@@ -4,7 +4,15 @@ version = "0.1.0"
 description = "Trade blotter enrichment, price history caching, and return-vs-benchmark reporting"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pandas>=2.2", "pydantic>=2.7", "requests>=2.31", "plotly>=5.22", "numpy>=1.26"]
+dependencies = [
+    "pandas>=2.2",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "plotly>=5.22",
+    "numpy>=1.26",
+]
 
 [dependency-groups]
 dev = [
