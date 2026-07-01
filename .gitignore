@@ -8,5 +8,9 @@ wheels/
 
 *.csv
 
+# Secrets
+.env
+.env.*
+
 # Virtual environments
 .venv

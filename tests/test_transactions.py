@@ -7,7 +7,9 @@ from trades import transactions
 from trades.config import AggregationConfig
 from trades.models import RawTrade
 
-DATA_CSV = Path(__file__).resolve().parents[1] / "data" / "20260701_trades.csv"
+DATA_CSV = (
+    Path(__file__).resolve().parents[1] / "data" / "brokers" / "ibkr" / "manual_20260701_trades.csv"
+)
 AGGREGATION_CONFIG = AggregationConfig()
 
 

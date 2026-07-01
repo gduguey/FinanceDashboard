@@ -6,22 +6,31 @@
 src/trades/
   config.py        every tunable parameter, as fields on frozen config objects
   models.py        pydantic schemas — the only place external data gets validated
-  transactions.py  load broker CSV -> enrich -> aggregate; investment schedule/pie helpers
+  preprocessing.py map each broker's native trade shape onto the canonical schema
+  transactions.py  enrich -> aggregate a canonical-shape trade DataFrame; schedule/pie helpers
   prices.py        Yahoo Finance chart API client + on-disk price cache
   returns.py       total/annualized return, HYSA benchmark, alpha, trend fit
   visualization.py every plotly chart; takes data, returns a Figure, nothing else
+  brokers/
+    ibkr.py        IBKR Flex Web Service client + local trade/position/cash cache
 ```
 
 `transactions.py` and `returns.py` are pure logic: pandas in, pandas out, no
-I/O. `prices.py` is the one module allowed to talk to the network and to
-disk. `visualization.py` never aggregates data — it only renders what the
-other modules already computed. This split is what would let a future
-React/API layer reuse the exact same logic modules behind HTTP endpoints,
-swapping only `visualization.py` for JSON responses.
+I/O. `prices.py` and `brokers/ibkr.py` are the modules allowed to talk to
+the network and to disk — one per external data source, so adding a second
+broker later means adding `brokers/schwab.py` (or similar), not touching
+what's already here. `visualization.py` never aggregates data — it only
+renders what the other modules already computed. This split is what would
+let a future React/API layer reuse the exact same logic modules behind HTTP
+endpoints, swapping only `visualization.py` for JSON responses.
 
 The notebook (`notebooks/portfolio.ipynb`) is pure orchestration: it calls
 these modules in sequence and displays the results. If you add a new metric
 or chart, it belongs in one of the modules above, not in the notebook.
+`transactions.py` only ever sees the canonical trade shape — `preprocessing.py`
+is what stands between it and any given broker's native data (see
+"Canonical trade schema" below, and AGENTS.md/CLAUDE.md for the convention
+this exists to enforce going forward).
 
 ## Configuration
 
@@ -47,18 +56,44 @@ from turning into indirection for its own sake:
 
 ## Validation boundary
 
-Pydantic models only exist for the two places untrusted data enters the
-system:
+Pydantic models only exist for the places untrusted data enters the system:
 
 - `RawTrade` — one row of the broker CSV (parses `"$1,234.56"` strings,
   rejects non-positive shares/spend).
 - `PriceObservation` — one (symbol, date, close) triple from the Yahoo
   Finance API (rejects non-positive closes).
+- `IbkrTrade` / `IbkrPosition` / `IbkrCashBalance` — one `<Trade>` /
+  `<OpenPosition>` / `<CashReportCurrency>` row from an IBKR Flex Query
+  response; field aliases match the XML attribute names exactly, so an
+  element's `.attrib` dict validates directly with no manual mapping.
 
 Once data has passed through one of these, it lives in a plain, typed
 pandas DataFrame for the rest of the pipeline. There's no pydantic model per
 aggregated/return row — that would just be ceremony around data that's
 already trusted.
+
+## Canonical trade schema
+
+`transactions.py` knows exactly one trade shape: the four columns named by
+`config.TradeSchema` (`trade_date`, `symbol`, `shares`, `usd_spent`), the
+same shape `models.RawTrade` validates. It has no idea IBKR, or any other
+broker, exists.
+
+Getting a broker's native data into that shape is `preprocessing.py`'s job,
+one `standardize_{broker}_trades` function per broker —
+`standardize_ibkr_trades` today, filtering IBKR's raw trade history down to
+genuine `BUY` fills and mapping `quantity`/`net_cash` onto `shares`/
+`usd_spent`. The output is validated through `RawTrade` before it's
+returned, so a broker preprocessor can't silently hand `transactions.py`
+something malformed.
+
+Why this indirection instead of just teaching `transactions.py` about
+IBKR's columns: it's the one place a second broker's differently-shaped
+data (different column names, different sign conventions, different
+notion of "a trade") gets reconciled, so `transactions.py` — and
+`returns.py`, `visualization.py`, the notebook — never have to special-case
+"which broker is this." See AGENTS.md/CLAUDE.md for the standing rule this
+encodes for future data sources.
 
 ## Same-day trade aggregation
 
@@ -108,3 +143,37 @@ Design constraints and how they're met:
 Prices are Yahoo's unadjusted daily close (price return, not total return —
 dividends aren't folded in). That's a deliberate simplification, documented
 here rather than silently baked into the numbers.
+
+## Data layout
+
+```
+data/
+  prices/                     market data, not broker-specific
+    {SYMBOL}.csv
+  brokers/
+    ibkr/
+      manual_20260701_trades.csv   one-off manual export, kept for history
+      raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
+      trades.csv                    rebuildable cache, derived from raw_statements/
+      position_snapshots.csv        rebuildable cache, derived from raw_statements/
+      cash_snapshots.csv            rebuildable cache, derived from raw_statements/
+```
+
+Trade/position/cash data is organized per broker (`data/brokers/{broker}/`)
+so a second broker later is a new sibling directory, not a reshuffle of an
+existing one. Price history isn't broker data — the same `VOO.csv` applies
+regardless of which broker you bought it through — so it stays outside
+`brokers/`. See `docs/ibkr_flex_api.md` for how the IBKR side of this is
+populated and kept from silently missing a day of trades.
+
+`.env` (the IBKR Flex token and query ID) is gitignored; nothing under
+`data/` is committed either (see `.gitignore`) — this is personal financial
+data, not fixtures.
+
+## Guidance for AI assistants working on this repo
+
+`AGENTS.md` (and `CLAUDE.md`, kept identical to it — see the note at the
+top of `AGENTS.md`) carries standing conventions for future work in this
+repo, in particular around adding new data sources and caching pulled
+data. Read it before adding a new broker, a new external API, or new
+cached/fetched data.

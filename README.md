@@ -1,15 +1,23 @@
 # IBKR Portfolio
 
 Personal finance dashboard, built one package at a time. `trades` (this
-package) enriches a broker trade export, fetches and caches daily price
-history, and compares per-trade returns against a HYSA benchmark. Future
-packages (budget, accounting, ...) will live alongside it and feed the same
-dashboard.
+package) enriches a broker trade export, syncs trade/position/cash data
+from IBKR, fetches and caches daily price history, and compares per-trade
+returns against a HYSA benchmark. Future packages (budget, accounting, ...)
+will live alongside it and feed the same dashboard.
 
 ## Setup
 
 ```bash
 uv sync
+```
+
+Then create a `.env` in the repo root (gitignored) with your IBKR Flex Web
+Service credentials, needed only for `trades.brokers.ibkr`:
+
+```
+IBKR_FLEX_WEB_SERVICE_TOKEN=...
+IBKR_QUERY_ID=...
 ```
 
 ## Sync after pulling changes
@@ -41,4 +49,4 @@ uv run ruff check .
 ```
 
 See `docs/` for how the pieces fit together, how the price cache and Yahoo
-API integration work, and how the return math is derived.
+and IBKR API integrations work, and how the return math is derived.
