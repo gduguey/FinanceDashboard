@@ -15,6 +15,34 @@ from trades.config import AggregationConfig
 from trades.models import RawTrade
 
 
+def standardize_ibkr_trades(ledger: pd.DataFrame) -> pd.DataFrame:
+    """Derive the older, narrower "invested schedule" trade shape from the
+    ledger: `BUY` events on a real symbol (excluding `CASH`) become one row
+    each, `usd_spent` = the event's principal `amount` (commission is its
+    own `FEE` event, deliberately excluded here — see docs/architecture.md,
+    "Canonical trade schema"). `event_datetime` is truncated to a date, the
+    grain `transactions.py`'s aggregation and rollups are built around.
+    """
+    buys = ledger[(ledger["event_type"] == "BUY") & (ledger["symbol"] != _CASH_SYMBOL)]
+    if buys.empty:
+        return pd.DataFrame(columns=list(RawTrade.model_fields)).astype(
+            {"trade_date": "datetime64[ns]", "shares": "float64", "usd_spent": "float64"}
+        )
+
+    standardized = pd.DataFrame(
+        {
+            "trade_date": pd.to_datetime(buys["event_datetime"]).dt.date,
+            "symbol": buys["symbol"],
+            "shares": buys["shares"],
+            "usd_spent": buys["amount"],
+        }
+    )
+    trades = [RawTrade.model_validate(row.to_dict()) for _, row in standardized.iterrows()]
+    df = pd.DataFrame([t.model_dump() for t in trades])
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return df.sort_values(["trade_date", "symbol"]).reset_index(drop=True)
+
+
 def load_raw_trades(csv_path: Path) -> pd.DataFrame:
     """Read the broker CSV, validating every row through `RawTrade`.
 

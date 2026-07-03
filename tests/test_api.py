@@ -5,39 +5,31 @@ import pytest
 from fastapi.testclient import TestClient
 
 from trades import api
-from trades.brokers import ibkr
+from trades.brokers.ibkr import api
 from trades.config import IbkrFlexApiConfig, PriceApiConfig
 
-TRADE_ROWS = [
+LEDGER_ROWS = [
     {
-        "account_id": "U1",
-        "transaction_id": "1",
-        "trade_id": "1",
+        "event_id": "ibkr:1",
+        "event_datetime": pd.Timestamp("2026-01-01 10:00:00"),
         "symbol": "VOO",
-        "asset_category": "STK",
+        "event_type": "BUY",
+        "shares": 1.0,
+        "price": 500.0,
+        "amount": 500.0,
         "currency": "USD",
-        "buy_sell": "BUY",
-        "trade_date": pd.Timestamp("2026-01-01"),
-        "quantity": 1.0,
-        "trade_price": 500.0,
-        "trade_money": 500.0,
-        "ib_commission": -1.0,
-        "net_cash": -501.0,
+        "meta": "{}",
     },
     {
-        "account_id": "U1",
-        "transaction_id": "2",
-        "trade_id": "2",
+        "event_id": "ibkr:2",
+        "event_datetime": pd.Timestamp("2026-01-02 10:00:00"),
         "symbol": "VOO",
-        "asset_category": "STK",
+        "event_type": "SELL",
+        "shares": 1.0,
+        "price": 500.0,
+        "amount": 500.0,
         "currency": "USD",
-        "buy_sell": "SELL",
-        "trade_date": pd.Timestamp("2026-01-02"),
-        "quantity": -1.0,
-        "trade_price": 500.0,
-        "trade_money": -500.0,
-        "ib_commission": -1.0,
-        "net_cash": 499.0,
+        "meta": "{}",
     },
 ]
 
@@ -45,14 +37,14 @@ TRADE_ROWS = [
 @pytest.fixture(autouse=True)
 def _isolated_caches(tmp_path, monkeypatch):
     """Point every module-level config at a throwaway cache dir, and seed a
-    minimal local trade + price history so GET endpoints never touch the
+    minimal local ledger + price history so GET endpoints never touch the
     network (per api.py's read-only GET contract)."""
     ibkr_config = IbkrFlexApiConfig(cache_dir=tmp_path / "ibkr")
     price_config = PriceApiConfig(cache_dir=tmp_path / "prices")
     monkeypatch.setattr(api, "ibkr_config", ibkr_config)
     monkeypatch.setattr(api, "price_api_config", price_config)
 
-    ibkr._atomic_write_csv(ibkr_config.cache_dir / "trades.csv", pd.DataFrame(TRADE_ROWS))
+    api._atomic_write_csv(ibkr_config.cache_dir / "ledger.csv", pd.DataFrame(LEDGER_ROWS))
     price_history = pd.DataFrame(
         {"price_date": pd.to_datetime(["2026-01-01", "2026-01-02"]), "close": [500.0, 550.0]}
     )
@@ -70,9 +62,9 @@ def test_summary_reports_current_value_and_gain(client) -> None:
     response = client.get("/api/summary")
     assert response.status_code == 200
     body = response.json()
-    assert body["total_invested_usd"] == pytest.approx(501.0)
+    assert body["total_invested_usd"] == pytest.approx(500.0)
     assert body["current_value_usd"] == pytest.approx(550.0)
-    assert body["total_gain_usd"] == pytest.approx(49.0)
+    assert body["total_gain_usd"] == pytest.approx(50.0)
     assert body["symbol_count"] == 1
 
 
@@ -139,16 +131,16 @@ def test_sync_calls_ibkr_and_refreshes_prices_without_hitting_network(
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "20260103T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
         sync_calls.append((credentials, config))
-        return ibkr.IbkrSyncResult(
+        return api.IbkrSyncResult(
             pulled_at=pd.Timestamp("2026-01-03").to_pydatetime(),
             statement_from_date=date(2026, 1, 3),
             statement_to_date=date(2026, 1, 3),
-            new_trade_count=0,
-            total_trade_count=1,
+            new_event_count=0,
+            total_event_count=1,
         )
 
     sync_calls = []
-    monkeypatch.setattr(api.ibkr, "sync_ibkr_account", fake_sync)
+    monkeypatch.setattr(api.api, "sync_ibkr_account", fake_sync)
     price_calls = []
     monkeypatch.setattr(
         api.prices,

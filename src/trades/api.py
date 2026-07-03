@@ -21,8 +21,8 @@ from datetime import date
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 
-from trades import preprocessing, prices, returns, transactions
-from trades.brokers import ibkr
+from trades import prices, returns, transactions
+from trades.brokers.ibkr import api, main, preprocessing
 from trades.config import (
     AggregationConfig,
     IbkrFlexApiConfig,
@@ -50,13 +50,14 @@ def _records(df: pd.DataFrame) -> list[dict]:
 
 
 def _load_trades() -> pd.DataFrame:
-    """Load -> standardize -> enrich -> aggregate, read-only (no network)."""
-    raw_ibkr_trades = ibkr.load_trade_history(ibkr_config)
-    if raw_ibkr_trades.empty:
+    """Load the ledger -> standardize to the older trade schema -> enrich ->
+    aggregate, read-only (no network)."""
+    ledger = main.load_ledger(ibkr_config)
+    if ledger.empty:
         raise HTTPException(
-            status_code=404, detail="No trade history cached yet. Hit Sync to pull it from IBKR."
+            status_code=404, detail="No ledger cached yet. Hit Sync to pull it from IBKR."
         )
-    standardized = preprocessing.standardize_ibkr_trades(raw_ibkr_trades)
+    standardized = transactions.standardize_ibkr_trades(ledger)
     enriched = transactions.enrich_trades(standardized)
     return transactions.aggregate_same_day_trades(enriched, aggregation_config)
 
@@ -84,7 +85,7 @@ def get_summary() -> dict:
     current_value = float((returns_df["shares"] * returns_df["current_price"]).sum())
     total_gain_usd = current_value - total_invested
 
-    last_synced = ibkr.last_synced_at(ibkr_config)
+    last_synced = api.last_synced_at(ibkr_config)
     last_synced = last_synced.isoformat() if last_synced else None
 
     return {
@@ -178,7 +179,7 @@ def get_return_curve(as_of: date | None = None) -> dict:
 @app.post("/api/sync")
 def sync() -> dict:
     credentials = IbkrFlexCredentials()
-    sync_result = ibkr.sync_ibkr_account(credentials, ibkr_config)
+    sync_result = api.sync_ibkr_account(credentials, ibkr_config)
 
     trades = _load_trades()
     symbols = sorted(trades["symbol"].unique())
@@ -188,8 +189,8 @@ def sync() -> dict:
     )
 
     return {
-        "synced_at": ibkr.last_synced_at(ibkr_config).isoformat(),
-        "new_trade_count": sync_result.new_trade_count,
-        "total_trade_count": sync_result.total_trade_count,
+        "synced_at": api.last_synced_at(ibkr_config).isoformat(),
+        "new_event_count": sync_result.new_event_count,
+        "total_event_count": sync_result.total_event_count,
         "symbols_refreshed": symbols,
     }

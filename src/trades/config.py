@@ -1,9 +1,4 @@
-"""Every tunable value in this package lives here, as a field on one of
-these frozen config objects — never as a bare module-level constant that a
-function silently falls back to. Callers construct the config they need
-(defaults below are the package's suggested values, not hidden ones) and
-pass it explicitly; nothing is picked up implicitly.
-"""
+"""Every tunable value in this package lives here."""
 
 from __future__ import annotations
 
@@ -16,24 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-class TradeSchema(BaseModel):
-    """The canonical trade-row column names every broker's data must be
-    mapped onto (by a `standardize_*` function in `preprocessing.py`) before
-    it reaches `transactions.py`. Declared once here — as data, not string
-    literals repeated in every preprocessor — so a rename is a one-line
-    change instead of a hunt across every broker's preprocessing code.
-
-    Field *values* are the column names themselves. `models.RawTrade` is the
-    validator for a row in this exact shape; its field names must match
-    these values (`tests/test_config.py` asserts this doesn't drift).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    trade_date: str = "trade_date"
-    symbol: str = "symbol"
-    shares: str = "shares"
-    usd_spent: str = "usd_spent"
+LedgerEventType = Literal[
+    "DEPOSIT", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "WITHHOLDING", "FEE", "SPLIT"
+]
+"""The only transaction kinds the ledger knows — see docs/architecture.md
+("The ledger"). `models.LedgerEvent.event_type` is typed against this."""
 
 
 class AggregationConfig(BaseModel):
@@ -101,6 +83,8 @@ class IbkrFlexApiConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     cache_dir: Path = _REPO_ROOT / "data" / "brokers" / "ibkr"
+    ledger_csv_path: Path = cache_dir / "ledger.csv"
+    raw_statement_dir: Path = cache_dir / "raw_statements"
     send_request_url: str = (
         "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest"
     )
@@ -112,3 +96,7 @@ class IbkrFlexApiConfig(BaseModel):
     max_poll_attempts: int = Field(default=10, gt=0)
     server_busy_retry_seconds: float = Field(default=5.0, gt=0)
     throttled_retry_seconds: float = Field(default=10.0, gt=0)
+    drip_reinvestment_note_code: str = Field(
+        default="R", min_length=1, 
+        description="IBKR's <Trade notes='...'> code for a dividend-reinvestment."
+    )
