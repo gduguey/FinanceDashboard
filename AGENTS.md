@@ -19,20 +19,21 @@ existing source) that overlaps with an existing concept:
 - **Don't let the source's native field/column names leak past the module
   that reads it.** `transactions.py`, `returns.py`, and `visualization.py`
   must stay ignorant of which broker or API anything came from.
-- **The canonical name for a concept is declared once**, as a field on a
-  config object in `config.py` (e.g. `TradeSchema` for trade rows) —
-  never re-typed as a string literal in multiple places, never invented ad
-  hoc by a new preprocessor.
+- **The canonical name for a concept is declared once**, as the field
+  names on its pydantic model in `models.py` (e.g. `RawTrade` for trade
+  rows, `LedgerEvent` for ledger rows) — never re-typed as a string
+  literal on a separate config object, never invented ad hoc by a new
+  preprocessor. A model's field names *are* its column names; there's no
+  parallel schema class to keep in sync.
 - **Add a `standardize_{source}_...` function to `preprocessing.py`** that
   maps the source's native shape onto that canonical schema, and validates
-  the result through the matching pydantic model in `models.py` (e.g.
-  `RawTrade`) before returning it. If no matching pydantic model or config
-  schema exists yet for this concept, that's a sign to add one — not a
-  reason to skip validation.
+  the result through the matching pydantic model before returning it. If
+  no matching model exists yet for this concept, that's a sign to add one
+  — not a reason to skip validation.
 
-See `docs/architecture.md` ("Canonical trade schema") for the concrete
-example this pattern is based on (`IBKR raw trades -> TradeSchema ->
-RawTrade`, in `preprocessing.standardize_ibkr_trades`).
+See `docs/architecture.md` ("The ledger") for the concrete example this
+pattern is based on (`IBKR <Trade> rows -> LedgerEvent`, in
+`preprocessing.standardize_ibkr_ledger`).
 
 ## 2. Caching fetched external data: archive raw, derive everything else
 

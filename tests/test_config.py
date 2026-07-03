@@ -1,14 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from trades.config import (
-    AggregationConfig,
-    IbkrFlexApiConfig,
-    IbkrFlexCredentials,
-    ReturnsConfig,
-    TradeSchema,
-)
-from trades.models import RawTrade
+from trades.config import AggregationConfig, IbkrFlexApiConfig, IbkrFlexCredentials, ReturnsConfig
 
 
 def test_aggregation_config_default_tolerance() -> None:
@@ -62,9 +55,3 @@ def test_ibkr_flex_api_config_defaults() -> None:
 def test_ibkr_flex_api_config_rejects_non_positive_timeout() -> None:
     with pytest.raises(ValidationError):
         IbkrFlexApiConfig(request_timeout_seconds=0)
-
-
-def test_trade_schema_matches_raw_trade_field_names() -> None:
-    """RawTrade validates rows in exactly the shape TradeSchema names —
-    these two must never drift apart (see config.TradeSchema docstring)."""
-    assert set(TradeSchema().model_dump().values()) == set(RawTrade.model_fields)

@@ -1,5 +1,3 @@
-"""One module per broker. Each fetches that broker's own trade/position/cash
-data and writes it to `data/brokers/{broker}/`, in whatever shape that
-broker's API naturally returns — normalizing across brokers into a single
-schema is a problem for whoever consumes them, not for these modules.
+"""Per-broker API and raw-data logic: each broker fetches and archives its
+own raw data in `data/brokers/{broker}/`, then projects it onto a clean ledger in that folder.
 """
