@@ -16,7 +16,7 @@ instead of something that silently happens on every page load.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
@@ -84,8 +84,8 @@ def get_summary() -> dict:
     current_value = float((returns_df["shares"] * returns_df["current_price"]).sum())
     total_gain_usd = current_value - total_invested
 
-    snapshots = ibkr.load_position_snapshots(ibkr_config)
-    last_synced = None if snapshots.empty else snapshots["pulled_at"].max().isoformat()
+    last_synced = ibkr.last_synced_at(ibkr_config)
+    last_synced = last_synced.isoformat() if last_synced else None
 
     return {
         "as_of_date": date.today().isoformat(),
@@ -188,7 +188,7 @@ def sync() -> dict:
     )
 
     return {
-        "synced_at": datetime.now().isoformat(),
+        "synced_at": ibkr.last_synced_at(ibkr_config).isoformat(),
         "new_trade_count": sync_result.new_trade_count,
         "total_trade_count": sync_result.total_trade_count,
         "symbols_refreshed": symbols,

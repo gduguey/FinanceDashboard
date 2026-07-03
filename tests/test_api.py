@@ -76,22 +76,22 @@ def test_summary_reports_current_value_and_gain(client) -> None:
     assert body["symbol_count"] == 1
 
 
-def test_summary_reports_last_synced_from_position_snapshots(client, _isolated_caches) -> None:
+def test_summary_reports_last_synced_from_raw_statement_archive(client, _isolated_caches) -> None:
+    # Deliberately not seeded via position_snapshots.csv's `pulled_at` — that's
+    # IBKR's own `whenGenerated`, not local wall-clock time (see
+    # ibkr.last_synced_at's docstring), so it's the wrong source for this.
     ibkr_config, _ = _isolated_caches
-    snapshot = pd.DataFrame(
-        [
-            {
-                "pulled_at": pd.Timestamp("2026-01-02T06:00:00"),
-                "account_id": "U1",
-                "symbol": "VOO",
-                "report_date": pd.Timestamp("2026-01-02"),
-            }
-        ]
-    )
-    ibkr._atomic_write_csv(ibkr_config.cache_dir / "position_snapshots.csv", snapshot)
+    raw_dir = ibkr_config.cache_dir / "raw_statements"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "20260102T060000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
 
     body = client.get("/api/summary").json()
     assert body["last_synced_at"] == "2026-01-02T06:00:00"
+
+
+def test_summary_reports_no_sync_yet_when_never_synced(client) -> None:
+    body = client.get("/api/summary").json()
+    assert body["last_synced_at"] is None
 
 
 def test_trades_only_includes_buys(client) -> None:
@@ -126,24 +126,29 @@ def test_no_trades_yet_is_a_404(client, tmp_path, monkeypatch) -> None:
 
 
 def test_sync_calls_ibkr_and_refreshes_prices_without_hitting_network(
-    client, monkeypatch
+    client, monkeypatch, _isolated_caches
 ) -> None:
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+    ibkr_config, _ = _isolated_caches
 
-    sync_calls = []
-    monkeypatch.setattr(
-        api.ibkr,
-        "sync_ibkr_account",
-        lambda credentials, config: sync_calls.append((credentials, config))
-        or ibkr.IbkrSyncResult(
+    def fake_sync(credentials, config):
+        # Real `sync_ibkr_account` always archives a raw statement before
+        # returning (see its docstring) — `last_synced_at` depends on that.
+        raw_dir = ibkr_config.cache_dir / "raw_statements"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / "20260103T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
+        sync_calls.append((credentials, config))
+        return ibkr.IbkrSyncResult(
             pulled_at=pd.Timestamp("2026-01-03").to_pydatetime(),
             statement_from_date=date(2026, 1, 3),
             statement_to_date=date(2026, 1, 3),
             new_trade_count=0,
             total_trade_count=1,
-        ),
-    )
+        )
+
+    sync_calls = []
+    monkeypatch.setattr(api.ibkr, "sync_ibkr_account", fake_sync)
     price_calls = []
     monkeypatch.setattr(
         api.prices,
@@ -156,4 +161,6 @@ def test_sync_calls_ibkr_and_refreshes_prices_without_hitting_network(
     assert response.status_code == 200
     assert len(sync_calls) == 1
     assert price_calls == [["VOO"]]
-    assert response.json()["symbols_refreshed"] == ["VOO"]
+    body = response.json()
+    assert body["symbols_refreshed"] == ["VOO"]
+    assert body["synced_at"] == "2026-01-03T00:00:00"
