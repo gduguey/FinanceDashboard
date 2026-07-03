@@ -73,7 +73,7 @@ export interface ReturnCurve {
 
 export interface SyncResult {
   synced_at: string
-  new_trade_count: number
-  total_trade_count: number
+  new_event_count: number
+  total_event_count: number
   symbols_refreshed: string[]
 }
