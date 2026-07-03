@@ -50,3 +50,19 @@ rest of the app actually reads should be treated as a disposable cache of
 that raw archive — cheap to delete and regenerate (see
 `rebuild_from_raw_statements`), never the only copy of the data. Apply this
 to any new fetched-and-cached data source, not just IBKR.
+
+## 3. Rules for coding
+
+Avoid using for loops. Use instead polars or numpy expressions whenever possible.
+
+Functions that take in dataframes should be able to be lazy dataframes or regular dataframes and then return the same type. 
+However internal calculations should always be done lazy and only collect if a regular dataframe was passed in.
+
+Make sure you add type hints to code, and the types are as STRICT as possible.
+Run MYPY and ruff at the end and fix any errors that come up. Also run ruff format
+
+When usings tests make sure to write tests first, make sure the fail before moving writing the code. Use the /tdd skill for tests.
+
+Use Numpy style docstrings on public methods.
+
+Keep the code as simple as possible. Don't add random checks, and assertions unless strictly necessary. Make sure functions aren't just a single line of code, If that's the case it's normally better to be explicit rather than implicit and have that line of code visible. 
