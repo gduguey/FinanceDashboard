@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import pytest
@@ -203,6 +203,22 @@ def test_sync_ibkr_account_archives_every_call_without_overwriting(tmp_path, mon
     archived = list((tmp_path / "raw_statements").glob("*.xml"))
     assert len(archived) == 2
     assert all(path.read_text(encoding="utf-8") == FIXTURE_XML for path in archived)
+
+
+def test_last_synced_at_returns_none_without_any_archive(tmp_path) -> None:
+    assert ibkr.last_synced_at(_config(tmp_path)) is None
+
+
+def test_last_synced_at_reads_the_latest_raw_statement_filename(tmp_path) -> None:
+    config = _config(tmp_path)
+    raw_dir = tmp_path / "raw_statements"
+    raw_dir.mkdir()
+    (raw_dir / "20260101T060000.xml").write_text(FIXTURE_XML, encoding="utf-8")
+    (raw_dir / "20260701T190908.xml").write_text(FIXTURE_XML, encoding="utf-8")
+    # "-1" suffix is the same-second collision tag `_save_raw_statement` appends
+    (raw_dir / "20260701T190908-1.xml").write_text(FIXTURE_XML, encoding="utf-8")
+
+    assert ibkr.last_synced_at(config) == datetime(2026, 7, 1, 19, 9, 8)
 
 
 def test_rebuild_from_raw_statements_raises_without_archive(tmp_path) -> None:

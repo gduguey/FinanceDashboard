@@ -239,6 +239,28 @@ def _save_raw_statement(xml_text: str, received_at: datetime, config: IbkrFlexAp
     return path
 
 
+def _parse_raw_statement_filename(path: Path) -> datetime:
+    stem = path.stem.split("-")[0]  # strip the "-{suffix}" same-second collision tag, if any
+    return datetime.strptime(stem, "%Y%m%dT%H%M%S")
+
+
+def last_synced_at(config: IbkrFlexApiConfig) -> datetime | None:
+    """The real local timestamp of the most recent successful sync, read from
+    the `raw_statements/` archive's filenames (named by actual receive time —
+    see `_save_raw_statement`). Deliberately not `pulled_at` in
+    `position_snapshots.csv`/`cash_snapshots.csv`, which is IBKR's own
+    `whenGenerated` for the statement, not local wall-clock time (see
+    docs/ibkr_flex_api.md) — it can stay frozen across multiple same-day
+    pulls and would misreport a sync that just ran as hours stale.
+
+    None if nothing has ever been synced.
+    """
+    raw_paths = list(_raw_statement_dir(config).glob("*.xml"))
+    if not raw_paths:
+        return None
+    return max(_parse_raw_statement_filename(path) for path in raw_paths)
+
+
 def _trades_frame(trades: list[IbkrTrade]) -> pd.DataFrame:
     if not trades:
         return pd.DataFrame(columns=_TRADE_COLUMNS)
