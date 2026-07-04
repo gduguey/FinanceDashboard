@@ -1,19 +1,47 @@
-"""Pydantic schemas for broker's data and API"""
+"""Pydantic schemas for IBKR's Flex Query XML rows."""
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-def drop_tz_suffix(value: object) -> object:
-    """IBKR appends a timezone abbreviation (e.g. "EDT") to timestamps
-    regardless of the query's configured format; nothing in this codebase
-    tracks timezones, so it's dropped rather than resolved to a UTC
-    offset — the result is a naive local timestamp."""
-    return value[:19] if isinstance(value, str) else value
+def parse_ibkr_datetime(value: object) -> object:
+    """Convert an IBKR timestamp string to naive UTC.
+
+    IBKR appends a timezone abbreviation to every timestamp — always
+    "EDT" or "EST", the daylight/standard names for its US Eastern
+    reporting zone. That abbreviation is read directly to get the exact
+    UTC offset, rather than assumed from a configured zone: the report
+    already says what it means, so there's nothing to configure.
+
+    Parameters
+    ----------
+    value
+        The raw field value from the XML attribute, before pydantic parsing.
+
+    Returns
+    -------
+    object
+        `value` converted to a naive UTC `datetime`, if it was a string.
+        Passed through unchanged otherwise (e.g. an already-parsed `datetime`).
+
+    Raises
+    ------
+    ValueError
+        If a string value's trailing abbreviation isn't "EDT" or "EST".
+    """
+    if not isinstance(value, str):
+        return value
+    local_text, _, abbreviation = value.rpartition(" ")
+    utc_offset_hours = {"EDT": 4, "EST": 5}.get(abbreviation)
+    if utc_offset_hours is None:
+        message = f"Unrecognized IBKR timezone abbreviation {abbreviation!r} in {value!r} (expected EDT or EST)."
+        raise ValueError(message)
+    naive_local = datetime.strptime(local_text, "%Y-%m-%d %H:%M:%S")  # noqa: DTZ007
+    return naive_local + timedelta(hours=utc_offset_hours)
 
 
 class IbkrTrade(BaseModel):
@@ -43,14 +71,16 @@ class IbkrTrade(BaseModel):
     net_cash: float = Field(alias="netCash")
     notes: str = Field(alias="notes", default="")
 
-    _parse_date_time = field_validator("date_time", mode="before")(drop_tz_suffix)
+    _parse_date_time = field_validator("date_time", mode="before")(parse_ibkr_datetime)
 
 
 class IbkrCashTransaction(BaseModel):
-    """One `<CashTransaction>` row (only present if the Flex Query's "Cash
-    Transactions" section is enabled). IBKR reports every real transaction
-    twice — `level_of_detail="DETAIL"` (real ID) and a same-day "SUMMARY"
-    rollup (blank ID) — so `transaction_id`/`symbol` skip `IbkrTrade`-style
+    """One `<CashTransaction>` row from an IBKR Flex Query report.
+
+    Only present if the Flex Query's "Cash Transactions" section is
+    enabled. IBKR reports every real transaction twice —
+    `level_of_detail="DETAIL"` (real ID) and a same-day "SUMMARY" rollup
+    (blank ID) — so `transaction_id`/`symbol` skip `IbkrTrade`-style
     `min_length` checks; `preprocessing.standardize_ibkr_cash_transactions`
     drops the SUMMARY rows before anything becomes a ledger event.
     """
@@ -68,4 +98,4 @@ class IbkrCashTransaction(BaseModel):
     action_id: str = Field(alias="actionID", default="")
     level_of_detail: Literal["DETAIL", "SUMMARY"] = Field(alias="levelOfDetail")
 
-    _parse_date_time = field_validator("date_time", mode="before")(drop_tz_suffix)
+    _parse_date_time = field_validator("date_time", mode="before")(parse_ibkr_datetime)
