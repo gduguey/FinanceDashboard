@@ -33,19 +33,6 @@ class LedgerConfig(BaseModel):
     long_term_holding_days: int = Field(default=365, gt=0)
 
 
-class AggregationConfig(BaseModel):
-    """Controls how same-day, same-symbol fills are merged."""
-
-    model_config = ConfigDict(frozen=True)
-
-    same_day_price_tolerance: float = Field(
-        default=0.0001,
-        gt=0,
-        lt=1,
-        description="Max relative $/share difference for two same-day fills to be merged.",
-    )
-
-
 class PriceApiConfig(BaseModel):
     """Where price history is cached and how the Yahoo Finance API is called."""
 
@@ -95,13 +82,19 @@ class TimezoneConfig(BaseModel):
 
 
 class ReturnsConfig(BaseModel):
-    """The return/annualization math and the cash benchmark to compare against."""
+    """The annualization convention and the counterfactual benchmarks to compare against.
+
+    `hysa_annual_rate` stands in for a real HYSA rate time series until
+    `market_data.hysa_rates` is implemented — `counterfactuals.hysa_counterfactual_value`
+    takes a `rate_lookup` callable specifically so this constant can be
+    swapped for a real series later without changing that function.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     annualization_days: int = Field(default=365, gt=0)
     hysa_annual_rate: float = Field(default=0.04, ge=0)
-    trend_fit_kind: Literal["linear", "mean"] = "linear"
+    benchmark_symbol: str = Field(default="VOO", min_length=1, description="The all-equity counterfactual symbol.")
 
 
 class IbkrFlexCredentials(BaseSettings):
@@ -153,15 +146,29 @@ class IbkrFlexApiConfig(BaseModel):
         return self.cache_dir / "raw_statements"
 
 
+class DashboardConfig(BaseModel):
+    """Where dashboard-only, user-editable settings (e.g. a target allocation) are persisted.
+
+    These aren't fetched data (see `docs/architecture.md`'s caching rule)
+    and aren't a code-level tunable either — they're settings a user
+    changes from the frontend, so `dashboard.py` reads/writes a small JSON
+    file here instead of holding them as a hardcoded default.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    settings_path: Path = _REPO_ROOT / "data" / "dashboard_settings.json"
+
+
 class AppConfig(BaseModel):
     """Every sub-config for the application, composed into one object."""
 
     model_config = ConfigDict(frozen=True)
 
     ledger: LedgerConfig = Field(default_factory=LedgerConfig)
-    aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     prices: PriceApiConfig = Field(default_factory=PriceApiConfig)
     cpi: CpiConfig = Field(default_factory=CpiConfig)
     returns: ReturnsConfig = Field(default_factory=ReturnsConfig)
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)

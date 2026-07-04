@@ -2,8 +2,10 @@ import type { ReactNode } from 'react'
 
 const SECTIONS = [
   { id: 'overview', label: 'Overview' },
-  { id: 'schedule', label: 'Schedule' },
-  { id: 'returns', label: 'Returns' },
+  { id: 'performance', label: 'Performance' },
+  { id: 'allocation', label: 'Allocation' },
+  { id: 'lots', label: 'Lots' },
+  { id: 'data-quality', label: 'Data quality' },
 ]
 
 export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {

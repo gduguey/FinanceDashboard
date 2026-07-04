@@ -1,30 +1,30 @@
-"""JSON-over-HTTP view of the same data `visualization.py` renders to Plotly.
+"""JSON-over-HTTP view of the dashboard, computed entirely by `dashboard.py`/`ledger.*`.
 
-Every endpoint below just calls existing `transactions`/`returns`/`prices`/
-`brokers.ibkr` functions and serializes the result — no aggregation or
-fetching happens in this module, matching the rule `visualization.py`
-already follows. See docs/architecture.md ("this split is what would let a
-future React/API layer reuse the exact same logic modules behind HTTP
-endpoints") and NEXT_STEPS.md #4.
+Every endpoint below calls `dashboard.py` (which composes `ledger.*` and
+`market_data.*`) and serializes the result — no aggregation happens in
+this module itself, matching the split documented in
+docs/architecture.md.
 
 GET endpoints only ever read what's already cached on disk — they never
 make a network call. `POST /sync` is the one endpoint allowed to touch the
-network (an IBKR pull plus a price-cache refresh for every known symbol);
-that's what makes the frontend's "Sync" button a real, explicit action
-instead of something that silently happens on every page load.
+network (an IBKR pull plus a price/CPI cache refresh); that's what makes
+the frontend's "Sync" button a real, explicit action instead of something
+that silently happens on every page load.
 """
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 
-from trades import returns, transactions
+from trades import dashboard
 from trades.brokers.ibkr import api, main
 from trades.config import AppConfig, IbkrFlexCredentials
+from trades.market_data import cpi as cpi_module
 from trades.market_data import prices
 
 if TYPE_CHECKING:
@@ -35,15 +35,13 @@ app_config = AppConfig()
 app = FastAPI(title="Investments API")
 
 
-def _load_trades() -> pl.DataFrame:
-    """Load the ledger, standardize it to the trade schema, enrich, and aggregate.
-
-    Read-only — never touches the network.
+def _load_ledger() -> pl.DataFrame:
+    """Load the cached ledger. Read-only — never touches the network.
 
     Returns
     -------
     polars.DataFrame
-        One row per same-day, same-symbol-price cluster of `BUY` events.
+        The full ledger, in chronological order.
 
     Raises
     ------
@@ -54,22 +52,26 @@ def _load_trades() -> pl.DataFrame:
     if ledger.is_empty():
         message = "No ledger cached yet. Hit Sync to pull it from IBKR."
         raise HTTPException(status_code=404, detail=message)
-    standardized = transactions.standardize_ibkr_trades(ledger.lazy(), app_config)
-    enriched = transactions.enrich_trades(standardized)
-    aggregated = transactions.aggregate_same_day_trades(enriched, app_config)
-    return cast("pl.LazyFrame", aggregated).collect()
+    return ledger
 
 
-def _price_lookup(symbol: str, as_of: date) -> float | None:
-    history = prices.load_price_cache(symbol, app_config)
-    return prices.price_as_of(history, as_of)
+def _first_event_date(ledger: pl.DataFrame) -> date:
+    return cast("date", ledger["event_datetime"].dt.date().min())
 
 
-def _build_returns(trades: pl.DataFrame, as_of: date) -> pl.DataFrame:
-    try:
-        return cast("pl.DataFrame", returns.build_returns_table(trades, _price_lookup, as_of=as_of, config=app_config))
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+def _chart_range(ledger: pl.DataFrame, start: date | None, end: date | None) -> tuple[date, date]:
+    """Default a chart's range to the ledger's full history.
+
+    Never defaults to "just today" (NEW_TASKS.md 6.10): the dashboard's
+    views should default to since-inception or a long window, not a
+    single-day snapshot that invites daily-change watching.
+
+    Returns
+    -------
+    tuple[datetime.date, datetime.date]
+        `(start, end)`, each defaulted if not given.
+    """
+    return start or _first_event_date(ledger), end or datetime.now(tz=UTC).date()
 
 
 def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
@@ -91,143 +93,231 @@ def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
     return value.replace(tzinfo=UTC).astimezone(ZoneInfo(config.timezone.local_zone))
 
 
-@app.get("/api/summary")
-def get_summary() -> dict[str, Any]:
-    """Return portfolio-level totals: invested, current value, gain, and alpha.
+def _last_synced_iso() -> str | None:
+    last_synced = api.last_synced_at(app_config)
+    return _to_display_zone(last_synced, app_config).isoformat() if last_synced else None
+
+
+@app.get("/api/overview")
+def get_overview(as_of: date | None = None) -> dict[str, Any]:
+    """Return the overview card row: value, gain split, XIRR, dollar alpha, TWR (NEW_TASKS.md 6.1).
 
     Returns
     -------
     dict[str, Any]
-        `as_of_date`, `total_invested_usd`, `current_value_usd`,
-        `total_gain_usd`, `total_gain_pct`, `portfolio_alpha_pct`,
-        `hysa_annual_rate`, `symbol_count`, `last_synced_at`.
+        `OverviewCards` fields, plus `last_synced_at`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    today = datetime.now(tz=UTC).date()
-    trades = _load_trades()
-    returns_df = _build_returns(trades, today)
-
-    total_invested = float(trades["usd_spent"].sum())
-    current_value = float((returns_df["shares"] * returns_df["current_price"]).sum())
-    total_gain_usd = current_value - total_invested
-
-    last_synced = api.last_synced_at(app_config)
-
-    return {
-        "as_of_date": today.isoformat(),
-        "total_invested_usd": total_invested,
-        "current_value_usd": current_value,
-        "total_gain_usd": total_gain_usd,
-        "total_gain_pct": (total_gain_usd / total_invested * 100) if total_invested else None,
-        "portfolio_alpha_pct": returns.portfolio_alpha_pct(returns_df),
-        "hysa_annual_rate": app_config.returns.hysa_annual_rate,
-        "symbol_count": trades["symbol"].n_unique(),
-        "last_synced_at": _to_display_zone(last_synced, app_config).isoformat() if last_synced else None,
-    }
+    ledger = _load_ledger()
+    try:
+        cards = dashboard.overview_cards(ledger, app_config, as_of or datetime.now(tz=UTC).date())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {**asdict(cards), "last_synced_at": _last_synced_iso()}
 
 
-@app.get("/api/trades")
-def get_trades() -> list[dict[str, Any]]:
-    """Return every aggregated trade row.
+@app.get("/api/chart/dollar")
+def get_dollar_chart(start: date | None = None, end: date | None = None) -> dict[str, Any]:
+    """Return the three/four-line dollar chart plus reallocation markers (NEW_TASKS.md 6.2).
+
+    Returns
+    -------
+    dict[str, Any]
+        `series` (one entry per day) and `reallocation_markers`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        series = dashboard.dollar_chart_series(ledger, app_config, range_start, range_end)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    markers = dashboard.reallocation_markers(ledger)
+    return {"series": series.to_dicts(), "reallocation_markers": markers.to_dicts()}
+
+
+@app.get("/api/chart/growth-of-100")
+def get_growth_of_100_chart(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return the growth-of-$100 chart: NAV plus every benchmark, indexed to 100 (NEW_TASKS.md 3.3, 6.3).
 
     Returns
     -------
     list[dict[str, Any]]
-        One entry per same-day, same-symbol-price cluster of `BUY` events.
+        One entry per day.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    return _load_trades().to_dicts()
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return dashboard.growth_of_100_chart(ledger, app_config, range_start, range_end).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/schedule/monthly")
-def get_monthly_invested() -> list[dict[str, Any]]:
-    """Return USD invested per month, broken down by symbol.
+@app.get("/api/chart/monthly-pnl")
+def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return each month's value change split into contributions and market gain (NEW_TASKS.md 3.5, 6.4).
 
     Returns
     -------
     list[dict[str, Any]]
         One entry per calendar month.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    return cast("pl.DataFrame", transactions.monthly_invested(_load_trades())).to_dicts()
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return dashboard.monthly_pnl(ledger, app_config, range_start, range_end).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/schedule/daily")
-def get_daily_timeline() -> list[dict[str, Any]]:
-    """Return USD invested per investment day, with a running total.
+@app.get("/api/allocation")
+def get_allocation(as_of: date | None = None) -> list[dict[str, Any]]:
+    """Return the current-value allocation by symbol (including cash), against the target (NEW_TASKS.md 6.5).
 
     Returns
     -------
     list[dict[str, Any]]
-        One entry per day a trade happened.
+        One entry per symbol (plus cash).
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    return cast("pl.DataFrame", transactions.daily_investment_timeline(_load_trades())).to_dicts()
+    ledger = _load_ledger()
+    try:
+        return dashboard.allocation_view(ledger, app_config, as_of or datetime.now(tz=UTC).date()).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/schedule/pie")
-def get_pie_breakdown() -> dict[str, list[dict[str, Any]]]:
-    """Return every pie-chart breakdown: whole-portfolio-by-symbol plus one by-date breakdown per symbol.
+@app.get("/api/settings/target-allocation")
+def get_target_allocation() -> dict[str, float]:
+    """Return the persisted target allocation.
 
     Returns
     -------
-    dict[str, list[dict[str, Any]]]
-        Chart label -> its breakdown rows.
+    dict[str, float]
+        Symbol -> target percentage.
     """
-    options = transactions.pie_chart_options(_load_trades())
-    return {label: breakdown.to_dicts() for label, breakdown in options.items()}
+    return dashboard.load_settings(app_config).target_allocation_pct
 
 
-@app.get("/api/returns")
-def get_returns(as_of: date | None = None) -> list[dict[str, Any]]:
-    """Return the per-trade returns table as of a given date (today, by default).
+@app.put("/api/settings/target-allocation")
+def put_target_allocation(target_allocation_pct: dict[str, float]) -> dict[str, float]:
+    """Persist a new target allocation, set from the frontend (NEW_TASKS.md 6.5).
 
     Returns
     -------
-    list[dict[str, Any]]
-        One entry per trade.
+    dict[str, float]
+        The persisted target allocation.
     """
-    trades = _load_trades()
-    returns_df = _build_returns(trades, as_of or datetime.now(tz=UTC).date())
-    selected = returns_df.select(
-        "trade_date",
-        "symbol",
-        "usd_per_share",
-        "current_price",
-        "days_held",
-        "total_return_pct",
-        "annualized_return_pct",
-        "hysa_period_return_pct",
-        "alpha_period_pct",
-        "usd_spent",
-    ).rename({"usd_per_share": "price_paid"})
-    return selected.to_dicts()
+    settings = dashboard.DashboardSettings(target_allocation_pct=target_allocation_pct)
+    dashboard.save_settings(settings, app_config)
+    return settings.target_allocation_pct
 
 
-@app.get("/api/returns/curve")
-def get_return_curve(as_of: date | None = None) -> dict[str, Any]:
-    """Return per-trade annualized return vs. days held, plus a fitted trend line.
+@app.get("/api/lots")
+def get_lots(as_of: date | None = None) -> dict[str, Any]:
+    """Return the trade-level table: open lots, closed lots, per-symbol rollup (NEW_TASKS.md 6.6).
 
     Returns
     -------
     dict[str, Any]
-        `points` (one per trade), `trend` (the fitted curve), `hysa_annual_rate_pct`.
+        `open_lots`, `closed_lots`, `symbol_rollup`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    trades = _load_trades()
-    returns_df = _build_returns(trades, as_of or datetime.now(tz=UTC).date())
-    trend_x, trend_y = returns.fit_trend(
-        returns_df["days_held"].to_numpy(),
-        returns_df["annualized_return_pct"].to_numpy(),
-        app_config,
-    )
+    ledger = _load_ledger()
+    try:
+        table = dashboard.lots_table(ledger, app_config, as_of or datetime.now(tz=UTC).date())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return {
-        "points": returns_df.select("symbol", "days_held", "annualized_return_pct").to_dicts(),
-        "trend": [
-            {"days_held": float(x), "annualized_return_pct": float(y)} for x, y in zip(trend_x, trend_y, strict=True)
-        ],
-        "hysa_annual_rate_pct": app_config.returns.hysa_annual_rate * 100,
+        "open_lots": table.open_lots.to_dicts(),
+        "closed_lots": table.closed_lots.to_dicts(),
+        "symbol_rollup": table.symbol_rollup.to_dicts(),
     }
+
+
+@app.get("/api/risk")
+def get_risk(start: date | None = None, end: date | None = None) -> dict[str, Any]:
+    """Return the largest peak-to-trough NAV decline over a window (NEW_TASKS.md 6.7).
+
+    Returns
+    -------
+    dict[str, Any]
+        `max_drawdown_pct`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return {"max_drawdown_pct": dashboard.risk_stat(ledger, app_config, range_start, range_end)}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/data-quality")
+def get_data_quality() -> list[dict[str, Any]]:
+    """Return the last cached price date per symbol ever held or benchmarked against (NEW_TASKS.md 6.9).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One entry per symbol.
+    """
+    ledger = _load_ledger()
+    held_and_benchmark = {*ledger["symbol"].unique().to_list(), app_config.returns.benchmark_symbol}
+    symbols = sorted(held_and_benchmark - {app_config.ledger.cash_symbol})
+    return dashboard.data_quality(symbols, app_config).to_dicts()
+
+
+@app.get("/api/ledger/export")
+def get_ledger_export() -> list[dict[str, Any]]:
+    """Export the full ledger, for the user's own backup (NEW_TASKS.md 6.9).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Every ledger row.
+    """
+    return _load_ledger().to_dicts()
 
 
 @app.post("/api/sync")
 def sync() -> dict[str, Any]:
-    """Pull the latest IBKR statement and refresh the price cache for every known symbol.
+    """Pull the latest IBKR statement and refresh the price/CPI caches.
+
+    Refreshes the raw price cache for every symbol ever held plus the
+    benchmark symbol, the adjusted (dividend-reinvested) cache for the
+    benchmark symbol only (0.5: adjusted prices are for benchmark
+    counterfactuals, never for pricing your own positions), and the CPI cache.
 
     Returns
     -------
@@ -237,15 +327,20 @@ def sync() -> dict[str, Any]:
     credentials = IbkrFlexCredentials()  # type: ignore[call-arg]  # token/query_id come from the environment
     sync_result = main.sync_ibkr_account(credentials, app_config)
 
-    trades = _load_trades()
-    symbols = sorted(trades["symbol"].unique())
-    first_trade_date = cast("date", trades["trade_date"].min())
-    prices.update_price_caches(symbols, since=first_trade_date, as_of=datetime.now(tz=UTC).date(), config=app_config)
+    ledger = _load_ledger()
+    benchmark_symbol = app_config.returns.benchmark_symbol
+    held_symbols = sorted(set(ledger["symbol"].unique().to_list()) - {app_config.ledger.cash_symbol})
+    raw_symbols = sorted({*held_symbols, benchmark_symbol})
+    first_event = _first_event_date(ledger)
+    today = datetime.now(tz=UTC).date()
 
-    last_synced = api.last_synced_at(app_config)
+    prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=app_config)
+    prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=app_config, adjusted=True)
+    cpi_module.update_cpi_cache(app_config)
+
     return {
-        "synced_at": _to_display_zone(last_synced, app_config).isoformat() if last_synced else None,
+        "synced_at": _last_synced_iso(),
         "new_event_count": sync_result.new_event_count,
         "total_event_count": sync_result.total_event_count,
-        "symbols_refreshed": symbols,
+        "symbols_refreshed": raw_symbols,
     }

@@ -1,12 +1,15 @@
 import type {
-  DailyInvestment,
-  MonthlyInvested,
-  PieOptions,
-  ReturnCurve,
-  ReturnRow,
-  Summary,
+  AllocationRow,
+  DataQualityRow,
+  DollarChart,
+  GrowthOf100Point,
+  LedgerEvent,
+  LotsTable,
+  MonthlyPnl,
+  Overview,
+  RiskStat,
   SyncResult,
-  Trade,
+  TargetAllocation,
 } from '@/types/portfolio'
 
 export class ApiError extends Error {}
@@ -20,13 +23,41 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+// Date range params shared by every chart/stat endpoint — omitted keys let
+// the backend default to "since inception" through today (never "just
+// today" alone, per the anti-overmonitoring default).
+export interface DateRange {
+  start?: string
+  end?: string
+}
+
+function withRange(path: string, range?: DateRange): string {
+  const params = new URLSearchParams()
+  if (range?.start) params.set('start', range.start)
+  if (range?.end) params.set('end', range.end)
+  const query = params.toString()
+  return query ? `${path}?${query}` : path
+}
+
 export const api = {
-  summary: () => request<Summary>('/api/summary'),
-  trades: () => request<Trade[]>('/api/trades'),
-  monthlyInvested: () => request<MonthlyInvested[]>('/api/schedule/monthly'),
-  dailyInvestment: () => request<DailyInvestment[]>('/api/schedule/daily'),
-  pieBreakdown: () => request<PieOptions>('/api/schedule/pie'),
-  returns: () => request<ReturnRow[]>('/api/returns'),
-  returnCurve: () => request<ReturnCurve>('/api/returns/curve'),
+  overview: (asOf?: string) =>
+    request<Overview>(asOf ? `/api/overview?as_of=${asOf}` : '/api/overview'),
+  dollarChart: (range?: DateRange) => request<DollarChart>(withRange('/api/chart/dollar', range)),
+  growthOf100Chart: (range?: DateRange) =>
+    request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
+  monthlyPnl: (range?: DateRange) => request<MonthlyPnl[]>(withRange('/api/chart/monthly-pnl', range)),
+  allocation: (asOf?: string) =>
+    request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
+  targetAllocation: () => request<TargetAllocation>('/api/settings/target-allocation'),
+  setTargetAllocation: (target: TargetAllocation) =>
+    request<TargetAllocation>('/api/settings/target-allocation', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(target),
+    }),
+  lots: (asOf?: string) => request<LotsTable>(asOf ? `/api/lots?as_of=${asOf}` : '/api/lots'),
+  risk: (range?: DateRange) => request<RiskStat>(withRange('/api/risk', range)),
+  dataQuality: () => request<DataQualityRow[]>('/api/data-quality'),
+  ledgerExport: () => request<LedgerEvent[]>('/api/ledger/export'),
   sync: () => request<SyncResult>('/api/sync', { method: 'POST' }),
 }

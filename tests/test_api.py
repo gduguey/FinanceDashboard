@@ -13,11 +13,11 @@ LEDGER_ROWS = [
     {
         "event_id": "ibkr:1",
         "event_datetime": datetime(2026, 1, 1, 10, 0, 0),
-        "symbol": "VOO",
-        "event_type": "BUY",
-        "shares": 1.0,
-        "price": 500.0,
-        "amount": 500.0,
+        "symbol": "CASH",
+        "event_type": "DEPOSIT",
+        "shares": None,
+        "price": None,
+        "amount": 2000.0,
         "currency": "USD",
         "meta": "{}",
     },
@@ -25,10 +25,21 @@ LEDGER_ROWS = [
         "event_id": "ibkr:2",
         "event_datetime": datetime(2026, 1, 2, 10, 0, 0),
         "symbol": "VOO",
+        "event_type": "BUY",
+        "shares": 2.0,
+        "price": 500.0,
+        "amount": 1000.0,
+        "currency": "USD",
+        "meta": "{}",
+    },
+    {
+        "event_id": "ibkr:3",
+        "event_datetime": datetime(2026, 1, 3, 10, 0, 0),
+        "symbol": "VOO",
         "event_type": "SELL",
         "shares": 1.0,
-        "price": 500.0,
-        "amount": 500.0,
+        "price": 550.0,
+        "amount": 550.0,
         "currency": "USD",
         "meta": "{}",
     },
@@ -39,16 +50,29 @@ LEDGER_ROWS = [
 def isolated_config(tmp_path, monkeypatch):
     """Point the module-level config at a throwaway cache dir.
 
-    Seeds a minimal local ledger + price history so GET endpoints never
-    touch the network (per api.py's read-only GET contract).
+    Seeds a minimal local ledger + price + CPI history so GET endpoints
+    never touch the network (per api.py's read-only GET contract).
     """
-    config = AppConfig(ibkr={"cache_dir": tmp_path / "ibkr"}, prices={"cache_dir": tmp_path / "prices"})
+    config = AppConfig(
+        ibkr={"cache_dir": tmp_path / "ibkr"},
+        prices={"cache_dir": tmp_path / "prices"},
+        cpi={"cache_dir": tmp_path / "cpi"},
+        dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
+    )
     monkeypatch.setattr(trades_api, "app_config", config)
 
     write_csv_atomic(pl.DataFrame(LEDGER_ROWS), config.ibkr.ledger_csv_path)
-    price_history = pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 550.0]})
+    price_history = pl.DataFrame({
+        "price_date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
+        "close": [500.0, 500.0, 560.0],
+    })
     config.prices.cache_dir.mkdir(parents=True)
     write_csv_atomic(price_history, config.prices.cache_dir / "VOO.csv")
+    write_csv_atomic(price_history, config.prices.cache_dir / "VOO.adjusted.csv")
+    config.cpi.cache_dir.mkdir(parents=True)
+    write_csv_atomic(
+        pl.DataFrame({"observation_date": [date(2026, 1, 1)], "value": [300.0]}), config.cpi.cache_dir / "CPIAUCSL.csv"
+    )
     return config
 
 
@@ -57,98 +81,118 @@ def client():
     return TestClient(trades_api.app)
 
 
-def test_summary_reports_current_value_and_gain(client) -> None:
-    response = client.get("/api/summary")
+def test_overview_reports_value_and_gain(client) -> None:
+    response = client.get("/api/overview", params={"as_of": "2026-01-03"})
     assert response.status_code == 200
     body = response.json()
-    assert body["total_invested_usd"] == pytest.approx(500.0)
-    assert body["current_value_usd"] == pytest.approx(550.0)
-    assert body["total_gain_usd"] == pytest.approx(50.0)
-    assert body["symbol_count"] == 1
+    assert body["value_usd"] == pytest.approx(1 * 560.0 + 1550.0)
+    assert body["realized_gain_usd"] == pytest.approx(50.0)
 
 
-def test_summary_reports_last_synced_from_raw_statement_archive(client, isolated_config) -> None:
-    # Deliberately not seeded via the ledger's event_datetime — that's IBKR's
-    # own whenGenerated, not local wall-clock time (see
-    # ibkr.api.last_synced_at's docstring), so it's the wrong source for this.
-    raw_dir = isolated_config.ibkr.raw_statement_dir
-    raw_dir.mkdir(parents=True)
-    (raw_dir / "20260102T060000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
-
-    body = client.get("/api/summary").json()
-    # Stored as naive UTC, rendered in config.timezone.local_zone (default America/New_York, EST in January).
-    assert body["last_synced_at"] == "2026-01-02T01:00:00-05:00"
-
-
-def test_summary_reports_no_sync_yet_when_never_synced(client) -> None:
-    body = client.get("/api/summary").json()
-    assert body["last_synced_at"] is None
-
-
-def test_trades_only_includes_buys(client) -> None:
-    trades = client.get("/api/trades").json()
-    assert len(trades) == 1
-    assert trades[0]["symbol"] == "VOO"
-
-
-def test_returns_missing_price_is_a_422_not_a_silent_gap(client) -> None:
-    response = client.get("/api/returns", params={"as_of": "2020-01-01"})
-    assert response.status_code == 422
-
-
-def test_returns_curve_shape(client) -> None:
-    body = client.get("/api/returns/curve").json()
-    assert len(body["points"]) == 1
-    assert len(body["trend"]) == 1
-    assert body["hysa_annual_rate_pct"] == pytest.approx(4.0)
-
-
-def test_schedule_endpoints_return_data(client) -> None:
-    assert client.get("/api/schedule/monthly").json()
-    assert client.get("/api/schedule/daily").json()
-    pie = client.get("/api/schedule/pie").json()
-    assert "Whole portfolio — by symbol" in pie
-
-
-def test_no_trades_yet_is_a_404(client, tmp_path, monkeypatch) -> None:
+def test_overview_no_ledger_is_a_404(client, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(trades_api, "app_config", AppConfig(ibkr={"cache_dir": tmp_path / "empty"}))
-    assert client.get("/api/trades").status_code == 404
+    assert client.get("/api/overview").status_code == 404
 
 
-def test_sync_calls_ibkr_and_refreshes_prices_without_hitting_network(client, monkeypatch) -> None:
+def test_dollar_chart_returns_series_and_reallocation_markers(client) -> None:
+    body = client.get("/api/chart/dollar", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert len(body["series"]) == 3
+    assert body["series"][0]["date"] == "2026-01-01"
+    assert body["reallocation_markers"] == []
+
+
+def test_growth_of_100_chart_returns_one_entry_per_day(client) -> None:
+    body = client.get("/api/chart/growth-of-100", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert len(body) == 3
+    assert body[0]["portfolio_index"] == pytest.approx(100.0)
+
+
+def test_monthly_pnl_returns_one_entry_for_january(client) -> None:
+    body = client.get("/api/chart/monthly-pnl", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert len(body) == 1
+    assert body[0]["month"] == "2026-01"
+
+
+def test_allocation_reports_voo_and_cash(client) -> None:
+    body = client.get("/api/allocation", params={"as_of": "2026-01-03"}).json()
+    symbols = {row["symbol"] for row in body}
+    assert symbols == {"VOO", "CASH"}
+
+
+def test_target_allocation_defaults_to_empty(client) -> None:
+    assert client.get("/api/settings/target-allocation").json() == {}
+
+
+def test_target_allocation_put_then_get_round_trips(client) -> None:
+    put_response = client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    assert put_response.status_code == 200
+    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+
+
+def test_lots_reports_open_and_closed_lots(client) -> None:
+    body = client.get("/api/lots", params={"as_of": "2026-01-03"}).json()
+    assert len(body["open_lots"]) == 1
+    assert len(body["closed_lots"]) == 1
+    assert len(body["symbol_rollup"]) == 1
+
+
+def test_risk_reports_max_drawdown(client) -> None:
+    body = client.get("/api/risk", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert body["max_drawdown_pct"] <= 0.0
+
+
+def test_data_quality_includes_held_and_benchmark_symbols(client) -> None:
+    body = client.get("/api/data-quality").json()
+    symbols = {row["symbol"] for row in body}
+    assert symbols == {"VOO"}
+    assert body[0]["last_price_date"] == "2026-01-03"
+
+
+def test_ledger_export_returns_every_row(client) -> None:
+    body = client.get("/api/ledger/export").json()
+    assert len(body) == len(LEDGER_ROWS)
+
+
+def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_network(client, monkeypatch) -> None:
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
     def fake_sync(credentials, config):
-        # Real `sync_ibkr_account` always archives a raw statement before
-        # returning (see its docstring) — `last_synced_at` depends on that.
         raw_dir = config.ibkr.raw_statement_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
-        (raw_dir / "20260103T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
+        (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
         sync_calls.append((credentials, config))
         return IbkrSyncResult(
-            pulled_at=datetime(2026, 1, 3),
-            statement_from_date=date(2026, 1, 3),
-            statement_to_date=date(2026, 1, 3),
+            pulled_at=datetime(2026, 1, 4),
+            statement_from_date=date(2026, 1, 4),
+            statement_to_date=date(2026, 1, 4),
             new_event_count=0,
-            total_event_count=1,
+            total_event_count=3,
         )
 
     sync_calls = []
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
-    price_calls = []
+    raw_price_calls = []
     monkeypatch.setattr(
         trades_api.prices,
         "update_price_caches",
-        lambda symbols, since, as_of, config: price_calls.append(symbols) or {},
+        lambda symbols, since, as_of, config: raw_price_calls.append(symbols) or {},
     )
+    adjusted_price_calls = []
+    monkeypatch.setattr(
+        trades_api.prices,
+        "update_price_cache",
+        lambda symbol, since, as_of, config, adjusted=False: adjusted_price_calls.append((symbol, adjusted)),
+    )
+    cpi_calls = []
+    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", cpi_calls.append)
 
     response = client.post("/api/sync")
 
     assert response.status_code == 200
     assert len(sync_calls) == 1
-    assert price_calls == [["VOO"]]
+    assert raw_price_calls == [["VOO"]]
+    assert adjusted_price_calls == [("VOO", True)]
+    assert len(cpi_calls) == 1
     body = response.json()
     assert body["symbols_refreshed"] == ["VOO"]
-    # Stored as naive UTC, rendered in config.timezone.local_zone (default America/New_York, EST in January).
-    assert body["synced_at"] == "2026-01-02T19:00:00-05:00"

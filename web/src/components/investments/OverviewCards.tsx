@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatPercent, formatUsd, signColor } from '@/lib/format'
-import { useSummary } from '@/hooks/usePortfolioData'
+import { useOverview } from '@/hooks/usePortfolioData'
 
 function MetricCard({
   label,
@@ -42,8 +42,11 @@ function MetricSkeleton() {
   )
 }
 
-export function MetricsRow() {
-  const { data, isLoading, isError } = useSummary()
+// NEW_TASKS.md 6.1: one Value card (gain split realized/unrealized in the
+// subline) instead of three separate "invested / value / gain" cards that
+// spread one fact across three places.
+export function OverviewCards() {
+  const { data, isLoading, isError } = useOverview()
 
   if (isLoading) {
     return (
@@ -63,25 +66,38 @@ export function MetricsRow() {
     )
   }
 
+  const xirrLabel = data.xirr_is_provisional ? 'XIRR (provisional)' : 'XIRR'
+  const timingGap =
+    data.timing_gap_pct === null
+      ? undefined
+      : `${data.timing_gap_pct >= 0 ? 'Timing helped' : 'Timing hurt'} ${formatPercent(data.timing_gap_pct)}`
+
   return (
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-      <MetricCard label="Total invested" value={formatUsd(data.total_invested_usd)} />
       <MetricCard
-        label="Current value"
-        value={formatUsd(data.current_value_usd)}
-        detail={`as of ${data.as_of_date}`}
+        label="Value"
+        value={formatUsd(data.value_usd)}
+        detail={`${formatUsd(data.gain_usd)} (${formatPercent(data.gain_pct)}) — ${formatUsd(
+          data.realized_gain_usd,
+        )} realized, ${formatUsd(data.unrealized_gain_usd)} unrealized`}
+        detailColor={signColor(data.gain_usd)}
+      />
+      <MetricCard
+        label={xirrLabel}
+        value={formatPercent(data.xirr_pct)}
+        detail={`as of ${data.as_of}`}
         detailColor="text-muted-foreground"
       />
       <MetricCard
-        label="Total gain"
-        value={formatUsd(data.total_gain_usd)}
-        detail={formatPercent(data.total_gain_pct)}
-        detailColor={signColor(data.total_gain_usd)}
+        label="Dollar alpha vs. HYSA"
+        value={formatUsd(data.dollar_alpha_vs_hysa_usd)}
+        detail="vs. a compounding HYSA counterfactual"
+        detailColor={signColor(data.dollar_alpha_vs_hysa_usd)}
       />
       <MetricCard
-        label={`Alpha vs. ${(data.hysa_annual_rate * 100).toFixed(0)}% HYSA`}
-        value={formatPercent(data.portfolio_alpha_pct)}
-        detail={`${data.symbol_count} symbol${data.symbol_count === 1 ? '' : 's'}`}
+        label="TWR"
+        value={formatPercent(data.twr_annualized_pct ?? data.twr_pct)}
+        detail={timingGap}
         detailColor="text-muted-foreground"
       />
     </div>
