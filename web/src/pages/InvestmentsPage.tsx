@@ -1,7 +1,10 @@
 import { AllocationView } from '@/components/investments/AllocationView'
+import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
 import { DataQualityPanel } from '@/components/investments/DataQualityPanel'
 import { DollarChart } from '@/components/investments/DollarChart'
+import { GlossarySection } from '@/components/investments/GlossarySection'
 import { GrowthOf100Chart } from '@/components/investments/GrowthOf100Chart'
+import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
 import { LotsTable } from '@/components/investments/LotsTable'
 import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
@@ -31,8 +34,12 @@ export function InvestmentsPage() {
 
         <section id="performance" className="scroll-section space-y-4">
           <SectionTitle>Performance vs. benchmarks</SectionTitle>
+          <div className="flex flex-wrap items-center gap-4">
+            <BenchmarkPicker />
+          </div>
           <DollarChart />
           <GrowthOf100Chart />
+          <HysaSettingsPanel />
           <MonthlyPnlChart />
         </section>
 
@@ -49,6 +56,11 @@ export function InvestmentsPage() {
         <section id="data-quality" className="scroll-section space-y-4">
           <SectionTitle>Trust &amp; data quality</SectionTitle>
           <DataQualityPanel />
+        </section>
+
+        <section id="glossary" className="scroll-section space-y-4">
+          <SectionTitle>Glossary</SectionTitle>
+          <GlossarySection />
         </section>
       </div>
     </div>

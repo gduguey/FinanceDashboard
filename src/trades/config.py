@@ -57,6 +57,34 @@ class CpiConfig(BaseModel):
     request_timeout_seconds: float = Field(default=10.0, gt=0)
 
 
+class SymbolSearchConfig(BaseModel):
+    """How Yahoo Finance's public ticker-search endpoint is called.
+
+    Nothing here is cached: a symbol search is a live, on-demand lookup
+    for the frontend's benchmark picker, not data the app replays against.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    search_url: str = "https://query2.finance.yahoo.com/v1/finance/search"
+    request_headers: dict[str, str] = Field(
+        default_factory=lambda: {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
+    )
+    request_timeout_seconds: float = Field(default=10.0, gt=0)
+    max_results: int = Field(default=8, gt=0)
+
+
+class HysaRatesConfig(BaseModel):
+    """Where the HYSA bank-rate-history cache lives and how apyarchives.com is scraped."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cache_dir: Path = _REPO_ROOT / "data" / "hysa_rates"
+    source_url: str = "https://www.apyarchives.com"
+    request_timeout_seconds: float = Field(default=15.0, gt=0)
+    default_bank_id: str = Field(default="ally-bank", min_length=1)
+
+
 class TimezoneConfig(BaseModel):
     """The timezone timestamps are displayed in.
 
@@ -168,6 +196,8 @@ class AppConfig(BaseModel):
     ledger: LedgerConfig = Field(default_factory=LedgerConfig)
     prices: PriceApiConfig = Field(default_factory=PriceApiConfig)
     cpi: CpiConfig = Field(default_factory=CpiConfig)
+    hysa_rates: HysaRatesConfig = Field(default_factory=HysaRatesConfig)
+    symbol_search: SymbolSearchConfig = Field(default_factory=SymbolSearchConfig)
     returns: ReturnsConfig = Field(default_factory=ReturnsConfig)
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)

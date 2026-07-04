@@ -79,7 +79,11 @@ def fetch_cpi_series(config: AppConfig, session: requests.Session | None = None)
         timeout=config.cpi.request_timeout_seconds,
     )
     response.raise_for_status()
-    raw = pl.read_csv(io.StringIO(response.text))
+    # `infer_schema=False` keeps every column Utf8: the real FRED series is
+    # decades long, and polars' schema inference only samples the first
+    # ~100 rows — the "." sentinel for a not-yet-published month sits at
+    # the very end, so a numeric-inferred column chokes when it gets there.
+    raw = pl.read_csv(io.StringIO(response.text), infer_schema=False)
     date_column, value_column = raw.columns[0], raw.columns[1]
     raw = raw.filter(pl.col(value_column) != _FRED_MISSING_VALUE)
 

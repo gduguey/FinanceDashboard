@@ -57,6 +57,7 @@ def isolated_config(tmp_path, monkeypatch):
         ibkr={"cache_dir": tmp_path / "ibkr"},
         prices={"cache_dir": tmp_path / "prices"},
         cpi={"cache_dir": tmp_path / "cpi"},
+        hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
         dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
     )
     monkeypatch.setattr(trades_api, "app_config", config)
@@ -72,6 +73,16 @@ def isolated_config(tmp_path, monkeypatch):
     config.cpi.cache_dir.mkdir(parents=True)
     write_csv_atomic(
         pl.DataFrame({"observation_date": [date(2026, 1, 1)], "value": [300.0]}), config.cpi.cache_dir / "CPIAUCSL.csv"
+    )
+    config.hysa_rates.cache_dir.mkdir(parents=True)
+    write_csv_atomic(
+        pl.DataFrame({
+            "bank_id": ["ally-bank", "marcus"],
+            "bank_name": ["Ally Bank", "Marcus"],
+            "rate_date": [date(2026, 1, 1), date(2026, 1, 1)],
+            "apy_pct": [4.0, 4.1],
+        }),
+        config.hysa_rates.cache_dir / "rates.csv",
     )
     return config
 
@@ -135,6 +146,60 @@ def test_target_allocation_put_then_get_round_trips(client) -> None:
     assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
 
 
+def test_target_allocation_put_preserves_other_settings(client) -> None:
+    client.put("/api/settings/hysa", json={"bank_id": "marcus"})
+    client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    assert client.get("/api/settings/hysa").json()["bank_id"] == "marcus"
+
+
+def test_hysa_settings_default_to_no_override(client) -> None:
+    assert client.get("/api/settings/hysa").json() == {"bank_id": None, "fixed_rate_pct": None}
+
+
+def test_hysa_settings_put_then_get_round_trips(client) -> None:
+    put_response = client.put("/api/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
+    assert put_response.status_code == 200
+    assert client.get("/api/settings/hysa").json() == {"bank_id": "marcus", "fixed_rate_pct": None}
+
+
+def test_hysa_settings_put_preserves_target_allocation(client) -> None:
+    client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    client.put("/api/settings/hysa", json={"fixed_rate_pct": 5.0})
+    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+
+
+def test_benchmark_setting_defaults_to_no_override(client) -> None:
+    assert client.get("/api/settings/benchmark").json() == {"symbol_override": None}
+
+
+def test_benchmark_setting_put_then_get_round_trips(client) -> None:
+    put_response = client.put("/api/settings/benchmark", json={"symbol_override": "QQQ"})
+    assert put_response.status_code == 200
+    assert client.get("/api/settings/benchmark").json() == {"symbol_override": "QQQ"}
+
+
+def test_hysa_rates_lists_banks_and_history(client) -> None:
+    body = client.get("/api/hysa-rates").json()
+    bank_ids = {bank["bank_id"] for bank in body["banks"]}
+    assert bank_ids == {"ally-bank", "marcus"}
+    assert len(body["history"]) == 2
+    assert body["default_bank_id"]
+
+
+def test_symbol_search_passes_the_query_through(client, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        trades_api.symbol_search_module,
+        "search_symbols",
+        lambda query, config: (
+            calls.append(query) or [{"symbol": "VOO", "name": "Vanguard S&P 500", "exchange": "NYSE"}]
+        ),
+    )
+    body = client.get("/api/symbols/search", params={"q": "voo"}).json()
+    assert calls == ["voo"]
+    assert body == [{"symbol": "VOO", "name": "Vanguard S&P 500", "exchange": "NYSE"}]
+
+
 def test_lots_reports_open_and_closed_lots(client) -> None:
     body = client.get("/api/lots", params={"as_of": "2026-01-03"}).json()
     assert len(body["open_lots"]) == 1
@@ -192,6 +257,8 @@ def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_netw
     )
     cpi_calls = []
     monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", cpi_calls.append)
+    hysa_rates_calls = []
+    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", hysa_rates_calls.append)
 
     response = client.post("/api/sync")
 
@@ -200,5 +267,6 @@ def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_netw
     assert raw_price_calls == [["VOO"]]
     assert adjusted_price_calls == [("VOO", True)]
     assert len(cpi_calls) == 1
+    assert len(hysa_rates_calls) == 1
     body = response.json()
     assert body["symbols_refreshed"] == ["VOO"]

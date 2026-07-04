@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import asdict, dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
@@ -29,6 +29,7 @@ from trades.ledger.metrics import lot_returns, max_drawdown, realized_gain_total
 from trades.ledger.nav import growth_of_100, nav_series, period_pnl, time_weighted_return
 from trades.ledger.replay import external_cashflows, portfolio_value, replay_ledger
 from trades.market_data import cpi as cpi_module
+from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
 from trades.utils.frames import collect_if_lazy
 from trades.utils.io_utils import write_json_atomic
@@ -42,11 +43,20 @@ if TYPE_CHECKING:
 
 
 class DashboardSettings(BaseModel):
-    """User-editable dashboard settings, persisted outside the ledger (NEW_TASKS.md 6.5)."""
+    """User-editable dashboard settings, persisted outside the ledger (NEW_TASKS.md 6.5).
+
+    `hysa_fixed_rate_pct` takes priority over `hysa_bank_id` when both are
+    set — an explicit fixed rate is a deliberate override, not just a
+    fallback. `hysa_bank_id`/`benchmark_symbol_override` being unset falls
+    back to `config.hysa_rates.default_bank_id`/`config.returns.benchmark_symbol`.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     target_allocation_pct: dict[str, float] = Field(default_factory=dict)
+    hysa_bank_id: str | None = None
+    hysa_fixed_rate_pct: float | None = None
+    benchmark_symbol_override: str | None = None
 
 
 def load_settings(config: AppConfig) -> DashboardSettings:
@@ -180,14 +190,51 @@ class OverviewCards:
     twr_annualized_pct: float | None
     timing_gap_pct: float | None
     total_deposited_usd: float
+    total_withdrawn_usd: float
     total_dividends_usd: float
 
 
 def _hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
-    def rate(_day: date) -> float:
-        return config.returns.hysa_annual_rate
+    """Build the HYSA rate lookup the dashboard's HYSA counterfactuals use.
+
+    Priority: an explicit fixed-rate override, then the selected (or
+    default) bank's real historical APY, falling back to
+    `config.returns.hysa_annual_rate` for any day that bank has no
+    published rate for yet (e.g. before its history starts).
+
+    Returns
+    -------
+    Callable[[datetime.date], float]
+        The rate (as a fraction, e.g. `0.04`) as of a given date.
+    """
+    settings = load_settings(config)
+    if settings.hysa_fixed_rate_pct is not None:
+        fixed_rate = settings.hysa_fixed_rate_pct / 100
+
+        def fixed(_day: date) -> float:
+            return fixed_rate
+
+        return fixed
+
+    bank_id = settings.hysa_bank_id or config.hysa_rates.default_bank_id
+    history = hysa_rates_module.load_hysa_rates_cache(config)
+
+    def rate(day: date) -> float:
+        apy_pct = hysa_rates_module.rate_as_of(history, bank_id, day)
+        return apy_pct / 100 if apy_pct is not None else config.returns.hysa_annual_rate
 
     return rate
+
+
+def resolved_benchmark_symbol(config: AppConfig) -> str:
+    """Resolve the benchmark symbol to use: the user's override if set, else `config.returns.benchmark_symbol`.
+
+    Returns
+    -------
+    str
+        The ticker symbol to benchmark against.
+    """
+    return load_settings(config).benchmark_symbol_override or config.returns.benchmark_symbol
 
 
 def _xirr_and_twr(
@@ -222,21 +269,23 @@ def _xirr_and_twr(
     return xirr_pct, is_provisional, twr
 
 
-def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float]:
-    """Sum gross `DEPOSIT` and `DIVIDEND` amounts, for the overview card's "money in" context.
+def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, float]:
+    """Sum gross `DEPOSIT`, `WITHDRAWAL`, and `DIVIDEND` amounts, for the overview card's "money in" context.
 
-    Deliberately gross, not net of withdrawals/sells: this answers "how
-    much have I personally put in" and "how much has this portfolio paid
-    me," neither of which a sell or a withdrawal changes.
+    Deliberately gross, not netted against each other: shown side by side
+    so `value = (deposited - withdrawn) + gain` visibly reconciles, rather
+    than a lone "money in" figure that looks wrong once a withdrawal has
+    happened (deposits alone won't explain the gap to `value`).
 
     Returns
     -------
-    tuple[float, float]
-        `(total_deposited, total_dividends)`.
+    tuple[float, float, float]
+        `(total_deposited, total_withdrawn, total_dividends)`.
     """
     total_deposited = float(ledger.filter(pl.col("event_type") == "DEPOSIT")["amount"].sum())
+    total_withdrawn = float(ledger.filter(pl.col("event_type") == "WITHDRAWAL")["amount"].sum())
     total_dividends = float(ledger.filter(pl.col("event_type") == "DIVIDEND")["amount"].sum())
-    return total_deposited, total_dividends
+    return total_deposited, total_withdrawn, total_dividends
 
 
 def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> OverviewCards:
@@ -293,7 +342,8 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
         twr_annualized_pct=twr.annualized_pct if twr else None,
         timing_gap_pct=timing_gap_pct,
         total_deposited_usd=gross[0],
-        total_dividends_usd=gross[1],
+        total_withdrawn_usd=gross[1],
+        total_dividends_usd=gross[2],
     )
 
 
@@ -383,7 +433,7 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     """
     raw_lookup = make_price_lookup(config)
     adjusted_lookup = make_price_lookup(config, adjusted=True)
-    benchmark_symbol = config.returns.benchmark_symbol
+    benchmark_symbol = resolved_benchmark_symbol(config)
 
     daily_values = daily_portfolio_values(ledger, raw_lookup, start, end, config)
     flows = collect_if_lazy(external_cashflows(ledger))
@@ -402,6 +452,18 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     )
 
 
+def _series_from_lookup(dates: pl.Series, lookup: Callable[[date], float | None], value_column: str) -> pl.DataFrame:
+    """Sample a date-keyed lookup over a set of dates, dropping dates it has no value for.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `date`, `value_column`.
+    """
+    values = [lookup(day) for day in dates.to_list()]
+    return pl.DataFrame({"date": dates, value_column: values}).drop_nulls(value_column)
+
+
 def _cpi_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
     """Look up the CPI index for a set of dates, dropping dates before the series starts.
 
@@ -411,16 +473,22 @@ def _cpi_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
         Columns `date`, `value`.
     """
     history = cpi_module.load_cpi_cache(config)
-    values = [cpi_module.cpi_as_of(history, day) for day in dates.to_list()]
-    return pl.DataFrame({"date": dates, "value": values}).drop_nulls("value")
+    return _series_from_lookup(dates, lambda day: cpi_module.cpi_as_of(history, day), "value")
 
 
 def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
     """Build the growth-of-$100 chart: your NAV plus every benchmark, indexed to a common start (NEW_TASKS.md 3.3, 6.3).
 
-    Because everything is reindexed to 100 at its own start, no cashflow
-    matching is needed here, unlike the dollar chart — this is the one
-    chart where benchmarks overlay directly against your own performance.
+    Unlike the dollar chart's counterfactuals, these benchmark/HYSA series
+    are NOT a replay of your contributions — they're pure indices (the
+    benchmark's own adjusted price, a single $100 compounding at the HYSA
+    rate) reindexed to 100. Replaying contributions here would answer "how
+    much have I put in," not "how did the benchmark perform" — a later,
+    much bigger deposit would balloon a contribution-replayed index even
+    if the benchmark itself hadn't moved. Because everything is reindexed
+    to 100 at its own start, no cashflow matching is needed here, unlike
+    the dollar chart — this is the one chart where benchmarks overlay
+    directly against your own performance.
 
     Parameters
     ----------
@@ -440,27 +508,30 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
     """
     raw_lookup = make_price_lookup(config)
     adjusted_lookup = make_price_lookup(config, adjusted=True)
-    benchmark_symbol = config.returns.benchmark_symbol
+    benchmark_symbol = resolved_benchmark_symbol(config)
 
     daily_values = daily_portfolio_values(ledger, raw_lookup, start, end, config)
     flows = collect_if_lazy(external_cashflows(ledger))
     nav = cast("pl.DataFrame", nav_series(daily_values, flows))
-    hysa_index = cast(
-        "pl.DataFrame", growth_of_100(hysa_counterfactual_series(flows, end, _hysa_rate_lookup(config)), "value")
+
+    benchmark_prices = _series_from_lookup(
+        daily_values["date"], lambda day: adjusted_lookup(benchmark_symbol, day), "close"
     )
-    benchmark_index = cast(
-        "pl.DataFrame",
-        growth_of_100(
-            benchmark_counterfactual_series(flows, end, lambda day: adjusted_lookup(benchmark_symbol, day)), "value"
-        ),
-    )
+    benchmark_index = cast("pl.DataFrame", growth_of_100(benchmark_prices, "close"))
+
+    hysa_principal = pl.DataFrame({
+        "event_datetime": [datetime.combine(start, datetime.min.time())],
+        "amount": [-100.0],
+    })
+    hysa_series = hysa_counterfactual_series(hysa_principal, end, _hysa_rate_lookup(config))
+
     cpi_index = cast("pl.DataFrame", growth_of_100(_cpi_series(daily_values["date"], config), "value"))
 
     return (
         nav
         .select("date", portfolio_index="nav")
-        .join(hysa_index.select("date", hysa_index="index"), on="date", how="left")
         .join(benchmark_index.select("date", benchmark_index="index"), on="date", how="left")
+        .join(hysa_series.select("date", hysa_index="value"), on="date", how="left")
         .join(cpi_index.select("date", cpi_index="index"), on="date", how="left")
         .sort("date")
     )

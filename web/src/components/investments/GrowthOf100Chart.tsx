@@ -1,4 +1,4 @@
-import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
+import { Brush, CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/investments/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate } from '@/lib/format'
@@ -90,6 +90,7 @@ export function GrowthOf100Chart() {
           dot={false}
           connectNulls
         />
+        <Brush dataKey="date" height={20} tickFormatter={formatDate} stroke="#94a3b8" travellerWidth={8} />
       </LineChart>
     </ChartCard>
   )

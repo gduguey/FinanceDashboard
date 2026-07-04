@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import { SortableTableHead } from '@/components/investments/SortableTableHead'
@@ -98,25 +98,26 @@ export function LotsTable() {
           </p>
         ) : (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <Tabs defaultValue="open">
+            <Tabs defaultValue="open">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <TabsList>
                   <TabsTrigger value="open">Open lots ({data.open_lots.length})</TabsTrigger>
                   <TabsTrigger value="closed">Closed lots ({data.closed_lots.length})</TabsTrigger>
                 </TabsList>
-                <TabsContent value="open">
-                  <OpenLotsTable lots={aggregateByDay ? aggregateOpenLotsByDay(data.open_lots) : data.open_lots} />
-                </TabsContent>
-                <TabsContent value="closed">
-                  <ClosedLotsTable
-                    lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots}
-                  />
-                </TabsContent>
-              </Tabs>
-            </div>
-            <Button variant="outline" size="sm" onClick={() => setAggregateByDay((v) => !v)}>
-              {aggregateByDay ? 'Show every fill' : 'Aggregate same symbol/day'}
-            </Button>
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  Aggregate same symbol/day
+                  <Switch size="sm" checked={aggregateByDay} onCheckedChange={setAggregateByDay} />
+                </label>
+              </div>
+              <TabsContent value="open">
+                <OpenLotsTable lots={aggregateByDay ? aggregateOpenLotsByDay(data.open_lots) : data.open_lots} />
+              </TabsContent>
+              <TabsContent value="closed">
+                <ClosedLotsTable
+                  lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots}
+                />
+              </TabsContent>
+            </Tabs>
             <SymbolRollupTable rows={data.symbol_rollup} />
           </div>
         )}

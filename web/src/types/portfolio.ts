@@ -16,6 +16,7 @@ export interface Overview {
   twr_annualized_pct: number | null
   timing_gap_pct: number | null
   total_deposited_usd: number
+  total_withdrawn_usd: number
   total_dividends_usd: number
   last_synced_at: string | null
 }
@@ -143,4 +144,37 @@ export interface SyncResult {
   new_event_count: number
   total_event_count: number
   symbols_refreshed: string[]
+}
+
+export interface HysaBank {
+  bank_id: string
+  bank_name: string
+}
+
+export interface HysaRatePoint {
+  bank_id: string
+  bank_name: string
+  rate_date: string
+  apy_pct: number
+}
+
+export interface HysaRates {
+  banks: HysaBank[]
+  history: HysaRatePoint[]
+  default_bank_id: string
+}
+
+export interface HysaSettings {
+  bank_id: string | null
+  fixed_rate_pct: number | null
+}
+
+export interface BenchmarkSetting {
+  symbol_override: string | null
+}
+
+export interface SymbolSearchResult {
+  symbol: string
+  name: string
+  exchange: string
 }

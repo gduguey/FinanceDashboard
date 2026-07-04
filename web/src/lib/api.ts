@@ -1,14 +1,18 @@
 import type {
   AllocationRow,
+  BenchmarkSetting,
   DataQualityRow,
   DollarChart,
   GrowthOf100Point,
+  HysaRates,
+  HysaSettings,
   LedgerEvent,
   LotsTable,
   MonthlyPnl,
   MonthlyPnlBySymbol,
   Overview,
   RiskStat,
+  SymbolSearchResult,
   SyncResult,
   TargetAllocation,
 } from '@/types/portfolio'
@@ -63,4 +67,21 @@ export const api = {
   dataQuality: () => request<DataQualityRow[]>('/api/data-quality'),
   ledgerExport: () => request<LedgerEvent[]>('/api/ledger/export'),
   sync: () => request<SyncResult>('/api/sync', { method: 'POST' }),
+  hysaRates: () => request<HysaRates>('/api/hysa-rates'),
+  hysaSettings: () => request<HysaSettings>('/api/settings/hysa'),
+  setHysaSettings: (settings: HysaSettings) =>
+    request<HysaSettings>('/api/settings/hysa', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    }),
+  benchmarkSetting: () => request<BenchmarkSetting>('/api/settings/benchmark'),
+  setBenchmarkSetting: (setting: BenchmarkSetting) =>
+    request<BenchmarkSetting>('/api/settings/benchmark', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(setting),
+    }),
+  searchSymbols: (query: string) =>
+    request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
 }

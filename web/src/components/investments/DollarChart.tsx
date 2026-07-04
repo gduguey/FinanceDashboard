@@ -1,4 +1,4 @@
-import { CartesianGrid, Line, LineChart, ReferenceLine, Tooltip, XAxis, YAxis } from 'recharts'
+import { Brush, CartesianGrid, Line, LineChart, ReferenceLine, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/investments/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate, formatUsd } from '@/lib/format'
@@ -108,6 +108,7 @@ export function DollarChart() {
             }}
           />
         ))}
+        <Brush dataKey="date" height={20} tickFormatter={formatDate} stroke="#94a3b8" travellerWidth={8} />
       </LineChart>
     </ChartCard>
   )

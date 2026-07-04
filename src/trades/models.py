@@ -86,3 +86,24 @@ class CpiObservation(BaseModel):
         "observation_date": pl.Date,
         "value": pl.Float64,
     }
+
+
+class HysaRateObservation(BaseModel):
+    """One (bank, rate-change date, APY) triple from apyarchives.com.
+
+    A rate only gets a new row on the date it changed — not one row per
+    day — so looking up "the rate on day X" means rolling back to the most
+    recent row on or before X, the same as `prices.price_as_of`.
+    """
+
+    bank_id: str = Field(min_length=1)
+    bank_name: str = Field(min_length=1)
+    rate_date: date
+    apy_pct: float = Field(ge=0)
+
+    polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
+        "bank_id": pl.Utf8,
+        "bank_name": pl.Utf8,
+        "rate_date": pl.Date,
+        "apy_pct": pl.Float64,
+    }

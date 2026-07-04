@@ -6,6 +6,7 @@ const SECTIONS = [
   { id: 'allocation', label: 'Allocation' },
   { id: 'lots', label: 'Lots' },
   { id: 'data-quality', label: 'Data quality' },
+  { id: 'glossary', label: 'Glossary' },
 ]
 
 export function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {

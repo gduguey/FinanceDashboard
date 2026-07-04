@@ -29,6 +29,7 @@ def _config(tmp_path) -> AppConfig:
         dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
         prices={"cache_dir": tmp_path},
         cpi={"cache_dir": tmp_path},
+        hysa_rates={"cache_dir": tmp_path},
     )
 
 
@@ -197,6 +198,7 @@ def test_overview_cards_reports_gross_deposits_and_dividends(tmp_path) -> None:
     cards = overview_cards(ledger, config, as_of=date(2026, 1, 2))
 
     assert cards.total_deposited_usd == pytest.approx(1000.0)
+    assert cards.total_withdrawn_usd == pytest.approx(200.0)
     assert cards.total_dividends_usd == pytest.approx(5.0)
 
 
@@ -246,6 +248,81 @@ def test_dollar_chart_series_reports_the_four_lines(tmp_path) -> None:
     assert result["hysa_value_usd"].to_list() == pytest.approx([1000.0, expected_hysa_day2])
 
 
+def test_dollar_chart_series_uses_a_fixed_rate_override_for_hysa(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 520.0]}),
+        tmp_path / "VOO.adjusted.csv",
+    )
+    save_settings(DashboardSettings(hysa_fixed_rate_pct=10.0), config)
+
+    result = dollar_chart_series(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+
+    expected_hysa_day2 = 1000.0 * (1 + 0.10 / 365)
+    assert result["hysa_value_usd"].to_list() == pytest.approx([1000.0, expected_hysa_day2])
+
+
+def test_dollar_chart_series_uses_the_selected_bank_for_hysa(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 520.0]}),
+        tmp_path / "VOO.adjusted.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({
+            "bank_id": ["some-bank"],
+            "bank_name": ["Some Bank"],
+            "rate_date": [date(2025, 1, 1)],
+            "apy_pct": [8.0],
+        }),
+        tmp_path / "rates.csv",
+    )
+    save_settings(DashboardSettings(hysa_bank_id="some-bank"), config)
+
+    result = dollar_chart_series(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+
+    expected_hysa_day2 = 1000.0 * (1 + 0.08 / 365)
+    assert result["hysa_value_usd"].to_list() == pytest.approx([1000.0, expected_hysa_day2])
+
+
+def test_dollar_chart_series_uses_a_benchmark_symbol_override(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [200.0, 220.0]}),
+        tmp_path / "QQQ.adjusted.csv",
+    )
+    save_settings(DashboardSettings(benchmark_symbol_override="QQQ"), config)
+
+    result = dollar_chart_series(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+
+    expected_shares = 1000.0 / 200.0
+    assert result["benchmark_value_usd"].to_list() == pytest.approx([1000.0, expected_shares * 220.0])
+
+
 def test_dollar_chart_series_with_no_activity_yet_is_all_zero(tmp_path) -> None:
     config = _config(tmp_path)
     ledger = _ledger(_event("d1", "2026-01-05", "DEPOSIT", amount=1000.0))
@@ -278,6 +355,33 @@ def test_growth_of_100_chart_indexes_every_series_to_100_at_the_start(tmp_path) 
     assert result["benchmark_index"].to_list() == pytest.approx([100.0, 120.0])
     assert result["cpi_index"].to_list() == pytest.approx([100.0, 101.0])
     expected_hysa_day2 = (1 + config.returns.hysa_annual_rate / 365) * 100
+    assert result["hysa_index"].to_list() == pytest.approx([100.0, expected_hysa_day2])
+
+
+def test_growth_of_100_chart_benchmark_and_hysa_are_unaffected_by_a_later_deposit(tmp_path) -> None:
+    # A pure index of "how did $100 grow" must not balloon just because a
+    # much bigger deposit happened later — that would be measuring "total
+    # dollars contributed," not benchmark/HYSA performance (this is what
+    # the contribution-replaying counterfactual functions would wrongly do).
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=100.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=0.2, price=500.0, amount=100.0),
+        _event("d2", "2026-01-02", "DEPOSIT", amount=100_000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 500.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.adjusted.csv",
+    )
+
+    result = growth_of_100_chart(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+
+    assert result["benchmark_index"].to_list() == pytest.approx([100.0, 102.0])
+    expected_hysa_day2 = 100.0 * (1 + config.returns.hysa_annual_rate / 365)
     assert result["hysa_index"].to_list() == pytest.approx([100.0, expected_hysa_day2])
 
 

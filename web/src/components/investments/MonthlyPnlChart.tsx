@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Bar, BarChart, CartesianGrid, Cell, Legend, Tooltip, XAxis, YAxis } from 'recharts'
+import type { TooltipContentProps } from 'recharts'
+import { Bar, BarChart, CartesianGrid, Cell, Label, Legend, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/investments/ChartCard'
 import { Button } from '@/components/ui/button'
 import { colorForIndex } from '@/lib/colors'
@@ -7,25 +8,105 @@ import { formatMonth, formatUsd } from '@/lib/format'
 import { useMonthlyPnl, useMonthlyPnlBySymbol } from '@/hooks/usePortfolioData'
 import type { MonthlyPnlBySymbol } from '@/types/portfolio'
 
+const CASH_COLOR = '#94a3b8'
+const CASH_SYMBOL = 'CASH'
+
+interface PivotedRow {
+  month: string
+  cash_contribution: number
+  cash_gain: number
+  cash_total: number
+  contribution_total: number
+  gain_total: number
+  [key: string]: string | number
+}
+
 function pivotBySymbol(rows: MonthlyPnlBySymbol[] | undefined) {
-  if (!rows?.length) return { data: [], symbols: [] as string[] }
+  if (!rows?.length) return { data: [] as PivotedRow[], symbols: [] as string[] }
   const months = [...new Set(rows.map((r) => r.month))].sort()
-  const symbols = [...new Set(rows.map((r) => r.symbol))].sort()
-  const byMonth = new Map<string, Record<string, number>>()
+  const symbols = [...new Set(rows.map((r) => r.symbol).filter((s) => s !== CASH_SYMBOL))].sort()
+  const byMonth = new Map<string, Partial<PivotedRow>>()
   for (const row of rows) {
     const entry = byMonth.get(row.month) ?? {}
-    entry[`${row.symbol}__contribution`] = row.contribution_usd
-    entry[`${row.symbol}__gain`] = row.market_gain_usd
+    if (row.symbol === CASH_SYMBOL) {
+      entry.cash_contribution = row.contribution_usd
+      entry.cash_gain = row.market_gain_usd
+    } else {
+      entry[`${row.symbol}__contribution`] = row.contribution_usd
+      entry[`${row.symbol}__gain`] = row.market_gain_usd
+    }
     byMonth.set(row.month, entry)
   }
-  const data = months.map((month) => ({ month, ...byMonth.get(month) }))
+  const data = months.map((month) => {
+    const entry = byMonth.get(month) ?? {}
+    const contributionTotal = symbols.reduce((sum, s) => sum + (Number(entry[`${s}__contribution`]) || 0), 0)
+    const gainTotal = symbols.reduce((sum, s) => sum + (Number(entry[`${s}__gain`]) || 0), 0)
+    const cashTotal = (entry.cash_contribution ?? 0) + (entry.cash_gain ?? 0)
+    return {
+      month,
+      cash_contribution: entry.cash_contribution ?? 0,
+      cash_gain: entry.cash_gain ?? 0,
+      cash_total: cashTotal,
+      contribution_total: contributionTotal,
+      gain_total: gainTotal,
+      ...entry,
+    } as PivotedRow
+  })
   return { data, symbols }
+}
+
+// A compact, categorized tooltip — the default recharts tooltip lists
+// every symbol's contribution AND gain as flat, same-sized lines, which
+// becomes unreadable with more than a couple of symbols.
+function BySymbolTooltip({ active, payload, label }: TooltipContentProps) {
+  if (!active || !payload?.length) return null
+  const row = payload[0]?.payload as PivotedRow | undefined
+  if (!row) return null
+  const symbols = Object.keys(row)
+    .filter((key) => key.endsWith('__contribution'))
+    .map((key) => key.replace('__contribution', ''))
+
+  return (
+    <div className="max-w-56 rounded-md border border-border bg-popover p-2 text-xs shadow-md">
+      <div className="mb-1.5 font-medium">{formatMonth(String(label))}</div>
+      <div className="mb-1.5">
+        <div className="font-medium text-muted-foreground">Cash</div>
+        <div className="flex justify-between gap-3">
+          <span>Contribution</span>
+          <span className="tabular-nums">{formatUsd(row.cash_contribution)}</span>
+        </div>
+        <div className="flex justify-between gap-3">
+          <span>Gain</span>
+          <span className="tabular-nums">{formatUsd(row.cash_gain)}</span>
+        </div>
+      </div>
+      <div className="mb-1.5">
+        <div className="font-medium text-muted-foreground">Contributions</div>
+        {symbols.map((symbol) => (
+          <div key={symbol} className="flex justify-between gap-3">
+            <span>{symbol}</span>
+            <span className="tabular-nums">{formatUsd(Number(row[`${symbol}__contribution`]))}</span>
+          </div>
+        ))}
+      </div>
+      <div>
+        <div className="font-medium text-muted-foreground">Market gain</div>
+        {symbols.map((symbol) => (
+          <div key={symbol} className="flex justify-between gap-3">
+            <span>{symbol}</span>
+            <span className="tabular-nums">{formatUsd(Number(row[`${symbol}__gain`]))}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 // NEW_TASKS.md 3.5/6.4: contributions in grey, actual market P&L in
 // green/red — directly kills the "portfolio is up $12k (of which $11k was
 // my paycheck)" illusion every month. The per-symbol toggle breaks each of
-// those two bars down by symbol instead.
+// those two bars down by symbol instead, with cash isolated into its own
+// bar (leftmost) since it isn't a security's contribution or gain.
 export function MonthlyPnlChart() {
   const [bySymbol, setBySymbol] = useState(false)
   const aggregate = useMonthlyPnl()
@@ -52,7 +133,7 @@ export function MonthlyPnlChart() {
       }
     >
       {bySymbol ? (
-        <BarChart data={pivoted} margin={{ left: 8, right: 8, top: 8 }}>
+        <BarChart data={pivoted} margin={{ left: 8, right: 8, top: 20 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
           <XAxis dataKey="month" tickFormatter={formatMonth} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
           <YAxis
@@ -62,11 +143,12 @@ export function MonthlyPnlChart() {
             tickLine={false}
             width={64}
           />
-          <Tooltip
-            formatter={(value, name) => [formatUsd(Number(value)), String(name).replace('__', ' — ')]}
-            labelFormatter={(label) => formatMonth(String(label))}
-          />
+          <Tooltip content={BySymbolTooltip} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="cash_contribution" stackId="cash" name="Cash contribution" fill={CASH_COLOR} radius={2} />
+          <Bar dataKey="cash_gain" stackId="cash" name="Cash gain" fill={CASH_COLOR} fillOpacity={0.55} radius={2}>
+            <TotalLabel dataKey="cash_total" />
+          </Bar>
           {symbols.map((symbol, index) => (
             <Bar
               key={`${symbol}-contribution`}
@@ -75,7 +157,9 @@ export function MonthlyPnlChart() {
               name={`${symbol} contribution`}
               fill={colorForIndex(index)}
               radius={2}
-            />
+            >
+              {index === symbols.length - 1 && <TotalLabel dataKey="contribution_total" />}
+            </Bar>
           ))}
           {symbols.map((symbol, index) => (
             <Bar
@@ -86,7 +170,9 @@ export function MonthlyPnlChart() {
               fill={colorForIndex(index)}
               fillOpacity={0.55}
               radius={2}
-            />
+            >
+              {index === symbols.length - 1 && <TotalLabel dataKey="gain_total" />}
+            </Bar>
           ))}
         </BarChart>
       ) : (
@@ -114,5 +200,37 @@ export function MonthlyPnlChart() {
         </BarChart>
       )}
     </ChartCard>
+  )
+}
+
+// Shows the whole stack's total (not just this segment's value) above the
+// bar — recharts' built-in LabelList only ever knows its own segment's
+// value, so this reads the pre-computed `*_total` field off the row itself
+// (passed through in `payload`) instead.
+function TotalLabel({ dataKey }: { dataKey: keyof PivotedRow }) {
+  return (
+    <Label
+      position="top"
+      content={(props) => {
+        const { x, y, width, value, payload } = props as {
+          x: number
+          y: number
+          width: number
+          value: number
+          payload: PivotedRow
+        }
+        const total = Number(payload[dataKey])
+        if (!total || Number.isNaN(total)) return <g />
+        // For negative stacks recharts anchors `y` at the bar's bottom edge,
+        // not its top — nudge the label further up in that case so it still
+        // sits above (not inside) the bar.
+        const labelY = value < 0 ? y + 14 : y - 6
+        return (
+          <text x={x + width / 2} y={labelY} textAnchor="middle" fontSize={11} fill="var(--muted-foreground)">
+            {formatUsd(total, true)}
+          </text>
+        )
+      }}
+    />
   )
 }

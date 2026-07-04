@@ -96,6 +96,26 @@ export const GLOSSARY = {
     title: 'Largest peak-to-trough so far',
     body: "The biggest drop your NAV has ever taken from a prior high point, on paper. Doesn't measure everyday wiggle — measures how bad your worst 'should I sell?' moment would have felt. Formula: min over time of NAV(t) ÷ (highest NAV seen so far) − 1.",
   },
+  dripReinvestment: {
+    title: 'DRIP (dividend reinvestment)',
+    body: "A buy that a dividend paid for, not you — your broker automatically used a cash dividend to purchase more shares the same day. These buys are excluded from 'money in' (they're not new cash from your pocket), but the shares and their future growth still count toward your position; the reinvested amount's effect shows up through the dividend itself, not as a contribution.",
+  },
+  ledger: {
+    title: 'The ledger',
+    body: "A single chronological list of every buy, sell, dividend, deposit, and withdrawal in your account, translated into one common format regardless of which broker or file it came from. Everything else on this page — lots, gains, NAV, XIRR — is derived by replaying this list from the beginning; nothing is stored pre-computed, so it's always consistent with the raw history.",
+  },
+  lot: {
+    title: 'Lot',
+    body: "One purchase's worth of shares, tracked separately from other purchases of the same symbol even if you now think of it as one position. Lots exist because cost basis, holding period, and realized gain are all specific to when and at what price you bought — selling doesn't touch a blended average, it consumes your oldest lots first (FIFO), oldest shares first.",
+  },
+  openLot: {
+    title: 'Open lot',
+    body: "Shares from a purchase that you still hold, in whole or in part. An open lot's gain is unrealized — it moves with the market price until some of it is sold.",
+  },
+  closedLot: {
+    title: 'Closed lot',
+    body: "The specific slice of a purchase that a later sale disposed of — its own exit price, holding period, and locked-in realized gain, separate from any shares of that same original lot still open. A single sale can close multiple lots (or partially close one) if it's bigger than your most recent purchase.",
+  },
 } as const
 
 export type GlossaryTerm = keyof typeof GLOSSARY
