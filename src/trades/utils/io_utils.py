@@ -3,41 +3,60 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import polars as pl
 
+from trades.utils.frames import collect_if_lazy
 
-def write_csv_atomic(frame: pl.DataFrame, path: Path) -> None:
-    """Write a DataFrame to a CSV file atomically.
 
-    Writes to a temporary file in the same directory, then replaces the
-    destination in one filesystem operation, so a crash mid-write can
-    never leave a half-written cache file.
+def write_csv_atomic(frame: pl.DataFrame | pl.LazyFrame, path: Path) -> None:
+    """Write a DataFrame or LazyFrame to a CSV file atomically.
+
+    Collects the frame if lazy, writes to a temporary file with a unique name
+    in the same directory, then replaces the destination in one filesystem
+    operation. A try/finally ensures temp files are cleaned up even if the
+    write fails, preventing stale temp files from accumulating. This prevents
+    race conditions when multiple concurrent writers target the same path:
+    each uses a unique temp name, so one writer's partial write is never picked
+    up by another's replace().
 
     Parameters
     ----------
     frame
-        The data to write.
+        The data to write. If LazyFrame, will be collected before writing.
     path
         The destination CSV path. Its parent directory is created if missing.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".csv.tmp")
-    frame.write_csv(tmp_path)
-    tmp_path.replace(path)
+    eager_frame = collect_if_lazy(frame)
+
+    # Use mkstemp for a unique temp filename with no open file descriptor conflicts
+    fd, tmp_path_str = tempfile.mkstemp(suffix=".csv", dir=str(path.parent))
+    tmp_path = path.parent / Path(tmp_path_str).name
+    try:
+        os.close(fd)  # Close the FD opened by mkstemp; we'll write via polars
+        eager_frame.write_csv(tmp_path)
+        tmp_path.replace(path)
+    finally:
+        # Clean up temp file if it still exists (e.g., if write_csv failed)
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def write_json_atomic(data: dict[str, Any], path: Path) -> None:
     """Write a JSON-serializable dict to a file atomically.
 
-    Same crash-safety rationale as `write_csv_atomic`: user-editable
-    settings (e.g. a target allocation) are read back on the next request,
-    so a half-written file would corrupt the dashboard's config, not just
-    a data cache.
+    Writes to a temporary file with a unique name in the same directory, then
+    replaces the destination in one filesystem operation. A try/finally ensures
+    temp files are cleaned up even if the write fails. Used for user-editable
+    settings (e.g., a target allocation) that are read back on the next request,
+    so a half-written or stale temp file would corrupt the dashboard's config,
+    not just a data cache.
 
     Parameters
     ----------
@@ -47,6 +66,15 @@ def write_json_atomic(data: dict[str, Any], path: Path) -> None:
         The destination JSON path. Its parent directory is created if missing.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(data, indent=2))
-    tmp_path.replace(path)
+
+    # Use mkstemp for a unique temp filename
+    fd, tmp_path_str = tempfile.mkstemp(suffix=".json", dir=str(path.parent))
+    tmp_path = path.parent / Path(tmp_path_str).name
+    try:
+        os.close(fd)  # Close the FD opened by mkstemp; we'll write via write_text
+        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.replace(path)
+    finally:
+        # Clean up temp file if it still exists (e.g., if write_text failed)
+        if tmp_path.exists():
+            tmp_path.unlink()

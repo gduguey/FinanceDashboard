@@ -68,7 +68,7 @@ export function HysaSettingsPanel() {
   const setSettings = useSetHysaSettings()
   const [showCompare, setShowCompare] = useState(false)
   const [selectedBanks, setSelectedBanks] = useState<Set<string>>(new Set())
-  const [rateDraft, setRateDraft] = useState('')
+  const [rateDraft, setRateDraft] = useState<string>('')
   const seededRef = useRef(false)
 
   const isCustom = settings?.fixed_rate_pct != null
@@ -84,6 +84,13 @@ export function HysaSettingsPanel() {
     }
   }, [rates])
 
+  // Seed rateDraft when custom rate is loaded or selected
+  useEffect(() => {
+    if (isCustom && settings?.fixed_rate_pct != null) {
+      setRateDraft(settings.fixed_rate_pct.toString())
+    }
+  }, [isCustom, settings?.fixed_rate_pct])
+
   const comparisonData = useMemo(
     () => buildComparisonSeries(rates?.history, selectedBanks, isCustom ? (settings?.fixed_rate_pct ?? null) : null),
     [rates, selectedBanks, isCustom, settings?.fixed_rate_pct],
@@ -91,14 +98,23 @@ export function HysaSettingsPanel() {
 
   function handleBankChange(value: string | null) {
     if (value === CUSTOM_RATE) {
-      setSettings.mutate({ bank_id: null, fixed_rate_pct: Number(rateDraft) || 0 })
+      // When switching to custom, use the current rate or a sensible default
+      const parsed = rateDraft.trim() ? Number(rateDraft) : settings?.fixed_rate_pct ?? 4.0
+      setRateDraft(parsed.toString())
+      setSettings.mutate({ bank_id: null, fixed_rate_pct: parsed })
     } else {
       setSettings.mutate({ bank_id: value, fixed_rate_pct: null })
     }
   }
 
   function applyCustomRate() {
-    setSettings.mutate({ bank_id: null, fixed_rate_pct: Number(rateDraft) || 0 })
+    // Only submit if the draft was actually edited to a valid number
+    const trimmed = rateDraft.trim()
+    if (!trimmed) return // Blur without edits — preserve existing rate
+    const parsed = Number(trimmed)
+    if (!isNaN(parsed) && parsed >= 0) {
+      setSettings.mutate({ bank_id: null, fixed_rate_pct: parsed })
+    }
   }
 
   function toggleBank(bankId: string) {
@@ -132,7 +148,7 @@ export function HysaSettingsPanel() {
             <Input
               type="number"
               className="w-20"
-              defaultValue={settings?.fixed_rate_pct ?? undefined}
+              value={rateDraft}
               onChange={(event) => setRateDraft(event.target.value)}
               onBlur={applyCustomRate}
               placeholder="4.0"

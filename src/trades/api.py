@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
+from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
@@ -53,6 +54,10 @@ class SyncProgress:
 app = FastAPI(title="Investments API")
 app.state.config = AppConfig()
 app.state.sync_progress = SyncProgress(step="Idle", percent=0.0, done=True)
+
+# Lock to prevent concurrent syncs: /api/sync writes to caches and the ledger,
+# so concurrent requests would step on each other's writes.
+_sync_lock = Lock()
 
 
 def _config() -> AppConfig:
@@ -698,16 +703,20 @@ def sync() -> dict[str, Any]:
     /api/sync/progress` — the IBKR pull is the one step slow enough that a
     bare spinner isn't good enough feedback.
 
+    Concurrent requests are serialized by a lock to prevent cache and ledger
+    corruption from simultaneous writes.
+
     Returns
     -------
     dict[str, Any]
         `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`.
     """
-    try:
-        result = _run_sync(_config())
-    except Exception as error:
-        app.state.sync_progress = SyncProgress(step="Sync failed", percent=100.0, done=True, error=str(error))
-        raise
+    with _sync_lock:
+        try:
+            result = _run_sync(_config())
+        except Exception as error:
+            app.state.sync_progress = SyncProgress(step="Sync failed", percent=100.0, done=True, error=str(error))
+            raise
 
-    app.state.sync_progress = SyncProgress(step="Done", percent=100.0, done=True)
-    return result
+        app.state.sync_progress = SyncProgress(step="Done", percent=100.0, done=True)
+        return result
