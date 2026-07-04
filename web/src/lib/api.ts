@@ -6,6 +6,7 @@ import type {
   LedgerEvent,
   LotsTable,
   MonthlyPnl,
+  MonthlyPnlBySymbol,
   Overview,
   RiskStat,
   SyncResult,
@@ -46,6 +47,8 @@ export const api = {
   growthOf100Chart: (range?: DateRange) =>
     request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
   monthlyPnl: (range?: DateRange) => request<MonthlyPnl[]>(withRange('/api/chart/monthly-pnl', range)),
+  monthlyPnlBySymbol: (range?: DateRange) =>
+    request<MonthlyPnlBySymbol[]>(withRange('/api/chart/monthly-pnl/by-symbol', range)),
   allocation: (asOf?: string) =>
     request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
   targetAllocation: () => request<TargetAllocation>('/api/settings/target-allocation'),

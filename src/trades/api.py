@@ -188,6 +188,28 @@ def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@app.get("/api/chart/monthly-pnl/by-symbol")
+def get_monthly_pnl_by_symbol(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return each month's value change split into contributions and market gain, per symbol (NEW_TASKS.md 3.5, 6.4).
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One entry per (month, symbol) pair.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return dashboard.monthly_pnl_by_symbol(ledger, app_config, range_start, range_end).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @app.get("/api/allocation")
 def get_allocation(as_of: date | None = None) -> list[dict[str, Any]]:
     """Return the current-value allocation by symbol (including cash), against the target (NEW_TASKS.md 6.5).

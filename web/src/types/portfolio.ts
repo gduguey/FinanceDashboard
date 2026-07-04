@@ -15,6 +15,8 @@ export interface Overview {
   twr_pct: number | null
   twr_annualized_pct: number | null
   timing_gap_pct: number | null
+  total_deposited_usd: number
+  total_dividends_usd: number
   last_synced_at: string | null
 }
 
@@ -48,6 +50,13 @@ export interface GrowthOf100Point {
 export interface MonthlyPnl {
   month: string
   contributions_usd: number
+  market_gain_usd: number
+}
+
+export interface MonthlyPnlBySymbol {
+  month: string
+  symbol: string
+  contribution_usd: number
   market_gain_usd: number
 }
 

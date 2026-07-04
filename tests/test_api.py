@@ -113,6 +113,12 @@ def test_monthly_pnl_returns_one_entry_for_january(client) -> None:
     assert body[0]["month"] == "2026-01"
 
 
+def test_monthly_pnl_by_symbol_returns_one_row_per_symbol_per_month(client) -> None:
+    body = client.get("/api/chart/monthly-pnl/by-symbol", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    symbols = {row["symbol"] for row in body}
+    assert symbols == {"VOO", "CASH"}
+
+
 def test_allocation_reports_voo_and_cash(client) -> None:
     body = client.get("/api/allocation", params={"as_of": "2026-01-03"}).json()
     symbols = {row["symbol"] for row in body}

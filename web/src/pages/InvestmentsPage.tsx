@@ -5,7 +5,6 @@ import { GrowthOf100Chart } from '@/components/investments/GrowthOf100Chart'
 import { LotsTable } from '@/components/investments/LotsTable'
 import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
-import { RiskStat } from '@/components/investments/RiskStat'
 import { SyncButton } from '@/components/investments/SyncButton'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useOverview } from '@/hooks/usePortfolioData'
@@ -28,9 +27,6 @@ export function InvestmentsPage() {
         <section id="overview" className="scroll-section space-y-4">
           <SectionTitle>Overview</SectionTitle>
           <OverviewCards />
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <RiskStat />
-          </div>
         </section>
 
         <section id="performance" className="scroll-section space-y-4">

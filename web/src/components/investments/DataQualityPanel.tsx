@@ -2,7 +2,9 @@ import { Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
+import { SortableTableHead } from '@/components/investments/SortableTableHead'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import { api } from '@/lib/api'
 import { formatDate } from '@/lib/format'
 import { useDataQuality } from '@/hooks/usePortfolioData'
@@ -12,6 +14,7 @@ import { useDataQuality } from '@/hooks/usePortfolioData'
 // so your financial history never lives only in this local cache.
 export function DataQualityPanel() {
   const { data, isLoading, isError } = useDataQuality()
+  const { sorted, sort, toggleSort } = useSortableRows(data, 'symbol')
 
   async function exportLedger() {
     const ledger = await api.ledgerExport()
@@ -39,12 +42,21 @@ export function DataQualityPanel() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Symbol</TableHead>
-                <TableHead className="text-right">Last price sync</TableHead>
+                <SortableTableHead active={sort.key === 'symbol'} desc={sort.desc} onClick={() => toggleSort('symbol')}>
+                  Symbol
+                </SortableTableHead>
+                <SortableTableHead
+                  align="right"
+                  active={sort.key === 'last_price_date'}
+                  desc={sort.desc}
+                  onClick={() => toggleSort('last_price_date')}
+                >
+                  Last price sync
+                </SortableTableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.map((row) => (
+              {sorted.map((row) => (
                 <TableRow key={row.symbol}>
                   <TableCell className="font-medium">{row.symbol}</TableCell>
                   <TableCell className="text-right tabular-nums">

@@ -179,6 +179,8 @@ class OverviewCards:
     twr_pct: float | None
     twr_annualized_pct: float | None
     timing_gap_pct: float | None
+    total_deposited_usd: float
+    total_dividends_usd: float
 
 
 def _hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
@@ -220,6 +222,23 @@ def _xirr_and_twr(
     return xirr_pct, is_provisional, twr
 
 
+def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float]:
+    """Sum gross `DEPOSIT` and `DIVIDEND` amounts, for the overview card's "money in" context.
+
+    Deliberately gross, not net of withdrawals/sells: this answers "how
+    much have I personally put in" and "how much has this portfolio paid
+    me," neither of which a sell or a withdrawal changes.
+
+    Returns
+    -------
+    tuple[float, float]
+        `(total_deposited, total_dividends)`.
+    """
+    total_deposited = float(ledger.filter(pl.col("event_type") == "DEPOSIT")["amount"].sum())
+    total_dividends = float(ledger.filter(pl.col("event_type") == "DIVIDEND")["amount"].sum())
+    return total_deposited, total_dividends
+
+
 def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> OverviewCards:
     """Assemble the overview card row: value, gain split, XIRR, dollar alpha, TWR (NEW_TASKS.md 6.1).
 
@@ -258,6 +277,7 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
     timing_gap_pct = (
         xirr_pct - twr.annualized_pct if xirr_pct is not None and twr and twr.annualized_pct is not None else None
     )
+    gross = _gross_deposits_and_dividends(ledger)
 
     return OverviewCards(
         as_of=as_of,
@@ -272,6 +292,8 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
         twr_pct=twr.raw_pct if twr else None,
         twr_annualized_pct=twr.annualized_pct if twr else None,
         timing_gap_pct=timing_gap_pct,
+        total_deposited_usd=gross[0],
+        total_dividends_usd=gross[1],
     )
 
 
@@ -506,6 +528,126 @@ def monthly_pnl(ledger: pl.DataFrame, config: AppConfig, start: date, end: date)
         market_gains.append(period_pnl(flows, value_start, value_end, month_start, month_end))
 
     return pl.DataFrame({"month": months, "contributions_usd": contributions, "market_gain_usd": market_gains})
+
+
+def _symbol_and_cash_values(
+    ledger: pl.DataFrame,
+    price_lookup: Callable[[str, date], float | None],
+    symbols: Sequence[str],
+    cash_symbol: str,
+    as_of: date,
+    config: AppConfig,
+) -> dict[str, float]:
+    """Value every symbol's holding plus cash as of a date.
+
+    Returns
+    -------
+    dict[str, float]
+        `{symbol: value, ..., cash_symbol: cash_balance}`.
+
+    Raises
+    ------
+    ValueError
+        If a price is unavailable for any symbol still held.
+    """
+    result = replay_ledger(ledger.filter(pl.col("event_datetime").dt.date() <= as_of), config)
+    values: dict[str, float] = dict.fromkeys(symbols, 0.0)
+    values[cash_symbol] = result.cash_balance
+    if not result.open_lots.is_empty():
+        by_symbol = result.open_lots.group_by("symbol").agg(shares=pl.col("shares").sum())
+        for symbol, shares in zip(by_symbol["symbol"].to_list(), by_symbol["shares"].to_list(), strict=True):
+            price = price_lookup(symbol, as_of)
+            if price is None:
+                message = f"No price available for {symbol} on or before {as_of}."
+                raise ValueError(message)
+            values[symbol] = shares * price
+    return values
+
+
+def _symbol_trading_contributions(ledger: pl.DataFrame, month_start: date, month_end: date) -> dict[str, float]:
+    """Net `BUY` minus `SELL` amount per symbol within a month — a symbol's analog of "money in".
+
+    Returns
+    -------
+    dict[str, float]
+        Symbol -> net trading contribution for the month.
+    """
+    in_month = pl.col("event_datetime").dt.date().is_between(month_start, month_end)
+    month_trades = ledger.filter(in_month & pl.col("event_type").is_in(["BUY", "SELL"]))
+    if month_trades.is_empty():
+        return {}
+    by_symbol = (
+        month_trades
+        .with_columns(signed=pl.when(pl.col("event_type") == "BUY").then(pl.col("amount")).otherwise(-pl.col("amount")))
+        .group_by("symbol")
+        .agg(contribution=pl.col("signed").sum())
+    )
+    return dict(zip(by_symbol["symbol"].to_list(), by_symbol["contribution"].to_list(), strict=True))
+
+
+def monthly_pnl_by_symbol(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
+    """Split each month's per-symbol value change into that symbol's trading and market gain.
+
+    A symbol has no "external contribution" of its own — only the whole
+    portfolio does (0.1) — so this defines a symbol's contribution as its
+    net `BUY` minus `SELL` amount that month (money moved into or out of
+    that position), with whatever's left over from external flows
+    attributed to a `CASH` row. The two attributions reconcile exactly
+    with the whole-portfolio `monthly_pnl`: contributions sum to net
+    external flows, market gains sum to the same total market gain.
+
+    Parameters
+    ----------
+    ledger
+        The full ledger, in chronological order.
+    config
+        Application configuration.
+    start
+        First day to report, inclusive.
+    end
+        Last day to report, inclusive.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `month` (`"YYYY-MM"`), `symbol`, `contribution_usd`, `market_gain_usd`.
+    """
+    price_lookup = make_price_lookup(config)
+    cash_symbol = config.ledger.cash_symbol
+    symbols = sorted(set(ledger["symbol"].unique().to_list()) - {cash_symbol})
+    flows = collect_if_lazy(external_cashflows(ledger))
+
+    rows: list[dict[str, str | float]] = []
+    for month_start, month_end in _month_boundaries(start, end):
+        start_values = _symbol_and_cash_values(
+            ledger, price_lookup, symbols, cash_symbol, month_start - timedelta(days=1), config
+        )
+        end_values = _symbol_and_cash_values(ledger, price_lookup, symbols, cash_symbol, month_end, config)
+        trading = _symbol_trading_contributions(ledger, month_start, month_end)
+
+        month_flows = flows.filter(pl.col("event_datetime").dt.date().is_between(month_start, month_end))
+        net_external = -float(month_flows["amount"].sum()) if not month_flows.is_empty() else 0.0
+        cash_contribution = net_external - sum(trading.values())
+
+        month_label = month_start.strftime("%Y-%m")
+        for symbol in symbols:
+            contribution = trading.get(symbol, 0.0)
+            gain = end_values[symbol] - start_values[symbol] - contribution
+            rows.append({
+                "month": month_label,
+                "symbol": symbol,
+                "contribution_usd": contribution,
+                "market_gain_usd": gain,
+            })
+        cash_gain = end_values[cash_symbol] - start_values[cash_symbol] - cash_contribution
+        rows.append({
+            "month": month_label,
+            "symbol": cash_symbol,
+            "contribution_usd": cash_contribution,
+            "market_gain_usd": cash_gain,
+        })
+
+    return pl.DataFrame(rows)
 
 
 def allocation_view(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> pl.DataFrame:

@@ -15,6 +15,7 @@ from trades.dashboard import (
     lots_table,
     make_price_lookup,
     monthly_pnl,
+    monthly_pnl_by_symbol,
     overview_cards,
     reallocation_markers,
     risk_stat,
@@ -181,6 +182,24 @@ def test_overview_cards_twr_matches_value_growth_with_no_intermediate_flows(tmp_
     assert cards.timing_gap_pct is None
 
 
+def test_overview_cards_reports_gross_deposits_and_dividends(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+        _event("div1", "2026-01-02", "DIVIDEND", symbol="VOO", amount=5.0),
+        _event("w1", "2026-01-02", "WITHDRAWAL", amount=200.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.csv",
+    )
+    cards = overview_cards(ledger, config, as_of=date(2026, 1, 2))
+
+    assert cards.total_deposited_usd == pytest.approx(1000.0)
+    assert cards.total_dividends_usd == pytest.approx(5.0)
+
+
 def test_reallocation_markers_flags_a_date_with_both_a_sell_and_a_buy(tmp_path) -> None:
     ledger = _ledger(
         _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
@@ -281,6 +300,37 @@ def test_monthly_pnl_splits_value_change_into_contributions_and_market_gain(tmp_
     assert result["month"].to_list() == ["2026-01", "2026-02"]
     assert result["contributions_usd"].to_list() == pytest.approx([1000.0, 200.0])
     assert result["market_gain_usd"].to_list() == pytest.approx([40.0, 20.0])
+
+
+def test_monthly_pnl_by_symbol_reconciles_with_the_whole_portfolio_view(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+        _event("d2", "2026-02-15", "DEPOSIT", amount=200.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({
+            "price_date": [date(2026, 1, 1), date(2026, 1, 31), date(2026, 2, 28)],
+            "close": [500.0, 520.0, 530.0],
+        }),
+        tmp_path / "VOO.csv",
+    )
+    result = monthly_pnl_by_symbol(ledger, config, date(2026, 1, 1), date(2026, 2, 28))
+
+    january = result.filter(pl.col("month") == "2026-01")
+    voo_january = january.filter(pl.col("symbol") == "VOO")
+    assert voo_january["contribution_usd"][0] == pytest.approx(1000.0)
+    assert voo_january["market_gain_usd"][0] == pytest.approx(40.0)
+    assert january["contribution_usd"].sum() == pytest.approx(1000.0)
+    assert january["market_gain_usd"].sum() == pytest.approx(40.0)
+
+    february = result.filter(pl.col("month") == "2026-02")
+    assert february["contribution_usd"].sum() == pytest.approx(200.0)
+    assert february["market_gain_usd"].sum() == pytest.approx(20.0)
+    cash_february = february.filter(pl.col("symbol") == config.ledger.cash_symbol)
+    assert cash_february["contribution_usd"][0] == pytest.approx(200.0)
+    assert cash_february["market_gain_usd"][0] == pytest.approx(0.0)
 
 
 def test_allocation_view_reports_current_and_target_pct(tmp_path) -> None:

@@ -1,7 +1,33 @@
 import { CartesianGrid, Line, LineChart, ReferenceLine, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/investments/ChartCard'
+import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate, formatUsd } from '@/lib/format'
 import { useDollarChart } from '@/hooks/usePortfolioData'
+import type { GlossaryTerm } from '@/lib/glossary'
+
+const LEGEND: { label: string; color: string; term: GlossaryTerm; dashed?: boolean }[] = [
+  { label: 'Contributions', color: '#94a3b8', term: 'contributions' },
+  { label: 'Portfolio value', color: '#0f172a', term: 'portfolioValue' },
+  { label: 'HYSA counterfactual', color: '#059669', term: 'hysaCounterfactual', dashed: true },
+  { label: 'Benchmark counterfactual', color: '#2563eb', term: 'benchmarkCounterfactual', dashed: true },
+]
+
+function ChartLegend() {
+  return (
+    <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      {LEGEND.map((item) => (
+        <span key={item.label} className="inline-flex items-center gap-1">
+          <span
+            className="inline-block h-0.5 w-3"
+            style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }}
+          />
+          {item.label}
+          <InfoTooltip term={item.term} />
+        </span>
+      ))}
+    </div>
+  )
+}
 
 // NEW_TASKS.md 6.2: the single most valuable addition — contributions
 // (moves only on external flows), portfolio market value, and the HYSA +
@@ -15,7 +41,8 @@ export function DollarChart() {
   return (
     <ChartCard
       title="Portfolio vs. cash and market benchmarks"
-      description="Contributions (grey step), your portfolio, HYSA and benchmark counterfactuals"
+      description="Contributions, your portfolio, and what the same money would be worth elsewhere"
+      legend={<ChartLegend />}
       isLoading={isLoading}
       isEmpty={!series?.length}
     >

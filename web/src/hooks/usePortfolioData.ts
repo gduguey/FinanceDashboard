@@ -9,6 +9,7 @@ const keys = {
   dollarChart: (range?: DateRange) => ['portfolio', 'chart', 'dollar', range ?? {}],
   growthOf100: (range?: DateRange) => ['portfolio', 'chart', 'growth-of-100', range ?? {}],
   monthlyPnl: (range?: DateRange) => ['portfolio', 'chart', 'monthly-pnl', range ?? {}],
+  monthlyPnlBySymbol: (range?: DateRange) => ['portfolio', 'chart', 'monthly-pnl-by-symbol', range ?? {}],
   allocation: ['portfolio', 'allocation'],
   targetAllocation: ['portfolio', 'settings', 'target-allocation'],
   lots: ['portfolio', 'lots'],
@@ -26,6 +27,9 @@ export const useGrowthOf100Chart = (range?: DateRange) =>
 
 export const useMonthlyPnl = (range?: DateRange) =>
   useQuery({ queryKey: keys.monthlyPnl(range), queryFn: () => api.monthlyPnl(range) })
+
+export const useMonthlyPnlBySymbol = (range?: DateRange) =>
+  useQuery({ queryKey: keys.monthlyPnlBySymbol(range), queryFn: () => api.monthlyPnlBySymbol(range) })
 
 export const useAllocation = () => useQuery({ queryKey: keys.allocation, queryFn: () => api.allocation() })
 
