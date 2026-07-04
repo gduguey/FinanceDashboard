@@ -6,7 +6,27 @@ dist/
 wheels/
 *.egg-info
 
+
+.DS_Store
+
 *.csv
+*.xml
+data/dashboard_settings.json
+data/
+
+# Secrets
+.env
+.env.*
 
 # Virtual environments
 .venv
+
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.claude/
+
+AGENTS.md
+CLAUDE.md
+
+info/

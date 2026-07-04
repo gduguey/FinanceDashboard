@@ -1,0 +1,127 @@
+"""Portfolio valuation helpers wired to the on-disk price cache."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import TYPE_CHECKING
+
+import polars as pl
+
+from trades.ledger.replay import portfolio_value, replay_ledger
+from trades.market_data import prices
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from trades.config import AppConfig
+
+
+def make_price_lookup(config: AppConfig, *, adjusted: bool = False) -> Callable[[str, date], float | None]:
+    """Build a `price_lookup` callable backed by the on-disk price cache.
+
+    Every `ledger.*` function that needs a price takes a plain callable
+    rather than a config, so it stays agnostic of where prices come from.
+    This is the one place that wires that callable to `market_data.prices`,
+    reading each symbol's cache file at most once per call regardless of
+    how many dates it's asked to price.
+
+    Parameters
+    ----------
+    config
+        Application configuration; `config.prices.cache_dir` is read.
+    adjusted
+        Look up the dividend/split-adjusted series instead of the raw
+        close (see `market_data.prices`'s module docstring) — the raw
+        series for pricing your own positions, the adjusted series for
+        benchmark counterfactuals.
+
+    Returns
+    -------
+    Callable[[str, datetime.date], float or None]
+        Looks up a symbol's price as of a given date; returns None if
+        the symbol has never been cached.
+    """
+    histories: dict[str, pl.DataFrame] = {}
+
+    def lookup(symbol: str, as_of: date) -> float | None:
+        if symbol not in histories:
+            histories[symbol] = prices.load_price_cache(symbol, config, adjusted=adjusted)
+        return prices.price_as_of(histories[symbol], as_of)
+
+    return lookup
+
+
+def daily_portfolio_values(
+    ledger: pl.DataFrame | pl.LazyFrame,
+    price_lookup: Callable[[str, date], float | None],
+    start: date,
+    end: date,
+    config: AppConfig,
+) -> pl.DataFrame | pl.LazyFrame:
+    """Compute portfolio value for every calendar day in a range.
+
+    The backbone series for the dollar chart, the Net Asset Value (NAV)
+    series, growth-of-100, monthly P&L, and max drawdown — all derived
+    from the same day-by-day valuation rather than each recomputing it.
+
+    Optimization: Instead of replaying the ledger for every calendar day
+    (O(days x ledger size)), this computes values only for event dates and
+    forward-fills for days with no events. This reduces replay calls to
+    O(unique_event_dates), which is typically much smaller.
+
+    Parameters
+    ----------
+    ledger
+        The full ledger, in chronological order.
+    price_lookup
+        Looks up a symbol's price as of a given date; returns None if unavailable.
+    start
+        First day to value, inclusive.
+    end
+        Last day to value, inclusive.
+    config
+        Application configuration, passed through to `replay_ledger`.
+
+    Returns
+    -------
+    polars.DataFrame or polars.LazyFrame
+        Columns `date`, `value`, one row per calendar day in `[start, end]`.
+        Same type as input.
+    """
+    was_eager = isinstance(ledger, pl.DataFrame)
+    ledger_df = ledger if was_eager else ledger.collect()
+
+    # Extract unique event dates in [start, end] range using Polars
+    event_dates_result = (
+        ledger_df
+        .filter(
+            (pl.col("event_datetime").dt.date() >= start)
+            & (pl.col("event_datetime").dt.date() <= end)
+        )
+        .select(pl.col("event_datetime").dt.date().unique().sort())
+    )
+    event_dates: list[date] = [] if event_dates_result.is_empty() else event_dates_result["event_datetime"].to_list()
+
+    # Compute portfolio value at each event date
+    values_by_date: dict[date, float] = {}
+    for event_date in event_dates:
+        result = replay_ledger(
+            ledger_df.filter(pl.col("event_datetime").dt.date() <= event_date), config
+        )
+        values_by_date[event_date] = portfolio_value(result, price_lookup, event_date)
+
+    # Generate all calendar dates and forward-fill values
+    all_dates = [start + timedelta(days=n) for n in range((end - start).days + 1)]
+    values: list[float] = []
+    for cal_date in all_dates:
+        # Find most recent event date <= this calendar date
+        recent_event_dates = [d for d in event_dates if d <= cal_date]
+        if recent_event_dates:
+            recent_date = max(recent_event_dates)
+            values.append(values_by_date[recent_date])
+        else:
+            # No events yet; portfolio value is 0
+            values.append(0.0)
+
+    result = pl.DataFrame({"date": all_dates, "value": values})
+    return result if was_eager else result.lazy()
