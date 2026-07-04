@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+
+.DS_Store
+
 *.csv
 *.xml
 data/dashboard_settings.json
@@ -25,3 +28,5 @@ data/
 
 AGENTS.md
 CLAUDE.md
+
+info/

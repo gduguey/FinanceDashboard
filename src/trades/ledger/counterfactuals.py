@@ -33,7 +33,7 @@ def hysa_counterfactual_series(
     end: date,
     rate_lookup: Callable[[date], float],
     days_per_year: int,
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Compound a virtual high-yield-savings balance daily, returning the balance for every day along the way.
 
     Simulates "what if every deposit/withdrawal had instead gone into a
@@ -67,13 +67,16 @@ def hysa_counterfactual_series(
 
     Returns
     -------
-    polars.DataFrame
+    polars.DataFrame or polars.LazyFrame
         Columns `date`, `value` — the virtual HYSA balance for every day
         from the earliest cashflow through `end`. Empty if `cashflows` is empty.
+        Same type as input.
     """
+    was_eager = isinstance(cashflows, pl.DataFrame)
     flows = collect_if_lazy(cashflows)
     if flows.is_empty():
-        return pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
+        empty = pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
+        return empty if was_eager else empty.lazy()
 
     daily_flows = (
         flows
@@ -97,8 +100,10 @@ def hysa_counterfactual_series(
             balance *= 1 + rate_lookup(current_date) / days_per_year
         current_date += timedelta(days=1)
     if not dates:
-        return pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
-    return pl.DataFrame({"date": dates, "value": balances})
+        empty = pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
+        return empty if was_eager else empty.lazy()
+    result = pl.DataFrame({"date": dates, "value": balances})
+    return result if was_eager else result.lazy()
 
 
 def hysa_counterfactual_value(
@@ -140,7 +145,7 @@ def benchmark_counterfactual_series(
     cashflows: pl.DataFrame | pl.LazyFrame,
     end: date,
     price_lookup: Callable[[date], float | None],
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Buy a benchmark with a set of external cashflows, valuing the position for every day along the way.
 
     Simulates "what if every deposit/withdrawal had instead bought this
@@ -166,18 +171,21 @@ def benchmark_counterfactual_series(
 
     Returns
     -------
-    polars.DataFrame
+    polars.DataFrame or polars.LazyFrame
         Columns `date`, `value` (`shares_held x price(date)`) for every
         day from the earliest cashflow through `end`. Empty if `cashflows` is empty.
+        Same type as input.
 
     Raises
     ------
     ValueError
         If `price_lookup` returns None for any day from the earliest cashflow through `end`.
     """
+    was_eager = isinstance(cashflows, pl.DataFrame)
     flows = collect_if_lazy(cashflows)
     if flows.is_empty():
-        return pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
+        empty = pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
+        return empty if was_eager else empty.lazy()
 
     daily_flows = (
         flows
@@ -203,8 +211,10 @@ def benchmark_counterfactual_series(
         values.append(shares * price)
         current_date += timedelta(days=1)
     if not dates:
-        return pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
-    return pl.DataFrame({"date": dates, "value": values})
+        empty = pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
+        return empty if was_eager else empty.lazy()
+    result = pl.DataFrame({"date": dates, "value": values})
+    return result if was_eager else result.lazy()
 
 
 def benchmark_counterfactual_value(

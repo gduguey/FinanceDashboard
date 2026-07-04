@@ -88,7 +88,7 @@ def annual_tax_report(
     config: AppConfig,
     current_regime: TaxRegime,
     status_change_date: date | None,
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Summarize realized gains and dividend income by calendar year and regime.
 
     Every closed lot and every `DIVIDEND`/`WITHHOLDING` ledger row is
@@ -120,13 +120,15 @@ def annual_tax_report(
 
     Returns
     -------
-    polars.DataFrame
+    polars.DataFrame or polars.LazyFrame
         One row per (year, regime) combination that had any activity,
         columns `year`, `regime`, `long_term_gain_usd`,
         `short_term_gain_usd`, `qualified_dividends_usd`,
         `ordinary_dividends_usd`, `ordinary_interest_usd`,
-        `withholding_tax_usd`. Sorted by year then regime.
+        `withholding_tax_usd`. Sorted by year then regime. Same type as
+        input.
     """
+    was_eager = isinstance(closed_lots, pl.DataFrame)
     lots = collect_if_lazy(closed_lots)
     rows = collect_if_lazy(ledger)
 
@@ -138,9 +140,10 @@ def annual_tax_report(
         withholding, on=["year", "regime"], how="full", coalesce=True
     )
     if combined.is_empty():
-        return pl.DataFrame(schema=_ANNUAL_REPORT_SCHEMA)
+        empty = pl.DataFrame(schema=_ANNUAL_REPORT_SCHEMA)
+        return empty if was_eager else empty.lazy()
     money_columns = [name for name in _ANNUAL_REPORT_SCHEMA if name not in {"year", "regime"}]
-    return (
+    result = (
         combined
         # `fill_null` unifies every targeted column to one common dtype, so
         # `year` (an int) is cast back explicitly rather than joining it
@@ -149,6 +152,7 @@ def annual_tax_report(
         .select(*_ANNUAL_REPORT_SCHEMA.keys())
         .sort("year", "regime")
     )
+    return result if was_eager else result.lazy()
 
 
 def _gains_by_year_and_regime(
@@ -472,7 +476,7 @@ def preview_sale(
     price_lookup: Callable[[str, date], float | None],
     as_of: date,
     config: AppConfig,
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Preview what selling every open lot today, without actually selling it, would look like.
 
     Answers the same three questions a real sale answers — how long was
@@ -498,18 +502,20 @@ def preview_sale(
 
     Returns
     -------
-    polars.DataFrame
+    polars.DataFrame or polars.LazyFrame
         Columns `lot_id`, `symbol`, `shares`, `days_held`, `term`,
-        `unrealized_gain_usd`, `would_wash_sale`.
+        `unrealized_gain_usd`, `would_wash_sale`. Same type as input.
 
     Raises
     ------
     ValueError
         If `price_lookup` returns None for any symbol still held.
     """
+    was_eager = isinstance(open_lots, pl.DataFrame)
     lots = collect_if_lazy(open_lots)
     if lots.is_empty():
-        return pl.DataFrame(schema=_PREVIEW_SCHEMA)
+        empty = pl.DataFrame(schema=_PREVIEW_SCHEMA)
+        return empty if was_eager else empty.lazy()
 
     prices: dict[str, float] = {}
     for symbol in lots["symbol"].unique().to_list():
@@ -536,7 +542,8 @@ def preview_sale(
     )
     flagged = _wash_sale_flagged_lot_ids(candidates, rows, config)
 
-    return with_preview.with_columns(would_wash_sale=pl.col("lot_id").is_in(flagged)).select(*_PREVIEW_SCHEMA.keys())
+    result = with_preview.with_columns(would_wash_sale=pl.col("lot_id").is_in(flagged)).select(*_PREVIEW_SCHEMA.keys())
+    return result if was_eager else result.lazy()
 
 
 def tax_owed_by_year_and_regime(

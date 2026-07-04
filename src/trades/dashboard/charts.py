@@ -242,13 +242,16 @@ def _month_boundaries(start: date, end: date) -> list[tuple[date, date]]:
     -------
     list[tuple[datetime.date, datetime.date]]
         One `(month_start, month_end)` pair per calendar month, clipped to `[start, end]`.
+        The first boundary's start is `start`, not snapped to the 1st of the month.
     """
     boundaries: list[tuple[date, date]] = []
-    current = start.replace(day=1)
+    current = start
     while current <= end:
+        # Month ends on the last day of the current month, clipped to `end`
         last_day_of_month = monthrange(current.year, current.month)[1]
-        month_end = min(current.replace(day=last_day_of_month), end)
+        month_end = min(date(current.year, current.month, last_day_of_month), end)
         boundaries.append((current, month_end))
+        # Next month starts the day after this month ends
         current = month_end + timedelta(days=1)
     return boundaries
 
