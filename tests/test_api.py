@@ -191,6 +191,11 @@ def test_tax_settings_default_to_disabled_and_resident(client) -> None:
         "resolved_tax_regime": "RESIDENT",
         "residency_status_change_date": None,
         "w8ben_claimed": False,
+        "w8ben_treaty_rate_pct": None,
+        "marginal_ordinary_rate_pct": None,
+        "resolved_marginal_ordinary_rate_pct": pytest.approx(24.0),
+        "qualified_ltcg_rate_pct": None,
+        "resolved_qualified_ltcg_rate_pct": pytest.approx(15.0),
     }
 
 
@@ -202,6 +207,9 @@ def test_tax_settings_put_then_get_round_trips(client) -> None:
             "tax_regime": "NRA",
             "residency_status_change_date": "2025-10-01",
             "w8ben_claimed": True,
+            "w8ben_treaty_rate_pct": 15.0,
+            "marginal_ordinary_rate_pct": 32.0,
+            "qualified_ltcg_rate_pct": 20.0,
         },
     )
     assert put_response.status_code == 200
@@ -212,6 +220,11 @@ def test_tax_settings_put_then_get_round_trips(client) -> None:
         "resolved_tax_regime": "NRA",
         "residency_status_change_date": "2025-10-01",
         "w8ben_claimed": True,
+        "w8ben_treaty_rate_pct": pytest.approx(15.0),
+        "marginal_ordinary_rate_pct": pytest.approx(32.0),
+        "resolved_marginal_ordinary_rate_pct": pytest.approx(32.0),
+        "qualified_ltcg_rate_pct": pytest.approx(20.0),
+        "resolved_qualified_ltcg_rate_pct": pytest.approx(20.0),
     }
 
 
@@ -219,7 +232,15 @@ def test_tax_settings_put_preserves_target_allocation(client) -> None:
     client.put("/api/settings/target-allocation", json={"VOO": 80.0})
     client.put(
         "/api/settings/tax",
-        json={"tax_enabled": True, "tax_regime": None, "residency_status_change_date": None, "w8ben_claimed": False},
+        json={
+            "tax_enabled": True,
+            "tax_regime": None,
+            "residency_status_change_date": None,
+            "w8ben_claimed": False,
+            "w8ben_treaty_rate_pct": None,
+            "marginal_ordinary_rate_pct": None,
+            "qualified_ltcg_rate_pct": None,
+        },
     )
     assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
 
@@ -231,6 +252,18 @@ def test_tax_report_returns_the_realized_gain_and_an_open_lot_preview(client) ->
     assert body["wash_sales"] == []
     assert len(body["sale_previews"]) == 1
     assert body["sale_previews"][0]["symbol"] == "VOO"
+
+
+def test_tax_report_includes_tax_owed_and_liquidation_value(client) -> None:
+    body = client.get("/api/tax/report", params={"as_of": "2026-01-03"}).json()
+    owed_row = next(row for row in body["tax_owed"] if row["year"] == 2026)
+    assert owed_row["capital_gains_tax_usd"] == pytest.approx(50.0 * 0.24)
+    assert "balance_due_usd" in owed_row
+    assert body["liquidation_pretax_value_usd"] - body["liquidation_capital_gains_tax_usd"] == pytest.approx(
+        body["liquidation_value_usd"]
+    )
+    assert body["liquidation_long_term_gain_usd"] >= 0
+    assert body["liquidation_short_term_gain_usd"] >= 0
 
 
 def test_hysa_rates_lists_banks_and_history(client) -> None:

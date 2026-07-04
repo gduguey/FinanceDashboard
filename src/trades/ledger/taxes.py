@@ -17,7 +17,7 @@ hasn't closed yet.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -26,9 +26,8 @@ from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import date
 
-    from trades.config import AppConfig, TaxRegime
+    from trades.config import AppConfig, TaxCharacter, TaxRegime
 
 
 def _earlier_regime(current_regime: TaxRegime) -> TaxRegime:
@@ -170,6 +169,130 @@ def _gains_by_year_and_regime(
     )
 
 
+_ZERO_POSITION_TOLERANCE = 1e-9  # a share count this close to zero is treated as fully sold, not a rounding residue
+
+
+def _overlap_days(a_start: date, a_end: date, b_start: date, b_end: date) -> int:
+    """Compute the overlap between two half-open date intervals `[start, end)`.
+
+    Returns
+    -------
+    int
+        Days of overlap, or 0 if the intervals don't overlap.
+    """
+    start = max(a_start, b_start)
+    end = min(a_end, b_end)
+    return max(0, (end - start).days)
+
+
+def _longest_holding_span_within_window(
+    position_events: list[tuple[date, float]], window_start: date, window_end: date
+) -> int:
+    """Find the longest unbroken run of a positive position overlapping a date window.
+
+    `position_events` is a symbol's `BUY`(+)/`SELL`(-) share deltas,
+    sorted by date. A run begins the day the position turns positive and
+    ends the day it returns to zero; a run still open after the last known
+    event is treated as continuing through `window_end`, since nothing
+    past that matters to this check.
+
+    Returns
+    -------
+    int
+        The longest run's overlap with `[window_start, window_end]`, in days.
+    """
+    window_end_exclusive = window_end + timedelta(days=1)
+    position = 0.0
+    run_start: date | None = None
+    longest = 0
+    for event_date, delta in position_events:
+        was_held = position > _ZERO_POSITION_TOLERANCE
+        position += delta
+        is_held = position > _ZERO_POSITION_TOLERANCE
+        if is_held and not was_held:
+            run_start = event_date
+        elif was_held and not is_held and run_start is not None:
+            longest = max(longest, _overlap_days(run_start, event_date, window_start, window_end_exclusive))
+            run_start = None
+    if run_start is not None:
+        longest = max(longest, _overlap_days(run_start, window_end_exclusive, window_start, window_end_exclusive))
+    return longest
+
+
+def _symbol_position_events(ledger: pl.DataFrame, symbol: str) -> list[tuple[date, float]]:
+    """Build a symbol's full `BUY`(+)/`SELL`(-) share-count-delta history, sorted by date.
+
+    Returns
+    -------
+    list[tuple[datetime.date, float]]
+        One `(date, signed_share_delta)` pair per `BUY`/`SELL` event.
+    """
+    rows = (
+        ledger
+        .filter((pl.col("symbol") == symbol) & pl.col("event_type").is_in(["BUY", "SELL"]))
+        .with_columns(
+            event_date=pl.col("event_datetime").dt.date(),
+            delta=pl.when(pl.col("event_type") == "BUY").then(pl.col("shares")).otherwise(-pl.col("shares")),
+        )
+        .sort("event_date")
+    )
+    return list(zip(rows["event_date"].to_list(), rows["delta"].to_list(), strict=True))
+
+
+def classify_dividend(symbol: str, meta: dict[str, str], ledger: pl.DataFrame, config: AppConfig) -> TaxCharacter:
+    """Classify one dividend-shaped ledger event's tax character.
+
+    Checked in order, stopping at the first that applies: an explicit
+    per-symbol override in `config.tax.tax_character` always wins; then
+    IBKR's own `income_type` tag settles interest (never qualified,
+    regardless of holding period) and substitute payments in lieu of a
+    dividend (also never qualified, by statute, no matter how long the
+    position was held); then IBKR's own "Unqualified Dividend" label, if
+    present, is taken at face value. Only once none of those apply does
+    the holding-period test actually run: was the position held for more
+    than `config.tax.qualified_dividend_min_days_held` days within the
+    `config.tax.qualified_dividend_window_days`-day window centered on the
+    ex-date — the statutory test for a real dividend to qualify for the
+    lower long-term-capital-gains rate. Missing data (no ex-date recorded)
+    falls back to the conservative "ordinary" bucket rather than guessing.
+
+    Parameters
+    ----------
+    symbol
+        The symbol the dividend was paid on.
+    meta
+        The ledger event's `meta` dict.
+    ledger
+        The full ledger, in chronological order; read only when the
+        holding-period test actually needs to run.
+    config
+        Application configuration; `config.tax` is read.
+
+    Returns
+    -------
+    TaxCharacter
+        The dividend's tax character.
+    """
+    if symbol in config.tax.tax_character:
+        return config.tax.tax_character[symbol]
+    if meta.get("income_type") == "interest":
+        return "ordinary_interest"
+    if meta.get("income_type") == "substitute_payment":
+        return "ordinary_dividend"
+    if meta.get("dividend_type") == "Unqualified Dividend":
+        return "ordinary_dividend"
+    ex_date_raw = meta.get("ex_date")
+    if not ex_date_raw:
+        return "ordinary_dividend"
+
+    ex_date = date.fromisoformat(ex_date_raw)
+    window_start = ex_date - timedelta(days=config.tax.qualified_dividend_window_days)
+    window_end = ex_date + timedelta(days=config.tax.qualified_dividend_window_days)
+    events = _symbol_position_events(ledger, symbol)
+    held_days = _longest_holding_span_within_window(events, window_start, window_end)
+    return "qualified_dividend" if held_days > config.tax.qualified_dividend_min_days_held else "ordinary_dividend"
+
+
 def _dividends_by_year_and_regime(
     ledger: pl.DataFrame, config: AppConfig, current_regime: TaxRegime, status_change_date: date | None
 ) -> pl.DataFrame:
@@ -183,12 +306,21 @@ def _dividends_by_year_and_regime(
     dividend_rows = ledger.filter(pl.col("event_type") == "DIVIDEND")
     if dividend_rows.is_empty():
         return pl.DataFrame(schema=schema)
+
+    # `classify_dividend` looks at one dividend's own symbol history around
+    # its own ex-date — not something a single vectorized expression can
+    # express — so each row is classified by a plain Python call, the same
+    # justification as the `price_lookup` callbacks elsewhere in `ledger.*`.
+    characters = [
+        classify_dividend(row["symbol"], row["meta"] or {}, ledger, config)
+        for row in dividend_rows.iter_rows(named=True)
+    ]
     return (
         dividend_rows
         .with_columns(
             year=pl.col("event_datetime").dt.year(),
             event_date=pl.col("event_datetime").dt.date(),
-            character=pl.col("symbol").replace_strict(config.tax.tax_character, default="ordinary_dividend"),
+            character=pl.Series("character", characters, dtype=pl.Utf8),
         )
         .with_columns(regime=_regime_expr("event_date", current_regime, status_change_date))
         .group_by("year", "regime")
@@ -405,6 +537,140 @@ def preview_sale(
     flagged = _wash_sale_flagged_lot_ids(candidates, rows, config)
 
     return with_preview.with_columns(would_wash_sale=pl.col("lot_id").is_in(flagged)).select(*_PREVIEW_SCHEMA.keys())
+
+
+def tax_owed_by_year_and_regime(
+    annual: pl.DataFrame,
+    marginal_ordinary_rate: float,
+    qualified_ltcg_rate: float,
+    nra_dividend_tax_rate: float,
+) -> pl.DataFrame:
+    """Turn each year's realized income into an estimated tax bill, and net it against what was already withheld.
+
+    A resident alien's short-term gains and ordinary income (dividends
+    labeled "ordinary" plus interest) are taxed at `marginal_ordinary_rate`;
+    long-term gains and dividends labeled "qualified" get the lower
+    `qualified_ltcg_rate` instead — the same "held long enough" reward
+    `classify_dividend` and a lot's `term` already determine, just applied
+    at tax time. A nonresident alien owes no U.S. tax on capital gains at
+    all and no tax on interest (both `config.TaxRegime`-level facts, not
+    computed here), and pays a single flat withholding rate on the full
+    dividend amount regardless of the qualified/ordinary split, since that
+    distinction only matters to a resident's tax return. A year with a net
+    loss in a bucket is floored at zero rather than turned into a credit —
+    carrying a loss forward to shelter a future year's gain is a real part
+    of the tax code this estimate doesn't attempt to track.
+
+    Parameters
+    ----------
+    annual
+        The output of `annual_tax_report`.
+    marginal_ordinary_rate
+        The rate a resident alien pays on short-term gains and ordinary income.
+    qualified_ltcg_rate
+        The rate a resident alien pays on long-term gains and qualified dividends.
+    nra_dividend_tax_rate
+        The flat rate a nonresident alien pays on dividend income — a tax
+        treaty's negotiated rate if one is claimed, otherwise the default
+        statutory withholding rate.
+
+    Returns
+    -------
+    polars.DataFrame
+        `annual` plus `capital_gains_tax_usd`, `dividend_tax_usd`,
+        `total_tax_usd`, and `balance_due_usd` (the estimated tax minus
+        `withholding_tax_usd` already paid; negative means an overpayment).
+    """
+    is_resident = pl.col("regime") == "RESIDENT"
+    capital_gains_tax = (
+        pl
+        .when(is_resident)
+        .then(
+            pl.col("long_term_gain_usd").clip(lower_bound=0) * qualified_ltcg_rate
+            + pl.col("short_term_gain_usd").clip(lower_bound=0) * marginal_ordinary_rate
+        )
+        .otherwise(0.0)
+    )
+    dividend_tax = (
+        pl
+        .when(is_resident)
+        .then(
+            pl.col("qualified_dividends_usd").clip(lower_bound=0) * qualified_ltcg_rate
+            + pl.col("ordinary_dividends_usd").clip(lower_bound=0) * marginal_ordinary_rate
+            + pl.col("ordinary_interest_usd").clip(lower_bound=0) * marginal_ordinary_rate
+        )
+        .otherwise(
+            (
+                pl.col("qualified_dividends_usd").clip(lower_bound=0)
+                + pl.col("ordinary_dividends_usd").clip(lower_bound=0)
+            )
+            * nra_dividend_tax_rate
+        )
+    )
+    return (
+        annual
+        .with_columns(capital_gains_tax_usd=capital_gains_tax, dividend_tax_usd=dividend_tax)
+        .with_columns(total_tax_usd=pl.col("capital_gains_tax_usd") + pl.col("dividend_tax_usd"))
+        .with_columns(balance_due_usd=pl.col("total_tax_usd") - pl.col("withholding_tax_usd"))
+    )
+
+
+def liquidation_gain_buckets(previews: pl.DataFrame) -> tuple[float, float]:
+    """Sum every open lot's unrealized gain by term, each floored at zero.
+
+    Floored, not netted against each other, because a net loss in one
+    term bucket doesn't produce a rebate against the other — it just means
+    that bucket owes nothing.
+
+    Parameters
+    ----------
+    previews
+        The output of `preview_sale` — one row per open lot, with `term` and `unrealized_gain_usd`.
+
+    Returns
+    -------
+    tuple[float, float]
+        `(long_term_gain_usd, short_term_gain_usd)`, each floored at zero.
+    """
+    if previews.is_empty():
+        return 0.0, 0.0
+    long_term_gain = max(0.0, float(previews.filter(pl.col("term") == "LONG")["unrealized_gain_usd"].sum()))
+    short_term_gain = max(0.0, float(previews.filter(pl.col("term") == "SHORT")["unrealized_gain_usd"].sum()))
+    return long_term_gain, short_term_gain
+
+
+def liquidation_tax_usd(
+    previews: pl.DataFrame, regime: TaxRegime, marginal_ordinary_rate: float, qualified_ltcg_rate: float
+) -> float:
+    """Estimate the capital-gains tax a full liquidation of every open lot, today, would trigger.
+
+    The same rate logic `tax_owed_by_year_and_regime` applies to a year of
+    real sales, applied instead to one hypothetical sale of everything
+    still held: a nonresident alien owes nothing; a resident alien owes
+    `qualified_ltcg_rate` on the net long-term gain and
+    `marginal_ordinary_rate` on the net short-term gain (see
+    `liquidation_gain_buckets`).
+
+    Parameters
+    ----------
+    previews
+        The output of `preview_sale` — one row per open lot, with `term` and `unrealized_gain_usd`.
+    regime
+        The tax regime in effect today.
+    marginal_ordinary_rate
+        The rate a resident alien pays on short-term gains.
+    qualified_ltcg_rate
+        The rate a resident alien pays on long-term gains.
+
+    Returns
+    -------
+    float
+        The estimated tax on liquidating today; 0 for a nonresident alien or an empty portfolio.
+    """
+    if regime == "NRA" or previews.is_empty():
+        return 0.0
+    long_term_gain, short_term_gain = liquidation_gain_buckets(previews)
+    return long_term_gain * qualified_ltcg_rate + short_term_gain * marginal_ordinary_rate
 
 
 def after_tax_rate_lookup(

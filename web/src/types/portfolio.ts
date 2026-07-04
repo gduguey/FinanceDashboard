@@ -207,6 +207,11 @@ export interface TaxSettings {
   resolved_tax_regime: TaxRegime
   residency_status_change_date: string | null
   w8ben_claimed: boolean
+  w8ben_treaty_rate_pct: number | null
+  marginal_ordinary_rate_pct: number | null
+  resolved_marginal_ordinary_rate_pct: number
+  qualified_ltcg_rate_pct: number | null
+  resolved_qualified_ltcg_rate_pct: number
 }
 
 export interface TaxSettingsUpdate {
@@ -214,6 +219,9 @@ export interface TaxSettingsUpdate {
   tax_regime: TaxRegime | null
   residency_status_change_date: string | null
   w8ben_claimed: boolean
+  w8ben_treaty_rate_pct: number | null
+  marginal_ordinary_rate_pct: number | null
+  qualified_ltcg_rate_pct: number | null
 }
 
 export interface AnnualTaxRow {
@@ -251,9 +259,22 @@ export interface SalePreviewRow {
   would_wash_sale: boolean
 }
 
+export interface TaxOwedRow extends AnnualTaxRow {
+  capital_gains_tax_usd: number
+  dividend_tax_usd: number
+  total_tax_usd: number
+  balance_due_usd: number
+}
+
 export interface TaxReport {
   annual: AnnualTaxRow[]
+  tax_owed: TaxOwedRow[]
   wash_sales: WashSaleRow[]
   sale_previews: SalePreviewRow[]
   after_tax_dollar_alpha_vs_hysa_usd: number
+  liquidation_pretax_value_usd: number
+  liquidation_long_term_gain_usd: number
+  liquidation_short_term_gain_usd: number
+  liquidation_capital_gains_tax_usd: number
+  liquidation_value_usd: number
 }

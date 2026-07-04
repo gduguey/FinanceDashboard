@@ -18,6 +18,9 @@ from trades.dashboard import (
     monthly_pnl_by_symbol,
     overview_cards,
     reallocation_markers,
+    resolved_marginal_ordinary_rate,
+    resolved_nra_dividend_tax_rate,
+    resolved_qualified_ltcg_rate,
     resolved_tax_regime,
     risk_stat,
     save_settings,
@@ -169,6 +172,39 @@ def test_overview_cards_reports_dollar_alpha_vs_hysa(tmp_path) -> None:
     assert cards.dollar_alpha_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
 
 
+def test_overview_cards_dollar_alpha_taxes_the_hysa_leg_when_tax_is_enabled(tmp_path) -> None:
+    config = _config(tmp_path)
+    write_csv_atomic(
+        pl.DataFrame({
+            "price_date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
+            "close": [500.0, 510.0, 520.0],
+        }),
+        tmp_path / "VOO.csv",
+    )
+    save_settings(DashboardSettings(tax_enabled=True, tax_regime="RESIDENT"), config)
+    cards = overview_cards(_OVERVIEW_LEDGER, config, as_of=date(2026, 1, 3))
+
+    after_tax_rate = config.returns.hysa_annual_rate * (1 - config.tax.marginal_ordinary_rate)
+    expected_hysa_value = 1000.0 * (1 + after_tax_rate / 365) ** 2
+    assert cards.dollar_alpha_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
+
+
+def test_overview_cards_dollar_alpha_leaves_hysa_untaxed_for_a_nonresident_alien(tmp_path) -> None:
+    config = _config(tmp_path)
+    write_csv_atomic(
+        pl.DataFrame({
+            "price_date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
+            "close": [500.0, 510.0, 520.0],
+        }),
+        tmp_path / "VOO.csv",
+    )
+    save_settings(DashboardSettings(tax_enabled=True, tax_regime="NRA"), config)
+    cards = overview_cards(_OVERVIEW_LEDGER, config, as_of=date(2026, 1, 3))
+
+    expected_hysa_value = 1000.0 * (1 + config.returns.hysa_annual_rate / 365) ** 2
+    assert cards.dollar_alpha_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
+
+
 def test_overview_cards_twr_matches_value_growth_with_no_intermediate_flows(tmp_path) -> None:
     config = _config(tmp_path)
     write_csv_atomic(
@@ -273,6 +309,50 @@ def test_dollar_chart_series_uses_a_fixed_rate_override_for_hysa(tmp_path) -> No
     assert result["hysa_rate_pct"].to_list() == pytest.approx([10.0, 10.0])
 
 
+def test_dollar_chart_series_taxes_the_hysa_leg_when_tax_is_enabled(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 520.0]}),
+        tmp_path / "VOO.adjusted.csv",
+    )
+    save_settings(DashboardSettings(hysa_fixed_rate_pct=10.0, tax_enabled=True, tax_regime="RESIDENT"), config)
+
+    result = dollar_chart_series(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+
+    after_tax_rate_pct = 10.0 * (1 - config.tax.marginal_ordinary_rate)
+    expected_hysa_day2 = 1000.0 * (1 + after_tax_rate_pct / 100 / 365)
+    assert result["hysa_value_usd"].to_list() == pytest.approx([1000.0, expected_hysa_day2])
+    assert result["hysa_rate_pct"].to_list() == pytest.approx([after_tax_rate_pct, after_tax_rate_pct])
+
+
+def test_dollar_chart_series_leaves_hysa_untaxed_when_tax_is_disabled(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 510.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 520.0]}),
+        tmp_path / "VOO.adjusted.csv",
+    )
+    save_settings(DashboardSettings(hysa_fixed_rate_pct=10.0, tax_enabled=False, tax_regime="RESIDENT"), config)
+
+    result = dollar_chart_series(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+    assert result["hysa_rate_pct"].to_list() == pytest.approx([10.0, 10.0])
+
+
 def test_dollar_chart_series_uses_the_selected_bank_for_hysa(tmp_path) -> None:
     config = _config(tmp_path)
     ledger = _ledger(
@@ -360,6 +440,34 @@ def test_growth_of_100_chart_indexes_every_series_to_100_at_the_start(tmp_path) 
     expected_hysa_day2 = (1 + config.returns.hysa_annual_rate / 365) * 100
     assert result["hysa_index"].to_list() == pytest.approx([100.0, expected_hysa_day2])
     assert result["hysa_rate_pct"].to_list() == pytest.approx([config.returns.hysa_annual_rate * 100] * 2)
+
+
+def test_growth_of_100_chart_taxes_the_hysa_leg_when_tax_is_enabled(tmp_path) -> None:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
+        _event("b1", "2026-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 550.0]}),
+        tmp_path / "VOO.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2026, 1, 1), date(2026, 1, 2)], "close": [500.0, 600.0]}),
+        tmp_path / "VOO.adjusted.csv",
+    )
+    write_csv_atomic(
+        pl.DataFrame({"observation_date": [date(2026, 1, 1), date(2026, 1, 2)], "value": [300.0, 303.0]}),
+        tmp_path / "CPIAUCSL.csv",
+    )
+    save_settings(DashboardSettings(tax_enabled=True, tax_regime="RESIDENT"), config)
+
+    result = growth_of_100_chart(ledger, config, date(2026, 1, 1), date(2026, 1, 2))
+
+    after_tax_rate = config.returns.hysa_annual_rate * (1 - config.tax.marginal_ordinary_rate)
+    expected_hysa_day2 = (1 + after_tax_rate / 365) * 100
+    assert result["hysa_index"].to_list() == pytest.approx([100.0, expected_hysa_day2])
+    assert result["hysa_rate_pct"].to_list() == pytest.approx([after_tax_rate * 100] * 2)
 
 
 def test_growth_of_100_chart_benchmark_and_hysa_are_unaffected_by_a_later_deposit(tmp_path) -> None:
@@ -547,6 +655,45 @@ def test_resolved_tax_regime_honors_an_explicit_nra_selection(tmp_path) -> None:
     assert resolved_tax_regime(config) == "NRA"
 
 
+def test_resolved_marginal_ordinary_rate_defaults_to_config(tmp_path) -> None:
+    config = _config(tmp_path)
+    assert resolved_marginal_ordinary_rate(config) == pytest.approx(config.tax.marginal_ordinary_rate)
+
+
+def test_resolved_marginal_ordinary_rate_honors_an_override(tmp_path) -> None:
+    config = _config(tmp_path)
+    save_settings(DashboardSettings(marginal_ordinary_rate_pct=32.0), config)
+    assert resolved_marginal_ordinary_rate(config) == pytest.approx(0.32)
+
+
+def test_resolved_qualified_ltcg_rate_defaults_to_config(tmp_path) -> None:
+    config = _config(tmp_path)
+    assert resolved_qualified_ltcg_rate(config) == pytest.approx(config.tax.qualified_ltcg_rate)
+
+
+def test_resolved_nra_dividend_tax_rate_defaults_to_the_statutory_rate(tmp_path) -> None:
+    config = _config(tmp_path)
+    assert resolved_nra_dividend_tax_rate(config) == pytest.approx(config.tax.nra_statutory_dividend_withholding_rate)
+
+
+def test_resolved_nra_dividend_tax_rate_honors_a_claimed_treaty_rate(tmp_path) -> None:
+    config = _config(tmp_path)
+    save_settings(DashboardSettings(w8ben_claimed=True, w8ben_treaty_rate_pct=15.0), config)
+    assert resolved_nra_dividend_tax_rate(config) == pytest.approx(0.15)
+
+
+def test_resolved_nra_dividend_tax_rate_falls_back_to_statutory_when_claimed_without_a_rate(tmp_path) -> None:
+    config = _config(tmp_path)
+    save_settings(DashboardSettings(w8ben_claimed=True), config)
+    assert resolved_nra_dividend_tax_rate(config) == pytest.approx(config.tax.nra_statutory_dividend_withholding_rate)
+
+
+def test_resolved_qualified_ltcg_rate_honors_an_override(tmp_path) -> None:
+    config = _config(tmp_path)
+    save_settings(DashboardSettings(qualified_ltcg_rate_pct=20.0), config)
+    assert resolved_qualified_ltcg_rate(config) == pytest.approx(0.20)
+
+
 def _tax_ledger(tmp_path) -> tuple[AppConfig, pl.DataFrame]:
     config = _config(tmp_path)
     ledger = _ledger(
@@ -598,3 +745,38 @@ def test_tax_summary_after_tax_alpha_taxes_the_hysa_leg_for_residents(tmp_path) 
     # A resident's HYSA leg is taxed (smaller HYSA counterfactual, larger alpha);
     # an NRA's is untaxed, so its alpha is smaller (the HYSA leg compounded more).
     assert resident_alpha > nra_alpha
+
+
+def test_tax_summary_liquidation_value_subtracts_capital_gains_tax_for_a_resident(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    save_settings(DashboardSettings(tax_regime="RESIDENT"), config)
+    summary = tax_summary(ledger, config, as_of=date(2026, 1, 1))
+    value = overview_cards(ledger, config, as_of=date(2026, 1, 1)).value_usd
+    # The one open lot (2 shares of VOO, bought 2025-06-10) is a short-term
+    # position with a $40 unrealized gain as of 2026-01-01.
+    expected_tax = 40.0 * config.tax.marginal_ordinary_rate
+    assert summary.liquidation_pretax_value_usd == pytest.approx(value)
+    assert summary.liquidation_long_term_gain_usd == pytest.approx(0.0)
+    assert summary.liquidation_short_term_gain_usd == pytest.approx(40.0)
+    assert summary.liquidation_capital_gains_tax_usd == pytest.approx(expected_tax)
+    assert summary.liquidation_value_usd == pytest.approx(value - expected_tax)
+
+
+def test_tax_summary_liquidation_value_is_untaxed_for_a_nonresident_alien(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    save_settings(DashboardSettings(tax_regime="NRA"), config)
+    summary = tax_summary(ledger, config, as_of=date(2026, 1, 1))
+    value = overview_cards(ledger, config, as_of=date(2026, 1, 1)).value_usd
+    assert summary.liquidation_capital_gains_tax_usd == pytest.approx(0.0)
+    assert summary.liquidation_value_usd == pytest.approx(value)
+
+
+def test_tax_summary_tax_owed_estimates_tax_on_the_years_realized_income(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    save_settings(DashboardSettings(tax_regime="RESIDENT"), config)
+    summary = tax_summary(ledger, config, as_of=date(2026, 1, 1))
+    row = summary.tax_owed.row(0, named=True)
+    # The year's only realized gain is a $200 short-term loss, floored at
+    # zero; the $25 ordinary dividend is taxed at the marginal rate.
+    assert row["capital_gains_tax_usd"] == pytest.approx(0.0)
+    assert row["dividend_tax_usd"] == pytest.approx(25.0 * config.tax.marginal_ordinary_rate)
