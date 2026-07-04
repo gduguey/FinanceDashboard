@@ -5,6 +5,7 @@ const SECTIONS = [
   { id: 'performance', label: 'Performance' },
   { id: 'allocation', label: 'Allocation' },
   { id: 'lots', label: 'Lots' },
+  { id: 'taxes', label: 'Taxes' },
   { id: 'data-quality', label: 'Data quality' },
   { id: 'glossary', label: 'Glossary' },
 ]

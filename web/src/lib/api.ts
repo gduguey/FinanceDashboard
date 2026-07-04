@@ -18,6 +18,9 @@ import type {
   SyncProgress,
   SyncResult,
   TargetAllocation,
+  TaxReport,
+  TaxSettings,
+  TaxSettingsUpdate,
 } from '@/types/portfolio'
 
 export class ApiError extends Error {}
@@ -90,4 +93,12 @@ export const api = {
     request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
   ensureSymbolPriced: (symbol: string) =>
     request<SymbolPriceStatus>(`/api/symbols/${encodeURIComponent(symbol)}/ensure-priced`, { method: 'POST' }),
+  taxSettings: () => request<TaxSettings>('/api/settings/tax'),
+  setTaxSettings: (settings: TaxSettingsUpdate) =>
+    request<TaxSettings>('/api/settings/tax', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    }),
+  taxReport: (asOf?: string) => request<TaxReport>(asOf ? `/api/tax/report?as_of=${asOf}` : '/api/tax/report'),
 }

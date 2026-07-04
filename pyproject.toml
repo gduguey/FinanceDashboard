@@ -112,6 +112,12 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "TC003",
 ]
 
+"**/dashboard.py" = [
+    "TC001",   # DashboardSettings is a pydantic model too; same reason as models.py/config.py
+    "TC002",
+    "TC003",
+]
+
 "**/test_*.py" = [
     "ANN",     # Type annotation strictness is lower-value in tests
     "D",       # Docstring requirements are unnecessary for tests

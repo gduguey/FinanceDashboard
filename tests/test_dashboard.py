@@ -18,8 +18,10 @@ from trades.dashboard import (
     monthly_pnl_by_symbol,
     overview_cards,
     reallocation_markers,
+    resolved_tax_regime,
     risk_stat,
     save_settings,
+    tax_summary,
 )
 from trades.utils.io_utils import write_csv_atomic
 
@@ -533,3 +535,66 @@ def test_data_quality_reports_last_price_date_per_symbol(tmp_path) -> None:
     assert rows["VOO"]["last_price_date"] == date(2026, 1, 5)
     assert rows["BND"]["last_price_date"] == date(2026, 1, 3)
     assert rows["QQQM"]["last_price_date"] is None
+
+
+def test_resolved_tax_regime_defaults_to_resident(tmp_path) -> None:
+    assert resolved_tax_regime(_config(tmp_path)) == "RESIDENT"
+
+
+def test_resolved_tax_regime_honors_an_explicit_nra_selection(tmp_path) -> None:
+    config = _config(tmp_path)
+    save_settings(DashboardSettings(tax_regime="NRA"), config)
+    assert resolved_tax_regime(config) == "NRA"
+
+
+def _tax_ledger(tmp_path) -> tuple[AppConfig, pl.DataFrame]:
+    config = _config(tmp_path)
+    ledger = _ledger(
+        _event("d1", "2025-01-01", "DEPOSIT", amount=2000.0),
+        _event("b1", "2025-01-01", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
+        _event("s1", "2025-06-01", "SELL", symbol="VOO", shares=2.0, price=400.0, amount=800.0),
+        _event("b2", "2025-06-10", "BUY", symbol="VOO", shares=2.0, price=400.0, amount=800.0),
+        _event("div1", "2025-07-01", "DIVIDEND", symbol="BND", amount=25.0),
+    )
+    write_csv_atomic(
+        pl.DataFrame({"price_date": [date(2025, 1, 1), date(2026, 1, 1)], "close": [500.0, 420.0]}),
+        tmp_path / "VOO.csv",
+    )
+    return config, ledger
+
+
+def test_tax_summary_reports_the_realized_loss_in_the_annual_report(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    summary = tax_summary(ledger, config, as_of=date(2026, 1, 1))
+    row = summary.annual.row(0, named=True)
+    assert row["short_term_gain_usd"] == pytest.approx(-200.0)
+    assert row["ordinary_dividends_usd"] == pytest.approx(25.0)
+
+
+def test_tax_summary_flags_the_wash_sale_and_nothing_else(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    summary = tax_summary(ledger, config, as_of=date(2026, 1, 1))
+    assert len(summary.wash_sales) == 1
+    assert summary.wash_sales.row(0, named=True)["realized_gain"] == pytest.approx(-200.0)
+
+
+def test_tax_summary_previews_the_remaining_open_lot(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    summary = tax_summary(ledger, config, as_of=date(2026, 1, 1))
+    assert len(summary.sale_previews) == 1
+    preview = summary.sale_previews.row(0, named=True)
+    assert preview["symbol"] == "VOO"
+    assert preview["unrealized_gain_usd"] == pytest.approx(40.0)  # 2 shares * (420 - 400)
+
+
+def test_tax_summary_after_tax_alpha_taxes_the_hysa_leg_for_residents(tmp_path) -> None:
+    config, ledger = _tax_ledger(tmp_path)
+    save_settings(DashboardSettings(tax_regime="RESIDENT"), config)
+    resident_alpha = tax_summary(ledger, config, as_of=date(2026, 1, 1)).after_tax_dollar_alpha_vs_hysa_usd
+
+    save_settings(DashboardSettings(tax_regime="NRA"), config)
+    nra_alpha = tax_summary(ledger, config, as_of=date(2026, 1, 1)).after_tax_dollar_alpha_vs_hysa_usd
+
+    # A resident's HYSA leg is taxed (smaller HYSA counterfactual, larger alpha);
+    # an NRA's is untaxed, so its alpha is smaller (the HYSA leg compounded more).
+    assert resident_alpha > nra_alpha

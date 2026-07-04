@@ -198,3 +198,62 @@ export interface SyncProgress {
   done: boolean
   error: string | null
 }
+
+export type TaxRegime = 'NRA' | 'RESIDENT'
+
+export interface TaxSettings {
+  tax_enabled: boolean
+  tax_regime: TaxRegime | null
+  resolved_tax_regime: TaxRegime
+  residency_status_change_date: string | null
+  w8ben_claimed: boolean
+}
+
+export interface TaxSettingsUpdate {
+  tax_enabled: boolean
+  tax_regime: TaxRegime | null
+  residency_status_change_date: string | null
+  w8ben_claimed: boolean
+}
+
+export interface AnnualTaxRow {
+  year: number
+  regime: TaxRegime
+  long_term_gain_usd: number
+  short_term_gain_usd: number
+  qualified_dividends_usd: number
+  ordinary_dividends_usd: number
+  ordinary_interest_usd: number
+  withholding_tax_usd: number
+}
+
+export interface WashSaleRow {
+  lot_id: string
+  symbol: string
+  opened_at: string
+  closed_at: string
+  shares: number
+  cost_per_share: number
+  exit_price: number
+  realized_gain: number
+  term: 'LONG' | 'SHORT'
+  dividends_received: number
+  wash_sale_flag: boolean
+}
+
+export interface SalePreviewRow {
+  lot_id: string
+  symbol: string
+  shares: number
+  days_held: number
+  term: 'LONG' | 'SHORT'
+  unrealized_gain_usd: number
+  would_wash_sale: boolean
+}
+
+export interface TaxReport {
+  annual: AnnualTaxRow[]
+  wash_sales: WashSaleRow[]
+  sale_previews: SalePreviewRow[]
+  after_tax_dollar_alpha_vs_hysa_usd: number
+}
