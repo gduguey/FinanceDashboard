@@ -13,7 +13,6 @@ dependencies = [
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
     "requests>=2.31",
-    "plotly>=5.22",
     "numpy>=1.26",
     "defusedxml>=0.7",
 ]
@@ -32,6 +31,7 @@ dev = [
     "ipykernel>=6.29",
     "nbclient>=0.10",
     "httpx>=0.27",
+    "plotly>=5.22",
 ]
 
 [project.urls]
@@ -112,7 +112,7 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "TC003",
 ]
 
-"**/dashboard.py" = [
+"**/dashboard/settings.py" = [
     "TC001",   # DashboardSettings is a pydantic model too; same reason as models.py/config.py
     "TC002",
     "TC003",

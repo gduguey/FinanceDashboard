@@ -1,252 +1,173 @@
 # Architecture
 
+This repo is a personal portfolio dashboard built around one idea: **store
+what happened, replay everything else.** The ledger is the only source of
+truth; positions, gains, charts, and tax estimates are all derived by
+walking that history forward.
+
+## How the pieces fit together
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Front ends                                                     │
+│  web/ (React)          notebooks/ (Jupyter + Plotly)            │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ reads cached data, calls same modules
+┌────────────────────────────▼────────────────────────────────────┐
+│  trades/api.py          JSON endpoints (web only)               │
+│  trades/dashboard/      aggregates ledger + market data         │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+        ┌────────────────────┼────────────────────┐
+        │                    │                    │
+┌───────▼───────┐   ┌────────▼────────┐   ┌───────▼────────┐
+│  ledger/      │   │  market_data/   │   │  brokers/ibkr/ │
+│  replay, lots │   │  prices, CPI,   │   │  Flex API sync │
+│  metrics, nav │   │  HYSA rates     │   │  → ledger.csv  │
+│  taxes, cf    │   │                 │   │                │
+└───────────────┘   └─────────────────┘   └────────────────┘
+        │                    │                    │
+        └────────────────────┼────────────────────┘
+                             │
+                    data/  (gitignored)
+```
+
+Both the web dashboard and the notebook read from the same on-disk cache
+under `data/` and call the same `trades.*` modules. Neither front end owns
+the logic.
+
 ## Module map
 
 ```
 src/trades/
-  config.py        every tunable parameter, as fields on frozen config objects
-  models.py        pydantic schemas — the only place external data gets validated,
-                    and the single declaration of every canonical column name
-  prices.py        Yahoo Finance chart API client + on-disk raw/adjusted price cache
-  cpi.py           FRED CPI index client + on-disk cache (real-vs-nominal reference)
-  transactions.py  enrich -> aggregate a canonical-shape trade DataFrame; schedule/pie helpers
-  returns.py       total/annualized return, HYSA benchmark, alpha, trend fit
-  visualization.py every plotly chart; takes data, returns a Figure, nothing else
-  ledger/          pure ledger-replay domain logic (see "The ledger" below)
-    replay.py      walk the ledger -> open/closed lots + cash balance
-    lots.py        FIFO lot consumption, splits, realized gain (no I/O, no ledger-walking)
-    metrics.py      )
-    counterfactuals.py  )  not yet implemented — see each module's docstring
-    nav.py              )  for which NEW_TASKS.md sections it will cover
-    taxes.py       )
+  config.py           every tunable parameter, as fields on frozen config objects
+  models.py           pydantic schemas — canonical column names live here once
+  dashboard/          API-facing aggregation (composes ledger + market_data)
+    settings.py       user-editable settings (allocation targets, tax toggles)
+    valuation.py      price lookup wiring, daily portfolio values
+    overview.py       headline cards (XIRR, TWR, dollar alpha, …)
+    charts.py         dollar chart, growth-of-$100, monthly P&L, max drawdown
+    holdings.py       lots table, allocation view, data quality
+    tax.py            tax summary, liquidation estimate
+  ledger/             pure domain logic — no I/O, no broker awareness
+    replay.py         walk the ledger → open/closed lots + cash
+    lots.py           FIFO consumption, splits, dividend accrual
+    metrics.py        XIRR, lot returns, symbol metrics, max drawdown
+    nav.py            NAV per unit, TWR, growth-of-100, period P&L
+    counterfactuals.py  HYSA/benchmark/decision replays
+    taxes.py          wash sales, annual report, liquidation preview
+  market_data/        external reference data (fetch + cache)
+    prices.py         Yahoo Finance daily closes
+    cpi.py            FRED CPI index
+    hysa_rates.py     apyarchives.com HYSA APY history
+    symbol_search.py  live Yahoo symbol search (not cached)
   brokers/
-    ibkr/          IBKR Flex Web Service client + local ledger cache
-      api.py       network + XML parsing (SendRequest/GetStatement, `<FlexStatement>`)
-      models.py    pydantic schemas for IBKR's raw XML shapes (`IbkrTrade`, ...)
-      preprocessing.py  map IBKR's raw shapes onto `models.LedgerEvent`
-      main.py      orchestration: sync, rebuild, load the local ledger cache
+    ibkr/             IBKR Flex Web Service → ledger
+      api.py          network + XML parsing
+      models.py       pydantic schemas for IBKR's raw XML shapes
+      preprocessing.py  IBKR rows → LedgerEvent
+      main.py         sync, rebuild, load ledger cache
+  api.py              FastAPI JSON layer (needs the `api` extra)
+  visualization.py    Plotly charts for the notebook
 ```
 
-`transactions.py`/`returns.py`/`ledger/*` are pure logic (pandas in, pandas
-out, no I/O). `prices.py`/`cpi.py`/`brokers/ibkr/api.py` are the only
-modules allowed to touch the network or disk — one per external source, so
-a second broker means adding `brokers/schwab/`, not editing what's already
-here. `visualization.py` only renders what other modules already computed.
-This split is what lets `api.py` reuse the same logic behind HTTP instead
-of Plotly.
+Deep dives by topic:
 
-`transactions.py` only ever sees the trade shape `brokers/ibkr/preprocessing.py`
-produces — it has no idea IBKR, or any other broker, exists. See AGENTS.md
-for the standing rule this enforces for future data sources.
+| Doc | What it covers |
+|-----|----------------|
+| [ledger.md](ledger.md) | Event types, replay, lots, cashflows |
+| [metrics_and_benchmarks.md](metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
+| [market_data.md](market_data.md) | Price, CPI, and HYSA data sources |
+| [ibkr_flex_api.md](ibkr_flex_api.md) | Syncing from Interactive Brokers |
+| [glossary.md](glossary.md) | Plain-language definitions of dashboard terms |
 
-`ledger/` holds everything that only needs the ledger itself to do its
-job — no broker awareness, no I/O. It's a separate folder from
-`transactions.py`/`returns.py` (which predate the ledger and still run on
-an older, narrower shape — see below) because NEW_TASKS.md's Phase 0-4
-work is naturally one growing family of modules that all consume
-`replay.py`'s output, not a pair of files.
+## Core conventions
 
-## The ledger
+### New data source → canonical schema, always
 
-The stored truth of this system is one chronological, append-only list of
-events — never a "current position" or "current cash balance" stored as
-its own editable field. Everything else (positions, cost basis, gains,
-every chart) gets computed by **replaying** this list from the start, so
-there's exactly one place to look when a number is wrong, and a new metric
-later is a new replay function, not a migration. One row (`models.LedgerEvent`):
+If you add a broker, API, or file format that overlaps with an existing
+concept:
 
-```
-{ event_id, event_datetime, symbol, event_type, shares, price, amount, currency, meta }
-```
+- **Don't let native field names leak past the reader module.** Everything
+  downstream (`ledger/`, `dashboard/`, `api.py`) stays ignorant of which
+  broker or API anything came from.
+- **The canonical name is declared once** on the pydantic model in
+  `models.py` (e.g. `LedgerEvent`). A model's field names *are* its column
+  names — no parallel schema class to keep in sync.
+- **Add a `standardize_{source}_...` function** in the broker's
+  `preprocessing.py` that maps native shapes onto the canonical schema and
+  validates through the matching pydantic model before returning.
 
-`event_datetime` is a full timestamp, not just a date — IBKR reports fills
-to the second, and truncating that now would be unrecoverable later.
-`amount` is always a non-negative magnitude; direction (cash up or down)
-comes from `event_type` alone, never a sign. `event_type` is one of eight
-kinds:
+See [ledger.md](ledger.md) for the concrete IBKR example.
 
-- `DEPOSIT` / `WITHDRAWAL` — external cashflows, money crossing the
-  portfolio boundary.
-- `BUY` / `SELL` — internal cashflows, cash moving against a holding.
-  `amount` is the pure principal; commission is its own `FEE` row.
-- `DIVIDEND` — a cash distribution, recorded on pay date at the broker's
-  actual amount, never estimated from yield.
-- `WITHHOLDING` — tax withheld on a dividend, its own row (not netted into
-  `DIVIDEND`) so gross income and tax drag both stay visible.
-- `FEE` — commissions and account fees.
-- `SPLIT` — `{symbol, ratio}` in `meta`; on replay, multiplies open lots'
-  shares by `ratio` and divides cost/share by it.
+### Cache raw, derive everything else
 
-Cash is a pseudo-position under the symbol `"CASH"` — `DEPOSIT`/`SELL`/
-`DIVIDEND` add to it, `WITHDRAWAL`/`BUY`/`FEE` subtract — so
-`portfolio_value(t) = sum(shares * price) + cash`, no special-casing.
-Populated so far by IBKR's `BUY`/`SELL`/`FEE` (from `<Trade>` rows) and
-`DEPOSIT`/`WITHDRAWAL`/`DIVIDEND`/`WITHHOLDING` (from `<CashTransaction>`
-rows, only if the Flex Query's "Cash Transactions" section is enabled).
-`SPLIT` has no source yet — no corporate-actions section is pulled.
+When caching fetched external data:
 
-All eight are declared regardless: adding a case to a `Literal` in an
-empty design is free; retrofitting one into a live system whose metrics
-already assume a narrower shape is not. When a new source shows up,
-`brokers/ibkr/preprocessing.py` gains a mapping branch — the schema
-doesn't change.
+1. Save the **raw response verbatim**, timestamped, never overwritten
+   (see `brokers/ibkr/api.py`'s `raw_statements/`).
+2. Treat derived files (`ledger.csv`, price CSVs) as **disposable caches**
+   — cheap to delete and regenerate.
 
-`brokers/ibkr/preprocessing.py`'s `standardize_ibkr_ledger` (from
-`<Trade>`) and `standardize_ibkr_cash_transactions` (from
-`<CashTransaction>`) do the mapping; both validate their output through
-`models.LedgerEvent` before returning it. `standardize_ibkr_ledger` also
-flags a dividend-reinvestment `BUY` (IBKR trade-note code `"R"`, verified
-empirically — see its docstring) with `meta["drip_reinvestment"] = "true"`.
+Atomic writes (temp file + rename) protect against crashes, not logic bugs
+that overwrite good data with wrong-but-complete results. IBKR's Flex Query
+has a limited retrieval window; a bad overwrite may not be re-fetchable.
 
-`transactions.py` predates the ledger and still runs on an older, narrower
-4-column shape (`models.RawTrade`: `trade_date`, `symbol`, `shares`,
-`usd_spent`) — one row per real purchase, no fees, day-grained.
-`preprocessing.standardize_ibkr_trades` derives it *from the ledger*
-(`BUY` events, excluding the `CASH` pseudo-position) rather than from
-broker-native data directly, so `transactions.py`/`returns.py`/
-`visualization.py` never special-case a broker and don't care that the
-ledger grew event types they don't consume. Most of `transactions.py`/
-`returns.py` is expected to be replaced by `ledger/*` as NEW_TASKS.md's
-phases land — see "Replaying the ledger: lots and cash" below.
+### Pure logic vs I/O
 
-## Replaying the ledger: lots and cash
+| Layer | I/O? | Examples |
+|-------|------|----------|
+| `ledger/*`, `dashboard/*` | No | replay, metrics, chart series |
+| `market_data/*`, `brokers/*` | Yes | fetch, parse, cache |
+| `api.py` | Reads cache; sync endpoint writes | JSON serialization only |
 
-`ledger.replay.replay_ledger(ledger: pd.DataFrame) -> ReplayResult` is the
-one place the ledger gets walked chronologically (0.1-0.3). It returns:
-
-```
-ReplayResult:
-  open_lots: DataFrame     # lot_id, symbol, opened_at, shares, cost_per_share
-  closed_lots: DataFrame   # + closed_at, exit_price, realized_gain, term, closed_by_event_id
-  cash_balance: float
-```
-
-The walk is a genuine sequential fold — each event's effect depends on
-lots left open by every prior event — so it's a plain `for` loop over
-`ledger.iterrows()`, not a vectorized expression; that's a deliberate
-exception to the "avoid for loops" rule elsewhere in this codebase (see
-AGENTS.md), not an oversight.
-
-Per event type:
-- `BUY` opens a new lot (`ledger.lots.Lot`) and reduces `cash_balance`.
-- `SELL` consumes lots **oldest-`opened_at`-first** via
-  `ledger.lots.consume_fifo` and increases `cash_balance`. Each closed
-  portion is tagged `LONG`/`SHORT` (>= 365 days held) and gets
-  `realized_gain = shares_consumed x (exit_price - cost_per_share) -
-  allocated_fees` (0.3) — `allocated_fees` defaults to 0 today; linking a
-  `SELL` to its `FEE` event's amount is a known gap, deferred rather than
-  built on a fragile assumption about `event_id` naming.
-- `DEPOSIT`/`WITHDRAWAL`/`DIVIDEND`/`WITHHOLDING`/`FEE` only move
-  `cash_balance` — **cash is a plain running total, not a lot**: every
-  dollar is identical, so unlike a real symbol (where different buys have
-  different prices) there's no cost-basis heterogeneity for FIFO to track.
-  A separate `cash.py` was considered and deliberately skipped for this
-  reason (see the architecture discussion this folder came out of).
-- `SPLIT` multiplies open lots' shares and divides their cost/share via
-  `ledger.lots.apply_split` (0.1) — cash is untouched.
-
-`ledger.lots.py` itself has no I/O and no ledger-walking: `consume_fifo`
-and `apply_split` are pure functions over a `list[Lot]`, independently
-tested without needing a ledger DataFrame at all.
+`dashboard/` composes `ledger.*` and `market_data.*` into the exact shapes
+the API serves. `api.py` itself does no aggregation.
 
 ## Configuration
 
 Every tunable value lives on a frozen config object in `config.py`
-(`AggregationConfig`, `PriceApiConfig`, `CpiConfig`, `ReturnsConfig`,
-`IbkrFlexApiConfig`, ...), never a bare module-level constant a function
-falls back to — functions that need a value take the config object as a
-required argument (e.g. `IbkrFlexApiConfig.drip_reinvestment_note_code`,
-since a broker could plausibly change its own codes). A domain *fact*
-nothing external could reconfigure (IBKR's retry codes, the `"CASH"`
-pseudo-symbol) is a private module constant instead; only things a caller
-might legitimately want to change belong in `config.py`.
+(`AppConfig` bundles them all). Functions that need a value take the config
+object as a required argument — no bare module-level constants with silent
+fallbacks.
 
-A missing input is an error, not a silent fallback: `build_returns_table`
-raises if a price is unavailable rather than dropping the trade;
-`annualized_return_pct` raises on a negative `days_held`. An incomplete or
-wrong-looking table should never pass silently.
+A missing input is an error, not a silent fallback: if a price is
+unavailable, the function raises rather than dropping the row.
+
+User-editable dashboard settings (target allocation, tax regime, benchmark
+override) live in a separate JSON file managed by
+`dashboard/settings.py` — they describe preferences, not things that
+happened in the account.
 
 ## Validation boundary
 
 Pydantic models exist only at the edges, where untrusted data enters:
 
-- `RawTrade` — the trade-schema row (broker CSV export, or a ledger `BUY`).
-- `LedgerEvent` — one ledger row; every `standardize_*` in `preprocessing.py`
-  validates its output through it.
-- `PriceObservation` — one (symbol, date, close) from the Yahoo API (raw
-  or adjusted — same shape, see "Price cache" below).
-- `CpiObservation` — one (month, index value) from FRED's CPI series.
-- `IbkrTrade` / `IbkrCashTransaction` (in `brokers/ibkr/models.py`) — one
-  `<Trade>` / `<CashTransaction>` row; field aliases match IBKR's XML
-  attribute names exactly, so an element's `.attrib` dict validates with
-  no manual mapping.
+- `LedgerEvent` — one ledger row
+- `PriceObservation`, `CpiObservation`, `HysaRateObservation` — market data rows
+- `IbkrTrade`, `IbkrCashTransaction` — raw IBKR XML rows
 
-Once past one of these, data is a plain, typed pandas DataFrame for the
-rest of the pipeline — no pydantic model per aggregated/return row, that
-would just be ceremony around data that's already trusted.
-
-## Same-day trade aggregation
-
-`transactions.aggregate_same_day_trades` groups by `(trade_date, symbol)`,
-sorts by `usd_per_share`, and chains adjacent rows into one cluster while
-each next price stays within `config.same_day_price_tolerance` (default
-0.01%, relative) of the previous one — a "chain" clustering, so a slow
-price drift across many small fills merges as long as each *consecutive*
-step is small, even if the first and last differ by more. That matches
-what a single day's DRIP/limit fills should look like as one execution.
-
-## Price cache
-
-Two flat CSVs per symbol under `data/prices/`: `{SYMBOL}.csv` (raw close)
-and `{SYMBOL}.adjusted.csv` (dividend/split-adjusted close) — caches, not
-a source of truth (see `docs/prices_api.md` for the Yahoo endpoint
-itself). NEW_TASKS.md 0.5's rule: raw for pricing your own positions,
-adjusted for benchmark counterfactuals (e.g. all-VOO) — mixing the two
-silently corrupts every return, so they're deliberately separate files,
-not a column flag on one. Both share the same mechanics: `update_price_cache`
-/`update_adjusted_price_cache` never mutate rows in place (existing +
-fetched rows merged in memory, then an atomic replace), every row is
-validated through `PriceObservation` before it's storable, and
-`_missing_ranges` only fetches the gap(s) at the front/back of what's
-cached — a daily run typically fetches one day per symbol. One row per
-trading day, not calendar day; `price_as_of` returns the most recent
-close on or before a target date (never interpolated, per 0.5).
-
-## CPI cache
-
-One flat CSV at `data/cpi/{series_id}.csv` (`observation_date, value`),
-pulled from FRED's public CSV export (no API key). Unlike prices, the
-whole series is re-fetched and the cache overwritten on every
-`update_cpi_cache` call rather than fetching just the missing range —
-FRED revises seasonal adjustments on already-published months, so an
-incremental fetch could miss a revision to old data, and the full series
-is small enough (a few hundred KB) that re-fetching it is cheap. Still an
-atomic write. `cpi_as_of` mirrors `price_as_of`'s rollback lookup.
+Once past validation, data is a plain typed polars DataFrame for the rest
+of the pipeline.
 
 ## Data layout
 
 ```
 data/
   prices/
-    {SYMBOL}.csv                          raw close, market data, not broker-specific
-    {SYMBOL}.adjusted.csv                 dividend/split-adjusted close
-  cpi/{series_id}.csv                     CPI index, re-fetched whole each update
+    {SYMBOL}.csv              raw daily close
+    {SYMBOL}.adjusted.csv     dividend/split-adjusted close
+  cpi/{series_id}.csv         CPI index (re-fetched whole each update)
+  hysa_rates/rates.csv        HYSA APY history (re-fetched whole each update)
   brokers/ibkr/
-    manual_20260701_trades.csv           one-off manual export, kept for history
-    raw_statements/{timestamp}.xml       every fetch, verbatim, never overwritten
-    ledger.csv                           rebuildable cache, derived from raw_statements/
+    raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
+    ledger.csv                       rebuildable cache from raw_statements/
+  dashboard_settings.json     user preferences (allocation, tax, benchmark)
 ```
 
-`ledger.csv` is the one file `brokers/ibkr/main.py` derives from the raw
-archive (see `docs/ibkr_flex_api.md`, "Storage"). Broker data lives under
-`data/brokers/{broker}/` so a second broker is a new sibling directory;
-price/CPI history isn't broker-specific, so it stays outside `brokers/`.
+`.env` (IBKR credentials) and everything under `data/` are gitignored.
 
-`.env` and everything under `data/` are gitignored — this is personal
-financial data, not fixtures.
+## Guidance for AI assistants
 
-## Guidance for AI assistants working on this repo
-
-`AGENTS.md` (`CLAUDE.md` is a symlink to it) carries standing conventions,
-in particular around adding new data sources and caching pulled data.
-Read it before adding a new broker, external API, or cached/fetched data.
+`AGENTS.md` (`CLAUDE.md` is a symlink) carries standing conventions.
+Read it before adding a new broker, external API, or cached data source.
