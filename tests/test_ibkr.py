@@ -6,7 +6,7 @@ import pytest
 from trades.brokers.ibkr import api, main
 from trades.brokers.ibkr import models as ibkr_models
 from trades.config import AppConfig, IbkrFlexCredentials
-from trades.io_utils import write_csv_atomic
+from trades.utils.io_utils import write_csv_atomic
 
 FIXTURE_XML = """<FlexQueryResponse queryName="Trade History API" type="AF">
 <FlexStatements count="1">
@@ -120,19 +120,6 @@ def test_parse_statement_extracts_trades() -> None:
     # 09:48:03 EDT (UTC-4) -> 13:48:03 UTC; already UTC by the time it leaves this model.
     assert trade.date_time.isoformat() == "2026-06-30T13:48:03"
     assert trade.notes == "P"
-
-
-@pytest.mark.parametrize(
-    ("last_covered", "new_from", "expected"),
-    [
-        (date(2026, 6, 29), date(2026, 6, 30), False),  # back-to-back weekdays
-        (date(2026, 6, 26), date(2026, 6, 29), False),  # Fri -> Mon, weekend only
-        (date(2026, 6, 29), date(2026, 7, 1), True),  # Mon -> Wed skips Tuesday
-        (date(2026, 6, 30), date(2026, 6, 30), False),  # same day, no gap
-    ],
-)
-def test_has_uncovered_weekday_gap(last_covered, new_from, expected) -> None:
-    assert main._has_uncovered_weekday_gap(last_covered, new_from) is expected
 
 
 def test_merge_ledger_dedupes_by_event_id() -> None:

@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
-from trades.frames import collect_if_lazy, preserve_frame_type
 from trades.models import RawTrade
+from trades.utils.frames import collect_if_lazy, preserve_frame_type
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -242,3 +242,25 @@ def pie_chart_options(df: pl.DataFrame) -> dict[str, pl.DataFrame]:
     return {"Whole portfolio — by symbol": cast("pl.DataFrame", pie_breakdown(df, symbol=None))} | {
         f"{symbol} — by date": cast("pl.DataFrame", pie_breakdown(df, symbol=symbol)) for symbol in symbols
     }
+
+
+def total_invested_by_symbol(df: pl.LazyFrame | pl.DataFrame) -> pl.Series:
+    """Total USD invested per symbol, sorted descending.
+
+    Parameters
+    ----------
+    df
+        Trade rows with `symbol`, `usd_spent` columns.
+
+    Returns
+    -------
+    polars.Series
+        Total USD invested per symbol, sorted descending.
+    """
+    df = collect_if_lazy(df)
+    return (
+        df.group_by("symbol")
+        .agg(pl.col("usd_spent").sum().alias("total_invested"))
+        .sort("total_invested", descending=True)
+        .get_column("total_invested")
+    )

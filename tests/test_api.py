@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from trades import api as trades_api
 from trades.brokers.ibkr.main import IbkrSyncResult
 from trades.config import AppConfig
-from trades.io_utils import write_csv_atomic
+from trades.utils.io_utils import write_csv_atomic
 
 LEDGER_ROWS = [
     {
