@@ -134,7 +134,7 @@ def test_merge_ledger_dedupes_by_event_id() -> None:
 
 
 def test_sync_ibkr_account_writes_ledger_and_returns_result(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
     result = main.sync_ibkr_account(CREDENTIALS, config)
@@ -150,8 +150,25 @@ def test_sync_ibkr_account_writes_ledger_and_returns_result(tmp_path, monkeypatc
     assert ledger.filter(pl.col("event_type") == "BUY")["symbol"][0] == "VOO"
 
 
+def test_sync_ibkr_account_reports_progress_through_each_stage(tmp_path, monkeypatch) -> None:
+    def fake_fetch(credentials, config, on_progress=None):
+        if on_progress:
+            on_progress("Requesting IBKR statement", 5.0)
+        return FIXTURE_XML
+
+    monkeypatch.setattr(main, "fetch_flex_statement", fake_fetch)
+    config = _config(tmp_path)
+    steps = []
+
+    main.sync_ibkr_account(CREDENTIALS, config, on_progress=lambda step, pct: steps.append((step, pct)))
+
+    assert steps[0] == ("Requesting IBKR statement", 5.0)
+    assert any(step == "Parsing statement" for step, _ in steps)
+    assert any(step == "Merging into ledger" for step, _ in steps)
+
+
 def test_sync_ibkr_account_is_idempotent_same_day(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
     main.sync_ibkr_account(CREDENTIALS, config)
@@ -165,14 +182,14 @@ def test_sync_ibkr_account_raises_on_uncovered_gap(tmp_path, monkeypatch) -> Non
     config = _config(tmp_path)
     existing_ledger = pl.DataFrame([_ledger_row("ibkr:8000", "2026-06-24 09:30:00")])
     write_csv_atomic(existing_ledger, config.ibkr.ledger_csv_path)
-    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
 
     with pytest.raises(main.TradeHistoryGapError):
         main.sync_ibkr_account(CREDENTIALS, config)
 
 
 def test_sync_ibkr_account_archives_raw_statement_before_parsing(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
     main.sync_ibkr_account(CREDENTIALS, config)
@@ -183,7 +200,7 @@ def test_sync_ibkr_account_archives_raw_statement_before_parsing(tmp_path, monke
 
 
 def test_sync_ibkr_account_archives_every_call_without_overwriting(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
     main.sync_ibkr_account(CREDENTIALS, config)

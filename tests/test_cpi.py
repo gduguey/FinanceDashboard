@@ -39,6 +39,22 @@ def test_fetch_cpi_series_parses_rows_and_drops_missing_values() -> None:
     assert list(df["value"]) == pytest.approx([300.1, 301.2])
 
 
+def test_fetch_cpi_series_handles_missing_value_beyond_the_schema_inference_sample() -> None:
+    # polars' default schema inference only samples the first ~100 rows;
+    # FRED's "." sentinel for a not-yet-published month sits at the very
+    # end of a real, decades-long series, so a naive read_csv infers the
+    # value column as numeric and then chokes on "." when it actually
+    # parses that row. Reproduce with 150 real rows before the sentinel.
+    header = "DATE,CPIAUCSL\n"
+    rows = "".join(f"2020-{(i % 12) + 1:02d}-01,{300.0 + i}\n" for i in range(150))
+    csv_text = header + rows + "2033-01-01,.\n"
+    session = _FakeSession(csv_text)
+
+    df = cpi.fetch_cpi_series(AppConfig(), session=session)
+
+    assert len(df) == 150
+
+
 def test_fetch_cpi_series_requests_the_configured_series_id() -> None:
     session = _FakeSession(_CSV_TEXT)
     config = AppConfig(cpi={"series_id": "CPIAUCNS"})

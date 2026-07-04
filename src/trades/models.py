@@ -11,65 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from trades.config import LedgerEventType
 
 
-class RawTrade(BaseModel):
-    """The canonical "invested schedule" trade row.
-
-    A broker CSV export row, or a `BUY` event pulled off the ledger. Field
-    names double as the column names everywhere this shape is used.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    trade_date: date = Field(alias="Date")
-    symbol: str = Field(alias="Symbol", min_length=1)
-    shares: float = Field(alias="Shares", gt=0)
-    usd_spent: float = Field(alias="USD Spent", gt=0)
-
-    polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
-        "trade_date": pl.Date,
-        "symbol": pl.Utf8,
-        "shares": pl.Float64,
-        "usd_spent": pl.Float64,
-    }
-
-    @field_validator("usd_spent", mode="before")
-    @classmethod
-    def parse_currency(cls, value: object) -> object:
-        """Strip a "$1,234.56"-formatted string down to a plain number.
-
-        Parameters
-        ----------
-        value
-            The raw field value, before pydantic's type coercion.
-
-        Returns
-        -------
-        object
-            The value with currency formatting removed, unchanged if it
-            was not a string.
-        """
-        if isinstance(value, str):
-            return value.replace("$", "").replace(",", "").strip()
-        return value
-
-    @field_validator("symbol", mode="before")
-    @classmethod
-    def strip_symbol(cls, value: object) -> object:
-        """Normalize a ticker symbol to stripped, upper-case form.
-
-        Parameters
-        ----------
-        value
-            The raw field value, before pydantic's type coercion.
-
-        Returns
-        -------
-        object
-            The normalized symbol, unchanged if it was not a string.
-        """
-        return value.strip().upper() if isinstance(value, str) else value
-
-
 class LedgerEvent(BaseModel):
     """One immutable row of the transaction ledger.
 
@@ -144,4 +85,25 @@ class CpiObservation(BaseModel):
     polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
         "observation_date": pl.Date,
         "value": pl.Float64,
+    }
+
+
+class HysaRateObservation(BaseModel):
+    """One (bank, rate-change date, APY) triple from apyarchives.com.
+
+    A rate only gets a new row on the date it changed — not one row per
+    day — so looking up "the rate on day X" means rolling back to the most
+    recent row on or before X, the same as `prices.price_as_of`.
+    """
+
+    bank_id: str = Field(min_length=1)
+    bank_name: str = Field(min_length=1)
+    rate_date: date
+    apy_pct: float = Field(ge=0)
+
+    polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
+        "bank_id": pl.Utf8,
+        "bank_name": pl.Utf8,
+        "rate_date": pl.Date,
+        "apy_pct": pl.Float64,
     }

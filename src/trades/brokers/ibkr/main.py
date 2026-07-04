@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
@@ -15,6 +15,7 @@ from trades.models import LedgerEvent
 from trades.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import date
 
     from trades.brokers.ibkr.api import ParsedStatement
@@ -75,7 +76,9 @@ def _write_ledger(ledger: pl.DataFrame, config: AppConfig) -> None:
     write_csv_atomic(serialized, config.ibkr.ledger_csv_path)
 
 
-def sync_ibkr_account(credentials: IbkrFlexCredentials, config: AppConfig) -> IbkrSyncResult:
+def sync_ibkr_account(
+    credentials: IbkrFlexCredentials, config: AppConfig, on_progress: Callable[[str, float], None] | None = None
+) -> IbkrSyncResult:
     """Pull the configured Flex Query once and bring the local ledger cache in sync.
 
     Appends newly seen events (deduped by `event_id`) from the single
@@ -89,6 +92,9 @@ def sync_ibkr_account(credentials: IbkrFlexCredentials, config: AppConfig) -> Ib
         The IBKR Flex Web Service token and query id.
     config
         Application configuration; `config.ibkr` is read.
+    on_progress
+        Called with a short step description and a 0-100 percentage as the
+        pull proceeds, for a live sync-progress display. Optional.
 
     Returns
     -------
@@ -100,8 +106,10 @@ def sync_ibkr_account(credentials: IbkrFlexCredentials, config: AppConfig) -> Ib
     TradeHistoryGapError
         If this pull's coverage window doesn't connect to what's already cached.
     """
-    xml_text = fetch_flex_statement(credentials, config)
-    save_raw_statement(xml_text, datetime.now(), config)  # noqa: DTZ005
+    xml_text = fetch_flex_statement(credentials, config, on_progress)
+    if on_progress:
+        on_progress("Parsing statement", 45.0)
+    save_raw_statement(xml_text, datetime.now(UTC).replace(tzinfo=None), config)
     statement = parse_statement(xml_text)
 
     existing_ledger = load_ledger(config)
@@ -115,6 +123,8 @@ def sync_ibkr_account(credentials: IbkrFlexCredentials, config: AppConfig) -> Ib
             )
             raise TradeHistoryGapError(message)
 
+    if on_progress:
+        on_progress("Merging into ledger", 55.0)
     merged_ledger = _merge_ledger(existing_ledger, statement_to_ledger(statement, config))
     _write_ledger(merged_ledger, config)
 
