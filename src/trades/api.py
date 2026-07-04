@@ -1,75 +1,116 @@
-"""JSON-over-HTTP view of the same data `visualization.py` renders to Plotly.
+"""JSON-over-HTTP view of the dashboard, computed entirely by `dashboard.py`/`ledger.*`.
 
-Every endpoint below just calls existing `transactions`/`returns`/`prices`/
-`brokers.ibkr` functions and serializes the result — no aggregation or
-fetching happens in this module, matching the rule `visualization.py`
-already follows. See docs/architecture.md ("this split is what would let a
-future React/API layer reuse the exact same logic modules behind HTTP
-endpoints") and NEXT_STEPS.md #4.
+Every endpoint below calls `dashboard.py` (which composes `ledger.*` and
+`market_data.*`) and serializes the result — no aggregation happens in
+this module itself, matching the split documented in
+docs/architecture.md.
 
 GET endpoints only ever read what's already cached on disk — they never
-make a network call. `POST /sync` is the one endpoint allowed to touch the
-network (an IBKR pull plus a price-cache refresh for every known symbol);
-that's what makes the frontend's "Sync" button a real, explicit action
-instead of something that silently happens on every page load.
+make a network call, with one exception: `GET /api/symbols/search` is a
+live Yahoo Finance lookup for the benchmark picker's search box, which by
+its nature needs a live answer rather than a cached one. `POST /sync` is
+the endpoint that touches the network for the app's own data as a whole
+(an IBKR pull plus a price/CPI/HYSA-rate cache refresh); that's what makes
+the frontend's "Sync" button a real, explicit action instead of something
+that silently happens on every page load. `POST
+/api/symbols/{symbol}/ensure-priced` is the narrow exception to that: it
+refreshes a single symbol's price cache on the spot, so picking a new
+benchmark takes effect without waiting for a full sync.
 """
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-from trades import returns, transactions
+from trades import dashboard
 from trades.brokers.ibkr import api, main
 from trades.config import AppConfig, IbkrFlexCredentials
+from trades.market_data import cpi as cpi_module
+from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
+from trades.market_data import symbol_search as symbol_search_module
 
 if TYPE_CHECKING:
     import polars as pl
 
-app_config = AppConfig()
+
+@dataclass
+class SyncProgress:
+    """A snapshot of an in-flight (or just-finished) sync, for the frontend's progress bar."""
+
+    step: str
+    percent: float
+    done: bool
+    error: str | None = None
+
 
 app = FastAPI(title="Investments API")
+app.state.config = AppConfig()
+app.state.sync_progress = SyncProgress(step="Idle", percent=0.0, done=True)
 
 
-def _load_trades() -> pl.DataFrame:
-    """Load the ledger, standardize it to the trade schema, enrich, and aggregate.
+def _config() -> AppConfig:
+    """Return the configuration attached to the running app.
 
-    Read-only — never touches the network.
+    Held on `app.state` instead of a module-level variable so tests can
+    swap it per-test through the app instance itself, rather than through
+    mutable state shared across every import of this module.
+
+    Returns
+    -------
+    AppConfig
+        The application configuration currently attached to `app.state`.
+    """
+    return cast("AppConfig", app.state.config)
+
+
+def _report_sync_progress(step: str, percent: float) -> None:
+    app.state.sync_progress = SyncProgress(step=step, percent=percent, done=False)
+
+
+def _load_ledger() -> pl.DataFrame:
+    """Load the cached ledger. Read-only — never touches the network.
 
     Returns
     -------
     polars.DataFrame
-        One row per same-day, same-symbol-price cluster of `BUY` events.
+        The full ledger, in chronological order.
 
     Raises
     ------
     HTTPException
         If no ledger has been cached yet (404).
     """
-    ledger = main.load_ledger(app_config)
+    ledger = main.load_ledger(_config())
     if ledger.is_empty():
         message = "No ledger cached yet. Hit Sync to pull it from IBKR."
         raise HTTPException(status_code=404, detail=message)
-    standardized = transactions.standardize_ibkr_trades(ledger.lazy(), app_config)
-    enriched = transactions.enrich_trades(standardized)
-    aggregated = transactions.aggregate_same_day_trades(enriched, app_config)
-    return cast("pl.LazyFrame", aggregated).collect()
+    return ledger
 
 
-def _price_lookup(symbol: str, as_of: date) -> float | None:
-    history = prices.load_price_cache(symbol, app_config)
-    return prices.price_as_of(history, as_of)
+def _first_event_date(ledger: pl.DataFrame) -> date:
+    return cast("date", ledger["event_datetime"].dt.date().min())
 
 
-def _build_returns(trades: pl.DataFrame, as_of: date) -> pl.DataFrame:
-    try:
-        return cast("pl.DataFrame", returns.build_returns_table(trades, _price_lookup, as_of=as_of, config=app_config))
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+def _chart_range(ledger: pl.DataFrame, start: date | None, end: date | None) -> tuple[date, date]:
+    """Default a chart's range to the ledger's full history.
+
+    Deliberately never defaults to "just today": a single-day snapshot
+    invites watching daily noise, whereas since-inception or a long window
+    shows the trend that actually matters.
+
+    Returns
+    -------
+    tuple[datetime.date, datetime.date]
+        `(start, end)`, each defaulted if not given.
+    """
+    return start or _first_event_date(ledger), end or datetime.now(tz=UTC).date()
 
 
 def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
@@ -91,161 +132,471 @@ def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
     return value.replace(tzinfo=UTC).astimezone(ZoneInfo(config.timezone.local_zone))
 
 
-@app.get("/api/summary")
-def get_summary() -> dict[str, Any]:
-    """Return portfolio-level totals: invested, current value, gain, and alpha.
+def _last_synced_iso() -> str | None:
+    config = _config()
+    last_synced = api.last_synced_at(config)
+    return _to_display_zone(last_synced, config).isoformat() if last_synced else None
+
+
+@app.get("/api/overview")
+def get_overview(as_of: date | None = None) -> dict[str, Any]:
+    """Return the overview card row: value, gain split, XIRR, dollar alpha, TWR.
 
     Returns
     -------
     dict[str, Any]
-        `as_of_date`, `total_invested_usd`, `current_value_usd`,
-        `total_gain_usd`, `total_gain_pct`, `portfolio_alpha_pct`,
-        `hysa_annual_rate`, `symbol_count`, `last_synced_at`.
+        `OverviewCards` fields, plus `last_synced_at`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    today = datetime.now(tz=UTC).date()
-    trades = _load_trades()
-    returns_df = _build_returns(trades, today)
-
-    total_invested = float(trades["usd_spent"].sum())
-    current_value = float((returns_df["shares"] * returns_df["current_price"]).sum())
-    total_gain_usd = current_value - total_invested
-
-    last_synced = api.last_synced_at(app_config)
-
-    return {
-        "as_of_date": today.isoformat(),
-        "total_invested_usd": total_invested,
-        "current_value_usd": current_value,
-        "total_gain_usd": total_gain_usd,
-        "total_gain_pct": (total_gain_usd / total_invested * 100) if total_invested else None,
-        "portfolio_alpha_pct": returns.portfolio_alpha_pct(returns_df),
-        "hysa_annual_rate": app_config.returns.hysa_annual_rate,
-        "symbol_count": trades["symbol"].n_unique(),
-        "last_synced_at": _to_display_zone(last_synced, app_config).isoformat() if last_synced else None,
-    }
+    ledger = _load_ledger()
+    try:
+        cards = dashboard.overview_cards(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {**asdict(cards), "last_synced_at": _last_synced_iso()}
 
 
-@app.get("/api/trades")
-def get_trades() -> list[dict[str, Any]]:
-    """Return every aggregated trade row.
+@app.get("/api/chart/dollar")
+def get_dollar_chart(start: date | None = None, end: date | None = None) -> dict[str, Any]:
+    """Return the three/four-line dollar chart plus reallocation markers.
+
+    Returns
+    -------
+    dict[str, Any]
+        `series` (one entry per day) and `reallocation_markers`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        series = dashboard.dollar_chart_series(ledger, _config(), range_start, range_end)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    markers = dashboard.reallocation_markers(ledger)
+    return {"series": series.to_dicts(), "reallocation_markers": markers.to_dicts()}
+
+
+@app.get("/api/chart/growth-of-100")
+def get_growth_of_100_chart(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return the growth-of-$100 chart: NAV plus every benchmark, indexed to 100.
 
     Returns
     -------
     list[dict[str, Any]]
-        One entry per same-day, same-symbol-price cluster of `BUY` events.
+        One entry per day.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    return _load_trades().to_dicts()
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return dashboard.growth_of_100_chart(ledger, _config(), range_start, range_end).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/schedule/monthly")
-def get_monthly_invested() -> list[dict[str, Any]]:
-    """Return USD invested per month, broken down by symbol.
+@app.get("/api/chart/monthly-pnl")
+def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return each month's value change split into contributions and market gain.
 
     Returns
     -------
     list[dict[str, Any]]
         One entry per calendar month.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    return cast("pl.DataFrame", transactions.monthly_invested(_load_trades())).to_dicts()
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return dashboard.monthly_pnl(ledger, _config(), range_start, range_end).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/schedule/daily")
-def get_daily_timeline() -> list[dict[str, Any]]:
-    """Return USD invested per investment day, with a running total.
+@app.get("/api/chart/monthly-pnl/by-symbol")
+def get_monthly_pnl_by_symbol(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return each month's value change split into contributions and market gain, per symbol.
 
     Returns
     -------
     list[dict[str, Any]]
-        One entry per day a trade happened.
+        One entry per (month, symbol) pair.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    return cast("pl.DataFrame", transactions.daily_investment_timeline(_load_trades())).to_dicts()
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return dashboard.monthly_pnl_by_symbol(ledger, _config(), range_start, range_end).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/schedule/pie")
-def get_pie_breakdown() -> dict[str, list[dict[str, Any]]]:
-    """Return every pie-chart breakdown: whole-portfolio-by-symbol plus one by-date breakdown per symbol.
-
-    Returns
-    -------
-    dict[str, list[dict[str, Any]]]
-        Chart label -> its breakdown rows.
-    """
-    options = transactions.pie_chart_options(_load_trades())
-    return {label: breakdown.to_dicts() for label, breakdown in options.items()}
-
-
-@app.get("/api/returns")
-def get_returns(as_of: date | None = None) -> list[dict[str, Any]]:
-    """Return the per-trade returns table as of a given date (today, by default).
+@app.get("/api/allocation")
+def get_allocation(as_of: date | None = None) -> list[dict[str, Any]]:
+    """Return the current-value allocation by symbol (including cash), against the target.
 
     Returns
     -------
     list[dict[str, Any]]
-        One entry per trade.
+        One entry per symbol (plus cash).
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    trades = _load_trades()
-    returns_df = _build_returns(trades, as_of or datetime.now(tz=UTC).date())
-    selected = returns_df.select(
-        "trade_date",
-        "symbol",
-        "usd_per_share",
-        "current_price",
-        "days_held",
-        "total_return_pct",
-        "annualized_return_pct",
-        "hysa_period_return_pct",
-        "alpha_period_pct",
-        "usd_spent",
-    ).rename({"usd_per_share": "price_paid"})
-    return selected.to_dicts()
+    ledger = _load_ledger()
+    try:
+        return dashboard.allocation_view(ledger, _config(), as_of or datetime.now(tz=UTC).date()).to_dicts()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@app.get("/api/returns/curve")
-def get_return_curve(as_of: date | None = None) -> dict[str, Any]:
-    """Return per-trade annualized return vs. days held, plus a fitted trend line.
+@app.get("/api/settings/target-allocation")
+def get_target_allocation() -> dict[str, float]:
+    """Return the persisted target allocation.
+
+    Returns
+    -------
+    dict[str, float]
+        Symbol -> target percentage.
+    """
+    return dashboard.load_settings(_config()).target_allocation_pct
+
+
+@app.put("/api/settings/target-allocation")
+def put_target_allocation(target_allocation_pct: dict[str, float]) -> dict[str, float]:
+    """Persist a new target allocation, set from the frontend.
+
+    Merges into the existing settings — a settings file is one JSON blob,
+    so writing this field naively from a fresh `DashboardSettings()` would
+    silently wipe out the HYSA/benchmark settings saved separately.
+
+    Returns
+    -------
+    dict[str, float]
+        The persisted target allocation.
+    """
+    config = _config()
+    updated = dashboard.load_settings(config).model_copy(update={"target_allocation_pct": target_allocation_pct})
+    dashboard.save_settings(updated, config)
+    return updated.target_allocation_pct
+
+
+class HysaSettingsUpdate(BaseModel):
+    """Request body for `PUT /api/settings/hysa`."""
+
+    bank_id: str | None = None
+    fixed_rate_pct: float | None = None
+
+
+@app.get("/api/settings/hysa")
+def get_hysa_settings() -> dict[str, Any]:
+    """Return the persisted HYSA bank selection / fixed-rate override.
 
     Returns
     -------
     dict[str, Any]
-        `points` (one per trade), `trend` (the fitted curve), `hysa_annual_rate_pct`.
+        `bank_id`, `fixed_rate_pct` — both None if never set.
     """
-    trades = _load_trades()
-    returns_df = _build_returns(trades, as_of or datetime.now(tz=UTC).date())
-    trend_x, trend_y = returns.fit_trend(
-        returns_df["days_held"].to_numpy(),
-        returns_df["annualized_return_pct"].to_numpy(),
-        app_config,
+    settings = dashboard.load_settings(_config())
+    return {"bank_id": settings.hysa_bank_id, "fixed_rate_pct": settings.hysa_fixed_rate_pct}
+
+
+@app.put("/api/settings/hysa")
+def put_hysa_settings(update: HysaSettingsUpdate) -> dict[str, Any]:
+    """Persist a HYSA bank selection and/or fixed-rate override (merges into existing settings).
+
+    Returns
+    -------
+    dict[str, Any]
+        `bank_id`, `fixed_rate_pct` as persisted.
+    """
+    config = _config()
+    updated = dashboard.load_settings(config).model_copy(
+        update={"hysa_bank_id": update.bank_id, "hysa_fixed_rate_pct": update.fixed_rate_pct}
     )
+    dashboard.save_settings(updated, config)
+    return {"bank_id": updated.hysa_bank_id, "fixed_rate_pct": updated.hysa_fixed_rate_pct}
+
+
+class BenchmarkSettingUpdate(BaseModel):
+    """Request body for `PUT /api/settings/benchmark`."""
+
+    symbol_override: str | None = None
+
+
+@app.get("/api/settings/benchmark")
+def get_benchmark_setting() -> dict[str, str | None]:
+    """Return the persisted benchmark symbol override, plus the default it falls back to.
+
+    Returns
+    -------
+    dict[str, str or None]
+        `symbol_override` (None if never set) and `default_symbol` — the
+        frontend needs the latter to display a concrete symbol even when
+        no override is set.
+    """
+    config = _config()
     return {
-        "points": returns_df.select("symbol", "days_held", "annualized_return_pct").to_dicts(),
-        "trend": [
-            {"days_held": float(x), "annualized_return_pct": float(y)} for x, y in zip(trend_x, trend_y, strict=True)
-        ],
-        "hysa_annual_rate_pct": app_config.returns.hysa_annual_rate * 100,
+        "symbol_override": dashboard.load_settings(config).benchmark_symbol_override,
+        "default_symbol": config.returns.benchmark_symbol,
+    }
+
+
+@app.put("/api/settings/benchmark")
+def put_benchmark_setting(update: BenchmarkSettingUpdate) -> dict[str, str | None]:
+    """Persist a benchmark symbol override (merges into existing settings).
+
+    Returns
+    -------
+    dict[str, str or None]
+        `symbol_override` as persisted, plus `default_symbol`.
+    """
+    config = _config()
+    updated = dashboard.load_settings(config).model_copy(update={"benchmark_symbol_override": update.symbol_override})
+    dashboard.save_settings(updated, config)
+    return {"symbol_override": updated.benchmark_symbol_override, "default_symbol": config.returns.benchmark_symbol}
+
+
+@app.get("/api/hysa-rates")
+def get_hysa_rates() -> dict[str, Any]:
+    """Return every bank's known rate history, for the bank picker and APY comparison chart.
+
+    Returns
+    -------
+    dict[str, Any]
+        `banks` (id/name pairs), `history` (every rate-change row), `default_bank_id`.
+    """
+    config = _config()
+    history = hysa_rates_module.load_hysa_rates_cache(config)
+    banks = hysa_rates_module.list_banks(history)
+    return {
+        "banks": banks.to_dicts(),
+        "history": history.to_dicts(),
+        "default_bank_id": config.hysa_rates.default_bank_id,
+    }
+
+
+@app.get("/api/symbols/search")
+def get_symbol_search(q: str) -> list[dict[str, str]]:
+    """Search Yahoo Finance for a ticker symbol, for the benchmark picker.
+
+    Unlike every other GET endpoint, this touches the network — a live
+    search box needs a live answer, and there's nothing here to cache.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        One entry per match: `symbol`, `name`, `exchange`.
+    """
+    return symbol_search_module.search_symbols(q, _config())
+
+
+@app.post("/api/symbols/{symbol}/ensure-priced")
+def ensure_symbol_priced(symbol: str) -> dict[str, Any]:
+    """Refresh one symbol's price cache if it isn't already current, without a full sync.
+
+    Lets picking a new benchmark symbol take effect immediately —
+    `prices.update_price_cache` only fetches whatever date range is
+    actually missing, so re-running this on an already-current symbol is
+    cheap and safe to call on every selection.
+
+    Returns
+    -------
+    dict[str, Any]
+        `symbol`, `was_stale` (whether a fetch was actually needed), `last_price_date`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if Yahoo Finance has no data for `symbol`.
+    """
+    config = _config()
+    ledger = _load_ledger()
+    first_event = _first_event_date(ledger)
+    today = datetime.now(tz=UTC).date()
+
+    existing = prices.load_price_cache(symbol, config)
+    was_stale = existing.is_empty() or cast("date", existing["price_date"].max()) < today
+    try:
+        prices.update_price_cache(symbol, since=first_event, as_of=today, config=config)
+        updated = prices.update_price_cache(symbol, since=first_event, as_of=today, config=config, adjusted=True)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    last_price_date = updated["price_date"].max() if not updated.is_empty() else None
+    return {
+        "symbol": symbol,
+        "was_stale": was_stale,
+        "last_price_date": str(last_price_date) if last_price_date else None,
+    }
+
+
+@app.get("/api/lots")
+def get_lots(as_of: date | None = None) -> dict[str, Any]:
+    """Return the trade-level table: open lots, closed lots, per-symbol rollup.
+
+    Returns
+    -------
+    dict[str, Any]
+        `open_lots`, `closed_lots`, `symbol_rollup`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    try:
+        table = dashboard.lots_table(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "open_lots": table.open_lots.to_dicts(),
+        "closed_lots": table.closed_lots.to_dicts(),
+        "symbol_rollup": table.symbol_rollup.to_dicts(),
+    }
+
+
+@app.get("/api/risk")
+def get_risk(start: date | None = None, end: date | None = None) -> dict[str, Any]:
+    """Return the largest peak-to-trough NAV decline over a window.
+
+    Returns
+    -------
+    dict[str, Any]
+        `max_drawdown_pct`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    try:
+        return {"max_drawdown_pct": dashboard.risk_stat(ledger, _config(), range_start, range_end)}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/data-quality")
+def get_data_quality() -> list[dict[str, Any]]:
+    """Return the last cached price date per symbol ever held or benchmarked against.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One entry per symbol.
+    """
+    config = _config()
+    ledger = _load_ledger()
+    held_and_benchmark = {*ledger["symbol"].unique().to_list(), dashboard.resolved_benchmark_symbol(config)}
+    symbols = sorted(held_and_benchmark - {config.ledger.cash_symbol})
+    return dashboard.data_quality(symbols, config).to_dicts()
+
+
+@app.get("/api/ledger/export")
+def get_ledger_export() -> list[dict[str, Any]]:
+    """Export the full ledger, for the user's own backup.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Every ledger row.
+    """
+    return _load_ledger().to_dicts()
+
+
+@app.get("/api/sync/progress")
+def get_sync_progress() -> dict[str, Any]:
+    """Return the current (or most recently finished) sync's progress.
+
+    Polled by the frontend's progress bar while a sync is running.
+    `POST /api/sync` runs in FastAPI's thread pool (it's a plain `def`,
+    not `async def`), so this GET is served concurrently on its own
+    thread rather than queued behind the sync request.
+
+    Returns
+    -------
+    dict[str, Any]
+        `step`, `percent`, `done`, `error`.
+    """
+    return asdict(cast("SyncProgress", app.state.sync_progress))
+
+
+def _run_sync(config: AppConfig) -> dict[str, Any]:
+    _report_sync_progress("Connecting to IBKR", 0.0)
+    credentials = IbkrFlexCredentials()  # type: ignore[call-arg]  # token/query_id come from the environment
+    sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
+
+    ledger = _load_ledger()
+    benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
+    held_symbols = sorted(set(ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol})
+    raw_symbols = sorted({*held_symbols, benchmark_symbol})
+    first_event = _first_event_date(ledger)
+    today = datetime.now(tz=UTC).date()
+
+    _report_sync_progress("Updating price history", 65.0)
+    prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
+    _report_sync_progress("Updating benchmark prices", 80.0)
+    prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
+    _report_sync_progress("Updating CPI index", 90.0)
+    cpi_module.update_cpi_cache(config)
+    _report_sync_progress("Updating savings rates", 95.0)
+    hysa_rates_module.update_hysa_rates_cache(config)
+
+    return {
+        "synced_at": _last_synced_iso(),
+        "new_event_count": sync_result.new_event_count,
+        "total_event_count": sync_result.total_event_count,
+        "symbols_refreshed": raw_symbols,
     }
 
 
 @app.post("/api/sync")
 def sync() -> dict[str, Any]:
-    """Pull the latest IBKR statement and refresh the price cache for every known symbol.
+    """Pull the latest IBKR statement and refresh the price/CPI/HYSA-rate caches.
+
+    Refreshes the raw price cache for every symbol ever held plus the
+    benchmark symbol, the adjusted (dividend-reinvested) cache for the
+    benchmark symbol only (adjusted prices are for benchmark
+    counterfactuals, never for pricing your own positions), the CPI
+    cache, and every bank's HYSA rate history. Reports progress to
+    `app.state.sync_progress` throughout, readable via `GET
+    /api/sync/progress` — the IBKR pull is the one step slow enough that a
+    bare spinner isn't good enough feedback.
 
     Returns
     -------
     dict[str, Any]
         `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`.
     """
-    credentials = IbkrFlexCredentials()  # type: ignore[call-arg]  # token/query_id come from the environment
-    sync_result = main.sync_ibkr_account(credentials, app_config)
+    try:
+        result = _run_sync(_config())
+    except Exception as error:
+        app.state.sync_progress = SyncProgress(step="Sync failed", percent=100.0, done=True, error=str(error))
+        raise
 
-    trades = _load_trades()
-    symbols = sorted(trades["symbol"].unique())
-    first_trade_date = cast("date", trades["trade_date"].min())
-    prices.update_price_caches(symbols, since=first_trade_date, as_of=datetime.now(tz=UTC).date(), config=app_config)
-
-    last_synced = api.last_synced_at(app_config)
-    return {
-        "synced_at": _to_display_zone(last_synced, app_config).isoformat() if last_synced else None,
-        "new_event_count": sync_result.new_event_count,
-        "total_event_count": sync_result.total_event_count,
-        "symbols_refreshed": symbols,
-    }
+    app.state.sync_progress = SyncProgress(step="Done", percent=100.0, done=True)
+    return result

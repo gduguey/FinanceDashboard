@@ -1,10 +1,15 @@
-"""The NAV (unit) method.
+"""Net Asset Value (NAV) per-unit accounting.
 
-Will hold: the NAV/unit series, time-weighted return, growth-of-$100
-indexing, and period P&L decomposition. The
-XIRR-vs-TWR timing gap is a bare `xirr - twr` subtraction of two
-numbers already produced elsewhere — it gets no dedicated function here,
-same call as skipping a `total_gain()` wrapper in `metrics.py`.
+Models the portfolio like a private fund with a per-unit price: each
+deposit buys units at the current NAV, each withdrawal redeems units, and
+the unit price itself only moves with investment performance — never with
+money moving in or out. That's what makes `time_weighted_return` and
+`growth_of_100` (both built on `nav_series`) comparable to a benchmark or
+a savings account, independent of when or how much was contributed. The
+gap between XIRR (the money-weighted return computed in `metrics.py`) and
+TWR (the time-weighted return computed here) is a bare subtraction of two
+numbers already produced elsewhere, so it gets no dedicated function of
+its own.
 """
 
 from __future__ import annotations
@@ -26,19 +31,18 @@ def nav_series(
     portfolio_values: pl.DataFrame | pl.LazyFrame,
     external_flows: pl.DataFrame | pl.LazyFrame,
 ) -> pl.DataFrame | pl.LazyFrame:
-    """Turn a portfolio value series into a NAV/units series (NEW_TASKS.md 3.1).
+    """Turn a portfolio value series into a NAV/units series.
 
     `NAV(t) = value_pre_flow(t) / units_outstanding(t)`, where
     `value_pre_flow` is `portfolio_values`' end-of-day value with that
     day's external flow backed out (`value + amount`, in the
     `DEPOSIT`-negative/`WITHDRAWAL`-positive convention) — computing NAV
-    from the post-flow value would let a deposit inflate NAV on the day
-    it lands, the ordering bug NEW_TASKS.md 3.1 calls out. Each flow then
-    mints or burns units at that pre-flow NAV: `units_minted = deposit /
-    NAV_pre_flow`. At inception (no units outstanding yet), NAV bootstraps
-    to 100. This is a genuinely sequential walk, like
-    `replay.replay_ledger`'s loop, since each day's units depend on every
-    prior day's.
+    from the post-flow value would let a same-day deposit inflate NAV
+    before any of it had actually grown. Each flow then mints or burns
+    units at that pre-flow NAV: `units_minted = deposit / NAV_pre_flow`.
+    At inception (no units outstanding yet), NAV bootstraps to 100. This
+    is a genuinely sequential walk, like `replay.replay_ledger`'s loop,
+    since each day's units depend on every prior day's.
 
     Parameters
     ----------
@@ -98,7 +102,7 @@ def nav_series(
 
 @dataclass(frozen=True)
 class PeriodReturn:
-    """A time-weighted return over a period, annualized only once long enough (NEW_TASKS.md 1.2, 3.2)."""
+    """A time-weighted return over a period, annualized only once the period is long enough."""
 
     raw_pct: float
     annualized_pct: float | None
@@ -110,12 +114,16 @@ def time_weighted_return(
     end: date,
     config: AppConfig,
 ) -> PeriodReturn:
-    """Compute the time-weighted return between two dates on a NAV series (NEW_TASKS.md 3.2).
+    """Compute the time-weighted return (TWR) between two dates on a NAV series.
 
+    TWR answers "how did this strategy perform," with the size and timing
+    of any deposits or withdrawals removed — the opposite emphasis from
+    XIRR (the money-weighted return in `metrics.py`), which measures how
+    an actual investor's money did, contribution timing included.
     `TWR = NAV_end / NAV_start - 1`. Because NAV already nets out
     contribution timing (`nav.nav_series`), this needs no cashflow
-    matching, unlike XIRR. Same annualization gate as `metrics.lot_returns`
-    (1.2): below `config.returns.annualization_days`, only the raw figure
+    matching, unlike XIRR. Same annualization gate as `metrics.lot_returns`:
+    below `config.returns.annualization_days`, only the raw figure
     is returned.
 
     Parameters
@@ -154,11 +162,14 @@ def time_weighted_return(
 
 
 def growth_of_100(series: pl.DataFrame | pl.LazyFrame, value_column: str) -> pl.DataFrame | pl.LazyFrame:
-    """Reindex a value series to start at 100, so unrelated series are visually comparable (NEW_TASKS.md 3.3).
+    """Reindex a value series to start at 100, so unrelated series are visually comparable.
 
-    Because everything is indexed to a common starting point, this is
-    what makes it possible to overlay your NAV series against VOO, HYSA,
-    and CPI series on the same chart without any cashflow matching.
+    Answers "if I'd put in $100 on day one, what would it be worth now" —
+    for a NAV series, a benchmark's price series, or a Consumer Price
+    Index (CPI) series alike. Because everything is indexed to the same
+    starting point, this is what makes it possible to overlay a NAV
+    series against a benchmark, a savings rate, and CPI on one chart
+    without any cashflow matching.
 
     Parameters
     ----------
@@ -183,7 +194,7 @@ def period_pnl(
     period_start: date,
     period_end: date,
 ) -> float:
-    """Split a period's value change into contributions and actual market gain (NEW_TASKS.md 3.5).
+    """Split a period's value change into contributions and actual market gain.
 
     `market_gain = value_end - value_start - net_contributions`, where
     `net_contributions` flips `external_flows`' `DEPOSIT`-negative/

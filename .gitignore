@@ -8,6 +8,7 @@ wheels/
 
 *.csv
 *.xml
+data/dashboard_settings.json
 
 # Secrets
 .env

@@ -21,11 +21,8 @@ if TYPE_CHECKING:
     from trades.config import AppConfig
     from trades.ledger.replay import ReplayResult
 
-_XIRR_MIN_CASHFLOWS = 2
-_XIRR_TOLERANCE = 1e-6
-_XIRR_MAX_NEWTON_ITERATIONS = 100
-_XIRR_MAX_BISECTION_ITERATIONS = 200
-_XIRR_BISECTION_BRACKET = (-0.9999, 10.0)
+_XIRR_MIN_CASHFLOWS = 2  # a rate needs at least an outflow and a terminal value — not a tunable, a mathematical floor
+_XIRR_BISECTION_BRACKET = (-0.9999, 10.0)  # the feasible domain of an annual return: over -100%, under 1000%
 
 
 def lot_returns(
@@ -105,14 +102,19 @@ def lot_returns(
     return result if was_eager else result.lazy()
 
 
-def xirr(dates: Sequence[date], amounts: Sequence[float]) -> float:
+def xirr(dates: Sequence[date], amounts: Sequence[float], config: AppConfig) -> float:
     """Solve for the money-weighted rate of return over a set of dated cashflows.
 
-    Newton-Raphson with a bisection fallback. The
-    iteration itself is a genuinely sequential numerical search — each
-    guess depends on the previous one — so it's a bounded loop, not a
-    vectorized expression; the NPV and its derivative at each guess ARE
-    vectorized, over every cashflow at once via numpy.
+    XIRR (the "extended internal rate of return") is the single constant
+    annual interest rate that, if every cashflow had earned it from the
+    day it happened, would leave a running balance of exactly zero. It
+    generalizes the familiar "internal rate of return" to cashflows on
+    arbitrary dates rather than evenly spaced periods. Solved by
+    Newton-Raphson with a bisection fallback. The iteration itself is a
+    genuinely sequential numerical search — each guess depends on the
+    previous one — so it's a bounded loop, not a vectorized expression;
+    the NPV and its derivative at each guess ARE vectorized, over every
+    cashflow at once via numpy.
 
     Parameters
     ----------
@@ -120,11 +122,14 @@ def xirr(dates: Sequence[date], amounts: Sequence[float]) -> float:
         Each cashflow's date.
     amounts
         Each cashflow's signed amount (money out negative, money in positive).
+    config
+        Application configuration; `config.returns.days_per_year`,
+        `xirr_tolerance`, and `xirr_max_newton_iterations` are read.
 
     Returns
     -------
     float
-        The annualized rate `r` solving `sum(CF_i / (1 + r)^((d_i - d_0)/365)) = 0`.
+        The annualized rate `r` solving `sum(CF_i / (1 + r)^((d_i - d_0)/days_per_year)) = 0`.
 
     Raises
     ------
@@ -142,7 +147,7 @@ def xirr(dates: Sequence[date], amounts: Sequence[float]) -> float:
         raise ValueError(message)
 
     first_date = min(dates)
-    years = np.array([(d - first_date).days / 365 for d in dates], dtype=float)
+    years = np.array([(d - first_date).days / config.returns.days_per_year for d in dates], dtype=float)
 
     def npv(rate: float) -> float:
         return float(np.sum(amounts_arr / (1 + rate) ** years))
@@ -150,20 +155,21 @@ def xirr(dates: Sequence[date], amounts: Sequence[float]) -> float:
     def npv_derivative(rate: float) -> float:
         return float(np.sum(-years * amounts_arr / (1 + rate) ** (years + 1)))
 
+    tolerance = config.returns.xirr_tolerance
     rate = 0.1
-    for _ in range(_XIRR_MAX_NEWTON_ITERATIONS):
+    for _ in range(config.returns.xirr_max_newton_iterations):
         value = npv(rate)
-        if abs(value) < _XIRR_TOLERANCE:
+        if abs(value) < tolerance:
             return rate
         derivative = npv_derivative(rate)
         if derivative == 0 or rate <= -1:
             break
         rate -= value / derivative
 
-    return _bisect_xirr(npv)
+    return _bisect_xirr(npv, tolerance, config.returns.xirr_max_bisection_iterations)
 
 
-def _bisect_xirr(npv: Callable[[float], float]) -> float:
+def _bisect_xirr(npv: Callable[[float], float], tolerance: float, max_iterations: int) -> float:
     lo, hi = _XIRR_BISECTION_BRACKET
     npv_lo, npv_hi = npv(lo), npv(hi)
     if npv_lo * npv_hi > 0:
@@ -173,17 +179,17 @@ def _bisect_xirr(npv: Callable[[float], float]) -> float:
         )
         raise ValueError(message)
 
-    for _ in range(_XIRR_MAX_BISECTION_ITERATIONS):
+    for _ in range(max_iterations):
         mid = (lo + hi) / 2
         npv_mid = npv(mid)
-        if abs(npv_mid) < _XIRR_TOLERANCE:
+        if abs(npv_mid) < tolerance:
             return mid
         if (npv_mid > 0) == (npv_lo > 0):
             lo, npv_lo = mid, npv_mid
         else:
             hi = mid
 
-    message = f"xirr did not converge after {_XIRR_MAX_BISECTION_ITERATIONS} bisection iterations."
+    message = f"xirr did not converge after {max_iterations} bisection iterations."
     raise ValueError(message)
 
 
@@ -230,7 +236,7 @@ def unrealized_gain(
         The date to value every lot as of.
     include_dividends
         Also add each lot's `dividends_received`, for a total-return figure
-        rather than price appreciation alone (NEW_TASKS.md 2.4).
+        rather than price appreciation alone.
 
     Returns
     -------
@@ -283,20 +289,21 @@ def symbol_metrics(
     symbol: str,
     price_lookup: Callable[[str, date], float | None],
     as_of: date,
+    config: AppConfig,
 ) -> SymbolMetrics:
-    """Compute one symbol's lifecycle stats and money-weighted return (NEW_TASKS.md 2.5).
+    """Compute one symbol's lifecycle stats and money-weighted return.
 
-    `invested` excludes dividend-reinvestment (`DRIP`) buys: a `BUY` funded
-    by that symbol's own dividend isn't new capital, it's income the
-    symbol already earned being recycled — counting it would inflate
-    `invested` and understate the symbol's true return. The XIRR cashflow
-    set, in contrast, keeps every `BUY` including DRIP ones: a same-date
+    `invested` excludes dividend-reinvestment buys: a `BUY` funded by that
+    symbol's own dividend isn't new capital, it's income the symbol
+    already earned being recycled — counting it would inflate `invested`
+    and understate the symbol's true return. The XIRR cashflow set, in
+    contrast, keeps every `BUY` including reinvestment ones: a same-date
     `DIVIDEND`(+)/`BUY`(-) pair nets to zero, which is the correct
     treatment — the reinvested amount's growth shows up through the
     terminal value, exactly like a total-return index.
 
-    A fully closed symbol (no open lots) gets no terminal-value flow, per
-    NEW_TASKS.md 2.5 — its XIRR is a final, frozen figure.
+    A fully closed symbol (no open lots) gets no terminal-value flow — its
+    XIRR is a final, frozen figure that can't change anymore.
 
     Parameters
     ----------
@@ -310,6 +317,8 @@ def symbol_metrics(
         Looks up a symbol's price as of a given date; returns None if unavailable.
     as_of
         The date to value any remaining open position as of.
+    config
+        Application configuration; `config.returns.days_per_year` is read.
 
     Returns
     -------
@@ -348,7 +357,7 @@ def symbol_metrics(
         realized_gain=float(replay_result.closed_lots.filter(pl.col("symbol") == symbol)["realized_gain"].sum()),
         unrealized_gain=unrealized,
         status="open" if is_open else "closed",
-        xirr=xirr(cashflow_dates, cashflow_amounts),
+        xirr=xirr(cashflow_dates, cashflow_amounts, config),
     )
 
 
@@ -395,7 +404,7 @@ def _symbol_cashflows(rows: pl.DataFrame) -> tuple[list[date], list[float]]:
 
 
 def max_drawdown(series: pl.DataFrame | pl.LazyFrame, value_column: str) -> float:
-    """Find the largest peak-to-trough decline in a value series (NEW_TASKS.md 6.7).
+    """Find the largest peak-to-trough decline in a value series.
 
     Parameters
     ----------
