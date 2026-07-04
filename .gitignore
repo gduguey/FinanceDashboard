@@ -9,6 +9,7 @@ wheels/
 *.csv
 *.xml
 data/dashboard_settings.json
+data/
 
 # Secrets
 .env
@@ -16,3 +17,11 @@ data/dashboard_settings.json
 
 # Virtual environments
 .venv
+
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.claude/
+
+AGENTS.md
+CLAUDE.md

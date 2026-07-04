@@ -1,20 +1,21 @@
 # IBKR Portfolio
 
-A personal finance dashboard, built one package at a time. `trades` enriches a broker trade export, syncs trade/position/cash data
-from IBKR, fetches and caches daily price history, and compares per-trade
-returns against a HYSA benchmark. Future packages (budget, accounting, ...)
-will live alongside it and feed the same dashboard.
+A personal portfolio dashboard built around one idea: store what happened,
+replay everything else. The `trades` package syncs account history from
+IBKR, caches market reference data (prices, CPI, HYSA rates), replays an
+append-only ledger into positions and gains, and compares performance
+against benchmarks and counterfactuals.
 
 The same logic is exposed two ways today:
 
-- a **Jupyter notebook** (`notebooks/portfolio.ipynb`) that renders
-  Plotly charts inline — good for one-off, exploratory analysis;
+- **Jupyter notebooks** (`notebooks/`) — sync and analysis notebooks;
+  good for one-off, exploratory analysis;
 - a **local web dashboard** (`src/trades/api.py` + `web/`) — a FastAPI
   backend and a React frontend, good for day-to-day glancing.
 
 Both read the same on-disk cache under `data/` and call the same
 `trades.*` modules; neither owns the actual logic (see
-`docs/architecture.md`).
+[docs/architecture.md](docs/architecture.md)).
 
 ## Prerequisites
 
@@ -48,41 +49,45 @@ IBKR_QUERY_ID=...
 ```
 
 These come from a Flex Query you configure in IBKR's Account Management UI
-("Trade History API", exposing Trades + Open Positions + Cash Report) — see
-`docs/ibkr_flex_api.md` for exactly how to set that query up and where to
-find the token/query ID. Without a `.env`, everything still works against
-whatever's already cached in `data/` — you just can't pull anything new.
+("Trade History API", exposing Trades + Cash Transactions) — see
+[docs/ibkr_flex_api.md](docs/ibkr_flex_api.md) for exactly how to set that
+query up and where to find the token/query ID. Without a `.env`, everything
+still works against whatever's already cached in `data/` — you just can't
+pull anything new.
 
 ## Keeping the data fresh
 
-Whichever front end you use, the numbers come from two on-disk caches:
+Whichever front end you use, the numbers come from on-disk caches:
 
-- `data/brokers/ibkr/` — your trade/position/cash history, pulled from
-  IBKR's Flex Web Service
+- `data/brokers/ibkr/` — your trade/cash history, pulled from IBKR's Flex
+  Web Service
 - `data/prices/` — daily close prices per symbol, pulled from Yahoo Finance
+- `data/cpi/` — CPI index from FRED
+- `data/hysa_rates/` — HYSA APY history from apyarchives.com
 
-Both are safe to refresh as often as you like (deduped/idempotent — see
-`docs/architecture.md`). Do it either by:
+All are safe to refresh as often as you like (deduped/idempotent — see
+[docs/architecture.md](docs/architecture.md)). Do it either by:
 
-- running `notebooks/ibkr_sync.ipynb` (IBKR only; run
-  `prices.update_price_caches` yourself for prices, as `portfolio.ipynb` does), or
-- clicking **Sync** in the web dashboard, which does both in one action.
+- running the individual sync notebooks (`ibkr_sync.ipynb`,
+  `prices_sync.ipynb`, `cpi_sync.ipynb`, `hysa_sync.ipynb`), or
+- clicking **Sync** in the web dashboard, which refreshes all four in one
+  action.
 
 Run this regularly if you're actively trading — IBKR's Flex Query is scoped
 to a rolling window on their side, so a sync you skip for too long can leave
-a permanent gap (`docs/ibkr_flex_api.md` covers backfilling one if it happens).
+a permanent gap ([docs/ibkr_flex_api.md](docs/ibkr_flex_api.md) covers
+backfilling one if it happens).
 
-## Option A: the notebook
+## Option A: the notebooks
 
 ```bash
-uv run jupyter lab notebooks/portfolio.ipynb
+uv run jupyter lab
 ```
 
-Run it top to bottom. It loads whatever's cached under `data/`, tops up the
-price cache for any symbols you hold, and renders the investment-schedule
-charts, the trade-level returns table, and the annualized-return-vs-HYSA
-curve inline as Plotly figures. Nothing here fetches from IBKR — for that,
-run `notebooks/ibkr_sync.ipynb` first (see above).
+Run the sync notebooks first (`ibkr_sync.ipynb`, `prices_sync.ipynb`,
+`cpi_sync.ipynb`, `hysa_sync.ipynb`), then open `portfolio.ipynb` for
+analysis. Each sync notebook is independent — run only the ones whose
+caches are stale.
 
 ## Option B: the web dashboard
 
@@ -100,8 +105,9 @@ npm run dev
 
 Open **http://localhost:5173**. The dev server proxies `/api/*` to the
 FastAPI server on :8000, so no CORS setup is needed. The one **Sync** button
-in the page header pulls the latest IBKR trade history and refreshes every
-symbol's price cache, then the whole page refreshes with the new numbers.
+in the page header pulls the latest IBKR history and refreshes every
+symbol's price cache plus CPI and HYSA rates, then the whole page refreshes
+with the new numbers.
 
 Everything you see reads from the same local caches as the notebook — the
 API layer never fetches anything on its own except when you click Sync
@@ -120,27 +126,38 @@ kill <PID>
 
 ```
 src/trades/
-  config.py         every tunable parameter, as fields on frozen config objects
-  models.py         pydantic schemas — the only place external data gets validated
-  preprocessing.py  map each broker's native trade shape onto the canonical schema
-  transactions.py   enrich -> aggregate a canonical-shape trade DataFrame; schedule/pie helpers
-  prices.py         Yahoo Finance chart API client + on-disk price cache
-  returns.py        total/annualized return, HYSA benchmark, alpha, trend fit
-  visualization.py  every Plotly chart, for the notebook
-  api.py            every JSON endpoint, for the web dashboard (needs the `api` extra)
-  brokers/
-    ibkr.py         IBKR Flex Web Service client + local trade/position/cash cache
+  config.py           every tunable parameter, as fields on frozen config objects
+  models.py           pydantic schemas — canonical column names live here once
+  dashboard/          API-facing aggregation (composes ledger + market_data)
+  ledger/             replay, lots, metrics, NAV, counterfactuals, taxes
+  market_data/        prices, CPI, HYSA rates, symbol search
+  brokers/ibkr/       IBKR Flex Web Service → ledger
+  api.py              JSON endpoints for the web dashboard (needs `api` extra)
+  visualization.py    Plotly charts for the notebook
 notebooks/
-  portfolio.ipynb   the analysis notebook described above
-  ibkr_sync.ipynb   the IBKR-only sync notebook described above
-web/                the React frontend for the web dashboard
-data/               gitignored — your trade/position/cash/price caches live here
-docs/               architecture, IBKR Flex API, price API, and return-math deep-dives
+  portfolio.ipynb     analysis notebook (assumes syncing already done)
+  ibkr_sync.ipynb     sync IBKR trade/cash history
+  prices_sync.ipynb   sync Yahoo Finance price caches
+  cpi_sync.ipynb      sync FRED CPI series
+  hysa_sync.ipynb     sync HYSA rate history
+web/                  React frontend
+data/                 gitignored — caches live here
+docs/                 architecture deep-dives (see below)
 ```
 
-`docs/architecture.md` is the deeper read — module map, config conventions,
-the canonical-trade-schema pattern, and how the price/IBKR caches are kept
-safe to rebuild. Start there if you're adding a new data source or broker.
+## Documentation
+
+| Doc | What it covers |
+|-----|----------------|
+| [architecture.md](docs/architecture.md) | Module map, conventions, data layout |
+| [ledger.md](docs/ledger.md) | Event types, replay, lots, cashflows |
+| [metrics_and_benchmarks.md](docs/metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
+| [market_data.md](docs/market_data.md) | Yahoo prices, FRED CPI, HYSA rates |
+| [ibkr_flex_api.md](docs/ibkr_flex_api.md) | Syncing from Interactive Brokers |
+| [glossary.md](docs/glossary.md) | Plain-language definitions of dashboard terms |
+
+Start with [architecture.md](docs/architecture.md) if you're adding a new
+data source or broker.
 
 ## Dev
 
