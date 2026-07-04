@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
-from trades.frames import collect_if_lazy
+from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
     from collections.abc import Callable

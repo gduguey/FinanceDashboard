@@ -3,7 +3,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from trades import cpi
+from trades.market_data import cpi
 from trades.config import AppConfig
 
 

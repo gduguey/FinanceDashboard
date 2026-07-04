@@ -17,9 +17,9 @@ from typing import TYPE_CHECKING
 import polars as pl
 import requests
 
-from trades.frames import collect_if_lazy
-from trades.io_utils import write_csv_atomic
 from trades.models import CpiObservation
+from trades.utils.frames import collect_if_lazy
+from trades.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
     from datetime import date
