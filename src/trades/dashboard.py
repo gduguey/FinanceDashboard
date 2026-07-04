@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from trades.config import TaxRegime
 from trades.ledger.counterfactuals import (
     benchmark_counterfactual_series,
     hysa_counterfactual_series,
@@ -28,6 +29,7 @@ from trades.ledger.counterfactuals import (
 from trades.ledger.metrics import lot_returns, max_drawdown, realized_gain_total, symbol_metrics, unrealized_gain, xirr
 from trades.ledger.nav import growth_of_100, nav_series, period_pnl, time_weighted_return
 from trades.ledger.replay import external_cashflows, portfolio_value, replay_ledger
+from trades.ledger.taxes import after_tax_rate_lookup, annual_tax_report, flag_wash_sales, preview_sale
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
@@ -36,7 +38,6 @@ from trades.utils.io_utils import write_json_atomic
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from datetime import date
 
     from trades.config import AppConfig
     from trades.ledger.nav import PeriodReturn
@@ -49,6 +50,10 @@ class DashboardSettings(BaseModel):
     set — an explicit fixed rate is a deliberate override, not just a
     fallback. `hysa_bank_id`/`benchmark_symbol_override` being unset falls
     back to `config.hysa_rates.default_bank_id`/`config.returns.benchmark_symbol`.
+    `tax_regime` left unset falls back to `RESIDENT`, the fully taxed
+    baseline, rather than assuming the more favorable nonresident-alien
+    treatment on the user's behalf; `residency_status_change_date` left
+    unset means `tax_regime` has applied to the whole account history.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -57,6 +62,10 @@ class DashboardSettings(BaseModel):
     hysa_bank_id: str | None = None
     hysa_fixed_rate_pct: float | None = None
     benchmark_symbol_override: str | None = None
+    tax_enabled: bool = False
+    tax_regime: TaxRegime | None = None
+    residency_status_change_date: date | None = None
+    w8ben_claimed: bool = False
 
 
 def load_settings(config: AppConfig) -> DashboardSettings:
@@ -87,7 +96,7 @@ def save_settings(settings: DashboardSettings, config: AppConfig) -> None:
     config
         Application configuration; `config.dashboard.settings_path` is written to.
     """
-    write_json_atomic(settings.model_dump(), config.dashboard.settings_path)
+    write_json_atomic(settings.model_dump(mode="json"), config.dashboard.settings_path)
 
 
 def make_price_lookup(config: AppConfig, *, adjusted: bool = False) -> Callable[[str, date], float | None]:
@@ -250,6 +259,19 @@ def resolved_benchmark_symbol(config: AppConfig) -> str:
         The ticker symbol to benchmark against.
     """
     return load_settings(config).benchmark_symbol_override or config.returns.benchmark_symbol
+
+
+def resolved_tax_regime(config: AppConfig) -> TaxRegime:
+    """Resolve the tax regime to use: the user's selection, or the fully taxed default if never made.
+
+    Returns
+    -------
+    TaxRegime
+        `RESIDENT` unless the user has explicitly selected `NRA` — the
+        dashboard never assumes the more favorable nonresident-alien
+        treatment on the user's behalf.
+    """
+    return load_settings(config).tax_regime or "RESIDENT"
 
 
 def _xirr_and_twr(
@@ -927,3 +949,76 @@ def data_quality(symbols: Sequence[str], config: AppConfig) -> pl.DataFrame:
         history = prices.load_price_cache(symbol, config)
         last_dates.append(cast("date", history["price_date"].max()) if not history.is_empty() else None)
     return pl.DataFrame({"symbol": list(symbols), "last_price_date": last_dates})
+
+
+def _after_tax_dollar_alpha_vs_hysa(
+    ledger: pl.DataFrame, config: AppConfig, as_of: date, regime: TaxRegime, status_change_date: date | None
+) -> float:
+    """Dollar alpha vs. HYSA, using the after-tax rate in place of the raw published rate.
+
+    Mirrors `overview_cards`'s pre-tax figure exactly, substituting an
+    `after_tax_rate_lookup`-wrapped rate for the plain one — everything
+    else about the comparison (replaying the same deposit/withdrawal
+    history against a virtual savings account) is unchanged.
+
+    Returns
+    -------
+    float
+        Portfolio value minus the after-tax HYSA counterfactual value, as of `as_of`.
+    """
+    price_lookup = make_price_lookup(config)
+    result = replay_ledger(ledger, config)
+    value = portfolio_value(result, price_lookup, as_of)
+    flows = collect_if_lazy(external_cashflows(ledger))
+    if flows.is_empty():
+        return value
+
+    after_tax_lookup = after_tax_rate_lookup(
+        _hysa_rate_lookup(config), config.tax.marginal_ordinary_rate, regime, status_change_date
+    )
+    hysa_value = hysa_counterfactual_value(flows, as_of, after_tax_lookup, config.returns.days_per_year)
+    return value - hysa_value
+
+
+@dataclass(frozen=True)
+class TaxSummary:
+    """The full tax view: realized gains and dividends by year, flagged wash sales, and open-lot sale previews."""
+
+    annual: pl.DataFrame
+    wash_sales: pl.DataFrame
+    sale_previews: pl.DataFrame
+    after_tax_dollar_alpha_vs_hysa_usd: float
+
+
+def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSummary:
+    """Assemble the full tax view: the annual report, flagged wash sales, and open-lot sale previews.
+
+    Parameters
+    ----------
+    ledger
+        The full ledger, in chronological order.
+    config
+        Application configuration.
+    as_of
+        The date to preview open-lot sales, and value the after-tax HYSA comparison, as of.
+
+    Returns
+    -------
+    TaxSummary
+        The full tax view, ready to serialize.
+    """
+    settings = load_settings(config)
+    regime = resolved_tax_regime(config)
+    status_change_date = settings.residency_status_change_date
+    result = replay_ledger(ledger, config)
+
+    annual = annual_tax_report(result.closed_lots, ledger, config, regime, status_change_date)
+    wash_sales = cast("pl.DataFrame", flag_wash_sales(result.closed_lots, ledger, config)).filter(
+        pl.col("wash_sale_flag")
+    )
+    previews = preview_sale(result.open_lots, ledger, make_price_lookup(config), as_of, config)
+    after_tax_alpha = _after_tax_dollar_alpha_vs_hysa(ledger, config, as_of, regime, status_change_date)
+
+    return TaxSummary(
+        annual=annual, wash_sales=wash_sales, sale_previews=previews, after_tax_dollar_alpha_vs_hysa_usd=after_tax_alpha
+    )

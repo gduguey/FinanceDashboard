@@ -23,6 +23,48 @@ LedgerEventType = Literal["DEPOSIT", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "W
 is typed against this.
 """
 
+TaxRegime = Literal["NRA", "RESIDENT"]
+"""Which U.S. tax treatment applies to investment income: a nonresident
+alien (NRA — someone present on a visa such as F-1 who hasn't met the
+substantial-presence test) generally owes no U.S. tax on bank interest and
+no U.S. capital-gains tax on securities at all; a resident alien (e.g. an
+H-1B holder who has met that test) is taxed the same way a U.S. citizen
+is, on both.
+"""
+
+TaxCharacter = Literal["qualified_dividend", "ordinary_dividend", "ordinary_interest"]
+"""How a distribution is taxed: a qualified dividend gets the lower
+long-term-capital-gains rate; an ordinary dividend or interest payment is
+taxed at the regular income-tax rate. Which bucket a distribution falls
+into depends on the paying fund's underlying holdings, not on this
+dashboard's own logic — hence the static per-symbol mapping in `TaxConfig`.
+"""
+
+
+class TaxConfig(BaseModel):
+    """Static tax facts this dashboard needs but has no way to derive on its own.
+
+    `tax_character` classifies each symbol's distributions for the annual
+    tax report; a symbol missing from the map defaults to
+    `"ordinary_dividend"`, the more heavily taxed of the two dividend
+    buckets, rather than assuming the lower qualified rate it has no way
+    to verify. `wash_sale_similar_symbols` lists, for a given symbol,
+    other symbols a sale-and-repurchase pair between them might count as
+    "substantially identical" for the wash-sale check — declaring it in
+    one direction is enough, the reverse mapping is inferred automatically.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    marginal_ordinary_rate: float = Field(
+        default=0.24, ge=0, le=1, description="Top marginal rate applied to ordinary income, for after-tax estimates."
+    )
+    tax_character: dict[str, TaxCharacter] = Field(default_factory=dict)
+    wash_sale_window_days: int = Field(
+        default=30, gt=0, description="How many days before or after a loss sale a repurchase can still taint it."
+    )
+    wash_sale_similar_symbols: dict[str, list[str]] = Field(default_factory=dict)
+
 
 class LedgerConfig(BaseModel):
     """Ledger-replay tunables."""
@@ -220,6 +262,7 @@ class AppConfig(BaseModel):
     hysa_rates: HysaRatesConfig = Field(default_factory=HysaRatesConfig)
     symbol_search: SymbolSearchConfig = Field(default_factory=SymbolSearchConfig)
     returns: ReturnsConfig = Field(default_factory=ReturnsConfig)
+    tax: TaxConfig = Field(default_factory=TaxConfig)
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
