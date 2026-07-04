@@ -16,11 +16,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from trades.ledger.lots import ClosedLot, Lot, apply_split, closed_lots_to_frame, consume_fifo, lots_to_frame
+import polars as pl
+
+from trades.ledger.lots import (
+    ClosedLot,
+    Lot,
+    accrue_dividend,
+    apply_split,
+    closed_lots_to_frame,
+    consume_fifo,
+    lots_to_frame,
+)
 from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
-    import polars as pl
+    from collections.abc import Callable
+    from datetime import date
 
     from trades.config import AppConfig
 
@@ -40,7 +51,10 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> Rep
     `config.ledger.cash_symbol` is a plain running total, not a lot: every
     dollar is identical, so there is no cost-basis heterogeneity for FIFO
     to track, unlike a real symbol where different buys have different
-    prices.
+    prices. Each `DIVIDEND` also accrues into the open lots of its symbol
+    (see `lots.accrue_dividend`), pro rata by shares held at that moment —
+    a lot opened after the dividend was paid gets none of it, including a
+    lot the dividend itself created via reinvestment.
 
     Parameters
     ----------
@@ -71,8 +85,11 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> Rep
         symbol: str = row["symbol"]
         amount: float = row["amount"]
 
-        if event_type in {"DEPOSIT", "DIVIDEND"}:
+        if event_type == "DEPOSIT":
             cash_balance += amount
+        elif event_type == "DIVIDEND":
+            cash_balance += amount
+            open_lots_by_symbol[symbol] = accrue_dividend(open_lots_by_symbol.get(symbol, []), amount)
         elif event_type in {"WITHDRAWAL", "WITHHOLDING", "FEE"}:
             cash_balance -= amount
         elif event_type == "BUY":
@@ -111,3 +128,69 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> Rep
         closed_lots=closed_lots_to_frame(closed_lots),
         cash_balance=cash_balance,
     )
+
+
+def external_cashflows(ledger: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
+    """Select the ledger's external cashflows, signed for money-weighted-return math.
+
+    `DEPOSIT`/`WITHDRAWAL` are the only two event types that cross the
+    portfolio boundary — every other type (`BUY`, `SELL`, `DIVIDEND`,
+    `FEE`, `SPLIT`, `WITHHOLDING`) moves money or shares internally and is
+    excluded. This is the cashflow set XIRR, the counterfactual engines,
+    and NAV unit minting/burning all read from.
+
+    Parameters
+    ----------
+    ledger
+        The event ledger.
+
+    Returns
+    -------
+    polars.DataFrame or polars.LazyFrame
+        Columns `event_datetime`, `amount` — `DEPOSIT` negative,
+        `WITHDRAWAL` positive. Same type as `ledger`.
+    """
+    return ledger.filter(pl.col("event_type").is_in(["DEPOSIT", "WITHDRAWAL"])).select(
+        "event_datetime",
+        amount=pl.when(pl.col("event_type") == "DEPOSIT").then(-pl.col("amount")).otherwise(pl.col("amount")),
+    )
+
+
+def portfolio_value(result: ReplayResult, price_lookup: Callable[[str, date], float | None], as_of: date) -> float:
+    """Compute total portfolio value: open-lot holdings priced as of a date, plus cash.
+
+    `price_lookup` is an arbitrary Python callback (a cache lookup), not a
+    polars expression, so each symbol still held is priced by a plain
+    `for` loop rather than a vectorized computation (same justification as
+    `returns.build_returns_table`).
+
+    Parameters
+    ----------
+    result
+        A replayed ledger's open lots and cash balance.
+    price_lookup
+        Looks up a symbol's price as of a given date; returns None if unavailable.
+    as_of
+        The date to price every holding as of.
+
+    Returns
+    -------
+    float
+        `Σ shares x price + cash`.
+
+    Raises
+    ------
+    ValueError
+        If `price_lookup` returns None for any symbol still held.
+    """
+    if result.open_lots.is_empty():
+        return result.cash_balance
+
+    holdings_value = 0.0
+    for row in result.open_lots.group_by("symbol").agg(shares=pl.col("shares").sum()).iter_rows(named=True):
+        price = price_lookup(row["symbol"], as_of)
+        if price is None:
+            message = f"No price available for {row['symbol']} on or before {as_of}."
+            raise ValueError(message)
+        holdings_value += row["shares"] * price
+    return holdings_value + result.cash_balance

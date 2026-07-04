@@ -2,16 +2,24 @@ from datetime import datetime
 
 import pytest
 
-from trades.ledger.lots import Lot, apply_split, consume_fifo
+from trades.ledger.lots import Lot, accrue_dividend, apply_split, consume_fifo
 
 
-def _lot(lot_id: str, opened_at: str, shares: float, cost_per_share: float, symbol: str = "VOO") -> Lot:
+def _lot(
+    lot_id: str,
+    opened_at: str,
+    shares: float,
+    cost_per_share: float,
+    symbol: str = "VOO",
+    dividends_received: float = 0.0,
+) -> Lot:
     return Lot(
         lot_id=lot_id,
         symbol=symbol,
         opened_at=datetime.fromisoformat(opened_at),
         shares=shares,
         cost_per_share=cost_per_share,
+        dividends_received=dividends_received,
     )
 
 
@@ -152,6 +160,55 @@ def test_consume_fifo_ignores_other_symbols_lots() -> None:
     )
     assert closed[0].symbol == "VOO"
     assert remaining == []
+
+
+def test_consume_fifo_splits_accrued_dividends_proportionally_on_partial_close() -> None:
+    lots = [_lot("1", "2026-01-01", shares=10.0, cost_per_share=90.0, dividends_received=40.0)]
+    remaining, closed = consume_fifo(
+        lots,
+        shares_to_consume=4.0,
+        exit_price=110.0,
+        closed_at=datetime(2026, 3, 1),
+        closed_by_event_id="sell-1",
+        long_term_holding_days=365,
+    )
+    # 4 of 10 shares closed -> 40% of the $40 accrued dividend follows them.
+    assert closed[0].dividends_received == pytest.approx(16.0)
+    assert remaining[0].dividends_received == pytest.approx(24.0)
+
+
+def test_consume_fifo_fully_closing_a_lot_keeps_its_full_dividend_total() -> None:
+    lots = [_lot("1", "2026-01-01", shares=2.0, cost_per_share=90.0, dividends_received=15.0)]
+    _, closed = consume_fifo(
+        lots,
+        shares_to_consume=2.0,
+        exit_price=110.0,
+        closed_at=datetime(2026, 3, 1),
+        closed_by_event_id="sell-1",
+        long_term_holding_days=365,
+    )
+    assert closed[0].dividends_received == pytest.approx(15.0)
+
+
+def test_accrue_dividend_splits_pro_rata_by_shares() -> None:
+    lots = [
+        _lot("1", "2026-01-01", shares=10.0, cost_per_share=100.0),
+        _lot("2", "2026-01-01", shares=30.0, cost_per_share=100.0),
+    ]
+    result = accrue_dividend(lots, amount=100.0)
+    by_id = {lot.lot_id: lot for lot in result}
+    assert by_id["1"].dividends_received == pytest.approx(25.0)
+    assert by_id["2"].dividends_received == pytest.approx(75.0)
+
+
+def test_accrue_dividend_adds_to_any_existing_total() -> None:
+    lots = [_lot("1", "2026-01-01", shares=10.0, cost_per_share=100.0, dividends_received=5.0)]
+    result = accrue_dividend(lots, amount=20.0)
+    assert result[0].dividends_received == pytest.approx(25.0)
+
+
+def test_accrue_dividend_on_no_open_lots_returns_empty() -> None:
+    assert accrue_dividend([], amount=50.0) == []
 
 
 def test_apply_split_multiplies_shares_and_divides_cost_for_matching_symbol() -> None:
