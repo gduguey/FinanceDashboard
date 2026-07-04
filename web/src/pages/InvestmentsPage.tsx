@@ -9,6 +9,7 @@ import { LotsTable } from '@/components/investments/LotsTable'
 import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
 import { SyncButton } from '@/components/investments/SyncButton'
+import { TaxPanel } from '@/components/investments/TaxPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useOverview } from '@/hooks/usePortfolioData'
 
@@ -51,6 +52,11 @@ export function InvestmentsPage() {
         <section id="lots" className="scroll-section space-y-4">
           <SectionTitle>Lots</SectionTitle>
           <LotsTable />
+        </section>
+
+        <section id="taxes" className="scroll-section space-y-4">
+          <SectionTitle>Taxes</SectionTitle>
+          <TaxPanel />
         </section>
 
         <section id="data-quality" className="scroll-section space-y-4">
