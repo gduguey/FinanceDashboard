@@ -35,6 +35,14 @@ def parse_ibkr_datetime(value: object) -> object:
     """
     if not isinstance(value, str):
         return value
+
+    try:
+        date = datetime.strptime(value, "%Y-%m-%d")  # noqa: DTZ007
+    except ValueError:
+        pass
+    else:
+        return date.replace(hour=12)
+
     local_text, _, abbreviation = value.rpartition(" ")
     utc_offset_hours = {"EDT": 4, "EST": 5}.get(abbreviation)
     if utc_offset_hours is None:

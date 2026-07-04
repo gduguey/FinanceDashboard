@@ -11,8 +11,8 @@ import polars as pl
 
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
-from trades.io_utils import write_csv_atomic
 from trades.models import LedgerEvent
+from trades.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
     from datetime import date

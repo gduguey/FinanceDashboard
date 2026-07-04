@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from trades.frames import collect_if_lazy
 from trades.ledger.lots import ClosedLot, Lot, apply_split, closed_lots_to_frame, consume_fifo, lots_to_frame
+from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
     import polars as pl

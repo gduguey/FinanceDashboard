@@ -22,9 +22,10 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException
 
-from trades import prices, returns, transactions
+from trades import returns, transactions
 from trades.brokers.ibkr import api, main
 from trades.config import AppConfig, IbkrFlexCredentials
+from trades.market_data import prices
 
 if TYPE_CHECKING:
     import polars as pl

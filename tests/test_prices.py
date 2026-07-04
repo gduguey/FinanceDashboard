@@ -3,7 +3,7 @@ from datetime import date
 import polars as pl
 import pytest
 
-from trades import prices
+from trades.market_data import prices
 from trades.config import AppConfig
 from trades.models import PriceObservation
 

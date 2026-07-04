@@ -1,6 +1,5 @@
-"""Pure ledger-replay domain logic.
+"""Ledger-consuming logic through a ledger-replay.
 
 Everything here takes the canonical ledger (see `trades.models.LedgerEvent`)
-and derives positions, gains, and metrics from it — no I/O, no broker
-awareness (see docs/architecture.md).
+and derives positions, gains, and metrics from it.
 """
