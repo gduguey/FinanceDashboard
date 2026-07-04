@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatPercent, formatUsd, signColor } from '@/lib/format'
-import { useOverview, useRisk } from '@/hooks/usePortfolioData'
+import { useOverview, useRisk, useTaxSettings } from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 
 function MiniStat({ label, value }: { label: string; value: string }) {
@@ -65,6 +65,8 @@ function StatSkeleton({ big }: { big?: boolean }) {
 export function OverviewCards() {
   const { data, isLoading, isError } = useOverview()
   const risk = useRisk()
+  const { data: taxSettings } = useTaxSettings()
+  const taxAdjusted = taxSettings?.tax_enabled ?? false
 
   if (isLoading) {
     return (
@@ -130,10 +132,12 @@ export function OverviewCards() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label={xirrLabel} tooltip={xirrTooltip} value={formatPercent(data.xirr_pct)} />
         <StatCard
-          label="Dollar alpha vs. HYSA"
+          label={taxAdjusted ? 'Dollar alpha vs. HYSA (after tax)' : 'Dollar alpha vs. HYSA'}
           tooltip="dollarAlphaHysa"
           value={formatUsd(data.dollar_alpha_vs_hysa_usd)}
-          detail="vs. a compounding HYSA counterfactual"
+          detail={
+            taxAdjusted ? 'vs. an after-tax compounding HYSA counterfactual' : 'vs. a compounding HYSA counterfactual'
+          }
           detailColor="text-muted-foreground"
         />
         <StatCard

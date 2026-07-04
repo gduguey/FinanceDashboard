@@ -23,6 +23,20 @@ _CASH_TRANSACTION_EVENT_TYPES = {
     "Commission Adjustments": "FEE",
 }
 
+# Every one of these IBKR types becomes a canonical `DIVIDEND` ledger event
+# (see `_CASH_TRANSACTION_EVENT_TYPES` above), but they aren't the same
+# thing for tax purposes: real stock dividends can be qualified, interest
+# never can be, and a substitute payment in lieu of a dividend (paid when a
+# lent-out security's dividend is passed through instead of the dividend
+# itself) is explicitly disqualified by the tax code regardless of holding
+# period. Tagged here, at the one place that knows IBKR's own vocabulary,
+# so `ledger.taxes` never has to recognize an IBKR-specific string.
+_DIVIDEND_INCOME_TYPES = {
+    "Broker Interest Received": "interest",
+    "Bond Interest Received": "interest",
+    "Payment In Lieu Of Dividends": "substitute_payment",
+}
+
 
 def _empty_ledger() -> pl.DataFrame:
     return pl.DataFrame(schema=LedgerEvent.polars_schema)
@@ -118,6 +132,24 @@ def _standardize_ibkr_trades(ibkr_trades: pl.DataFrame, config: AppConfig) -> pl
     return _events_to_frame(events)
 
 
+def _cash_transaction_meta(row: dict[str, object]) -> dict[str, str]:
+    meta = {
+        "transaction_id": str(row["transaction_id"]),
+        "type": str(row["type"]),
+        "description": str(row["description"]),
+        "action_id": str(row["action_id"]),
+    }
+    if row["event_type"] == "DIVIDEND":
+        if row["dividend_type"]:
+            meta["dividend_type"] = str(row["dividend_type"])
+        if row["ex_date"]:
+            meta["ex_date"] = str(row["ex_date"])
+        income_type = _DIVIDEND_INCOME_TYPES.get(str(row["type"]))
+        if income_type:
+            meta["income_type"] = income_type
+    return meta
+
+
 def _standardize_ibkr_cash_transactions(ibkr_cash_transactions: pl.DataFrame) -> pl.DataFrame:
     """Map `<CashTransaction>` rows onto ledger events.
 
@@ -125,7 +157,12 @@ def _standardize_ibkr_cash_transactions(ibkr_cash_transactions: pl.DataFrame) ->
     `brokers.models.IbkrCashTransaction`). A blank `symbol` (deposits have
     none) becomes the `CASH` pseudo-position. IBKR encodes direction as
     `amount`'s sign; the ledger never does that, so it is translated into
-    `event_type` here and `amount` becomes a magnitude.
+    `event_type` here and `amount` becomes a magnitude. A `DIVIDEND` row
+    additionally carries IBKR's own `dividend_type` label, the dividend's
+    `ex_date`, and — since interest and substitute-dividend payments also
+    become `DIVIDEND` events — an `income_type` tag distinguishing them
+    from a real stock dividend, all in `meta`, for classifying the payment
+    as qualified or ordinary later (see `ledger.taxes`).
 
     Parameters
     ----------
@@ -158,12 +195,7 @@ def _standardize_ibkr_cash_transactions(ibkr_cash_transactions: pl.DataFrame) ->
             event_type=row["event_type"],
             amount=abs(row["amount"]),
             currency=row["currency"],
-            meta={
-                "transaction_id": row["transaction_id"],
-                "type": row["type"],
-                "description": row["description"],
-                "action_id": row["action_id"],
-            },
+            meta=_cash_transaction_meta(row),
         )
         for row in recognized.iter_rows(named=True)
     ]

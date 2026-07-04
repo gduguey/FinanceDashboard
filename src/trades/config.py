@@ -35,23 +35,31 @@ is, on both.
 TaxCharacter = Literal["qualified_dividend", "ordinary_dividend", "ordinary_interest"]
 """How a distribution is taxed: a qualified dividend gets the lower
 long-term-capital-gains rate; an ordinary dividend or interest payment is
-taxed at the regular income-tax rate. Which bucket a distribution falls
-into depends on the paying fund's underlying holdings, not on this
-dashboard's own logic — hence the static per-symbol mapping in `TaxConfig`.
+taxed at the regular income-tax rate. A symbol can be pinned to one of
+these explicitly in `TaxConfig.tax_character`; otherwise it's derived from
+the paying broker's own dividend label plus how long the position was
+actually held around the payment date (see `ledger.taxes`).
 """
 
 
 class TaxConfig(BaseModel):
-    """Static tax facts this dashboard needs but has no way to derive on its own.
+    """Static tax facts and rate assumptions this dashboard needs but has no way to derive on its own.
 
-    `tax_character` classifies each symbol's distributions for the annual
-    tax report; a symbol missing from the map defaults to
-    `"ordinary_dividend"`, the more heavily taxed of the two dividend
-    buckets, rather than assuming the lower qualified rate it has no way
-    to verify. `wash_sale_similar_symbols` lists, for a given symbol,
-    other symbols a sale-and-repurchase pair between them might count as
-    "substantially identical" for the wash-sale check — declaring it in
-    one direction is enough, the reverse mapping is inferred automatically.
+    `tax_character` pins a symbol's distributions to a fixed classification,
+    overriding the broker-label-plus-holding-period derivation in
+    `ledger.taxes` entirely — useful for a fund whose distributions are
+    known never to qualify regardless of how long it's held (e.g. most bond
+    funds). `qualified_dividend_window_days` is the length of the window,
+    centered on a dividend's ex-date, that the holding-period check looks
+    within; `qualified_dividend_min_days_held` is how many of those days
+    must actually be held for the dividend to qualify. `wash_sale_similar_symbols`
+    lists, for a given symbol, other symbols a sale-and-repurchase pair
+    between them might count as "substantially identical" for the wash-sale
+    check — declaring it in one direction is enough, the reverse mapping is
+    inferred automatically. `nra_statutory_dividend_withholding_rate` is the
+    default U.S. withholding rate on a nonresident alien's dividends when no
+    tax treaty lowers it — a resident of a treaty country (claimed on IRS
+    Form W-8BEN) pays that treaty's negotiated rate instead.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -59,7 +67,25 @@ class TaxConfig(BaseModel):
     marginal_ordinary_rate: float = Field(
         default=0.24, ge=0, le=1, description="Top marginal rate applied to ordinary income, for after-tax estimates."
     )
+    qualified_ltcg_rate: float = Field(
+        default=0.15,
+        ge=0,
+        le=1,
+        description="Rate applied to long-term capital gains and qualified dividends, for after-tax estimates.",
+    )
     tax_character: dict[str, TaxCharacter] = Field(default_factory=dict)
+    qualified_dividend_window_days: int = Field(
+        default=60, gt=0, description="Half-width of the ex-date-centered window the holding-period test looks within."
+    )
+    qualified_dividend_min_days_held: int = Field(
+        default=60, gt=0, description="Days that must actually be held within that window for a dividend to qualify."
+    )
+    nra_statutory_dividend_withholding_rate: float = Field(
+        default=0.30,
+        ge=0,
+        le=1,
+        description="Default U.S. withholding rate on a nonresident alien's dividends absent a tax treaty.",
+    )
     wash_sale_window_days: int = Field(
         default=30, gt=0, description="How many days before or after a loss sale a repurchase can still taint it."
     )

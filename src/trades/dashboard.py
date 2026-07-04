@@ -29,7 +29,15 @@ from trades.ledger.counterfactuals import (
 from trades.ledger.metrics import lot_returns, max_drawdown, realized_gain_total, symbol_metrics, unrealized_gain, xirr
 from trades.ledger.nav import growth_of_100, nav_series, period_pnl, time_weighted_return
 from trades.ledger.replay import external_cashflows, portfolio_value, replay_ledger
-from trades.ledger.taxes import after_tax_rate_lookup, annual_tax_report, flag_wash_sales, preview_sale
+from trades.ledger.taxes import (
+    after_tax_rate_lookup,
+    annual_tax_report,
+    flag_wash_sales,
+    liquidation_gain_buckets,
+    liquidation_tax_usd,
+    preview_sale,
+    tax_owed_by_year_and_regime,
+)
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
@@ -54,6 +62,12 @@ class DashboardSettings(BaseModel):
     baseline, rather than assuming the more favorable nonresident-alien
     treatment on the user's behalf; `residency_status_change_date` left
     unset means `tax_regime` has applied to the whole account history.
+    `marginal_ordinary_rate_pct`/`qualified_ltcg_rate_pct` left unset fall
+    back to `config.tax.marginal_ordinary_rate`/`config.tax.qualified_ltcg_rate`.
+    `w8ben_treaty_rate_pct` only means anything when `tax_regime` is `NRA`
+    and `w8ben_claimed` is set — it does not change any historical figure
+    (real withholding already happened at whatever rate the broker
+    actually applied); it only feeds the forward-looking tax-owed estimate.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -66,6 +80,9 @@ class DashboardSettings(BaseModel):
     tax_regime: TaxRegime | None = None
     residency_status_change_date: date | None = None
     w8ben_claimed: bool = False
+    w8ben_treaty_rate_pct: float | None = None
+    marginal_ordinary_rate_pct: float | None = None
+    qualified_ltcg_rate_pct: float | None = None
 
 
 def load_settings(config: AppConfig) -> DashboardSettings:
@@ -203,8 +220,8 @@ class OverviewCards:
     total_dividends_usd: float
 
 
-def _hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
-    """Build the HYSA rate lookup the dashboard's HYSA counterfactuals use.
+def _raw_hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
+    """Build the published-rate HYSA lookup, before any after-tax adjustment.
 
     Priority: an explicit fixed-rate override, then the selected (or
     default) bank's real historical APY, falling back to
@@ -233,6 +250,35 @@ def _hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
         return apy_pct / 100 if apy_pct is not None else config.returns.hysa_annual_rate
 
     return rate
+
+
+def _hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
+    """Build the HYSA rate lookup every HYSA counterfactual on the dashboard shares.
+
+    Because the overview's dollar-alpha card, the dollar chart, and the
+    growth-of-$100 chart all source their HYSA leg from this one function,
+    turning on `DashboardSettings.tax_enabled` here — wrapping the published
+    rate through `taxes.after_tax_rate_lookup` — is enough to make every one
+    of them switch from the pre-tax rate to an after-tax one at once,
+    without each chart needing its own tax-awareness. Left off, this
+    returns the published rate unchanged, exactly as before tax support
+    existed.
+
+    Returns
+    -------
+    Callable[[datetime.date], float]
+        The rate (as a fraction, e.g. `0.04`) as of a given date.
+    """
+    settings = load_settings(config)
+    raw_rate = _raw_hysa_rate_lookup(config)
+    if not settings.tax_enabled:
+        return raw_rate
+    return after_tax_rate_lookup(
+        raw_rate,
+        resolved_marginal_ordinary_rate(config),
+        resolved_tax_regime(config),
+        settings.residency_status_change_date,
+    )
 
 
 def _hysa_rate_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
@@ -272,6 +318,50 @@ def resolved_tax_regime(config: AppConfig) -> TaxRegime:
         treatment on the user's behalf.
     """
     return load_settings(config).tax_regime or "RESIDENT"
+
+
+def resolved_marginal_ordinary_rate(config: AppConfig) -> float:
+    """Resolve the ordinary-income tax rate to use: the user's override, or the code default.
+
+    Returns
+    -------
+    float
+        `config.tax.marginal_ordinary_rate` unless the user has entered their own rate.
+    """
+    override = load_settings(config).marginal_ordinary_rate_pct
+    return override / 100 if override is not None else config.tax.marginal_ordinary_rate
+
+
+def resolved_qualified_ltcg_rate(config: AppConfig) -> float:
+    """Resolve the long-term-capital-gains/qualified-dividend rate to use: the user's override, or the code default.
+
+    Returns
+    -------
+    float
+        `config.tax.qualified_ltcg_rate` unless the user has entered their own rate.
+    """
+    override = load_settings(config).qualified_ltcg_rate_pct
+    return override / 100 if override is not None else config.tax.qualified_ltcg_rate
+
+
+def resolved_nra_dividend_tax_rate(config: AppConfig) -> float:
+    """Resolve the flat rate a nonresident alien's dividends are taxed at.
+
+    A tax treaty only lowers the rate below the default statutory
+    withholding rate if it has actually been claimed (IRS Form W-8BEN) and
+    a specific negotiated rate has been entered; claiming it without
+    giving a rate is treated the same as not claiming it at all, since the
+    statutory rate is the safe assumption absent a known number.
+
+    Returns
+    -------
+    float
+        The claimed treaty rate, or `config.tax.nra_statutory_dividend_withholding_rate`.
+    """
+    settings = load_settings(config)
+    if settings.w8ben_claimed and settings.w8ben_treaty_rate_pct is not None:
+        return settings.w8ben_treaty_rate_pct / 100
+    return config.tax.nra_statutory_dividend_withholding_rate
 
 
 def _xirr_and_twr(
@@ -952,7 +1042,12 @@ def data_quality(symbols: Sequence[str], config: AppConfig) -> pl.DataFrame:
 
 
 def _after_tax_dollar_alpha_vs_hysa(
-    ledger: pl.DataFrame, config: AppConfig, as_of: date, regime: TaxRegime, status_change_date: date | None
+    ledger: pl.DataFrame,
+    config: AppConfig,
+    as_of: date,
+    regime: TaxRegime,
+    status_change_date: date | None,
+    marginal_ordinary_rate: float,
 ) -> float:
     """Dollar alpha vs. HYSA, using the after-tax rate in place of the raw published rate.
 
@@ -974,24 +1069,81 @@ def _after_tax_dollar_alpha_vs_hysa(
         return value
 
     after_tax_lookup = after_tax_rate_lookup(
-        _hysa_rate_lookup(config), config.tax.marginal_ordinary_rate, regime, status_change_date
+        _raw_hysa_rate_lookup(config), marginal_ordinary_rate, regime, status_change_date
     )
     hysa_value = hysa_counterfactual_value(flows, as_of, after_tax_lookup, config.returns.days_per_year)
     return value - hysa_value
 
 
 @dataclass(frozen=True)
+class LiquidationEstimate:
+    """What a full sale of every open lot, today, would leave you with, and the arithmetic behind that number.
+
+    `pretax_value_usd` is the portfolio's current value; the gain buckets
+    and `capital_gains_tax_usd` show how much of that value a hypothetical
+    sale right now would owe in tax (see `taxes.liquidation_gain_buckets`);
+    `after_tax_value_usd = pretax_value_usd - capital_gains_tax_usd` is what
+    would actually be left over.
+    """
+
+    pretax_value_usd: float
+    long_term_gain_usd: float
+    short_term_gain_usd: float
+    capital_gains_tax_usd: float
+    after_tax_value_usd: float
+
+
+def _liquidation_estimate(
+    ledger: pl.DataFrame,
+    config: AppConfig,
+    as_of: date,
+    regime: TaxRegime,
+    marginal_ordinary_rate: float,
+    qualified_ltcg_rate: float,
+) -> LiquidationEstimate:
+    """Estimate what selling every open lot right now, and paying the resulting tax, would leave you with.
+
+    Every open lot is previewed as if sold `as_of` (see `taxes.preview_sale`)
+    and taxed as `taxes.liquidation_tax_usd` describes — a resident alien's
+    net gain in each holding-period bucket, a nonresident alien's nothing.
+    This is a snapshot, not a projection: it says nothing about what
+    selling gradually, or on a different future date, would owe.
+
+    Returns
+    -------
+    LiquidationEstimate
+        The pre-tax value, the gain buckets and tax a sale would trigger, and what would be left over.
+    """
+    price_lookup = make_price_lookup(config)
+    result = replay_ledger(ledger, config)
+    value = portfolio_value(result, price_lookup, as_of)
+    if result.open_lots.is_empty():
+        return LiquidationEstimate(value, 0.0, 0.0, 0.0, value)
+
+    previews = preview_sale(result.open_lots, ledger, price_lookup, as_of, config)
+    long_term_gain, short_term_gain = liquidation_gain_buckets(previews)
+    tax = liquidation_tax_usd(previews, regime, marginal_ordinary_rate, qualified_ltcg_rate)
+    return LiquidationEstimate(value, long_term_gain, short_term_gain, tax, value - tax)
+
+
+@dataclass(frozen=True)
 class TaxSummary:
-    """The full tax view: realized gains and dividends by year, flagged wash sales, and open-lot sale previews."""
+    """The full tax view: realized gains/dividends by year, estimated tax owed, wash sales, and sale previews."""
 
     annual: pl.DataFrame
+    tax_owed: pl.DataFrame
     wash_sales: pl.DataFrame
     sale_previews: pl.DataFrame
     after_tax_dollar_alpha_vs_hysa_usd: float
+    liquidation_pretax_value_usd: float
+    liquidation_long_term_gain_usd: float
+    liquidation_short_term_gain_usd: float
+    liquidation_capital_gains_tax_usd: float
+    liquidation_value_usd: float
 
 
 def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSummary:
-    """Assemble the full tax view: the annual report, flagged wash sales, and open-lot sale previews.
+    """Assemble the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
 
     Parameters
     ----------
@@ -1000,7 +1152,7 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSumm
     config
         Application configuration.
     as_of
-        The date to preview open-lot sales, and value the after-tax HYSA comparison, as of.
+        The date to preview open-lot sales, and value the after-tax comparisons, as of.
 
     Returns
     -------
@@ -1010,15 +1162,32 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSumm
     settings = load_settings(config)
     regime = resolved_tax_regime(config)
     status_change_date = settings.residency_status_change_date
+    marginal_ordinary_rate = resolved_marginal_ordinary_rate(config)
+    qualified_ltcg_rate = resolved_qualified_ltcg_rate(config)
     result = replay_ledger(ledger, config)
 
     annual = annual_tax_report(result.closed_lots, ledger, config, regime, status_change_date)
+    owed = tax_owed_by_year_and_regime(
+        annual, marginal_ordinary_rate, qualified_ltcg_rate, resolved_nra_dividend_tax_rate(config)
+    )
     wash_sales = cast("pl.DataFrame", flag_wash_sales(result.closed_lots, ledger, config)).filter(
         pl.col("wash_sale_flag")
     )
     previews = preview_sale(result.open_lots, ledger, make_price_lookup(config), as_of, config)
-    after_tax_alpha = _after_tax_dollar_alpha_vs_hysa(ledger, config, as_of, regime, status_change_date)
+    after_tax_alpha = _after_tax_dollar_alpha_vs_hysa(
+        ledger, config, as_of, regime, status_change_date, marginal_ordinary_rate
+    )
+    liquidation = _liquidation_estimate(ledger, config, as_of, regime, marginal_ordinary_rate, qualified_ltcg_rate)
 
     return TaxSummary(
-        annual=annual, wash_sales=wash_sales, sale_previews=previews, after_tax_dollar_alpha_vs_hysa_usd=after_tax_alpha
+        annual=annual,
+        tax_owed=owed,
+        wash_sales=wash_sales,
+        sale_previews=previews,
+        after_tax_dollar_alpha_vs_hysa_usd=after_tax_alpha,
+        liquidation_pretax_value_usd=liquidation.pretax_value_usd,
+        liquidation_long_term_gain_usd=liquidation.long_term_gain_usd,
+        liquidation_short_term_gain_usd=liquidation.short_term_gain_usd,
+        liquidation_capital_gains_tax_usd=liquidation.capital_gains_tax_usd,
+        liquidation_value_usd=liquidation.after_tax_value_usd,
     )
