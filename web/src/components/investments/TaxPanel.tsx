@@ -124,11 +124,11 @@ function RateField({
 // are computed — meant to sit above the Overview section, since it affects
 // more than just the Taxes section further down (see the `taxToggle`
 // glossary entry surfaced by its info icon).
-export function TaxControlBar() {
+export function TaxSettingsControls() {
   const { data: settings, isLoading } = useTaxSettings()
   const setSettings = useSetTaxSettings()
 
-  if (isLoading) return <Skeleton className="h-12 w-full" />
+  if (isLoading) return <Skeleton className="h-10 w-48" />
   if (!settings) return null
 
   const regime = settings.tax_regime ?? settings.resolved_tax_regime
@@ -149,62 +149,62 @@ export function TaxControlBar() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-foreground/10 bg-muted/30 px-4 py-3">
-        <label className="flex items-center gap-2 text-sm font-medium">
-          Apply taxes
-          <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
-          <InfoTooltip term="taxToggle" />
-        </label>
-        {settings.tax_enabled && (
-          <>
-            <Select value={regime} onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}>
-              <SelectTrigger size="sm" className="w-64">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>
-                <SelectItem value="RESIDENT">H-1B (resident alien)</SelectItem>
-              </SelectContent>
-            </Select>
-            <RateField
-              label="Marginal rate"
-              override={settings.marginal_ordinary_rate_pct}
-              resolvedPct={settings.resolved_marginal_ordinary_rate_pct}
-              onCommit={(pct) => update({ marginal_ordinary_rate_pct: pct })}
-            />
-            <RateField
-              label="LTCG / qualified div. rate"
-              override={settings.qualified_ltcg_rate_pct}
-              resolvedPct={settings.resolved_qualified_ltcg_rate_pct}
-              onCommit={(pct) => update({ qualified_ltcg_rate_pct: pct })}
-            />
-            {isNra && (
-              <>
-                <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                  W-8BEN treaty benefits claimed
-                  <Switch
-                    checked={settings.w8ben_claimed}
-                    onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
-                  />
-                </label>
-                {settings.w8ben_claimed && (
-                  <RateField
-                    label="Treaty rate"
-                    override={settings.w8ben_treaty_rate_pct}
-                    resolvedPct={settings.w8ben_treaty_rate_pct ?? 30}
-                    onCommit={(pct) => update({ w8ben_treaty_rate_pct: pct })}
-                  />
-                )}
-              </>
-            )}
-          </>
-        )}
-      </div>
-
-      {settings.tax_enabled && <RulesCard regime={regime} w8benClaimed={settings.w8ben_claimed} />}
+    <div className="flex flex-wrap items-center gap-3">
+      <label className="flex items-center gap-2 text-sm font-medium">
+        Apply taxes
+        <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
+        <InfoTooltip term="taxToggle" />
+      </label>
+      {settings.tax_enabled && (
+        <>
+          <Select value={regime} onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}>
+            <SelectTrigger size="sm" className="w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>
+              <SelectItem value="RESIDENT">H-1B (resident alien)</SelectItem>
+            </SelectContent>
+          </Select>
+          <RateField
+            label="Marginal rate"
+            override={settings.marginal_ordinary_rate_pct}
+            resolvedPct={settings.resolved_marginal_ordinary_rate_pct}
+            onCommit={(pct) => update({ marginal_ordinary_rate_pct: pct })}
+          />
+          <RateField
+            label="LTCG / qualified div. rate"
+            override={settings.qualified_ltcg_rate_pct}
+            resolvedPct={settings.resolved_qualified_ltcg_rate_pct}
+            onCommit={(pct) => update({ qualified_ltcg_rate_pct: pct })}
+          />
+          {isNra && (
+            <>
+              <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                W-8BEN treaty benefits
+                <Switch
+                  checked={settings.w8ben_claimed}
+                  onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
+                />
+              </label>
+              {settings.w8ben_claimed && (
+                <RateField
+                  label="Treaty rate"
+                  override={settings.w8ben_treaty_rate_pct}
+                  resolvedPct={settings.w8ben_treaty_rate_pct ?? 30}
+                  onCommit={(pct) => update({ w8ben_treaty_rate_pct: pct })}
+                />
+              )}
+            </>
+          )}
+        </>
+      )}
     </div>
   )
+}
+
+export function TaxControlBar() {
+  return null
 }
 
 function AnnualReportTable({ rows }: { rows: AnnualTaxRow[] }) {
@@ -374,9 +374,13 @@ export function TaxDetailSection() {
   if (isLoading) return <Skeleton className="h-48 w-full" />
   if (!settings || !settings.tax_enabled) return null
 
+  const regime = settings.tax_regime ?? settings.resolved_tax_regime
+
   return (
     <div className="space-y-4">
       <h2 className="text-sm font-medium text-muted-foreground">Taxes</h2>
+
+      <RulesCard regime={regime} w8benClaimed={settings.w8ben_claimed} />
 
       <Card>
         <CardHeader>

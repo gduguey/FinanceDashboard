@@ -45,7 +45,7 @@ class ReplayResult:
     cash_balance: float
 
 
-def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> ReplayResult:
+def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig, *, net_dividends: bool = False) -> ReplayResult:
     """Replay a ledger into open/closed lots and a cash balance.
 
     `config.ledger.cash_symbol` is a plain running total, not a lot: every
@@ -64,6 +64,12 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> Rep
         data to be materialized, so a `LazyFrame` is collected immediately.
     config
         Application configuration; `config.ledger` is read.
+    net_dividends
+        When ``True``, the amount accrued into each lot is the gross
+        ``DIVIDEND`` minus any ``WITHHOLDING`` for the same symbol on the
+        same date, so ``lot.dividends_received`` reflects after-withholding
+        income. Cash is always correct regardless of this flag (DIVIDEND
+        adds gross, WITHHOLDING subtracts separately).
 
     Returns
     -------
@@ -80,6 +86,14 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> Rep
     closed_lots: list[ClosedLot] = []
     cash_balance = 0.0
 
+    withholding_by_symbol_date: dict[tuple[str, date], float] = {}
+    if net_dividends:
+        wh_rows = rows.filter(pl.col("event_type") == "WITHHOLDING")
+        if not wh_rows.is_empty():
+            for r in wh_rows.with_columns(dt=pl.col("event_datetime").dt.date()).iter_rows(named=True):
+                key = (r["symbol"], r["dt"])
+                withholding_by_symbol_date[key] = withholding_by_symbol_date.get(key, 0.0) + r["amount"]
+
     for row in rows.iter_rows(named=True):
         event_type: str = row["event_type"]
         symbol: str = row["symbol"]
@@ -89,7 +103,11 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig) -> Rep
             cash_balance += amount
         elif event_type == "DIVIDEND":
             cash_balance += amount
-            open_lots_by_symbol[symbol] = accrue_dividend(open_lots_by_symbol.get(symbol, []), amount)
+            accrual_amount = amount
+            if net_dividends:
+                wh = withholding_by_symbol_date.get((symbol, row["event_datetime"].date()), 0.0)
+                accrual_amount = max(0.0, amount - wh)
+            open_lots_by_symbol[symbol] = accrue_dividend(open_lots_by_symbol.get(symbol, []), accrual_amount)
         elif event_type in {"WITHDRAWAL", "WITHHOLDING", "FEE"}:
             cash_balance -= amount
         elif event_type == "BUY":

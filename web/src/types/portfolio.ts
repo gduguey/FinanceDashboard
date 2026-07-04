@@ -17,7 +17,9 @@ export interface Overview {
   timing_gap_pct: number | null
   total_deposited_usd: number
   total_withdrawn_usd: number
-  total_dividends_usd: number
+  total_dividends_gross_usd: number
+  total_withholding_usd: number
+  total_fees_usd: number
   last_synced_at: string | null
 }
 

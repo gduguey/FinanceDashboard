@@ -81,7 +81,8 @@ def _standardize_ibkr_trades(ibkr_trades: pl.DataFrame, config: AppConfig) -> pl
     polars.DataFrame
         Ledger-shaped rows, validated through `LedgerEvent`.
     """
-    trades = ibkr_trades.filter(pl.col("buy_sell").is_in(["BUY", "SELL"]))
+    ibkr_trades = ibkr_trades.filter(pl.col("level_of_detail") == "EXECUTION")
+    trades = ibkr_trades.filter(pl.col("buy_sell").is_in(["BUY", "SELL"]))  # Exclude cancellations (`BUY (Ca.)`/`SELL (Ca.)`)
     if trades.is_empty():
         return _empty_ledger()
 

@@ -126,7 +126,7 @@ export const GLOSSARY = {
   },
   taxToggle: {
     title: 'Taxes',
-    body: "Reveals the tax section further down the page: the annual realized-gain and dividend report, an estimated tax-owed summary, flagged wash sales, and open-lot sale previews. It also changes two things outside that section, easy to miss: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. Your portfolio value, XIRR, TWR, and the benchmark comparison are never taxed here, since a gain sitting unsold owes nothing.",
+    body: "Reveals the tax section further down the page: the annual realized-gain and dividend report, an estimated tax-owed summary, flagged wash sales, and open-lot sale previews. It also changes two things outside that section, easy to miss: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. When tax mode is enabled, dividend amounts in per-lot returns and metrics are shown net of withholding (reflecting the actual cash received); XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized.",
   },
   taxOwed: {
     title: 'Estimated tax owed',

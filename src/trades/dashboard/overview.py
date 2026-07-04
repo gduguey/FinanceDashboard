@@ -41,7 +41,9 @@ class OverviewCards:
     timing_gap_pct: float | None
     total_deposited_usd: float
     total_withdrawn_usd: float
-    total_dividends_usd: float
+    total_dividends_gross_usd: float
+    total_withholding_usd: float
+    total_fees_usd: float
 
 
 def _xirr_and_twr(
@@ -76,8 +78,8 @@ def _xirr_and_twr(
     return xirr_pct, is_provisional, twr
 
 
-def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, float]:
-    """Sum gross `DEPOSIT`, `WITHDRAWAL`, and `DIVIDEND` amounts, for the overview card's "money in" context.
+def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, float, float, float]:
+    """Sum gross `DEPOSIT`, `WITHDRAWAL`, `DIVIDEND`, `WITHHOLDING`, and `FEE` amounts.
 
     Deliberately gross, not netted against each other: shown side by side
     so `value = (deposited - withdrawn) + gain` visibly reconciles, rather
@@ -86,13 +88,15 @@ def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, f
 
     Returns
     -------
-    tuple[float, float, float]
-        `(total_deposited, total_withdrawn, total_dividends)`.
+    tuple[float, float, float, float, float]
+        `(total_deposited, total_withdrawn, total_dividends_gross, total_withholding, total_fees)`.
     """
     total_deposited = float(ledger.filter(pl.col("event_type") == "DEPOSIT")["amount"].sum())
     total_withdrawn = float(ledger.filter(pl.col("event_type") == "WITHDRAWAL")["amount"].sum())
     total_dividends = float(ledger.filter(pl.col("event_type") == "DIVIDEND")["amount"].sum())
-    return total_deposited, total_withdrawn, total_dividends
+    total_withholding = float(ledger.filter(pl.col("event_type") == "WITHHOLDING")["amount"].sum())
+    total_fees = float(ledger.filter(pl.col("event_type") == "FEE")["amount"].sum())
+    return total_deposited, total_withdrawn, total_dividends, total_withholding, total_fees
 
 
 def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> OverviewCards:
@@ -154,5 +158,7 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
         timing_gap_pct=timing_gap_pct,
         total_deposited_usd=gross[0],
         total_withdrawn_usd=gross[1],
-        total_dividends_usd=gross[2],
+        total_dividends_gross_usd=gross[2],
+        total_withholding_usd=gross[3],
+        total_fees_usd=gross[4],
     )

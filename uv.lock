@@ -1620,7 +1620,6 @@ source = { editable = "." }
 dependencies = [
     { name = "defusedxml" },
     { name = "numpy" },
-    { name = "plotly" },
     { name = "polars" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1640,6 +1639,7 @@ dev = [
     { name = "ipykernel" },
     { name = "jupyter" },
     { name = "nbclient" },
+    { name = "plotly" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1649,7 +1649,6 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "plotly", specifier = ">=5.22" },
     { name = "polars", specifier = ">=1.9" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.2" },
@@ -1665,6 +1664,7 @@ dev = [
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "jupyter", specifier = ">=1.0" },
     { name = "nbclient", specifier = ">=0.10" },
+    { name = "plotly", specifier = ">=5.22" },
     { name = "pytest", specifier = ">=8.2" },
     { name = "ruff", specifier = ">=0.6" },
 ]

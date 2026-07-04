@@ -9,9 +9,9 @@ import { LotsTable } from '@/components/investments/LotsTable'
 import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
 import { SyncButton } from '@/components/investments/SyncButton'
-import { TaxControlBar, TaxDetailSection } from '@/components/investments/TaxPanel'
+import { TaxControlBar, TaxDetailSection, TaxSettingsControls } from '@/components/investments/TaxPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { useOverview } from '@/hooks/usePortfolioData'
+import { useOverview, useTaxSettings } from '@/hooks/usePortfolioData'
 
 function SectionTitle({ children }: { children: string }) {
   return <h2 className="text-sm font-medium text-muted-foreground">{children}</h2>
@@ -19,12 +19,16 @@ function SectionTitle({ children }: { children: string }) {
 
 export function InvestmentsPage() {
   const { data: overview } = useOverview()
+  const { data: taxSettings } = useTaxSettings()
+  const taxEnabled = taxSettings?.tax_enabled ?? false
 
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader
         title="Investments"
         actions={<SyncButton lastSyncedAt={overview?.last_synced_at ?? null} />}
+        controls={<TaxSettingsControls />}
+        taxEnabled={taxEnabled}
       />
 
       <div className="mx-auto max-w-6xl space-y-10 px-8 py-8">

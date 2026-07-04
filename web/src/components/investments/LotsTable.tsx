@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components
 import { SortableTableHead } from '@/components/investments/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatDate, formatPercent, formatUsd, signColor } from '@/lib/format'
-import { useLots } from '@/hooks/usePortfolioData'
+import { useLots, useTaxSettings } from '@/hooks/usePortfolioData'
 import type { ClosedLot, OpenLot, SymbolRollup } from '@/types/portfolio'
 
 function aggregateOpenLotsByDay(lots: OpenLot[]): OpenLot[] {
@@ -81,7 +81,9 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
 // own tabs, plus a per-symbol rollup that doesn't exist anywhere else.
 export function LotsTable() {
   const { data, isLoading, isError } = useLots()
+  const { data: taxSettings } = useTaxSettings()
   const [aggregateByDay, setAggregateByDay] = useState(false)
+  const taxEnabled = taxSettings?.tax_enabled ?? false
 
   return (
     <Card>
@@ -110,15 +112,19 @@ export function LotsTable() {
                 </label>
               </div>
               <TabsContent value="open">
-                <OpenLotsTable lots={aggregateByDay ? aggregateOpenLotsByDay(data.open_lots) : data.open_lots} />
+                <OpenLotsTable
+                  lots={aggregateByDay ? aggregateOpenLotsByDay(data.open_lots) : data.open_lots}
+                  taxEnabled={taxEnabled}
+                />
               </TabsContent>
               <TabsContent value="closed">
                 <ClosedLotsTable
                   lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots}
+                  taxEnabled={taxEnabled}
                 />
               </TabsContent>
             </Tabs>
-            <SymbolRollupTable rows={data.symbol_rollup} />
+            <SymbolRollupTable rows={data.symbol_rollup} taxEnabled={taxEnabled} />
           </div>
         )}
       </CardContent>
@@ -126,7 +132,7 @@ export function LotsTable() {
   )
 }
 
-function OpenLotsTable({ lots }: { lots: OpenLot[] }) {
+function OpenLotsTable({ lots, taxEnabled }: { lots: OpenLot[]; taxEnabled: boolean }) {
   const { sorted, sort, toggleSort } = useSortableRows(lots, 'opened_at')
   if (!lots.length) return <p className="py-6 text-center text-sm text-muted-foreground">No open lots</p>
   return (
@@ -188,7 +194,7 @@ function OpenLotsTable({ lots }: { lots: OpenLot[] }) {
             desc={sort.desc}
             onClick={() => toggleSort('dividends_received')}
           >
-            Dividends
+            {taxEnabled ? 'Dividends (net)' : 'Dividends (gross)'}
           </SortableTableHead>
         </TableRow>
       </TableHeader>
@@ -215,7 +221,7 @@ function OpenLotsTable({ lots }: { lots: OpenLot[] }) {
   )
 }
 
-function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
+function ClosedLotsTable({ lots, taxEnabled }: { lots: ClosedLot[]; taxEnabled: boolean }) {
   const { sorted, sort, toggleSort } = useSortableRows(lots, 'closed_at')
   if (!lots.length) return <p className="py-6 text-center text-sm text-muted-foreground">No closed lots</p>
   return (
@@ -294,7 +300,7 @@ function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
   )
 }
 
-function SymbolRollupTable({ rows }: { rows: SymbolRollup[] }) {
+function SymbolRollupTable({ rows, taxEnabled }: { rows: SymbolRollup[]; taxEnabled: boolean }) {
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'current_value')
   if (!rows.length) return null
   return (
@@ -331,7 +337,7 @@ function SymbolRollupTable({ rows }: { rows: SymbolRollup[] }) {
               desc={sort.desc}
               onClick={() => toggleSort('dividends_received')}
             >
-              Dividends
+              {taxEnabled ? 'Dividends (net)' : 'Dividends (gross)'}
             </SortableTableHead>
             <SortableTableHead
               align="right"
