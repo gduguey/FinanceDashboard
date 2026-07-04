@@ -19,13 +19,19 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Lot:
-    """One open (or partially closed) tax lot."""
+    """One open (or partially closed) tax lot.
+
+    `dividends_received` accrues while the lot is open (see
+    `replay.replay_ledger`): each `DIVIDEND` on the lot's symbol is split
+    across every lot open at that moment, in proportion to shares held.
+    """
 
     lot_id: str
     symbol: str
     opened_at: datetime
     shares: float
     cost_per_share: float
+    dividends_received: float = 0.0
 
     polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
         "lot_id": pl.Utf8,
@@ -33,12 +39,18 @@ class Lot:
         "opened_at": pl.Datetime("us"),
         "shares": pl.Float64,
         "cost_per_share": pl.Float64,
+        "dividends_received": pl.Float64,
     }
 
 
 @dataclass(frozen=True)
 class ClosedLot:
-    """The portion of a lot consumed by one `SELL` (or other closing event)."""
+    """The portion of a lot consumed by one `SELL` (or other closing event).
+
+    `dividends_received` is the closed portion's share of whatever the
+    parent lot had accrued so far, split by `shares / (shares + the
+    portion that stayed open)` — see `consume_fifo`.
+    """
 
     lot_id: str
     symbol: str
@@ -50,6 +62,7 @@ class ClosedLot:
     realized_gain: float
     term: Literal["LONG", "SHORT"]
     closed_by_event_id: str
+    dividends_received: float = 0.0
 
     polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
         "lot_id": pl.Utf8,
@@ -62,6 +75,7 @@ class ClosedLot:
         "realized_gain": pl.Float64,
         "term": pl.Utf8,
         "closed_by_event_id": pl.Utf8,
+        "dividends_received": pl.Float64,
     }
 
 
@@ -115,6 +129,10 @@ def consume_fifo(
 
     `total_fees` is allocated pro rata by shares consumed:
     `realized_gain = shares_consumed x (exit_price - cost_per_share) - allocated_fees`.
+    Each lot's accrued `dividends_received` splits the same way, by shares:
+    the closed portion keeps `dividends_received x consumed_shares / shares`,
+    the remainder keeps the rest — a lot that shrinks keeps a proportionally
+    shrunk dividend total, not its full pre-sale amount.
 
     Parameters
     ----------
@@ -160,9 +178,11 @@ def consume_fifo(
             held_days=(pl.lit(closed_at) - pl.col("opened_at")).dt.total_days(),
             realized_gain=pl.col("consumed_shares") * (exit_price - pl.col("cost_per_share"))
             - pl.col("consumed_shares") * fee_per_share,
+            consumed_dividends=pl.col("dividends_received") * pl.col("consumed_shares") / pl.col("shares"),
         )
         .with_columns(
-            term=pl.when(pl.col("held_days") >= long_term_holding_days).then(pl.lit("LONG")).otherwise(pl.lit("SHORT"))
+            remaining_dividends=pl.col("dividends_received") - pl.col("consumed_dividends"),
+            term=pl.when(pl.col("held_days") >= long_term_holding_days).then(pl.lit("LONG")).otherwise(pl.lit("SHORT")),
         )
     )
 
@@ -178,6 +198,7 @@ def consume_fifo(
             opened_at=row["opened_at"],
             shares=row["remaining_shares"],
             cost_per_share=row["cost_per_share"],
+            dividends_received=row["remaining_dividends"],
         )
         for row in lots.filter(pl.col("remaining_shares") > 0).iter_rows(named=True)
     ]
@@ -193,10 +214,36 @@ def consume_fifo(
             realized_gain=row["realized_gain"],
             term=row["term"],
             closed_by_event_id=closed_by_event_id,
+            dividends_received=row["consumed_dividends"],
         )
         for row in lots.filter(pl.col("consumed_shares") > 0).iter_rows(named=True)
     ]
     return still_open, closed
+
+
+def accrue_dividend(open_lots: list[Lot], amount: float) -> list[Lot]:
+    """Split a dividend across a symbol's open lots, in proportion to shares held.
+
+    Parameters
+    ----------
+    open_lots
+        The open lots of the symbol the dividend was paid on (all must be
+        the same symbol — this isn't checked, since `replay.replay_ledger`
+        only ever calls it with one symbol's lots).
+    amount
+        The dividend amount to split across `open_lots`.
+
+    Returns
+    -------
+    list[Lot]
+        The lots with `dividends_received` increased by their pro-rata share.
+    """
+    if not open_lots:
+        return []
+    lots = lots_to_frame(open_lots).with_columns(
+        dividends_received=pl.col("dividends_received") + amount * pl.col("shares") / pl.col("shares").sum()
+    )
+    return [Lot(**row) for row in lots.iter_rows(named=True)]
 
 
 def apply_split(open_lots: list[Lot], symbol: str, ratio: float) -> list[Lot]:
