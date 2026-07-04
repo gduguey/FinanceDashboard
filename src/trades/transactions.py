@@ -16,6 +16,7 @@ from trades.models import RawTrade
 from trades.utils.frames import collect_if_lazy, preserve_frame_type
 
 if TYPE_CHECKING:
+    from datetime import date
     from pathlib import Path
 
     from trades.config import AppConfig
@@ -140,6 +141,11 @@ def aggregate_same_day_trades(df: pl.DataFrame | pl.LazyFrame, config: AppConfig
 def monthly_invested(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
     """Pivot: one row per calendar month, one column per symbol, plus Total.
 
+    Every calendar month from the first to the last trade is included,
+    even ones with no trading activity at all (filled with 0) — a plain
+    pivot only emits rows for months present in the source data, which
+    would silently drop a quiet month rather than showing it as zero.
+
     Parameters
     ----------
     df
@@ -152,14 +158,21 @@ def monthly_invested(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyF
     """
     was_eager = isinstance(df, pl.DataFrame)
     collected = collect_if_lazy(df.with_columns(month=pl.col("trade_date").dt.strftime("%Y-%m")))
-    pivot = (
-        collected
-        .pivot(on="symbol", index="month", values="usd_spent", aggregate_function="sum")
+    pivot = collected.pivot(on="symbol", index="month", values="usd_spent", aggregate_function="sum")
+
+    first_month = cast("date", collected["trade_date"].min()).replace(day=1)
+    last_month = cast("date", collected["trade_date"].max()).replace(day=1)
+    all_months = pl.date_range(first_month, last_month, interval="1mo", eager=True).dt.strftime("%Y-%m").alias("month")
+
+    full = (
+        all_months
+        .to_frame()
+        .join(pivot, on="month", how="left")
         .fill_null(0.0)
         .with_columns(Total=pl.sum_horizontal(pl.exclude("month")))
         .sort("month")
     )
-    return pivot if was_eager else pivot.lazy()
+    return full if was_eager else full.lazy()
 
 
 def daily_investment_timeline(df: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
@@ -259,7 +272,8 @@ def total_invested_by_symbol(df: pl.LazyFrame | pl.DataFrame) -> pl.Series:
     """
     df = collect_if_lazy(df)
     return (
-        df.group_by("symbol")
+        df
+        .group_by("symbol")
         .agg(pl.col("usd_spent").sum().alias("total_invested"))
         .sort("total_invested", descending=True)
         .get_column("total_invested")

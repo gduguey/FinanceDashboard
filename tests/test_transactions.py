@@ -96,6 +96,16 @@ def test_monthly_invested_totals_match_raw_sum() -> None:
     assert pivot["Total"].sum() == pytest.approx(df["usd_spent"].sum())
 
 
+def test_monthly_invested_includes_calendar_months_with_no_trades() -> None:
+    df = pl.DataFrame([
+        _trade("2026-01-27", "VOO", 1.0, 96.06),
+        _trade("2026-04-10", "BND", 1.0, 125.0),
+    ])
+    pivot = transactions.monthly_invested(df)
+    assert pivot["month"].to_list() == ["2026-01", "2026-02", "2026-03", "2026-04"]
+    assert pivot.filter(pl.col("month") == "2026-02")["Total"][0] == pytest.approx(0.0)
+
+
 def test_daily_investment_timeline_gap_in_days() -> None:
     df = pl.DataFrame([
         _trade("2026-01-27", "VOO", 1.0, 96.06),
