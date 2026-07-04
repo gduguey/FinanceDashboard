@@ -121,9 +121,29 @@ export function OverviewCards() {
                 label="Money in (deposits)"
                 value={formatUsd(data.total_deposited_usd - data.total_withdrawn_usd)}
               />
-              <MiniStat label="Dividends received" value={formatUsd(data.total_dividends_usd)} />
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">Dividends (gross)</div>
+                <div className="mt-1 text-sm font-semibold text-foreground tabular-nums">
+                  {formatUsd(data.total_dividends_gross_usd)}
+                </div>
+                {data.total_withholding_usd > 0 && (
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Withholding: {formatUsd(data.total_withholding_usd)}
+                  </div>
+                )}
+              </div>
               <MiniStat label="Realized gain" value={formatUsd(data.realized_gain_usd)} />
-              <MiniStat label="Unrealized gain" value={formatUsd(data.unrealized_gain_usd)} />
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">Unrealized gain</div>
+                <div className={`mt-1 text-sm font-semibold tabular-nums ${signColor(data.unrealized_gain_usd)}`}>
+                  {formatUsd(data.unrealized_gain_usd)}
+                </div>
+                {data.total_fees_usd > 0 && (
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    Fees: {formatUsd(data.total_fees_usd)}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </CardContent>

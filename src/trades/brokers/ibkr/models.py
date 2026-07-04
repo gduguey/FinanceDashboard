@@ -77,6 +77,7 @@ class IbkrTrade(BaseModel):
     trade_money: float = Field(alias="tradeMoney")
     ib_commission: float = Field(alias="ibCommission")
     net_cash: float = Field(alias="netCash")
+    level_of_detail: Literal["EXECUTION", "ORDER", "SYMBOL_SUMMARY"] = Field(alias="levelOfDetail")
     notes: str = Field(alias="notes", default="")
 
     _parse_date_time = field_validator("date_time", mode="before")(parse_ibkr_datetime)

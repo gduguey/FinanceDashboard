@@ -290,6 +290,8 @@ def symbol_metrics(
     price_lookup: Callable[[str, date], float | None],
     as_of: date,
     config: AppConfig,
+    *,
+    net_dividends: bool = False,
 ) -> SymbolMetrics:
     """Compute one symbol's lifecycle stats and money-weighted return.
 
@@ -319,6 +321,11 @@ def symbol_metrics(
         The date to value any remaining open position as of.
     config
         Application configuration; `config.returns.days_per_year` is read.
+    net_dividends
+        When ``True``, ``dividends_received`` is gross dividends minus
+        withholding and the XIRR cashflow set includes ``WITHHOLDING``
+        events as negative flows, matching the after-withholding income
+        actually received.
 
     Returns
     -------
@@ -343,16 +350,19 @@ def symbol_metrics(
         current_value = float(open_lots["shares"].sum()) * price
         unrealized = float((open_lots["shares"] * (price - open_lots["cost_per_share"])).sum())
 
-    cashflow_dates, cashflow_amounts = _symbol_cashflows(rows)
+    cashflow_dates, cashflow_amounts = _symbol_cashflows(rows, net_dividends=net_dividends)
     if is_open:
         cashflow_dates.append(as_of)
         cashflow_amounts.append(current_value)
+
+    gross_dividends = float(rows.filter(pl.col("event_type") == "DIVIDEND")["amount"].sum())
+    withholding = float(rows.filter(pl.col("event_type") == "WITHHOLDING")["amount"].sum()) if net_dividends else 0.0
 
     return SymbolMetrics(
         symbol=symbol,
         invested=_symbol_invested(rows.filter(pl.col("event_type") == "BUY")),
         proceeds_received=float(rows.filter(pl.col("event_type") == "SELL")["amount"].sum()),
-        dividends_received=float(rows.filter(pl.col("event_type") == "DIVIDEND")["amount"].sum()),
+        dividends_received=gross_dividends - withholding,
         current_value=current_value,
         realized_gain=float(replay_result.closed_lots.filter(pl.col("symbol") == symbol)["realized_gain"].sum()),
         unrealized_gain=unrealized,
@@ -383,22 +393,30 @@ def _symbol_invested(buys: pl.DataFrame) -> float:
     return float(buys.filter(~is_drip)["amount"].sum())
 
 
-def _symbol_cashflows(rows: pl.DataFrame) -> tuple[list[date], list[float]]:
+def _symbol_cashflows(rows: pl.DataFrame, *, net_dividends: bool = False) -> tuple[list[date], list[float]]:
     """Build a symbol's `BUY`/`SELL`/`DIVIDEND` cashflows for `xirr`.
 
     Parameters
     ----------
     rows
         The symbol's ledger rows.
+    net_dividends
+        When ``True``, dividend amounts are already net of withholding
+        (from lot accrual), so ``WITHHOLDING`` events are excluded to
+        avoid double-counting.
 
     Returns
     -------
     tuple[list[datetime.date], list[float]]
-        Dates and signed amounts (`BUY` negative, `SELL`/`DIVIDEND` positive).
+        Dates and signed amounts (``BUY`` negative,
+        ``SELL``/``DIVIDEND`` positive).
     """
-    flows = rows.filter(pl.col("event_type").is_in(["BUY", "SELL", "DIVIDEND"])).select(
+    types = ["BUY", "SELL", "DIVIDEND"]
+    flows = rows.filter(pl.col("event_type").is_in(types)).select(
         "event_datetime",
-        amount=pl.when(pl.col("event_type") == "BUY").then(-pl.col("amount")).otherwise(pl.col("amount")),
+        amount=pl.when(pl.col("event_type") == "BUY")
+        .then(-pl.col("amount"))
+        .otherwise(pl.col("amount")),
     )
     return flows["event_datetime"].dt.date().to_list(), flows["amount"].to_list()
 
