@@ -12,6 +12,7 @@ crash mid-write.
 from __future__ import annotations
 
 import io
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -32,6 +33,31 @@ _FRED_MISSING_VALUE = "."
 
 def _cache_path(config: AppConfig) -> Path:
     return config.cpi.cache_dir / f"{config.cpi.series_id}.csv"
+
+
+def _raw_archive_dir(config: AppConfig) -> Path:
+    """Directory for archiving raw FRED responses.
+
+    Parameters
+    ----------
+    config
+        Application configuration; `config.cpi` is read.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the directory for archiving raw FRED responses.
+    """
+    return config.cpi.cache_dir / "raw_responses"
+
+
+def _save_raw_response(config: AppConfig, response_text: str) -> None:
+    """Archive the raw FRED response with a timestamp, never overwritten."""
+    raw_dir = _raw_archive_dir(config)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().isoformat(timespec="seconds").replace(":", "")
+    raw_path = raw_dir / f"{timestamp}.csv"
+    raw_path.write_text(response_text, encoding="utf-8")
 
 
 def load_cpi_cache(config: AppConfig) -> pl.DataFrame:
@@ -58,7 +84,7 @@ def fetch_cpi_series(config: AppConfig, session: requests.Session | None = None)
 
     FRED marks a not-yet-released month's value as `"."`; those rows are
     dropped, not treated as an error. Every remaining row is validated
-    through `CpiObservation`.
+    through `CpiObservation`. The raw response is archived before parsing.
 
     Parameters
     ----------
@@ -79,6 +105,10 @@ def fetch_cpi_series(config: AppConfig, session: requests.Session | None = None)
         timeout=config.cpi.request_timeout_seconds,
     )
     response.raise_for_status()
+
+    # Archive raw response before parsing (idempotent, timestamped, never overwritten)
+    _save_raw_response(config, response.text)
+
     # `infer_schema=False` keeps every column Utf8: the real FRED series is
     # decades long, and polars' schema inference only samples the first
     # ~100 rows — the "." sentinel for a not-yet-published month sits at

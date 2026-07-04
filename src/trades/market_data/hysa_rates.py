@@ -159,7 +159,7 @@ def update_hysa_rates_cache(config: AppConfig, session: requests.Session | None 
     return series
 
 
-def list_banks(history: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+def list_banks(history: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
     """List every bank present in a rate history, for a bank picker.
 
     Parameters
@@ -169,10 +169,15 @@ def list_banks(history: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
 
     Returns
     -------
-    polars.DataFrame
+    polars.DataFrame or polars.LazyFrame
         Columns `bank_id`, `bank_name`, one row per bank, sorted by name.
+        Same type as input.
     """
-    return collect_if_lazy(history.select("bank_id", "bank_name").unique()).sort("bank_name")
+    was_eager = isinstance(history, pl.DataFrame)
+    result = history.select("bank_id", "bank_name").unique().sort("bank_name")
+    if not was_eager:
+        return result
+    return collect_if_lazy(result)
 
 
 def rate_as_of(history: pl.DataFrame | pl.LazyFrame, bank_id: str, target_date: date) -> float | None:

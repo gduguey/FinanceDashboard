@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import ClassVar
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trades.config import LedgerEventType
 
@@ -61,6 +61,44 @@ class LedgerEvent(BaseModel):
             The normalized symbol, unchanged if it was not a string.
         """
         return value.strip().upper() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_event_type_invariants(self) -> LedgerEvent:
+        """Validate that event-type-specific field constraints are satisfied.
+
+        Event types have specific requirements about which fields must be present:
+        - BUY, SELL: must have shares and price
+        - All others: must NOT have shares or price (both None)
+
+        Parameters
+        ----------
+        self
+            The fully-parsed `LedgerEvent` instance, after pydantic has coerced
+            all fields to their declared types.
+
+        Returns
+        -------
+        LedgerEvent
+            The same instance, unchanged if validation passes.
+
+        Raises
+        ------
+        ValueError
+            If event-type invariants are violated.
+        """
+        trading_events = ("BUY", "SELL")
+        has_shares = self.shares is not None
+        has_price = self.price is not None
+
+        if self.event_type in trading_events:
+            if not (has_shares and has_price):
+                message = f"{self.event_type} event must have both shares and price."
+                raise ValueError(message)
+        elif has_shares or has_price:
+            message = f"{self.event_type} event must not have shares or price."
+            raise ValueError(message)
+
+        return self
 
 
 class PriceObservation(BaseModel):
