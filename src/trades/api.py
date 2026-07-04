@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from trades import dashboard
 from trades.brokers.ibkr import api, main
-from trades.config import AppConfig, IbkrFlexCredentials
+from trades.config import AppConfig, IbkrFlexCredentials, TaxRegime
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
@@ -376,6 +376,90 @@ def put_benchmark_setting(update: BenchmarkSettingUpdate) -> dict[str, str | Non
     updated = dashboard.load_settings(config).model_copy(update={"benchmark_symbol_override": update.symbol_override})
     dashboard.save_settings(updated, config)
     return {"symbol_override": updated.benchmark_symbol_override, "default_symbol": config.returns.benchmark_symbol}
+
+
+class TaxSettingsUpdate(BaseModel):
+    """Request body for `PUT /api/settings/tax`."""
+
+    tax_enabled: bool
+    tax_regime: TaxRegime | None
+    residency_status_change_date: date | None
+    w8ben_claimed: bool
+
+
+def _tax_settings_response(config: AppConfig) -> dict[str, Any]:
+    settings = dashboard.load_settings(config)
+    return {
+        "tax_enabled": settings.tax_enabled,
+        "tax_regime": settings.tax_regime,
+        "resolved_tax_regime": dashboard.resolved_tax_regime(config),
+        "residency_status_change_date": settings.residency_status_change_date,
+        "w8ben_claimed": settings.w8ben_claimed,
+    }
+
+
+@app.get("/api/settings/tax")
+def get_tax_settings() -> dict[str, Any]:
+    """Return the persisted tax-reporting settings.
+
+    Returns
+    -------
+    dict[str, Any]
+        `tax_enabled`, `tax_regime` (the raw selection, None if never
+        set), `resolved_tax_regime` (what the tax report actually uses —
+        `RESIDENT` when `tax_regime` is unset), `residency_status_change_date`,
+        `w8ben_claimed`.
+    """
+    return _tax_settings_response(_config())
+
+
+@app.put("/api/settings/tax")
+def put_tax_settings(update: TaxSettingsUpdate) -> dict[str, Any]:
+    """Persist tax-reporting settings (merges into existing settings).
+
+    Returns
+    -------
+    dict[str, Any]
+        Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
+    """
+    config = _config()
+    updated = dashboard.load_settings(config).model_copy(
+        update={
+            "tax_enabled": update.tax_enabled,
+            "tax_regime": update.tax_regime,
+            "residency_status_change_date": update.residency_status_change_date,
+            "w8ben_claimed": update.w8ben_claimed,
+        }
+    )
+    dashboard.save_settings(updated, config)
+    return _tax_settings_response(config)
+
+
+@app.get("/api/tax/report")
+def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
+    """Return the full tax view: the annual report, flagged wash sales, and open-lot sale previews.
+
+    Returns
+    -------
+    dict[str, Any]
+        `annual`, `wash_sales`, `sale_previews`, `after_tax_dollar_alpha_vs_hysa_usd`.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    try:
+        summary = dashboard.tax_summary(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "annual": summary.annual.to_dicts(),
+        "wash_sales": summary.wash_sales.to_dicts(),
+        "sale_previews": summary.sale_previews.to_dicts(),
+        "after_tax_dollar_alpha_vs_hysa_usd": summary.after_tax_dollar_alpha_vs_hysa_usd,
+    }
 
 
 @app.get("/api/hysa-rates")

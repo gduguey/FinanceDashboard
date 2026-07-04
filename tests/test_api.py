@@ -183,6 +183,56 @@ def test_benchmark_setting_put_then_get_round_trips(client) -> None:
     assert client.get("/api/settings/benchmark").json()["symbol_override"] == "QQQ"
 
 
+def test_tax_settings_default_to_disabled_and_resident(client) -> None:
+    body = client.get("/api/settings/tax").json()
+    assert body == {
+        "tax_enabled": False,
+        "tax_regime": None,
+        "resolved_tax_regime": "RESIDENT",
+        "residency_status_change_date": None,
+        "w8ben_claimed": False,
+    }
+
+
+def test_tax_settings_put_then_get_round_trips(client) -> None:
+    put_response = client.put(
+        "/api/settings/tax",
+        json={
+            "tax_enabled": True,
+            "tax_regime": "NRA",
+            "residency_status_change_date": "2025-10-01",
+            "w8ben_claimed": True,
+        },
+    )
+    assert put_response.status_code == 200
+    body = client.get("/api/settings/tax").json()
+    assert body == {
+        "tax_enabled": True,
+        "tax_regime": "NRA",
+        "resolved_tax_regime": "NRA",
+        "residency_status_change_date": "2025-10-01",
+        "w8ben_claimed": True,
+    }
+
+
+def test_tax_settings_put_preserves_target_allocation(client) -> None:
+    client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    client.put(
+        "/api/settings/tax",
+        json={"tax_enabled": True, "tax_regime": None, "residency_status_change_date": None, "w8ben_claimed": False},
+    )
+    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+
+
+def test_tax_report_returns_the_realized_gain_and_an_open_lot_preview(client) -> None:
+    body = client.get("/api/tax/report", params={"as_of": "2026-01-03"}).json()
+    annual_row = next(row for row in body["annual"] if row["year"] == 2026)
+    assert annual_row["short_term_gain_usd"] == pytest.approx(50.0)
+    assert body["wash_sales"] == []
+    assert len(body["sale_previews"]) == 1
+    assert body["sale_previews"][0]["symbol"] == "VOO"
+
+
 def test_hysa_rates_lists_banks_and_history(client) -> None:
     body = client.get("/api/hysa-rates").json()
     bank_ids = {bank["bank_id"] for bank in body["banks"]}

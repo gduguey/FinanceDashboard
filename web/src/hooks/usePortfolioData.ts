@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type DateRange } from '@/lib/api'
-import type { BenchmarkSettingUpdate, HysaSettings, TargetAllocation } from '@/types/portfolio'
+import type { BenchmarkSettingUpdate, HysaSettings, TargetAllocation, TaxSettingsUpdate } from '@/types/portfolio'
 
 // One query key per endpoint, grouped under a shared "portfolio" root so a
 // single invalidate (see useSync below) refreshes every panel at once.
@@ -18,6 +18,8 @@ const keys = {
   hysaRates: ['portfolio', 'hysa-rates'],
   hysaSettings: ['portfolio', 'settings', 'hysa'],
   benchmarkSetting: ['portfolio', 'settings', 'benchmark'],
+  taxSettings: ['portfolio', 'settings', 'tax'],
+  taxReport: ['portfolio', 'tax-report'],
 } as const
 
 export const useOverview = () => useQuery({ queryKey: keys.overview, queryFn: () => api.overview() })
@@ -112,3 +114,15 @@ export function useSyncProgress(enabled: boolean) {
     refetchInterval: enabled ? 400 : false,
   })
 }
+
+export const useTaxSettings = () => useQuery({ queryKey: keys.taxSettings, queryFn: api.taxSettings })
+
+export function useSetTaxSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (settings: TaxSettingsUpdate) => api.setTaxSettings(settings),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+  })
+}
+
+export const useTaxReport = () => useQuery({ queryKey: keys.taxReport, queryFn: () => api.taxReport() })
