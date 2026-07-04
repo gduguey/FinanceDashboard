@@ -53,6 +53,8 @@ def _ibkr_cash_transaction(
     transaction_id: str = "1",
     level_of_detail: str = "DETAIL",
     date_time: str = "2026-06-30 09:48:03",
+    dividend_type: str = "",
+    ex_date: str = "",
 ) -> dict:
     return IbkrCashTransaction(
         account_id="U24174819",
@@ -65,6 +67,8 @@ def _ibkr_cash_transaction(
         description="",
         action_id="",
         level_of_detail=level_of_detail,
+        dividend_type=dividend_type,
+        ex_date=ex_date,
     ).model_dump()
 
 
@@ -179,6 +183,44 @@ def test_standardize_ibkr_cash_transactions_maps_known_types(transaction_type: s
     transactions = _cash_transactions_frame(_ibkr_cash_transaction(transaction_type, 5.0, symbol="VOO"))
     ledger = preprocessing._standardize_ibkr_cash_transactions(transactions)
     assert ledger.row(0, named=True)["event_type"] == expected_event_type
+
+
+def test_standardize_ibkr_cash_transactions_carries_dividend_type_and_ex_date_in_meta() -> None:
+    transactions = _cash_transactions_frame(
+        _ibkr_cash_transaction("Dividends", 5.0, symbol="VOO", dividend_type="Ordinary Dividend", ex_date="2026-03-27")
+    )
+    ledger = preprocessing._standardize_ibkr_cash_transactions(transactions)
+    meta = ledger.row(0, named=True)["meta"]
+    assert meta["dividend_type"] == "Ordinary Dividend"
+    assert meta["ex_date"] == "2026-03-27"
+
+
+def test_standardize_ibkr_cash_transactions_omits_dividend_type_for_non_dividend_rows() -> None:
+    transactions = _cash_transactions_frame(
+        _ibkr_cash_transaction("Withholding Tax", 1.0, symbol="VOO", dividend_type="Ordinary Dividend")
+    )
+    ledger = preprocessing._standardize_ibkr_cash_transactions(transactions)
+    meta = ledger.row(0, named=True)["meta"]
+    assert "dividend_type" not in meta
+    assert "ex_date" not in meta
+
+
+@pytest.mark.parametrize(
+    ("transaction_type", "expected_income_type"),
+    [
+        ("Dividends", None),
+        ("Broker Interest Received", "interest"),
+        ("Bond Interest Received", "interest"),
+        ("Payment In Lieu Of Dividends", "substitute_payment"),
+    ],
+)
+def test_standardize_ibkr_cash_transactions_tags_income_type(
+    transaction_type: str, expected_income_type: str | None
+) -> None:
+    transactions = _cash_transactions_frame(_ibkr_cash_transaction(transaction_type, 5.0, symbol="VOO"))
+    ledger = preprocessing._standardize_ibkr_cash_transactions(transactions)
+    meta = ledger.row(0, named=True)["meta"]
+    assert meta.get("income_type") == expected_income_type
 
 
 def test_standardize_ibkr_cash_transactions_drops_unrecognized_types() -> None:

@@ -9,7 +9,7 @@ import { LotsTable } from '@/components/investments/LotsTable'
 import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
 import { SyncButton } from '@/components/investments/SyncButton'
-import { TaxPanel } from '@/components/investments/TaxPanel'
+import { TaxControlBar, TaxDetailSection } from '@/components/investments/TaxPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useOverview } from '@/hooks/usePortfolioData'
 
@@ -28,6 +28,8 @@ export function InvestmentsPage() {
       />
 
       <div className="mx-auto max-w-6xl space-y-10 px-8 py-8">
+        <TaxControlBar />
+
         <section id="overview" className="scroll-section space-y-4">
           <SectionTitle>Overview</SectionTitle>
           <OverviewCards />
@@ -55,8 +57,7 @@ export function InvestmentsPage() {
         </section>
 
         <section id="taxes" className="scroll-section space-y-4">
-          <SectionTitle>Taxes</SectionTitle>
-          <TaxPanel />
+          <TaxDetailSection />
         </section>
 
         <section id="data-quality" className="scroll-section space-y-4">

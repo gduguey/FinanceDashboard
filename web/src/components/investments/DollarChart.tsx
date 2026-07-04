@@ -3,15 +3,20 @@ import { ChartCard } from '@/components/investments/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate, formatUsd } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useDollarChart, useHysaRates, useHysaSettings } from '@/hooks/usePortfolioData'
+import { useBenchmarkSetting, useDollarChart, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 import type { DollarChartPoint } from '@/types/portfolio'
 
-function buildLegend(benchmarkName: string, hysaName: string) {
+function buildLegend(benchmarkName: string, hysaName: string, taxAdjusted: boolean) {
   return [
     { label: 'Contributions', color: '#94a3b8', term: 'contributions' as GlossaryTerm },
     { label: 'Portfolio value', color: '#0f172a', term: 'portfolioValue' as GlossaryTerm },
-    { label: `HYSA counterfactual (${hysaName})`, color: '#059669', term: 'hysaCounterfactual' as GlossaryTerm, dashed: true },
+    {
+      label: `HYSA counterfactual (${hysaName})${taxAdjusted ? ' — after tax' : ''}`,
+      color: '#059669',
+      term: 'hysaCounterfactual' as GlossaryTerm,
+      dashed: true,
+    },
     {
       label: `Benchmark counterfactual (${benchmarkName})`,
       color: '#2563eb',
@@ -21,8 +26,16 @@ function buildLegend(benchmarkName: string, hysaName: string) {
   ]
 }
 
-function ChartLegend({ benchmarkName, hysaName }: { benchmarkName: string; hysaName: string }) {
-  const items = buildLegend(benchmarkName, hysaName)
+function ChartLegend({
+  benchmarkName,
+  hysaName,
+  taxAdjusted,
+}: {
+  benchmarkName: string
+  hysaName: string
+  taxAdjusted: boolean
+}) {
+  const items = buildLegend(benchmarkName, hysaName, taxAdjusted)
   return (
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {items.map((item) => (
@@ -48,19 +61,21 @@ export function DollarChart() {
   const { data: benchmarkSetting } = useBenchmarkSetting()
   const { data: hysaSettings } = useHysaSettings()
   const { data: hysaRates } = useHysaRates()
+  const { data: taxSettings } = useTaxSettings()
   const series = data?.series
   const markers = data?.reallocation_markers ?? []
 
+  const taxAdjusted = taxSettings?.tax_enabled ?? false
   const benchmarkName = benchmarkLabel(benchmarkSetting)
   const hysaName = hysaLabel(hysaSettings, hysaRates)
-  const hysaLineName = `HYSA counterfactual (${hysaName})`
+  const hysaLineName = `HYSA counterfactual (${hysaName})${taxAdjusted ? ' — after tax' : ''}`
   const benchmarkLineName = `Benchmark counterfactual (${benchmarkName})`
 
   return (
     <ChartCard
       title="Portfolio vs. cash and market benchmarks"
       description="Contributions, your portfolio, and what the same money would be worth elsewhere"
-      legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} />}
+      legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />}
       isLoading={isLoading}
       isEmpty={!series?.length}
     >
@@ -78,7 +93,8 @@ export function DollarChart() {
           formatter={(value, name, item) => {
             if (name === hysaLineName) {
               const rate = (item.payload as DollarChartPoint).hysa_rate_pct
-              return [`${formatUsd(Number(value))} (${rate.toFixed(2)}% APY)`, name]
+              const rateLabel = taxAdjusted ? 'after-tax APY' : 'APY'
+              return [`${formatUsd(Number(value))} (${rate.toFixed(2)}% ${rateLabel})`, name]
             }
             return [formatUsd(Number(value)), name]
           }}

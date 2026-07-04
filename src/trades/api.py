@@ -385,6 +385,9 @@ class TaxSettingsUpdate(BaseModel):
     tax_regime: TaxRegime | None
     residency_status_change_date: date | None
     w8ben_claimed: bool
+    w8ben_treaty_rate_pct: float | None
+    marginal_ordinary_rate_pct: float | None
+    qualified_ltcg_rate_pct: float | None
 
 
 def _tax_settings_response(config: AppConfig) -> dict[str, Any]:
@@ -395,6 +398,11 @@ def _tax_settings_response(config: AppConfig) -> dict[str, Any]:
         "resolved_tax_regime": dashboard.resolved_tax_regime(config),
         "residency_status_change_date": settings.residency_status_change_date,
         "w8ben_claimed": settings.w8ben_claimed,
+        "w8ben_treaty_rate_pct": settings.w8ben_treaty_rate_pct,
+        "marginal_ordinary_rate_pct": settings.marginal_ordinary_rate_pct,
+        "resolved_marginal_ordinary_rate_pct": dashboard.resolved_marginal_ordinary_rate(config) * 100,
+        "qualified_ltcg_rate_pct": settings.qualified_ltcg_rate_pct,
+        "resolved_qualified_ltcg_rate_pct": dashboard.resolved_qualified_ltcg_rate(config) * 100,
     }
 
 
@@ -408,7 +416,10 @@ def get_tax_settings() -> dict[str, Any]:
         `tax_enabled`, `tax_regime` (the raw selection, None if never
         set), `resolved_tax_regime` (what the tax report actually uses —
         `RESIDENT` when `tax_regime` is unset), `residency_status_change_date`,
-        `w8ben_claimed`.
+        `w8ben_claimed`, `w8ben_treaty_rate_pct`, `marginal_ordinary_rate_pct`
+        and `qualified_ltcg_rate_pct` (the raw overrides, None if never set)
+        alongside their `resolved_*_pct` counterparts (what the tax report
+        actually uses — the code default when no override was made).
     """
     return _tax_settings_response(_config())
 
@@ -429,6 +440,9 @@ def put_tax_settings(update: TaxSettingsUpdate) -> dict[str, Any]:
             "tax_regime": update.tax_regime,
             "residency_status_change_date": update.residency_status_change_date,
             "w8ben_claimed": update.w8ben_claimed,
+            "w8ben_treaty_rate_pct": update.w8ben_treaty_rate_pct,
+            "marginal_ordinary_rate_pct": update.marginal_ordinary_rate_pct,
+            "qualified_ltcg_rate_pct": update.qualified_ltcg_rate_pct,
         }
     )
     dashboard.save_settings(updated, config)
@@ -437,12 +451,19 @@ def put_tax_settings(update: TaxSettingsUpdate) -> dict[str, Any]:
 
 @app.get("/api/tax/report")
 def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
-    """Return the full tax view: the annual report, flagged wash sales, and open-lot sale previews.
+    """Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
 
     Returns
     -------
     dict[str, Any]
-        `annual`, `wash_sales`, `sale_previews`, `after_tax_dollar_alpha_vs_hysa_usd`.
+        `annual`, `tax_owed` (the annual report plus estimated
+        `capital_gains_tax_usd`, `dividend_tax_usd`, `total_tax_usd`,
+        `balance_due_usd` per year), `wash_sales`, `sale_previews`,
+        `after_tax_dollar_alpha_vs_hysa_usd`, and the liquidation estimate —
+        `liquidation_pretax_value_usd`, `liquidation_long_term_gain_usd`,
+        `liquidation_short_term_gain_usd`, `liquidation_capital_gains_tax_usd`,
+        `liquidation_value_usd` — what a full sale of every open lot right
+        now would leave you with, and the arithmetic behind that number.
 
     Raises
     ------
@@ -456,9 +477,15 @@ def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return {
         "annual": summary.annual.to_dicts(),
+        "tax_owed": summary.tax_owed.to_dicts(),
         "wash_sales": summary.wash_sales.to_dicts(),
         "sale_previews": summary.sale_previews.to_dicts(),
         "after_tax_dollar_alpha_vs_hysa_usd": summary.after_tax_dollar_alpha_vs_hysa_usd,
+        "liquidation_pretax_value_usd": summary.liquidation_pretax_value_usd,
+        "liquidation_long_term_gain_usd": summary.liquidation_long_term_gain_usd,
+        "liquidation_short_term_gain_usd": summary.liquidation_short_term_gain_usd,
+        "liquidation_capital_gains_tax_usd": summary.liquidation_capital_gains_tax_usd,
+        "liquidation_value_usd": summary.liquidation_value_usd,
     }
 
 

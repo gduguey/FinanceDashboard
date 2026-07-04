@@ -3,21 +3,34 @@ import { ChartCard } from '@/components/investments/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useGrowthOf100Chart, useHysaRates, useHysaSettings } from '@/hooks/usePortfolioData'
+import { useBenchmarkSetting, useGrowthOf100Chart, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 import type { GrowthOf100Point } from '@/types/portfolio'
 
-function buildLegend(benchmarkName: string, hysaName: string) {
+function buildLegend(benchmarkName: string, hysaName: string, taxAdjusted: boolean) {
   return [
     { label: 'Your NAV', color: '#0f172a', term: 'nav' as GlossaryTerm },
     { label: `Benchmark (${benchmarkName})`, color: '#2563eb', term: 'benchmarkIndex' as GlossaryTerm },
-    { label: `HYSA (${hysaName})`, color: '#059669', term: 'hysaCounterfactual' as GlossaryTerm, dashed: true },
+    {
+      label: `HYSA (${hysaName})${taxAdjusted ? ' — after tax' : ''}`,
+      color: '#059669',
+      term: 'hysaCounterfactual' as GlossaryTerm,
+      dashed: true,
+    },
     { label: 'CPI', color: '#d97706', term: 'cpi' as GlossaryTerm, dashed: true },
   ]
 }
 
-function ChartLegend({ benchmarkName, hysaName }: { benchmarkName: string; hysaName: string }) {
-  const items = buildLegend(benchmarkName, hysaName)
+function ChartLegend({
+  benchmarkName,
+  hysaName,
+  taxAdjusted,
+}: {
+  benchmarkName: string
+  hysaName: string
+  taxAdjusted: boolean
+}) {
+  const items = buildLegend(benchmarkName, hysaName, taxAdjusted)
   return (
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {items.map((item) => (
@@ -42,18 +55,20 @@ export function GrowthOf100Chart() {
   const { data: benchmarkSetting } = useBenchmarkSetting()
   const { data: hysaSettings } = useHysaSettings()
   const { data: hysaRates } = useHysaRates()
+  const { data: taxSettings } = useTaxSettings()
 
+  const taxAdjusted = taxSettings?.tax_enabled ?? false
   const benchmarkName = benchmarkLabel(benchmarkSetting)
   const hysaName = hysaLabel(hysaSettings, hysaRates)
   const benchmarkLineName = `Benchmark (${benchmarkName})`
-  const hysaLineName = `HYSA (${hysaName})`
+  const hysaLineName = `HYSA (${hysaName})${taxAdjusted ? ' — after tax' : ''}`
 
   return (
     <ChartCard
       title="Growth of $100"
       titleTooltip="growthOf100"
       description="Your strategy's quality vs. benchmarks, independent of contribution timing"
-      legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} />}
+      legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />}
       isLoading={isLoading}
       isEmpty={!data?.length}
     >
@@ -66,7 +81,8 @@ export function GrowthOf100Chart() {
             const formatted = Number(value).toFixed(1)
             if (name === hysaLineName) {
               const rate = (item.payload as GrowthOf100Point).hysa_rate_pct
-              return [rate === null ? formatted : `${formatted} (${rate.toFixed(2)}% APY)`, name]
+              const rateLabel = taxAdjusted ? 'after-tax APY' : 'APY'
+              return [rate === null ? formatted : `${formatted} (${rate.toFixed(2)}% ${rateLabel})`, name]
             }
             return [formatted, name]
           }}

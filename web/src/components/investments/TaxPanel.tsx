@@ -1,14 +1,16 @@
+import { useState } from 'react'
 import { Landmark } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { formatUsd, signColor } from '@/lib/format'
 import { useSetTaxSettings, useTaxReport, useTaxSettings } from '@/hooks/usePortfolioData'
-import type { AnnualTaxRow, SalePreviewRow, TaxRegime, TaxSettingsUpdate, WashSaleRow } from '@/types/portfolio'
+import type { AnnualTaxRow, SalePreviewRow, TaxOwedRow, TaxRegime, TaxSettingsUpdate, WashSaleRow } from '@/types/portfolio'
 
 const REGIME_LABELS: Record<TaxRegime, string> = {
   NRA: 'NRA / F-1 (nonresident alien)',
@@ -82,6 +84,129 @@ function RulesCard({ regime, w8benClaimed }: { regime: TaxRegime; w8benClaimed: 
   )
 }
 
+// Uncontrolled-with-a-touched-flag input: `draft` starts `null` (untouched)
+// so tabbing through the bar without typing anything can never overwrite a
+// saved override with an empty value — only committed once the user has
+// actually typed something and then leaves the field.
+function RateField({
+  label,
+  override,
+  resolvedPct,
+  onCommit,
+}: {
+  label: string
+  override: number | null
+  resolvedPct: number
+  onCommit: (pct: number | null) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      {label}
+      <Input
+        type="number"
+        className="w-16"
+        defaultValue={override ?? undefined}
+        placeholder={resolvedPct.toFixed(0)}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          if (draft === null) return
+          onCommit(draft.trim() === '' ? null : Number(draft))
+          setDraft(null)
+        }}
+      />
+      %
+    </label>
+  )
+}
+
+// The controls that decide how the rest of the page's tax-adjusted numbers
+// are computed — meant to sit above the Overview section, since it affects
+// more than just the Taxes section further down (see the `taxToggle`
+// glossary entry surfaced by its info icon).
+export function TaxControlBar() {
+  const { data: settings, isLoading } = useTaxSettings()
+  const setSettings = useSetTaxSettings()
+
+  if (isLoading) return <Skeleton className="h-12 w-full" />
+  if (!settings) return null
+
+  const regime = settings.tax_regime ?? settings.resolved_tax_regime
+  const isNra = regime === 'NRA'
+
+  function update(partial: Partial<TaxSettingsUpdate>) {
+    if (!settings) return
+    setSettings.mutate({
+      tax_enabled: settings.tax_enabled,
+      tax_regime: settings.tax_regime,
+      residency_status_change_date: settings.residency_status_change_date,
+      w8ben_claimed: settings.w8ben_claimed,
+      w8ben_treaty_rate_pct: settings.w8ben_treaty_rate_pct,
+      marginal_ordinary_rate_pct: settings.marginal_ordinary_rate_pct,
+      qualified_ltcg_rate_pct: settings.qualified_ltcg_rate_pct,
+      ...partial,
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-foreground/10 bg-muted/30 px-4 py-3">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          Apply taxes
+          <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
+          <InfoTooltip term="taxToggle" />
+        </label>
+        {settings.tax_enabled && (
+          <>
+            <Select value={regime} onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}>
+              <SelectTrigger size="sm" className="w-64">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>
+                <SelectItem value="RESIDENT">H-1B (resident alien)</SelectItem>
+              </SelectContent>
+            </Select>
+            <RateField
+              label="Marginal rate"
+              override={settings.marginal_ordinary_rate_pct}
+              resolvedPct={settings.resolved_marginal_ordinary_rate_pct}
+              onCommit={(pct) => update({ marginal_ordinary_rate_pct: pct })}
+            />
+            <RateField
+              label="LTCG / qualified div. rate"
+              override={settings.qualified_ltcg_rate_pct}
+              resolvedPct={settings.resolved_qualified_ltcg_rate_pct}
+              onCommit={(pct) => update({ qualified_ltcg_rate_pct: pct })}
+            />
+            {isNra && (
+              <>
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  W-8BEN treaty benefits claimed
+                  <Switch
+                    checked={settings.w8ben_claimed}
+                    onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
+                  />
+                </label>
+                {settings.w8ben_claimed && (
+                  <RateField
+                    label="Treaty rate"
+                    override={settings.w8ben_treaty_rate_pct}
+                    resolvedPct={settings.w8ben_treaty_rate_pct ?? 30}
+                    onCommit={(pct) => update({ w8ben_treaty_rate_pct: pct })}
+                  />
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {settings.tax_enabled && <RulesCard regime={regime} w8benClaimed={settings.w8ben_claimed} />}
+    </div>
+  )
+}
+
 function AnnualReportTable({ rows }: { rows: AnnualTaxRow[] }) {
   if (!rows.length) {
     return <p className="py-6 text-center text-sm text-muted-foreground">No realized gains or dividends yet.</p>
@@ -119,6 +244,44 @@ function AnnualReportTable({ rows }: { rows: AnnualTaxRow[] }) {
             <TableCell className="text-right tabular-nums">{formatUsd(row.ordinary_dividends_usd)}</TableCell>
             <TableCell className="text-right tabular-nums">{formatUsd(row.ordinary_interest_usd)}</TableCell>
             <TableCell className="text-right tabular-nums">{formatUsd(row.withholding_tax_usd)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  )
+}
+
+function TaxOwedTable({ rows }: { rows: TaxOwedRow[] }) {
+  if (!rows.length) {
+    return <p className="py-6 text-center text-sm text-muted-foreground">Nothing to estimate yet.</p>
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Year</TableHead>
+          <TableHead>Regime</TableHead>
+          <TableHead className="text-right">Capital-gains tax</TableHead>
+          <TableHead className="text-right">Dividend/interest tax</TableHead>
+          <TableHead className="text-right">Total estimated tax</TableHead>
+          <TableHead className="text-right">Already withheld</TableHead>
+          <TableHead className="text-right">Balance due</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <TableRow key={`${row.year}-${row.regime}`}>
+            <TableCell className="font-medium">{row.year}</TableCell>
+            <TableCell>
+              <Badge variant="outline">{row.regime}</Badge>
+            </TableCell>
+            <TableCell className="text-right tabular-nums">{formatUsd(row.capital_gains_tax_usd)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatUsd(row.dividend_tax_usd)}</TableCell>
+            <TableCell className="text-right tabular-nums font-medium">{formatUsd(row.total_tax_usd)}</TableCell>
+            <TableCell className="text-right tabular-nums">{formatUsd(row.withholding_tax_usd)}</TableCell>
+            <TableCell className={`text-right tabular-nums ${signColor(-row.balance_due_usd)}`}>
+              {formatUsd(row.balance_due_usd)}
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -200,120 +363,104 @@ function SalePreviewTable({ rows }: { rows: SalePreviewRow[] }) {
   )
 }
 
-// Tax reporting is opt-in and off by default: most of what it computes
-// (realized gains split by term, dividend character, the wash-sale check)
-// only makes sense once a regime is actually chosen, so the toggle keeps
-// it out of the way for anyone who doesn't need it.
-export function TaxPanel() {
+// The report tables and summary cards — everything the top-of-page
+// TaxControlBar's toggle reveals besides the rules card, which renders
+// next to that bar instead of down here. Reads the same settings/report
+// queries as the control bar; React Query dedupes the underlying requests.
+export function TaxDetailSection() {
   const { data: settings, isLoading } = useTaxSettings()
-  const setSettings = useSetTaxSettings()
   const { data: report } = useTaxReport()
 
   if (isLoading) return <Skeleton className="h-48 w-full" />
-  if (!settings) return null
-
-  const regime = settings.tax_regime ?? settings.resolved_tax_regime
-  const isNra = regime === 'NRA'
-
-  function update(partial: Partial<TaxSettingsUpdate>) {
-    if (!settings) return
-    setSettings.mutate({
-      tax_enabled: settings.tax_enabled,
-      tax_regime: settings.tax_regime,
-      residency_status_change_date: settings.residency_status_change_date,
-      w8ben_claimed: settings.w8ben_claimed,
-      ...partial,
-    })
-  }
+  if (!settings || !settings.tax_enabled) return null
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-4">
-        <label className="flex items-center gap-2 text-sm font-medium">
-          Tax reporting
-          <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
-        </label>
-        {settings.tax_enabled && (
-          <>
-            <Select
-              value={regime}
-              onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}
-            >
-              <SelectTrigger size="sm" className="w-64">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>
-                <SelectItem value="RESIDENT">H-1B (resident alien)</SelectItem>
-              </SelectContent>
-            </Select>
-            {isNra && (
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                W-8BEN treaty benefits claimed
-                <Switch
-                  checked={settings.w8ben_claimed}
-                  onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
-                />
-              </label>
-            )}
-          </>
-        )}
-      </div>
+      <h2 className="text-sm font-medium text-muted-foreground">Taxes</h2>
 
-      {settings.tax_enabled && (
-        <>
-          <RulesCard regime={regime} w8benClaimed={settings.w8ben_claimed} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Annual realized gains &amp; dividends</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <AnnualReportTable rows={report?.annual ?? []} />
+        </CardContent>
+      </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Annual realized gains &amp; dividends</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <AnnualReportTable rows={report?.annual ?? []} />
-            </CardContent>
-          </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5">
+            Estimated tax owed <InfoTooltip term="taxOwed" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TaxOwedTable rows={report?.tax_owed ?? []} />
+        </CardContent>
+      </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-1.5">
-                Flagged wash sales <InfoTooltip term="washSaleFlag" />
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <WashSaleTable rows={report?.wash_sales ?? []} />
-            </CardContent>
-          </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5">
+            Flagged wash sales <InfoTooltip term="washSaleFlag" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <WashSaleTable rows={report?.wash_sales ?? []} />
+        </CardContent>
+      </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>If you sold today</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SalePreviewTable rows={report?.sale_previews ?? []} />
-            </CardContent>
-          </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>If you sold today</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SalePreviewTable rows={report?.sale_previews ?? []} />
+        </CardContent>
+      </Card>
 
-          {report && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-normal text-muted-foreground">
-                  Dollar alpha vs. HYSA, after tax
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div
-                  className={`text-2xl font-semibold tracking-tight tabular-nums ${signColor(report.after_tax_dollar_alpha_vs_hysa_usd)}`}
-                >
-                  {formatUsd(report.after_tax_dollar_alpha_vs_hysa_usd)}
+      {report && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-1.5">
+              Liquidation value (after tax) <InfoTooltip term="liquidationValue" />
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span className="text-2xl font-semibold tracking-tight tabular-nums text-foreground">
+                {formatUsd(report.liquidation_value_usd)}
+              </span>
+              <span className="text-sm text-muted-foreground">
+                = {formatUsd(report.liquidation_pretax_value_usd)} portfolio value −{' '}
+                {formatUsd(report.liquidation_capital_gains_tax_usd)} estimated capital-gains tax
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-4 border-t border-border pt-3 text-sm sm:grid-cols-3">
+              <div>
+                <div className="text-xs text-muted-foreground">Long-term gain × rate</div>
+                <div className="tabular-nums">
+                  {formatUsd(report.liquidation_long_term_gain_usd)} ×{' '}
+                  {settings.resolved_qualified_ltcg_rate_pct.toFixed(1)}% ={' '}
+                  {formatUsd((report.liquidation_long_term_gain_usd * settings.resolved_qualified_ltcg_rate_pct) / 100)}
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Same comparison as the overview card, with the HYSA leg taxed at your marginal rate once resident
-                  status applies.
-                </p>
-              </CardContent>
-            </Card>
-          )}
-        </>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Short-term gain × rate</div>
+                <div className="tabular-nums">
+                  {formatUsd(report.liquidation_short_term_gain_usd)} ×{' '}
+                  {settings.resolved_marginal_ordinary_rate_pct.toFixed(1)}% ={' '}
+                  {formatUsd(
+                    (report.liquidation_short_term_gain_usd * settings.resolved_marginal_ordinary_rate_pct) / 100,
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">Total estimated tax</div>
+                <div className="tabular-nums font-medium">{formatUsd(report.liquidation_capital_gains_tax_usd)}</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   )

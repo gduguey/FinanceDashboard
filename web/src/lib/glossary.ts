@@ -121,8 +121,20 @@ export const GLOSSARY = {
     body: "Which U.S. tax treatment applies: NRA (nonresident alien, e.g. F-1 student status) generally owes no U.S. tax on bank interest or on security sales at all; RESIDENT (e.g. H-1B, once the substantial-presence test is met) is taxed the same way a U.S. citizen is, on both.",
   },
   washSaleFlag: {
-    title: 'Wash-sale flag',
-    body: "A loss sale is flagged when the same security — or one on a declared similar-fund list — was bought back within 30 days before or after the sale. This is a mechanical proximity check, not a ruling: it surfaces the risk, a tax professional decides whether the loss is actually disallowed.",
+    title: 'Wash-sale',
+    body: "A loss sale is flagged when the same security — or one on a declared similar-fund list — was bought back within 30 days before or after the sale. On this page it is just a mechanical proximity check, to surfaces the risk.",
+  },
+  taxToggle: {
+    title: 'Taxes',
+    body: "Reveals the tax section further down the page: the annual realized-gain and dividend report, an estimated tax-owed summary, flagged wash sales, and open-lot sale previews. It also changes two things outside that section, easy to miss: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. Your portfolio value, XIRR, TWR, and the benchmark comparison are never taxed here, since a gain sitting unsold owes nothing.",
+  },
+  taxOwed: {
+    title: 'Estimated tax owed',
+    body: "Capital-gains tax on the year's net realized gain, plus dividend/interest tax, at the rates set above — a resident alien pays the marginal rate on short-term gains and ordinary income, the lower rate on long-term gains and qualified dividends; a nonresident alien owes nothing on gains or interest and a flat rate on dividends. A net loss in a bucket is floored at zero, not a rebate. Balance due nets this estimate against tax already withheld by the broker.",
+  },
+  liquidationValue: {
+    title: 'After-tax liquidation value',
+    body: "Today's portfolio value minus the capital-gains tax a full sale of every open lot, right now, would trigger. A snapshot of what selling everything today would actually leave you with, not a projection of any other date.",
   },
 } as const
 
