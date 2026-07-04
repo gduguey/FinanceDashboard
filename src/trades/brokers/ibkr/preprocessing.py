@@ -1,17 +1,18 @@
-"""IBKR Preprocessing: map native `<Trade>`/`<CashTransaction>` rows onto the ledger.
-"""
+"""Map native IBKR `<Trade>`/`<CashTransaction>` rows onto the canonical ledger."""
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
+from typing import TYPE_CHECKING
 
-from trades.brokers.ibkr.api import ParsedStatement
-from trades.brokers.ibkr.models import IbkrCashTransaction, IbkrTrade
-from trades.config import IbkrFlexApiConfig, LedgerEventType
+import polars as pl
+
 from trades.models import LedgerEvent
 
-_CASH_TRANSACTION_EVENT_TYPES: dict[str, LedgerEventType] = {
+if TYPE_CHECKING:
+    from trades.brokers.ibkr.api import ParsedStatement
+    from trades.config import AppConfig
+
+_CASH_TRANSACTION_EVENT_TYPES = {
     "Dividends": "DIVIDEND",
     "Payment In Lieu Of Dividends": "DIVIDEND",
     "Withholding Tax": "WITHHOLDING",
@@ -23,155 +24,179 @@ _CASH_TRANSACTION_EVENT_TYPES: dict[str, LedgerEventType] = {
 }
 
 
-def _empty_ledger() -> pd.DataFrame:
-    return pd.DataFrame(columns=list(LedgerEvent.model_fields)).astype(
-        {
-            "event_datetime": "datetime64[ns]",
-            "shares": "float64",
-            "price": "float64",
-            "amount": "float64",
-        }
-    )
+def _empty_ledger() -> pl.DataFrame:
+    return pl.DataFrame(schema=LedgerEvent.polars_schema)
 
 
-def _finish_ledger(rows: pd.DataFrame) -> pd.DataFrame:
-    """Common tail of both `standardize_ibkr_*` functions below: `pd.concat`
-    turns a `None` (no shares/price) sitting next to a real float into NaN,
-    which a pydantic `float | None, gt=0` field rejects as an out-of-range
-    float instead of accepting as absent — so NaN is turned back into `None`
-    before validating every row through `LedgerEvent`."""
-    for column in ("shares", "price"):
-        rows[column] = rows[column].astype(object).where(rows[column].notna(), None)
-    events = [LedgerEvent.model_validate(row.to_dict()) for _, row in rows.iterrows()]
-    df = pd.DataFrame([event.model_dump() for event in events])
-    df["event_datetime"] = pd.to_datetime(df["event_datetime"])
-    return df.sort_values(["event_datetime", "symbol", "event_id"]).reset_index(drop=True)
+def _events_to_frame(events: list[LedgerEvent]) -> pl.DataFrame:
+    if not events:
+        return _empty_ledger()
+    frame = pl.DataFrame([event.model_dump() for event in events], schema=LedgerEvent.polars_schema)
+    return frame.sort("event_datetime", "symbol", "event_id")
 
 
-def _standardize_ibkr_trades(ibkr_trades: pd.DataFrame, config: IbkrFlexApiConfig) -> pd.DataFrame:
-    """Map `<Trade>` rows (validated via `brokers.models.IbkrTrade`) onto ledger
-    events. `BUY (Ca.)`/`SELL (Ca.)` cancellations are dropped.
+def _trade_meta(row: dict[str, object]) -> dict[str, str]:
+    meta = {"transaction_id": str(row["transaction_id"]), "trade_id": str(row["trade_id"])}
+    if row["notes"]:
+        meta["notes"] = str(row["notes"])
+    if row["is_drip"]:
+        meta["drip_reinvestment"] = "true"
+    return meta
 
-    - `BUY` / `SELL` — one per kept fill; `amount` is the principal
-    (`trade_price x quantity`).
+
+def _standardize_ibkr_trades(ibkr_trades: pl.DataFrame, config: AppConfig) -> pl.DataFrame:
+    """Map `<Trade>` rows (validated via `brokers.models.IbkrTrade`) onto ledger events.
+
+    `BUY (Ca.)`/`SELL (Ca.)` cancellations are dropped.
+
+    - `BUY`/`SELL` — one per kept fill; `amount` is the principal (`trade_price x quantity`).
     - `FEE` — a second event on the same transaction when `ib_commission` is
-    non-zero, kept separate so commission never inflates a lot's cost basis.
-    - DRIP flag — a `BUY` carrying `config.drip_reinvestment_note_code` gets
-    `meta["drip_reinvestment"] = "true"`.
+      non-zero, kept separate so commission never inflates a lot's cost basis.
+    - DRIP flag — a `BUY` carrying `config.ibkr.drip_reinvestment_note_code`
+      gets `meta["drip_reinvestment"] = "true"`.
+
+    Parameters
+    ----------
+    ibkr_trades
+        Native `<Trade>` rows.
+    config
+        Application configuration; `config.ibkr.drip_reinvestment_note_code` is read.
+
+    Returns
+    -------
+    polars.DataFrame
+        Ledger-shaped rows, validated through `LedgerEvent`.
     """
-    trades = ibkr_trades[ibkr_trades["buy_sell"].isin(["BUY", "SELL"])]
-    if trades.empty:
+    trades = ibkr_trades.filter(pl.col("buy_sell").is_in(["BUY", "SELL"]))
+    if trades.is_empty():
         return _empty_ledger()
 
-    def trade_meta(row: pd.Series) -> dict[str, str]:
-        meta = {
-            "transaction_id": row["transaction_id"],
-            "trade_id": row["trade_id"],
-            "notes": row["notes"],
-        }
-        codes = row["notes"].split(";")
-        if row["buy_sell"] == "BUY" and config.drip_reinvestment_note_code in codes:
-            meta["drip_reinvestment"] = "true"
-        return meta
-
-    principal = pd.DataFrame(
-        {
-            "event_id": "ibkr:" + trades["transaction_id"].astype(str),
-            "event_datetime": trades["date_time"],
-            "symbol": trades["symbol"],
-            "event_type": trades["buy_sell"],
-            "shares": trades["quantity"].abs(),
-            "price": trades["trade_price"],
-            "amount": trades["trade_money"].abs(),
-            "currency": trades["currency"],
-            "meta": trades.apply(trade_meta, axis=1),
-        }
+    principal = trades.select(
+        event_id=pl.concat_str([pl.lit("ibkr:"), pl.col("transaction_id")]),
+        event_datetime=pl.col("date_time"),
+        symbol=pl.col("symbol"),
+        event_type=pl.col("buy_sell"),
+        shares=pl.col("quantity").abs(),
+        price=pl.col("trade_price"),
+        amount=pl.col("trade_money").abs(),
+        currency=pl.col("currency"),
+        transaction_id=pl.col("transaction_id"),
+        trade_id=pl.col("trade_id"),
+        notes=pl.col("notes"),
+        is_drip=pl.col("buy_sell").eq("BUY")
+        & pl.col("notes").str.split(";").list.contains(pl.lit(config.ibkr.drip_reinvestment_note_code)),
+    )
+    fees = trades.filter(pl.col("ib_commission") != 0).select(
+        event_id=pl.concat_str([pl.lit("ibkr:"), pl.col("transaction_id"), pl.lit(":fee")]),
+        event_datetime=pl.col("date_time"),
+        symbol=pl.col("symbol"),
+        event_type=pl.lit("FEE"),
+        shares=pl.lit(None, dtype=pl.Float64),
+        price=pl.lit(None, dtype=pl.Float64),
+        amount=pl.col("ib_commission").abs(),
+        currency=pl.col("currency"),
+        transaction_id=pl.col("transaction_id"),
+        trade_id=pl.col("trade_id"),
+        notes=pl.lit(None, dtype=pl.Utf8),
+        is_drip=pl.lit(value=False),
     )
 
-    fees = trades[trades["ib_commission"] != 0]
-    fee_rows = pd.DataFrame(
-        {
-            "event_id": "ibkr:" + fees["transaction_id"].astype(str) + ":fee",
-            "event_datetime": fees["date_time"],
-            "symbol": fees["symbol"],
-            "event_type": "FEE",
-            "shares": None,
-            "price": None,
-            "amount": fees["ib_commission"].abs(),
-            "currency": fees["currency"],
-            "meta": fees.apply(
-                lambda row: {"transaction_id": row["transaction_id"], "trade_id": row["trade_id"]},
-                axis=1,
-            ),
-        }
-    )
-
-    return _finish_ledger(pd.concat([principal, fee_rows], ignore_index=True))
+    events = [
+        LedgerEvent(
+            event_id=row["event_id"],
+            event_datetime=row["event_datetime"],
+            symbol=row["symbol"],
+            event_type=row["event_type"],
+            shares=row["shares"],
+            price=row["price"],
+            amount=row["amount"],
+            currency=row["currency"],
+            meta=_trade_meta(row),
+        )
+        for row in pl.concat([principal, fees], how="vertical").iter_rows(named=True)
+    ]
+    return _events_to_frame(events)
 
 
-def _standardize_ibkr_cash_transactions(ibkr_cash_transactions: pd.DataFrame) -> pd.DataFrame:
-    """Map `<CashTransaction>` rows (already validated through
-    `brokers.models.IbkrCashTransaction`) onto the ledger. Only `level_of_detail
-    == "DETAIL"` rows are kept. A blank `symbol` (deposits have none) becomes the `CASH` 
-    pseudo-position. IBKR encodes direction as `amount`'s sign; the ledger never does that,
-    so it's translated into `event_type` here and `amount` becomes a magnitude.
+def _standardize_ibkr_cash_transactions(ibkr_cash_transactions: pl.DataFrame) -> pl.DataFrame:
+    """Map `<CashTransaction>` rows onto ledger events.
+
+    Only `level_of_detail == "DETAIL"` rows are kept (see
+    `brokers.models.IbkrCashTransaction`). A blank `symbol` (deposits have
+    none) becomes the `CASH` pseudo-position. IBKR encodes direction as
+    `amount`'s sign; the ledger never does that, so it is translated into
+    `event_type` here and `amount` becomes a magnitude.
+
+    Parameters
+    ----------
+    ibkr_cash_transactions
+        Native `<CashTransaction>` rows.
+
+    Returns
+    -------
+    polars.DataFrame
+        Ledger-shaped rows, validated through `LedgerEvent`.
     """
-    rows = ibkr_cash_transactions[ibkr_cash_transactions["level_of_detail"] == "DETAIL"]
-    if rows.empty:
+    rows = ibkr_cash_transactions.filter(pl.col("level_of_detail") == "DETAIL")
+    if rows.is_empty():
         return _empty_ledger()
 
-    is_deposit_or_withdrawal = rows["type"] == "Deposits/Withdrawals"
-    event_type = np.where(
-        is_deposit_or_withdrawal,
-        np.where(rows["amount"] >= 0, "DEPOSIT", "WITHDRAWAL"),
-        rows["type"].map(_CASH_TRANSACTION_EVENT_TYPES).to_numpy(),
-    )
-    recognized = rows[pd.notna(event_type)]
-    if recognized.empty:
+    recognized = rows.with_columns(
+        event_type=pl
+        .when(pl.col("type") == "Deposits/Withdrawals")
+        .then(pl.when(pl.col("amount") >= 0).then(pl.lit("DEPOSIT")).otherwise(pl.lit("WITHDRAWAL")))
+        .otherwise(pl.col("type").replace_strict(_CASH_TRANSACTION_EVENT_TYPES, default=None, return_dtype=pl.Utf8))
+    ).filter(pl.col("event_type").is_not_null())
+    if recognized.is_empty():
         return _empty_ledger()
 
-    events = pd.DataFrame(
-        {
-            "event_id": "ibkr:" + recognized["transaction_id"].astype(str),
-            "event_datetime": recognized["date_time"],
-            "symbol": recognized["symbol"].replace("", "CASH"),
-            "event_type": event_type[pd.notna(event_type)],
-            "shares": None,
-            "price": None,
-            "amount": recognized["amount"].abs(),
-            "currency": recognized["currency"],
-            "meta": recognized.apply(
-                lambda row: {
-                    "transaction_id": row["transaction_id"],
-                    "type": row["type"],
-                    "description": row["description"],
-                    "action_id": row["action_id"],
-                },
-                axis=1,
-            ),
-        }
+    events = [
+        LedgerEvent(
+            event_id=f"ibkr:{row['transaction_id']}",
+            event_datetime=row["date_time"],
+            symbol=row["symbol"] or "CASH",
+            event_type=row["event_type"],
+            amount=abs(row["amount"]),
+            currency=row["currency"],
+            meta={
+                "transaction_id": row["transaction_id"],
+                "type": row["type"],
+                "description": row["description"],
+                "action_id": row["action_id"],
+            },
+        )
+        for row in recognized.iter_rows(named=True)
+    ]
+    return _events_to_frame(events)
+
+
+def statement_to_ledger(statement: ParsedStatement, config: AppConfig) -> pl.DataFrame:
+    """Convert one parsed Flex statement's `<Trade>`/`<CashTransaction>` rows into ledger rows.
+
+    Parameters
+    ----------
+    statement
+        The parsed Flex statement.
+    config
+        Application configuration; `config.ibkr` is read.
+
+    Returns
+    -------
+    polars.DataFrame
+        Ledger-shaped rows, unsorted (the caller sorts after merging with the existing ledger).
+    """
+    trades = pl.DataFrame([trade.model_dump() for trade in statement.trades]) if statement.trades else pl.DataFrame()
+    cash_transactions = (
+        pl.DataFrame([transaction.model_dump() for transaction in statement.cash_transactions])
+        if statement.cash_transactions
+        else pl.DataFrame()
     )
-    return _finish_ledger(events)
-
-
-def statement_to_ledger(statement: ParsedStatement, config: IbkrFlexApiConfig) -> pd.DataFrame:
-    """Native `<Trade>`/`<CashTransaction>` rows -> ledger rows (see
-    `preprocessing.standardize_ibkr_ledger`/`standardize_ibkr_cash_transactions`).
-    Left unsorted — sorts after merging only."""
-    trades_df = pd.DataFrame(columns=list(IbkrTrade.model_fields))
-    if statement.trades:
-        trades_df = pd.DataFrame([t.model_dump() for t in statement.trades])
-        trades_df["date_time"] = pd.to_datetime(trades_df["date_time"])
-
-    cash_df = pd.DataFrame(columns=list(IbkrCashTransaction.model_fields))
-    if statement.cash_transactions:
-        cash_df = pd.DataFrame([t.model_dump() for t in statement.cash_transactions])
-        cash_df["date_time"] = pd.to_datetime(cash_df["date_time"])
-
-    return pd.concat(
+    return pl.concat(
         [
-            _standardize_ibkr_trades(trades_df, config),
-            _standardize_ibkr_cash_transactions(cash_df),
+            _standardize_ibkr_trades(trades, config) if not trades.is_empty() else _empty_ledger(),
+            _standardize_ibkr_cash_transactions(cash_transactions)
+            if not cash_transactions.is_empty()
+            else _empty_ledger(),
         ],
-        ignore_index=True,
+        how="vertical",
     )

@@ -1,7 +1,34 @@
 import pytest
 from pydantic import ValidationError
 
-from trades.config import AggregationConfig, IbkrFlexApiConfig, IbkrFlexCredentials, ReturnsConfig
+from trades.config import (
+    AggregationConfig,
+    AppConfig,
+    IbkrFlexApiConfig,
+    IbkrFlexCredentials,
+    LedgerConfig,
+    ReturnsConfig,
+)
+
+
+def test_ledger_config_default_cash_symbol() -> None:
+    assert LedgerConfig().cash_symbol == "CASH"
+
+
+def test_app_config_composes_every_sub_config() -> None:
+    config = AppConfig()
+    assert config.ledger.cash_symbol == "CASH"
+    assert config.aggregation.same_day_price_tolerance == pytest.approx(0.0001)
+    assert config.prices.request_timeout_seconds == pytest.approx(10.0)
+    assert config.cpi.series_id == "CPIAUCSL"
+    assert config.returns.hysa_annual_rate == pytest.approx(0.04)
+    assert config.ibkr.max_poll_attempts == 10
+
+
+def test_app_config_is_frozen() -> None:
+    config = AppConfig()
+    with pytest.raises(ValidationError):
+        config.returns = ReturnsConfig(hysa_annual_rate=0.05)
 
 
 def test_aggregation_config_default_tolerance() -> None:

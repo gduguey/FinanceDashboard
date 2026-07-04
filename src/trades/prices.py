@@ -1,115 +1,158 @@
-"""Daily close prices from Yahoo Finance's public chart endpoint, cached to
-disk as one flat CSV per symbol.
+"""Daily close prices from Yahoo Finance's public chart endpoint.
 
-Design (see docs/architecture.md and docs/prices_api.md for the full rationale):
-  - The cache is append-only from the caller's point of view: `update_price_cache`
-    never rewrites a value that's already stored, it only fetches the date
-    ranges missing at the front (older than the cache) or back (newer than the
-    cache) and appends them.
-  - Every row pulled from the API is validated through `PriceObservation`
-    before it can reach the cache, so a malformed API response can't corrupt
-    stored data.
-  - Writes are atomic (write to a temp file, then `Path.replace`), so a crash
-    mid-write can't leave a half-written cache file.
-  - Reads and re-fetches are bounded to exactly the missing range, so calling
-    this once a day only ever costs one small HTTP request per symbol.
-
-Every function below takes a `PriceApiConfig` explicitly — there is no
-module-level default cache directory, URL, or timeout to fall back to.
+Cached to disk as one flat CSV per symbol. Two series are cached per
+symbol: the raw daily close (for pricing your own positions) and the
+dividend/split-adjusted close (for benchmark counterfactuals, e.g. an
+all-VOO comparison) — mixing the two silently corrupts every return, so
+they are separate cache files, selected by the `adjusted` flag every
+function here takes. Both come from the same Yahoo chart API response,
+just a different field.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
-import pandas as pd
+import polars as pl
 import requests
 
-from trades.config import PriceApiConfig
+from trades.frames import collect_if_lazy
+from trades.io_utils import write_csv_atomic
 from trades.models import PriceObservation
 
-CACHE_COLUMNS = ["price_date", "close"]  # on-disk schema, not a tunable parameter
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from trades.config import AppConfig
 
 
-def _cache_path(symbol: str, cache_dir: Path) -> Path:
-    return cache_dir / f"{symbol.upper()}.csv"
+def _cache_path(symbol: str, cache_dir: Path, *, adjusted: bool) -> Path:
+    suffix = ".adjusted" if adjusted else ""
+    return cache_dir / f"{symbol.upper()}{suffix}.csv"
 
 
-def load_price_cache(symbol: str, config: PriceApiConfig) -> pd.DataFrame:
-    """Read a symbol's cached price history, or an empty frame if none exists yet."""
-    path = _cache_path(symbol, config.cache_dir)
+def _to_unix_seconds(value: date) -> int:
+    return int(datetime.combine(value, datetime.min.time(), tzinfo=UTC).timestamp())
+
+
+def load_price_cache(symbol: str, config: AppConfig, *, adjusted: bool = False) -> pl.DataFrame:
+    """Read a symbol's cached price history.
+
+    Parameters
+    ----------
+    symbol
+        The ticker symbol.
+    config
+        Application configuration; `config.prices.cache_dir` is read.
+    adjusted
+        Read the dividend/split-adjusted cache instead of the raw-close cache.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `price_date`, `close`, sorted by date. Empty if no cache file exists yet.
+    """
+    path = _cache_path(symbol, config.prices.cache_dir, adjusted=adjusted)
     if not path.exists():
-        return pd.DataFrame(columns=CACHE_COLUMNS).astype({"close": "float64"})
-    df = pd.read_csv(path, parse_dates=["price_date"])
-    return df.sort_values("price_date").reset_index(drop=True)
-
-
-def _write_cache_atomic(symbol: str, df: pd.DataFrame, cache_dir: Path) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path = _cache_path(symbol, cache_dir)
-    tmp_path = path.with_suffix(".csv.tmp")
-    df.sort_values("price_date").to_csv(tmp_path, index=False)
-    tmp_path.replace(path)  # atomic rename on the same filesystem
-
-
-def _to_unix(d: date) -> int:
-    return int(datetime.combine(d, datetime.min.time(), tzinfo=UTC).timestamp())
+        return pl.DataFrame(schema=PriceObservation.polars_schema)
+    return pl.read_csv(path, try_parse_dates=True).sort("price_date")
 
 
 def fetch_price_history(
     symbol: str,
     start: date,
     end: date,
-    config: PriceApiConfig,
+    config: AppConfig,
+    *,
+    adjusted: bool = False,
     session: requests.Session | None = None,
-) -> pd.DataFrame:
-    """Pull daily closes for `symbol` in [start, end] from the Yahoo chart API.
+) -> pl.DataFrame:
+    """Pull daily closes for a symbol from the Yahoo chart API.
 
-    Every row is validated through `PriceObservation` (positive close, real
-    date) before being returned; missing/holiday days are simply absent, not
-    filled in. Raises if the API responds with an error or no data at all —
-    callers must not receive an empty result mistaken for "no price change."
+    Parameters
+    ----------
+    symbol
+        The ticker symbol to fetch.
+    start
+        First date to fetch, inclusive.
+    end
+        Last date to fetch, inclusive.
+    config
+        Application configuration; `config.prices` is read.
+    adjusted
+        Fetch the dividend/split-adjusted close instead of the raw close.
+    session
+        HTTP session to use instead of the top-level `requests` module.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `price_date`, `close`. Missing/holiday days are absent, not filled in.
+
+    Raises
+    ------
+    ValueError
+        If the API responds with no data at all.
     """
     http = session or requests
+    params: dict[str, int | str] = {
+        "period1": _to_unix_seconds(start),
+        "period2": _to_unix_seconds(end + timedelta(days=1)),
+        "interval": "1d",
+    }
     response = http.get(
-        config.chart_url_template.format(symbol=symbol),
-        params={
-            "period1": _to_unix(start),
-            "period2": _to_unix(end + timedelta(days=1)),
-            "interval": "1d",
-        },
-        headers=config.request_headers,
-        timeout=config.request_timeout_seconds,
+        config.prices.chart_url_template.format(symbol=symbol),
+        params=params,
+        headers=config.prices.request_headers,
+        timeout=config.prices.request_timeout_seconds,
     )
     response.raise_for_status()
     payload = response.json()
     result = payload.get("chart", {}).get("result")
     if not result:
         error = payload.get("chart", {}).get("error")
-        raise ValueError(f"Yahoo chart API returned no data for {symbol}: {error}")
+        message = f"Yahoo chart API returned no data for {symbol}: {error}"
+        raise ValueError(message)
 
     timestamps = result[0]["timestamp"]
-    closes = result[0]["indicators"]["quote"][0]["close"]
+    indicators = result[0]["indicators"]
+    values = indicators["adjclose"][0]["adjclose"] if adjusted else indicators["quote"][0]["close"]
     observations = [
-        PriceObservation(
-            symbol=symbol,
-            price_date=datetime.fromtimestamp(ts, tz=UTC).date(),
-            close=close,
-        )
-        for ts, close in zip(timestamps, closes, strict=True)
-        if close is not None
+        PriceObservation(symbol=symbol, price_date=datetime.fromtimestamp(ts, tz=UTC).date(), close=value)
+        for ts, value in zip(timestamps, values, strict=True)
+        if value is not None
     ]
-    return pd.DataFrame(
-        [{"price_date": o.price_date, "close": o.close} for o in observations]
-    ).astype({"price_date": "datetime64[ns]"})
+    return pl.DataFrame(
+        {
+            "price_date": [observation.price_date for observation in observations],
+            "close": [observation.close for observation in observations],
+        },
+        schema=PriceObservation.polars_schema,
+    )
 
 
-def _missing_ranges(existing: pd.DataFrame, since: date, as_of: date) -> list[tuple[date, date]]:
-    if existing.empty:
+def _missing_ranges(existing: pl.DataFrame, since: date, as_of: date) -> list[tuple[date, date]]:
+    """Compute the date range(s) not yet covered by an existing cache.
+
+    Parameters
+    ----------
+    existing
+        The currently cached history.
+    since
+        Start of the window the caller wants covered.
+    as_of
+        End of the window the caller wants covered.
+
+    Returns
+    -------
+    list[tuple[datetime.date, datetime.date]]
+        Zero, one, or two (start, end) gaps at the front and/or back of `existing`.
+    """
+    if existing.is_empty():
         return [(since, as_of)]
-    existing_min = existing["price_date"].min().date()
-    existing_max = existing["price_date"].max().date()
+    existing_min = cast("date", existing["price_date"].min())
+    existing_max = cast("date", existing["price_date"].max())
     gaps: list[tuple[date, date]] = []
     if since < existing_min:
         gaps.append((since, existing_min - timedelta(days=1)))
@@ -122,31 +165,47 @@ def update_price_cache(
     symbol: str,
     since: date,
     as_of: date,
-    config: PriceApiConfig,
+    config: AppConfig,
+    *,
+    adjusted: bool = False,
     session: requests.Session | None = None,
-) -> pd.DataFrame:
-    """Ensure the on-disk cache for `symbol` covers [since, as_of], fetching
-    only what's missing, and return the full cached history."""
-    existing = load_price_cache(symbol, config)
+) -> pl.DataFrame:
+    """Ensure the on-disk cache for a symbol covers [since, as_of], fetching only what's missing.
+
+    Parameters
+    ----------
+    symbol
+        The ticker symbol.
+    since
+        Start of the window the cache must cover.
+    as_of
+        End of the window the cache must cover.
+    config
+        Application configuration; `config.prices` is read.
+    adjusted
+        Update the dividend/split-adjusted cache instead of the raw-close cache.
+    session
+        HTTP session to use instead of the top-level `requests` module.
+
+    Returns
+    -------
+    polars.DataFrame
+        The full cached history after the update.
+    """
+    existing = load_price_cache(symbol, config, adjusted=adjusted)
     gaps = _missing_ranges(existing, since, as_of)
     if not gaps:
         return existing
 
     fetched = [
-        fetch_price_history(symbol, gap_start, gap_end, config, session)
+        fetch_price_history(symbol, gap_start, gap_end, config, adjusted=adjusted, session=session)
         for gap_start, gap_end in gaps
     ]
-    new_rows = (
-        pd.concat(fetched, ignore_index=True) if fetched else pd.DataFrame(columns=CACHE_COLUMNS)
-    )
-    merged = (
-        pd.concat([existing, new_rows], ignore_index=True)
-        .drop_duplicates(subset="price_date", keep="last")
-        .sort_values("price_date")
-        .reset_index(drop=True)
-    )
-    if not new_rows.empty:
-        _write_cache_atomic(symbol, merged, config.cache_dir)
+    if all(frame.is_empty() for frame in fetched):
+        return existing
+
+    merged = pl.concat([existing, *fetched]).unique(subset="price_date", keep="last").sort("price_date")
+    write_csv_atomic(merged, _cache_path(symbol, config.prices.cache_dir, adjusted=adjusted))
     return merged
 
 
@@ -154,16 +213,58 @@ def update_price_caches(
     symbols: list[str],
     since: date,
     as_of: date,
-    config: PriceApiConfig,
+    config: AppConfig,
+    *,
+    adjusted: bool = False,
     session: requests.Session | None = None,
-) -> dict[str, pd.DataFrame]:
-    return {s: update_price_cache(s, since, as_of, config, session) for s in symbols}
+) -> dict[str, pl.DataFrame]:
+    """Ensure the on-disk cache for every symbol covers [since, as_of].
+
+    Parameters
+    ----------
+    symbols
+        The ticker symbols to update.
+    since
+        Start of the window the cache must cover.
+    as_of
+        End of the window the cache must cover.
+    config
+        Application configuration; `config.prices` is read.
+    adjusted
+        Update the dividend/split-adjusted cache instead of the raw-close cache.
+    session
+        HTTP session to use instead of the top-level `requests` module.
+
+    Returns
+    -------
+    dict[str, polars.DataFrame]
+        Each symbol's full cached history after the update.
+    """
+    return {
+        symbol: update_price_cache(symbol, since, as_of, config, adjusted=adjusted, session=session)
+        for symbol in symbols
+    }
 
 
-def price_as_of(history: pd.DataFrame, target_date: date) -> float | None:
-    """Most recent close on or before `target_date` (rolls back over
-    weekends/holidays); None if the history starts after `target_date`."""
-    eligible = history[history["price_date"] <= pd.Timestamp(target_date)]
-    if eligible.empty:
+def price_as_of(history: pl.DataFrame | pl.LazyFrame, target_date: date) -> float | None:
+    """Look up the most recent close on or before a target date.
+
+    Rolls back over weekends/holidays; never interpolates.
+
+    Parameters
+    ----------
+    history
+        Price history with `price_date` and `close` columns.
+    target_date
+        The date to price as of.
+
+    Returns
+    -------
+    float or None
+        The most recent close on or before `target_date`, or None if the
+        history starts after `target_date`.
+    """
+    eligible = collect_if_lazy(history.filter(pl.col("price_date") <= target_date).sort("price_date").tail(1))
+    if eligible.is_empty():
         return None
-    return float(eligible.sort_values("price_date").iloc[-1]["close"])
+    return float(eligible["close"].item())

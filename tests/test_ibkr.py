@@ -1,11 +1,12 @@
 from datetime import date, datetime
 
-import pandas as pd
+import polars as pl
 import pytest
 
-from trades.brokers.ibkr import api
-from trades.config import IbkrFlexApiConfig, IbkrFlexCredentials
-from trades.brokers.ibkr.models import drop_tz_suffix
+from trades.brokers.ibkr import api, main
+from trades.brokers.ibkr import models as ibkr_models
+from trades.config import AppConfig, IbkrFlexCredentials
+from trades.io_utils import write_csv_atomic
 
 FIXTURE_XML = """<FlexQueryResponse queryName="Trade History API" type="AF">
 <FlexStatements count="1">
@@ -61,17 +62,17 @@ EARLIER_FIXTURE_XML = """<FlexQueryResponse queryName="Trade History API" type="
 </FlexStatements>
 </FlexQueryResponse>"""
 
-CREDENTIALS = IbkrFlexCredentials(token="test-token", query_id="12345", _env_file=None)
+CREDENTIALS = IbkrFlexCredentials(token="test-token", query_id="12345", _env_file=None)  # noqa: S106
 
 
-def _config(tmp_path) -> IbkrFlexApiConfig:
-    return IbkrFlexApiConfig(cache_dir=tmp_path)
+def _config(tmp_path) -> AppConfig:
+    return AppConfig(ibkr={"cache_dir": tmp_path})
 
 
 def _ledger_row(event_id: str, event_datetime: str, event_type: str = "BUY") -> dict:
     return {
         "event_id": event_id,
-        "event_datetime": pd.Timestamp(event_datetime),
+        "event_datetime": datetime.fromisoformat(event_datetime),
         "symbol": "VOO",
         "event_type": event_type,
         "shares": 1.0,
@@ -85,22 +86,30 @@ def _ledger_row(event_id: str, event_datetime: str, event_type: str = "BUY") -> 
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("2026-07-01 06:00:00 EDT", "2026-07-01 06:00:00"),  # real IBKR format: always TZ-suffixed
-        ("2026-07-01 06:00:00", "2026-07-01 06:00:00"),  # tolerate no suffix too
+        ("2026-07-01 06:00:00 EDT", "2026-07-01T10:00:00"),  # summer: UTC-4
+        ("2026-01-15 06:00:00 EST", "2026-01-15T11:00:00"),  # winter: UTC-5
     ],
 )
-def test_drop_tz_suffix_ignores_timezone_abbreviation(raw, expected) -> None:
-    """`parse_statement` uses `brokers.models.drop_tz_suffix` for
-    `whenGenerated`, the same helper `IbkrTrade`/`IbkrCashTransaction` use
-    for `dateTime`."""
-    assert drop_tz_suffix(raw) == expected
+def test_parse_ibkr_datetime_converts_to_utc(raw, expected) -> None:
+    assert ibkr_models.parse_ibkr_datetime(raw).isoformat() == expected
+
+
+def test_parse_ibkr_datetime_passes_through_non_strings() -> None:
+    value = datetime(2026, 7, 1, 6, 0, 0)
+    assert ibkr_models.parse_ibkr_datetime(value) is value
+
+
+def test_parse_ibkr_datetime_rejects_unrecognized_abbreviation() -> None:
+    with pytest.raises(ValueError, match="Unrecognized IBKR timezone abbreviation"):
+        ibkr_models.parse_ibkr_datetime("2026-07-01 06:00:00 GMT")
 
 
 def test_parse_statement_extracts_trades() -> None:
-    statement = api._parse_statement(FIXTURE_XML)
+    statement = api.parse_statement(FIXTURE_XML)
     assert statement.from_date == date(2026, 6, 30)
     assert statement.to_date == date(2026, 6, 30)
-    assert statement.when_generated.isoformat() == "2026-07-01T06:00:00"
+    # 06:00 EDT (UTC-4) -> 10:00 UTC.
+    assert statement.when_generated.isoformat() == "2026-07-01T10:00:00"
     assert len(statement.trades) == 1
 
     trade = statement.trades[0]
@@ -108,7 +117,8 @@ def test_parse_statement_extracts_trades() -> None:
     assert trade.symbol == "VOO"
     assert trade.buy_sell == "BUY"
     assert trade.net_cash == pytest.approx(-1364.62)
-    assert trade.date_time.isoformat() == "2026-06-30T09:48:03"
+    # 09:48:03 EDT (UTC-4) -> 13:48:03 UTC; already UTC by the time it leaves this model.
+    assert trade.date_time.isoformat() == "2026-06-30T13:48:03"
     assert trade.notes == "P"
 
 
@@ -122,48 +132,43 @@ def test_parse_statement_extracts_trades() -> None:
     ],
 )
 def test_has_uncovered_weekday_gap(last_covered, new_from, expected) -> None:
-    assert api._has_uncovered_weekday_gap(last_covered, new_from) is expected
+    assert main._has_uncovered_weekday_gap(last_covered, new_from) is expected
 
 
 def test_merge_ledger_dedupes_by_event_id() -> None:
-    existing = pd.DataFrame([_ledger_row("ibkr:9001", "2026-06-30 09:48:03")])
-    new = pd.DataFrame(
-        [
-            _ledger_row("ibkr:9001", "2026-06-30 09:48:03"),
-            _ledger_row("ibkr:9002", "2026-07-01 09:48:03"),
-        ]
-    )
-    merged = api._merge_ledger(existing, new)
+    existing = pl.DataFrame([_ledger_row("ibkr:9001", "2026-06-30 09:48:03")])
+    new = pl.DataFrame([
+        _ledger_row("ibkr:9001", "2026-06-30 09:48:03"),
+        _ledger_row("ibkr:9002", "2026-07-01 09:48:03"),
+    ])
+    merged = main._merge_ledger(existing, new)
     assert len(merged) == 2
     assert set(merged["event_id"]) == {"ibkr:9001", "ibkr:9002"}
 
 
 def test_sync_ibkr_account_writes_ledger_and_returns_result(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(api, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
     config = _config(tmp_path)
 
-    result = api.sync_ibkr_account(CREDENTIALS, config)
+    result = main.sync_ibkr_account(CREDENTIALS, config)
 
     assert result.statement_from_date == date(2026, 6, 30)
     assert result.new_event_count == 2  # one BUY + its FEE (ibCommission=-1.00)
     assert result.total_event_count == 2
-    assert (tmp_path / "ledger.csv").exists()
-    assert not (tmp_path / "trades.csv").exists()
-    assert not (tmp_path / "position_snapshots.csv").exists()
-    assert not (tmp_path / "cash_snapshots.csv").exists()
+    assert config.ibkr.ledger_csv_path.exists()
 
-    ledger = api.load_ledger(config)
+    ledger = main.load_ledger(config)
     assert len(ledger) == 2
     assert set(ledger["event_type"]) == {"BUY", "FEE"}
-    assert ledger[ledger["event_type"] == "BUY"].iloc[0]["symbol"] == "VOO"
+    assert ledger.filter(pl.col("event_type") == "BUY")["symbol"][0] == "VOO"
 
 
 def test_sync_ibkr_account_is_idempotent_same_day(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(api, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
     config = _config(tmp_path)
 
-    api.sync_ibkr_account(CREDENTIALS, config)
-    second = api.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config)
+    second = main.sync_ibkr_account(CREDENTIALS, config)
 
     assert second.new_event_count == 0
     assert second.total_event_count == 2
@@ -171,35 +176,33 @@ def test_sync_ibkr_account_is_idempotent_same_day(tmp_path, monkeypatch) -> None
 
 def test_sync_ibkr_account_raises_on_uncovered_gap(tmp_path, monkeypatch) -> None:
     config = _config(tmp_path)
-    existing_ledger = pd.DataFrame(
-        [_ledger_row("ibkr:8000", "2026-06-24 09:30:00")]  # several weekdays before the fixture
-    )
-    api._atomic_write_csv(config.cache_dir / "ledger.csv", existing_ledger)
-    monkeypatch.setattr(api, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    existing_ledger = pl.DataFrame([_ledger_row("ibkr:8000", "2026-06-24 09:30:00")])
+    write_csv_atomic(existing_ledger, config.ibkr.ledger_csv_path)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
 
-    with pytest.raises(api.TradeHistoryGapError):
-        api.sync_ibkr_account(CREDENTIALS, config)
+    with pytest.raises(main.TradeHistoryGapError):
+        main.sync_ibkr_account(CREDENTIALS, config)
 
 
 def test_sync_ibkr_account_archives_raw_statement_before_parsing(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(api, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
     config = _config(tmp_path)
 
-    api.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config)
 
-    archived = list((tmp_path / "raw_statements").glob("*.xml"))
+    archived = list(config.ibkr.raw_statement_dir.glob("*.xml"))
     assert len(archived) == 1
     assert archived[0].read_text(encoding="utf-8") == FIXTURE_XML
 
 
 def test_sync_ibkr_account_archives_every_call_without_overwriting(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(api, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
+    monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config: FIXTURE_XML)
     config = _config(tmp_path)
 
-    api.sync_ibkr_account(CREDENTIALS, config)
-    api.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config)
 
-    archived = list((tmp_path / "raw_statements").glob("*.xml"))
+    archived = list(config.ibkr.raw_statement_dir.glob("*.xml"))
     assert len(archived) == 2
     assert all(path.read_text(encoding="utf-8") == FIXTURE_XML for path in archived)
 
@@ -210,11 +213,11 @@ def test_last_synced_at_returns_none_without_any_archive(tmp_path) -> None:
 
 def test_last_synced_at_reads_the_latest_raw_statement_filename(tmp_path) -> None:
     config = _config(tmp_path)
-    raw_dir = tmp_path / "raw_statements"
-    raw_dir.mkdir()
+    raw_dir = config.ibkr.raw_statement_dir
+    raw_dir.mkdir(parents=True)
     (raw_dir / "20260101T060000.xml").write_text(FIXTURE_XML, encoding="utf-8")
     (raw_dir / "20260701T190908.xml").write_text(FIXTURE_XML, encoding="utf-8")
-    # "-1" suffix is the same-second collision tag `_save_raw_statement` appends
+    # "-1" suffix is the same-second collision tag `save_raw_statement` appends
     (raw_dir / "20260701T190908-1.xml").write_text(FIXTURE_XML, encoding="utf-8")
 
     assert api.last_synced_at(config) == datetime(2026, 7, 1, 19, 9, 8)
@@ -223,23 +226,23 @@ def test_last_synced_at_reads_the_latest_raw_statement_filename(tmp_path) -> Non
 def test_rebuild_from_raw_statements_raises_without_archive(tmp_path) -> None:
     config = _config(tmp_path)
     with pytest.raises(FileNotFoundError):
-        api.rebuild_from_raw_statements(config)
+        main.rebuild_from_raw_statements(config)
 
 
 def test_rebuild_from_raw_statements_recomputes_ledger(tmp_path) -> None:
     config = _config(tmp_path)
-    raw_dir = config.cache_dir / "raw_statements"
+    raw_dir = config.ibkr.raw_statement_dir
     raw_dir.mkdir(parents=True)
     (raw_dir / "20260625T060000.xml").write_text(EARLIER_FIXTURE_XML, encoding="utf-8")
     (raw_dir / "20260701T060000.xml").write_text(FIXTURE_XML, encoding="utf-8")
 
-    result = api.rebuild_from_raw_statements(config)
+    result = main.rebuild_from_raw_statements(config)
 
     assert result.statement_from_date == date(2026, 6, 24)
     assert result.statement_to_date == date(2026, 6, 30)
     assert result.total_event_count == 4  # 2 trades x (BUY + FEE) each
 
-    ledger = api.load_ledger(config)
+    ledger = main.load_ledger(config)
     assert set(ledger["event_id"]) == {
         "ibkr:8000",
         "ibkr:8000:fee",
@@ -250,15 +253,15 @@ def test_rebuild_from_raw_statements_recomputes_ledger(tmp_path) -> None:
 
 def test_rebuild_from_raw_statements_recovers_a_corrupted_derived_cache(tmp_path) -> None:
     config = _config(tmp_path)
-    raw_dir = config.cache_dir / "raw_statements"
+    raw_dir = config.ibkr.raw_statement_dir
     raw_dir.mkdir(parents=True)
     (raw_dir / "20260701T060000.xml").write_text(FIXTURE_XML, encoding="utf-8")
 
     # Simulate a corrupted/wrong derived cache — the exact failure mode this
     # feature exists to make recoverable.
-    api._atomic_write_csv(config.cache_dir / "ledger.csv", pd.DataFrame({"garbage": [1, 2, 3]}))
+    write_csv_atomic(pl.DataFrame({"garbage": [1, 2, 3]}), config.ibkr.ledger_csv_path)
 
-    api.rebuild_from_raw_statements(config)
+    main.rebuild_from_raw_statements(config)
 
-    ledger = api.load_ledger(config)
+    ledger = main.load_ledger(config)
     assert set(ledger["event_id"]) == {"ibkr:9001", "ibkr:9001:fee"}
