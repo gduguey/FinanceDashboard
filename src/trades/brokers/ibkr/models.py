@@ -105,5 +105,15 @@ class IbkrCashTransaction(BaseModel):
     description: str = Field(alias="description", default="")
     action_id: str = Field(alias="actionID", default="")
     level_of_detail: Literal["DETAIL", "SUMMARY"] = Field(alias="levelOfDetail")
+    dividend_type: str = Field(
+        alias="dividendType",
+        default="",
+        description="IBKR's label, e.g. 'Ordinary Dividend'/'Unqualified Dividend'; blank outside dividend rows.",
+    )
+    ex_date: str = Field(
+        alias="exDate",
+        default="",
+        description="The dividend's ex-date (YYYY-MM-DD), kept as a raw string; blank outside dividend rows.",
+    )
 
     _parse_date_time = field_validator("date_time", mode="before")(parse_ibkr_datetime)
