@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type DateRange } from '@/lib/api'
-import type { BenchmarkSetting, HysaSettings, TargetAllocation } from '@/types/portfolio'
+import type { BenchmarkSettingUpdate, HysaSettings, TargetAllocation } from '@/types/portfolio'
 
 // One query key per endpoint, grouped under a shared "portfolio" root so a
 // single invalidate (see useSync below) refreshes every panel at once.
@@ -75,7 +75,19 @@ export const useBenchmarkSetting = () =>
 export function useSetBenchmarkSetting() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (setting: BenchmarkSetting) => api.setBenchmarkSetting(setting),
+    mutationFn: (setting: BenchmarkSettingUpdate) => api.setBenchmarkSetting(setting),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+  })
+}
+
+// Fetches just one symbol's price history on the spot — used right after
+// picking a new benchmark, so it takes effect without a full sync. Same
+// whole-tree invalidation as a settings change, since the charts that
+// read the refreshed prices are the same ones a benchmark change affects.
+export function useEnsureSymbolPriced() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (symbol: string) => api.ensureSymbolPriced(symbol),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
   })
 }
@@ -85,5 +97,18 @@ export function useSync() {
   return useMutation({
     mutationFn: api.sync,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+  })
+}
+
+// Polls the in-flight sync's step/percent while `enabled` — the sync POST
+// itself blocks until the whole thing finishes, so this is the only way
+// to show live progress rather than a bare spinner for however long the
+// slowest step (usually IBKR) takes.
+export function useSyncProgress(enabled: boolean) {
+  return useQuery({
+    queryKey: ['sync-progress'],
+    queryFn: api.syncProgress,
+    enabled,
+    refetchInterval: enabled ? 400 : false,
   })
 }

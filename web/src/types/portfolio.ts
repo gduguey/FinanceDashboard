@@ -27,6 +27,7 @@ export interface DollarChartPoint {
   portfolio_value_usd: number
   hysa_value_usd: number
   benchmark_value_usd: number
+  hysa_rate_pct: number
 }
 
 export interface ReallocationMarker {
@@ -46,6 +47,7 @@ export interface GrowthOf100Point {
   hysa_index: number | null
   benchmark_index: number | null
   cpi_index: number | null
+  hysa_rate_pct: number | null
 }
 
 export interface MonthlyPnl {
@@ -171,10 +173,28 @@ export interface HysaSettings {
 
 export interface BenchmarkSetting {
   symbol_override: string | null
+  default_symbol: string
+}
+
+export interface BenchmarkSettingUpdate {
+  symbol_override: string | null
 }
 
 export interface SymbolSearchResult {
   symbol: string
   name: string
   exchange: string
+}
+
+export interface SymbolPriceStatus {
+  symbol: string
+  was_stale: boolean
+  last_price_date: string | null
+}
+
+export interface SyncProgress {
+  step: string
+  percent: number
+  done: boolean
+  error: string | null
 }

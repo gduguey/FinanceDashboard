@@ -81,6 +81,9 @@ class HysaRatesConfig(BaseModel):
 
     cache_dir: Path = _REPO_ROOT / "data" / "hysa_rates"
     source_url: str = "https://www.apyarchives.com"
+    request_headers: dict[str, str] = Field(
+        default_factory=lambda: {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
+    )
     request_timeout_seconds: float = Field(default=15.0, gt=0)
     default_bank_id: str = Field(default="ally-bank", min_length=1)
 
@@ -120,9 +123,27 @@ class ReturnsConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    annualization_days: int = Field(default=365, gt=0)
+    annualization_days: int = Field(
+        default=365,
+        gt=0,
+        description="Minimum holding period before a raw return gets projected to a yearly rate.",
+    )
+    days_per_year: int = Field(
+        default=365,
+        gt=0,
+        description="Day-count basis for converting an annual rate to a daily one (XIRR's exponent, HYSA compounding).",
+    )
     hysa_annual_rate: float = Field(default=0.04, ge=0)
     benchmark_symbol: str = Field(default="VOO", min_length=1, description="The all-equity counterfactual symbol.")
+    xirr_tolerance: float = Field(
+        default=1e-6, gt=0, description="How close to zero XIRR's net-present-value search must land to accept a rate."
+    )
+    xirr_max_newton_iterations: int = Field(
+        default=100, gt=0, description="Newton-Raphson attempts before XIRR falls back to bisection."
+    )
+    xirr_max_bisection_iterations: int = Field(
+        default=200, gt=0, description="Bisection attempts before XIRR gives up and raises."
+    )
 
 
 class IbkrFlexCredentials(BaseSettings):

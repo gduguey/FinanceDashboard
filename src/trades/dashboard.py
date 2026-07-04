@@ -6,8 +6,8 @@ itself does no aggregation, matching `docs/architecture.md`'s split
 between the layer that computes something and the layer that serializes
 it. `DashboardSettings` is the one piece of state that lives here rather
 than in the ledger: a user-set target allocation has no home in an
-append-only record of what actually happened (NEW_TASKS.md 0.1), so it is
-its own small, persisted, user-editable settings file instead.
+append-only record of what actually happened, so it is its own small,
+persisted, user-editable settings file instead.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 
 class DashboardSettings(BaseModel):
-    """User-editable dashboard settings, persisted outside the ledger (NEW_TASKS.md 6.5).
+    """User-editable dashboard settings, persisted outside the ledger.
 
     `hysa_fixed_rate_pct` takes priority over `hysa_bank_id` when both are
     set — an explicit fixed rate is a deliberate override, not just a
@@ -134,10 +134,10 @@ def daily_portfolio_values(
 ) -> pl.DataFrame:
     """Compute portfolio value for every calendar day in a range.
 
-    The backbone series for the dollar chart (NEW_TASKS.md 6.2), the NAV
-    series (3.1), growth-of-100 (3.3), monthly P&L (3.5), and max drawdown
-    (6.7) — all derived from the same day-by-day valuation rather than
-    each recomputing it. Replays the ledger truncated to each day (see
+    The backbone series for the dollar chart, the Net Asset Value (NAV)
+    series, growth-of-100, monthly P&L, and max drawdown — all derived
+    from the same day-by-day valuation rather than each recomputing it.
+    Replays the ledger truncated to each day (see
     `counterfactuals.decision_counterfactual_value`'s docstring for why
     truncation, not just `replay_ledger`, is required for an as-of value)
     and prices the result; a day with no ledger activity yet has zero
@@ -175,7 +175,7 @@ def daily_portfolio_values(
 
 @dataclass(frozen=True)
 class OverviewCards:
-    """Headline portfolio stats for the overview card row (NEW_TASKS.md 6.1)."""
+    """Headline portfolio stats for the overview card row."""
 
     as_of: date
     value_usd: float
@@ -226,6 +226,21 @@ def _hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
     return rate
 
 
+def _hysa_rate_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
+    """Sample the resolved HYSA rate (as a percentage) over a set of dates.
+
+    Lets the dollar and growth-of-100 charts show the actual rate in
+    effect at each point, not just the dollar/index value it produced.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `date`, `hysa_rate_pct`.
+    """
+    rate_lookup = _hysa_rate_lookup(config)
+    return _series_from_lookup(dates, lambda day: rate_lookup(day) * 100, "hysa_rate_pct")
+
+
 def resolved_benchmark_symbol(config: AppConfig) -> str:
     """Resolve the benchmark symbol to use: the user's override if set, else `config.returns.benchmark_symbol`.
 
@@ -260,7 +275,7 @@ def _xirr_and_twr(
     first_flow_date = cast("date", min(flows["event_datetime"].dt.date().to_list()))
     dates = [*flows["event_datetime"].dt.date().to_list(), as_of]
     amounts = [*flows["amount"].to_list(), value]
-    xirr_pct = xirr(dates, amounts) * 100
+    xirr_pct = xirr(dates, amounts, config) * 100
     is_provisional = (as_of - first_flow_date).days < config.returns.annualization_days
 
     daily_values = daily_portfolio_values(ledger, price_lookup, first_flow_date, as_of, config)
@@ -289,7 +304,7 @@ def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, f
 
 
 def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> OverviewCards:
-    """Assemble the overview card row: value, gain split, XIRR, dollar alpha, TWR (NEW_TASKS.md 6.1).
+    """Assemble the overview card row: value, gain split, XIRR, dollar alpha, TWR.
 
     Parameters
     ----------
@@ -322,7 +337,11 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
     if not flows.is_empty():
         xirr_pct, is_provisional, twr = _xirr_and_twr(ledger, flows, price_lookup, value, as_of, config)
 
-    hysa_value = hysa_counterfactual_value(flows, as_of, _hysa_rate_lookup(config)) if not flows.is_empty() else 0.0
+    hysa_value = (
+        hysa_counterfactual_value(flows, as_of, _hysa_rate_lookup(config), config.returns.days_per_year)
+        if not flows.is_empty()
+        else 0.0
+    )
     timing_gap_pct = (
         xirr_pct - twr.annualized_pct if xirr_pct is not None and twr and twr.annualized_pct is not None else None
     )
@@ -348,7 +367,7 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
 
 
 def reallocation_markers(ledger: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
-    """Find dates where a sell funded a same-day buy of a different symbol (NEW_TASKS.md 6.2).
+    """Find dates where a sell funded a same-day buy of a different symbol.
 
     The ledger has no explicit "this sell and that buy were one
     reallocation decision" link (see `counterfactuals.decision_counterfactual_value`,
@@ -384,7 +403,7 @@ def _cumulative_contributions(flows: pl.DataFrame, dates: pl.Series) -> pl.DataF
     """Step-line of net external contributions (deposits positive) across a set of dates.
 
     A step-line, not a smooth line, by construction: it only moves on a
-    date with an external flow and holds flat otherwise (NEW_TASKS.md 6.2).
+    date with an external flow and holds flat otherwise.
 
     Returns
     -------
@@ -412,7 +431,7 @@ def _cumulative_contributions(flows: pl.DataFrame, dates: pl.Series) -> pl.DataF
 
 
 def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
-    """Build the three/four-line dollar chart series (NEW_TASKS.md 6.2).
+    """Build the three/four-line dollar chart series.
 
     Parameters
     ----------
@@ -429,7 +448,7 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     -------
     polars.DataFrame
         Columns `date`, `contributions_usd`, `portfolio_value_usd`,
-        `hysa_value_usd`, `benchmark_value_usd`.
+        `hysa_value_usd`, `benchmark_value_usd`, `hysa_rate_pct`.
     """
     raw_lookup = make_price_lookup(config)
     adjusted_lookup = make_price_lookup(config, adjusted=True)
@@ -438,8 +457,9 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     daily_values = daily_portfolio_values(ledger, raw_lookup, start, end, config)
     flows = collect_if_lazy(external_cashflows(ledger))
     contributions = _cumulative_contributions(flows, daily_values["date"])
-    hysa_series = hysa_counterfactual_series(flows, end, _hysa_rate_lookup(config))
+    hysa_series = hysa_counterfactual_series(flows, end, _hysa_rate_lookup(config), config.returns.days_per_year)
     benchmark_series = benchmark_counterfactual_series(flows, end, lambda day: adjusted_lookup(benchmark_symbol, day))
+    hysa_rate = _hysa_rate_series(daily_values["date"], config)
 
     return (
         daily_values
@@ -447,6 +467,7 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
         .join(contributions.rename({"value": "contributions_usd"}), on="date", how="left")
         .join(hysa_series.rename({"value": "hysa_value_usd"}), on="date", how="left")
         .join(benchmark_series.rename({"value": "benchmark_value_usd"}), on="date", how="left")
+        .join(hysa_rate, on="date", how="left")
         .fill_null(0.0)
         .sort("date")
     )
@@ -477,7 +498,7 @@ def _cpi_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
 
 
 def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
-    """Build the growth-of-$100 chart: your NAV plus every benchmark, indexed to a common start (NEW_TASKS.md 3.3, 6.3).
+    """Build the growth-of-$100 chart: your NAV plus every benchmark, indexed to a common start.
 
     Unlike the dollar chart's counterfactuals, these benchmark/HYSA series
     are NOT a replay of your contributions — they're pure indices (the
@@ -504,7 +525,8 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
     Returns
     -------
     polars.DataFrame
-        Columns `date`, `portfolio_index`, `benchmark_index`, `hysa_index`, `cpi_index`.
+        Columns `date`, `portfolio_index`, `benchmark_index`, `hysa_index`,
+        `cpi_index`, `hysa_rate_pct`.
     """
     raw_lookup = make_price_lookup(config)
     adjusted_lookup = make_price_lookup(config, adjusted=True)
@@ -523,7 +545,10 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
         "event_datetime": [datetime.combine(start, datetime.min.time())],
         "amount": [-100.0],
     })
-    hysa_series = hysa_counterfactual_series(hysa_principal, end, _hysa_rate_lookup(config))
+    hysa_series = hysa_counterfactual_series(
+        hysa_principal, end, _hysa_rate_lookup(config), config.returns.days_per_year
+    )
+    hysa_rate = _hysa_rate_series(daily_values["date"], config)
 
     cpi_index = cast("pl.DataFrame", growth_of_100(_cpi_series(daily_values["date"], config), "value"))
 
@@ -533,6 +558,7 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
         .join(benchmark_index.select("date", benchmark_index="index"), on="date", how="left")
         .join(hysa_series.select("date", hysa_index="value"), on="date", how="left")
         .join(cpi_index.select("date", cpi_index="index"), on="date", how="left")
+        .join(hysa_rate, on="date", how="left")
         .sort("date")
     )
 
@@ -556,7 +582,7 @@ def _month_boundaries(start: date, end: date) -> list[tuple[date, date]]:
 
 
 def monthly_pnl(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
-    """Split each month's value change into contributions and actual market gain (NEW_TASKS.md 3.5, 6.4).
+    """Split each month's value change into contributions and actual market gain.
 
     Parameters
     ----------
@@ -722,7 +748,7 @@ def monthly_pnl_by_symbol(ledger: pl.DataFrame, config: AppConfig, start: date, 
 
 
 def allocation_view(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> pl.DataFrame:
-    """Current-value allocation by symbol (including cash), against a user-set target (NEW_TASKS.md 6.5).
+    """Current-value allocation by symbol (including cash), against a user-set target.
 
     Sliced by current value, not invested dollars — invested-dollar slices
     can't show drift from a target allocation.
@@ -781,7 +807,7 @@ def allocation_view(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> pl.
 
 @dataclass(frozen=True)
 class LotsTable:
-    """Open lots (with returns), closed lots (with vs-HYSA alpha), and a per-symbol rollup (NEW_TASKS.md 6.6)."""
+    """Open lots (with returns), closed lots (with vs-HYSA alpha), and a per-symbol rollup."""
 
     open_lots: pl.DataFrame
     closed_lots: pl.DataFrame
@@ -793,7 +819,8 @@ def _closed_lots_with_hysa_alpha(closed_lots: pl.DataFrame, config: AppConfig) -
 
     A closed lot's window is finished, so this alpha is a legitimate,
     non-provisional number (unlike a live position's annualized return,
-    which is gated per NEW_TASKS.md 1.2).
+    which stays hidden until it's been held long enough — see
+    `metrics.lot_returns`).
 
     Returns
     -------
@@ -821,7 +848,7 @@ def _closed_lots_with_hysa_alpha(closed_lots: pl.DataFrame, config: AppConfig) -
 
 
 def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTable:
-    """Assemble the trade-level table: open lots, closed lots, per-symbol rollup (NEW_TASKS.md 6.6).
+    """Assemble the trade-level table: open lots, closed lots, per-symbol rollup.
 
     Parameters
     ----------
@@ -848,14 +875,14 @@ def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTabl
     closed_lots = _closed_lots_with_hysa_alpha(result.closed_lots, config)
 
     symbols = sorted({*result.open_lots["symbol"].to_list(), *result.closed_lots["symbol"].to_list()})
-    rollup_rows = [asdict(symbol_metrics(ledger, result, symbol, price_lookup, as_of)) for symbol in symbols]
+    rollup_rows = [asdict(symbol_metrics(ledger, result, symbol, price_lookup, as_of, config)) for symbol in symbols]
     symbol_rollup = pl.DataFrame(rollup_rows) if rollup_rows else pl.DataFrame()
 
     return LotsTable(open_lots=open_lots, closed_lots=closed_lots, symbol_rollup=symbol_rollup)
 
 
 def risk_stat(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> float:
-    """Largest peak-to-trough decline in the NAV series, as a percentage (NEW_TASKS.md 6.7).
+    """Largest peak-to-trough decline in the NAV series, as a percentage.
 
     Parameters
     ----------
@@ -881,7 +908,7 @@ def risk_stat(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -
 
 
 def data_quality(symbols: Sequence[str], config: AppConfig) -> pl.DataFrame:
-    """Last cached price date per symbol, for the data-quality panel (NEW_TASKS.md 6.9).
+    """Last cached price date per symbol, for the data-quality panel.
 
     Parameters
     ----------

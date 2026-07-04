@@ -76,9 +76,9 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
   })
 }
 
-// NEW_TASKS.md 6.6: sold positions must not vanish from the trade table —
-// that's self-inflicted survivorship bias — so open and closed lots get
-// their own tabs, plus a per-symbol rollup that doesn't exist anywhere else.
+// Sold positions must not vanish from the trade table — that's
+// self-inflicted survivorship bias — so open and closed lots get their
+// own tabs, plus a per-symbol rollup that doesn't exist anywhere else.
 export function LotsTable() {
   const { data, isLoading, isError } = useLots()
   const [aggregateByDay, setAggregateByDay] = useState(false)

@@ -6,9 +6,9 @@ import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatPercent, formatUsd } from '@/lib/format'
 import { useAllocation, useSetTargetAllocation, useTargetAllocation } from '@/hooks/usePortfolioData'
 
-// NEW_TASKS.md 6.5: sliced by current value (including cash), not invested
-// dollars — invested-dollar slices can't show drift from a target. A
-// horizontal bar reads target-vs-actual pairs more directly than two donuts.
+// Sliced by current value (including cash), not invested dollars —
+// invested-dollar slices can't show drift from a target. A horizontal bar
+// reads target-vs-actual pairs more directly than two donuts.
 //
 // The chart and the drift numbers react to the draft target the moment you
 // type it — "Save" only persists it for next time, it isn't required to

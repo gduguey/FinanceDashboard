@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
 _NEXT_F_CHUNK = re.compile(r'self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)')
 _ACCOUNTS_KEY = '"accounts":['
-_REQUEST_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
 
 
 def _cache_path(config: AppConfig) -> Path:
@@ -113,7 +112,7 @@ def fetch_hysa_rates(config: AppConfig, session: requests.Session | None = None)
     http = session or requests
     response = http.get(
         config.hysa_rates.source_url,
-        headers=_REQUEST_HEADERS,
+        headers=config.hysa_rates.request_headers,
         timeout=config.hysa_rates.request_timeout_seconds,
     )
     response.raise_for_status()

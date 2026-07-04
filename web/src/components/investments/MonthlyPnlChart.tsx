@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { TooltipContentProps } from 'recharts'
-import { Bar, BarChart, CartesianGrid, Cell, Label, Legend, Tooltip, XAxis, YAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/investments/ChartCard'
 import { Button } from '@/components/ui/button'
 import { colorForIndex } from '@/lib/colors'
@@ -102,11 +102,11 @@ function BySymbolTooltip({ active, payload, label }: TooltipContentProps) {
   )
 }
 
-// NEW_TASKS.md 3.5/6.4: contributions in grey, actual market P&L in
-// green/red — directly kills the "portfolio is up $12k (of which $11k was
-// my paycheck)" illusion every month. The per-symbol toggle breaks each of
-// those two bars down by symbol instead, with cash isolated into its own
-// bar (leftmost) since it isn't a security's contribution or gain.
+// Contributions in grey, actual market P&L in green/red — directly kills
+// the "portfolio is up $12k (of which $11k was my paycheck)" illusion
+// every month. The per-symbol toggle breaks each of those two bars down
+// by symbol instead, with cash isolated into its own bar (leftmost) since
+// it isn't a security's contribution or gain.
 export function MonthlyPnlChart() {
   const [bySymbol, setBySymbol] = useState(false)
   const aggregate = useMonthlyPnl()
@@ -203,31 +203,33 @@ export function MonthlyPnlChart() {
   )
 }
 
-// Shows the whole stack's total (not just this segment's value) above the
-// bar — recharts' built-in LabelList only ever knows its own segment's
-// value, so this reads the pre-computed `*_total` field off the row itself
-// (passed through in `payload`) instead.
+// Shows the whole stack's total above its topmost segment. Pointing
+// `dataKey` at a pre-computed `*_total` field (rather than reading the
+// segment's own value) makes recharts resolve it straight off the row, so
+// this only needs to place the text — it doesn't reach into `payload`
+// itself, which isn't part of what a Bar's label content receives.
 function TotalLabel({ dataKey }: { dataKey: keyof PivotedRow }) {
   return (
-    <Label
-      position="top"
+    <LabelList
+      dataKey={dataKey}
       content={(props) => {
-        const { x, y, width, value, payload } = props as {
-          x: number
-          y: number
-          width: number
-          value: number
-          payload: PivotedRow
+        const { value, viewBox } = props as {
+          value?: number
+          viewBox?: { x: number; y: number; width: number; height: number }
         }
-        const total = Number(payload[dataKey])
-        if (!total || Number.isNaN(total)) return <g />
-        // For negative stacks recharts anchors `y` at the bar's bottom edge,
-        // not its top — nudge the label further up in that case so it still
-        // sits above (not inside) the bar.
-        const labelY = value < 0 ? y + 14 : y - 6
+        if (!viewBox || !value || Number.isNaN(value)) return null
+        // For negative stacks the bar's rect sits below its own top edge —
+        // nudge the label below the rect instead so it stays clear of it.
+        const labelY = value < 0 ? viewBox.y + viewBox.height + 14 : viewBox.y - 6
         return (
-          <text x={x + width / 2} y={labelY} textAnchor="middle" fontSize={11} fill="var(--muted-foreground)">
-            {formatUsd(total, true)}
+          <text
+            x={viewBox.x + viewBox.width / 2}
+            y={labelY}
+            textAnchor="middle"
+            fontSize={11}
+            fill="var(--muted-foreground)"
+          >
+            {formatUsd(value, true)}
           </text>
         )
       }}

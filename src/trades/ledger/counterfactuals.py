@@ -32,13 +32,15 @@ def hysa_counterfactual_series(
     cashflows: pl.DataFrame | pl.LazyFrame,
     end: date,
     rate_lookup: Callable[[date], float],
+    days_per_year: int,
 ) -> pl.DataFrame:
-    """Compound a virtual HYSA balance daily, returning the balance for every day along the way (NEW_TASKS.md 2.2a).
+    """Compound a virtual high-yield-savings balance daily, returning the balance for every day along the way.
 
     Simulates "what if every deposit/withdrawal had instead gone into a
-    high-yield savings account": each `DEPOSIT` grows the virtual balance,
-    each `WITHDRAWAL` shrinks it, and the balance compounds daily in
-    between at `rate_lookup`'s annual rate. This is a genuinely sequential
+    high-yield savings account (HYSA)": each `DEPOSIT` grows the virtual
+    balance, each `WITHDRAWAL` shrinks it, and the balance compounds daily
+    in between at `rate_lookup`'s annual rate, converted to a daily rate
+    by dividing by `days_per_year`. This is a genuinely sequential
     day-by-day walk (like `replay.replay_ledger`'s loop) since each day's
     balance depends on the previous day's, not a vectorized expression.
     `hysa_counterfactual_value` is a thin wrapper around this that keeps
@@ -59,6 +61,9 @@ def hysa_counterfactual_series(
         Looks up the annual HYSA rate as of a given date; a real rate
         series can be substituted for a constant one without changing
         this function's contract (see `market_data.hysa_rates`).
+    days_per_year
+        Day-count basis for converting the annual rate to a daily one
+        (see `config.ReturnsConfig.days_per_year`).
 
     Returns
     -------
@@ -89,7 +94,7 @@ def hysa_counterfactual_series(
         dates.append(current_date)
         balances.append(balance)
         if current_date < end:
-            balance *= 1 + rate_lookup(current_date) / 365
+            balance *= 1 + rate_lookup(current_date) / days_per_year
         current_date += timedelta(days=1)
     if not dates:
         return pl.DataFrame(schema=_EMPTY_SERIES_SCHEMA)
@@ -100,8 +105,9 @@ def hysa_counterfactual_value(
     cashflows: pl.DataFrame | pl.LazyFrame,
     as_of: date,
     rate_lookup: Callable[[date], float],
+    days_per_year: int,
 ) -> float:
-    """Compound a virtual HYSA balance daily against a set of external cashflows (NEW_TASKS.md 2.2a).
+    """Compound a virtual high-yield-savings balance daily against a set of external cashflows.
 
     Parameters
     ----------
@@ -115,13 +121,16 @@ def hysa_counterfactual_value(
         Looks up the annual HYSA rate as of a given date; a real rate
         series can be substituted for a constant one without changing
         this function's contract (see `market_data.hysa_rates`).
+    days_per_year
+        Day-count basis for converting the annual rate to a daily one
+        (see `config.ReturnsConfig.days_per_year`).
 
     Returns
     -------
     float
         The virtual HYSA balance as of `as_of`.
     """
-    series = hysa_counterfactual_series(cashflows, as_of, rate_lookup)
+    series = hysa_counterfactual_series(cashflows, as_of, rate_lookup, days_per_year)
     if series.is_empty():
         return 0.0
     return float(series["value"][-1])
@@ -141,7 +150,7 @@ def benchmark_counterfactual_series(
     `market_data`'s price rules) — this one function is reused for every
     price-series benchmark (VOO, VT, ...), only `price_lookup` differs.
     `benchmark_counterfactual_value` is a thin wrapper around this that
-    keeps only the last day (NEW_TASKS.md 2.2b).
+    keeps only the last day.
 
     Parameters
     ----------
@@ -203,7 +212,7 @@ def benchmark_counterfactual_value(
     as_of: date,
     price_lookup: Callable[[date], float | None],
 ) -> float:
-    """Buy a benchmark with a set of external cashflows and value the resulting position (NEW_TASKS.md 2.2b).
+    """Buy a benchmark with a set of external cashflows and value the resulting position.
 
     Parameters
     ----------
@@ -235,7 +244,7 @@ def decision_counterfactual_value(
     as_of: date,
     config: AppConfig,
 ) -> float:
-    """Value the ledger as if one reallocation's sell and buy had never happened (NEW_TASKS.md 4.2).
+    """Value the ledger as if one reallocation's sell and buy had never happened.
 
     Answers "what if I hadn't sold": drops the given event IDs (a
     reallocation's `SELL` and the `BUY` it funded) from the ledger,

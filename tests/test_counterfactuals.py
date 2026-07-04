@@ -63,7 +63,10 @@ def _carry_forward(prices: dict[date, float]):
 
 def test_hysa_counterfactual_compounds_a_single_deposit_daily() -> None:
     value = hysa_counterfactual_value(
-        _cashflows(("2025-01-01", -1000.0)), as_of=date(2026, 1, 1), rate_lookup=lambda d: 0.04
+        _cashflows(("2025-01-01", -1000.0)),
+        as_of=date(2026, 1, 1),
+        rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     expected = 1000.0 * (1 + 0.04 / 365) ** 365
     assert value == pytest.approx(expected)
@@ -74,6 +77,7 @@ def test_hysa_counterfactual_handles_multiple_deposits() -> None:
         _cashflows(("2025-01-01", -1000.0), ("2025-07-01", -500.0)),
         as_of=date(2026, 1, 1),
         rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     expected = 1000.0 * (1 + 0.04 / 365) ** 365 + 500.0 * (1 + 0.04 / 365) ** 184
     assert value == pytest.approx(expected)
@@ -84,6 +88,7 @@ def test_hysa_counterfactual_a_withdrawal_reduces_the_balance() -> None:
         _cashflows(("2025-01-01", -1000.0), ("2025-07-01", 200.0)),
         as_of=date(2025, 7, 1),
         rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     expected = 1000.0 * (1 + 0.04 / 365) ** 181 - 200.0
     assert value == pytest.approx(expected)
@@ -91,7 +96,9 @@ def test_hysa_counterfactual_a_withdrawal_reduces_the_balance() -> None:
 
 def test_hysa_counterfactual_with_no_cashflows_is_zero() -> None:
     empty = pl.DataFrame(schema={"event_datetime": pl.Datetime, "amount": pl.Float64})
-    assert hysa_counterfactual_value(empty, as_of=date(2026, 1, 1), rate_lookup=lambda d: 0.04) == pytest.approx(0.0)
+    assert hysa_counterfactual_value(
+        empty, as_of=date(2026, 1, 1), rate_lookup=lambda d: 0.04, days_per_year=CONFIG.returns.days_per_year
+    ) == pytest.approx(0.0)
 
 
 def test_hysa_counterfactual_uses_a_varying_rate_series() -> None:
@@ -101,7 +108,10 @@ def test_hysa_counterfactual_uses_a_varying_rate_series() -> None:
         return rates.get(day, 0.04)
 
     value = hysa_counterfactual_value(
-        _cashflows(("2025-01-01", -1000.0)), as_of=date(2025, 1, 3), rate_lookup=rate_lookup
+        _cashflows(("2025-01-01", -1000.0)),
+        as_of=date(2025, 1, 3),
+        rate_lookup=rate_lookup,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     expected = 1000.0 * (1 + 0.04 / 365) * (1 + 0.08 / 365)
     assert value == pytest.approx(expected)
@@ -146,7 +156,10 @@ def test_benchmark_counterfactual_with_no_cashflows_is_zero() -> None:
 
 def test_hysa_counterfactual_series_has_one_row_per_day_since_the_first_flow() -> None:
     series = hysa_counterfactual_series(
-        _cashflows(("2025-01-01", -1000.0)), end=date(2025, 1, 3), rate_lookup=lambda d: 0.04
+        _cashflows(("2025-01-01", -1000.0)),
+        end=date(2025, 1, 3),
+        rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     assert series["date"].to_list() == [date(2025, 1, 1), date(2025, 1, 2), date(2025, 1, 3)]
     day1 = 1000.0
@@ -157,23 +170,34 @@ def test_hysa_counterfactual_series_has_one_row_per_day_since_the_first_flow() -
 
 def test_hysa_counterfactual_series_last_value_matches_the_scalar_function() -> None:
     series = hysa_counterfactual_series(
-        _cashflows(("2025-01-01", -1000.0), ("2025-07-01", 200.0)), end=date(2025, 7, 1), rate_lookup=lambda d: 0.04
+        _cashflows(("2025-01-01", -1000.0), ("2025-07-01", 200.0)),
+        end=date(2025, 7, 1),
+        rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     value = hysa_counterfactual_value(
-        _cashflows(("2025-01-01", -1000.0), ("2025-07-01", 200.0)), as_of=date(2025, 7, 1), rate_lookup=lambda d: 0.04
+        _cashflows(("2025-01-01", -1000.0), ("2025-07-01", 200.0)),
+        as_of=date(2025, 7, 1),
+        rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     assert series["value"][-1] == pytest.approx(value)
 
 
 def test_hysa_counterfactual_series_with_no_cashflows_is_empty() -> None:
     empty = pl.DataFrame(schema={"event_datetime": pl.Datetime, "amount": pl.Float64})
-    series = hysa_counterfactual_series(empty, end=date(2025, 1, 3), rate_lookup=lambda d: 0.04)
+    series = hysa_counterfactual_series(
+        empty, end=date(2025, 1, 3), rate_lookup=lambda d: 0.04, days_per_year=CONFIG.returns.days_per_year
+    )
     assert series.is_empty()
 
 
 def test_hysa_counterfactual_series_with_cashflows_entirely_after_end_is_empty_with_a_typed_schema() -> None:
     series = hysa_counterfactual_series(
-        _cashflows(("2025-01-05", -1000.0)), end=date(2025, 1, 1), rate_lookup=lambda d: 0.04
+        _cashflows(("2025-01-05", -1000.0)),
+        end=date(2025, 1, 1),
+        rate_lookup=lambda d: 0.04,
+        days_per_year=CONFIG.returns.days_per_year,
     )
     assert series.is_empty()
     assert series.schema == {"date": pl.Date, "value": pl.Float64}

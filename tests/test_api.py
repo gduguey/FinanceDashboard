@@ -60,7 +60,10 @@ def isolated_config(tmp_path, monkeypatch):
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
         dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
     )
-    monkeypatch.setattr(trades_api, "app_config", config)
+    monkeypatch.setattr(trades_api.app.state, "config", config)
+    monkeypatch.setattr(
+        trades_api.app.state, "sync_progress", trades_api.SyncProgress(step="Idle", percent=0.0, done=True)
+    )
 
     write_csv_atomic(pl.DataFrame(LEDGER_ROWS), config.ibkr.ledger_csv_path)
     price_history = pl.DataFrame({
@@ -101,7 +104,7 @@ def test_overview_reports_value_and_gain(client) -> None:
 
 
 def test_overview_no_ledger_is_a_404(client, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(trades_api, "app_config", AppConfig(ibkr={"cache_dir": tmp_path / "empty"}))
+    monkeypatch.setattr(trades_api.app.state, "config", AppConfig(ibkr={"cache_dir": tmp_path / "empty"}))
     assert client.get("/api/overview").status_code == 404
 
 
@@ -169,13 +172,15 @@ def test_hysa_settings_put_preserves_target_allocation(client) -> None:
 
 
 def test_benchmark_setting_defaults_to_no_override(client) -> None:
-    assert client.get("/api/settings/benchmark").json() == {"symbol_override": None}
+    body = client.get("/api/settings/benchmark").json()
+    assert body["symbol_override"] is None
+    assert body["default_symbol"]
 
 
 def test_benchmark_setting_put_then_get_round_trips(client) -> None:
     put_response = client.put("/api/settings/benchmark", json={"symbol_override": "QQQ"})
     assert put_response.status_code == 200
-    assert client.get("/api/settings/benchmark").json() == {"symbol_override": "QQQ"}
+    assert client.get("/api/settings/benchmark").json()["symbol_override"] == "QQQ"
 
 
 def test_hysa_rates_lists_banks_and_history(client) -> None:
@@ -198,6 +203,49 @@ def test_symbol_search_passes_the_query_through(client, monkeypatch) -> None:
     body = client.get("/api/symbols/search", params={"q": "voo"}).json()
     assert calls == ["voo"]
     assert body == [{"symbol": "VOO", "name": "Vanguard S&P 500", "exchange": "NYSE"}]
+
+
+def test_ensure_symbol_priced_refreshes_raw_and_adjusted_caches(client, monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(trades_api.prices, "load_price_cache", lambda symbol, config: pl.DataFrame())
+    monkeypatch.setattr(
+        trades_api.prices,
+        "update_price_cache",
+        lambda symbol, since, as_of, config, adjusted=False: (
+            calls.append(adjusted) or pl.DataFrame({"price_date": [date(2026, 1, 5)], "close": [123.0]})
+        ),
+    )
+
+    body = client.post("/api/symbols/AAPL/ensure-priced").json()
+
+    assert calls == [False, True]
+    assert body == {"symbol": "AAPL", "was_stale": True, "last_price_date": "2026-01-05"}
+
+
+def test_ensure_symbol_priced_reports_not_stale_when_cache_already_covers_today(client, monkeypatch) -> None:
+    today = datetime.now().date()
+    cached = pl.DataFrame({"price_date": [today], "close": [500.0]})
+    monkeypatch.setattr(trades_api.prices, "load_price_cache", lambda symbol, config: cached)
+    monkeypatch.setattr(
+        trades_api.prices, "update_price_cache", lambda symbol, since, as_of, config, adjusted=False: cached
+    )
+
+    body = client.post("/api/symbols/VOO/ensure-priced").json()
+
+    assert body["was_stale"] is False
+
+
+def test_ensure_symbol_priced_maps_unknown_symbol_to_422(client, monkeypatch) -> None:
+    monkeypatch.setattr(trades_api.prices, "load_price_cache", lambda symbol, config: pl.DataFrame())
+
+    def raise_unknown_symbol(symbol, since, as_of, config, adjusted=False):
+        message = f"Yahoo chart API returned no data for {symbol}: not found"
+        raise ValueError(message)
+
+    monkeypatch.setattr(trades_api.prices, "update_price_cache", raise_unknown_symbol)
+
+    response = client.post("/api/symbols/NOTASYMBOL/ensure-priced")
+    assert response.status_code == 422
 
 
 def test_lots_reports_open_and_closed_lots(client) -> None:
@@ -228,7 +276,7 @@ def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_netw
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
-    def fake_sync(credentials, config):
+    def fake_sync(credentials, config, on_progress=None):
         raw_dir = config.ibkr.raw_statement_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
@@ -270,3 +318,58 @@ def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_netw
     assert len(hysa_rates_calls) == 1
     body = response.json()
     assert body["symbols_refreshed"] == ["VOO"]
+
+
+def test_sync_progress_defaults_to_idle_and_done(client) -> None:
+    body = client.get("/api/sync/progress").json()
+    assert body == {"step": "Idle", "percent": 0.0, "done": True, "error": None}
+
+
+def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch) -> None:
+    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
+    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+
+    def fake_sync(credentials, config, on_progress=None):
+        raw_dir = config.ibkr.raw_statement_dir
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
+        return IbkrSyncResult(
+            pulled_at=datetime(2026, 1, 4),
+            statement_from_date=date(2026, 1, 4),
+            statement_to_date=date(2026, 1, 4),
+            new_event_count=0,
+            total_event_count=3,
+        )
+
+    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
+    monkeypatch.setattr(trades_api.prices, "update_price_caches", lambda symbols, since, as_of, config: {})
+    monkeypatch.setattr(
+        trades_api.prices,
+        "update_price_cache",
+        lambda symbol, since, as_of, config, adjusted=False: None,
+    )
+    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", lambda config: None)
+    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", lambda config: None)
+
+    client.post("/api/sync")
+
+    body = client.get("/api/sync/progress").json()
+    assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
+
+
+def test_sync_progress_reflects_failure_and_still_raises(client, monkeypatch) -> None:
+    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
+    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+
+    def failing_sync(credentials, config, on_progress=None):
+        message = "IBKR Flex API error 1018: too many requests"
+        raise ValueError(message)
+
+    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", failing_sync)
+
+    with pytest.raises(ValueError, match="too many requests"):
+        client.post("/api/sync")
+
+    body = client.get("/api/sync/progress").json()
+    assert body["done"] is True
+    assert body["error"] is not None

@@ -59,15 +59,20 @@ def test_reallocation_does_not_enter_portfolio_xirrs_cashflow_set() -> None:
     )
     dates = [*flows["event_datetime"].dt.date().to_list(), date(2026, 12, 1)]
     amounts = [*flows["amount"].to_list(), terminal_value]
-    rate = xirr(dates, amounts)
+    rate = xirr(dates, amounts, CONFIG)
     days = (date(2026, 12, 1) - date(2026, 1, 1)).days
-    assert rate == pytest.approx((1200.0 / 1000.0) ** (365 / days) - 1)
+    assert rate == pytest.approx((1200.0 / 1000.0) ** (CONFIG.returns.days_per_year / days) - 1)
 
 
 def test_reallocation_sell_proceeds_enter_the_sold_symbols_per_symbol_cashflows() -> None:
     result = replay_ledger(REALLOCATION_LEDGER, CONFIG)
     voo_metrics = symbol_metrics(
-        REALLOCATION_LEDGER, result, "VOO", price_lookup=lambda symbol, as_of: None, as_of=date(2026, 12, 1)
+        REALLOCATION_LEDGER,
+        result,
+        "VOO",
+        price_lookup=lambda symbol, as_of: None,
+        as_of=date(2026, 12, 1),
+        config=CONFIG,
     )
     assert voo_metrics.status == "closed"
     assert voo_metrics.proceeds_received == pytest.approx(1200.0)

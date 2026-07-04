@@ -1,6 +1,7 @@
 import type {
   AllocationRow,
   BenchmarkSetting,
+  BenchmarkSettingUpdate,
   DataQualityRow,
   DollarChart,
   GrowthOf100Point,
@@ -12,7 +13,9 @@ import type {
   MonthlyPnlBySymbol,
   Overview,
   RiskStat,
+  SymbolPriceStatus,
   SymbolSearchResult,
+  SyncProgress,
   SyncResult,
   TargetAllocation,
 } from '@/types/portfolio'
@@ -67,6 +70,7 @@ export const api = {
   dataQuality: () => request<DataQualityRow[]>('/api/data-quality'),
   ledgerExport: () => request<LedgerEvent[]>('/api/ledger/export'),
   sync: () => request<SyncResult>('/api/sync', { method: 'POST' }),
+  syncProgress: () => request<SyncProgress>('/api/sync/progress'),
   hysaRates: () => request<HysaRates>('/api/hysa-rates'),
   hysaSettings: () => request<HysaSettings>('/api/settings/hysa'),
   setHysaSettings: (settings: HysaSettings) =>
@@ -76,7 +80,7 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   benchmarkSetting: () => request<BenchmarkSetting>('/api/settings/benchmark'),
-  setBenchmarkSetting: (setting: BenchmarkSetting) =>
+  setBenchmarkSetting: (setting: BenchmarkSettingUpdate) =>
     request<BenchmarkSetting>('/api/settings/benchmark', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -84,4 +88,6 @@ export const api = {
     }),
   searchSymbols: (query: string) =>
     request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
+  ensureSymbolPriced: (symbol: string) =>
+    request<SymbolPriceStatus>(`/api/symbols/${encodeURIComponent(symbol)}/ensure-priced`, { method: 'POST' }),
 }

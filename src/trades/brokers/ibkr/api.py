@@ -19,6 +19,7 @@ from defusedxml import ElementTree
 from trades.brokers.ibkr.models import IbkrCashTransaction, IbkrTrade, parse_ibkr_datetime
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import date
     from pathlib import Path
 
@@ -59,7 +60,11 @@ class ParsedStatement:
     cash_transactions: list[IbkrCashTransaction]
 
 
-def _send_flex_request(credentials: IbkrFlexCredentials, config: AppConfig) -> tuple[str, str]:
+def _send_flex_request(
+    credentials: IbkrFlexCredentials, config: AppConfig, on_progress: Callable[[str, float], None] | None = None
+) -> tuple[str, str]:
+    if on_progress:
+        on_progress("Requesting IBKR statement", 5.0)
     response = requests.get(
         config.ibkr.send_request_url,
         params={"v": "3", "t": credentials.token.get_secret_value(), "q": credentials.query_id},
@@ -77,9 +82,18 @@ def _send_flex_request(credentials: IbkrFlexCredentials, config: AppConfig) -> t
 
 
 def _poll_flex_statement(
-    reference_code: str, statement_url: str, credentials: IbkrFlexCredentials, config: AppConfig
+    reference_code: str,
+    statement_url: str,
+    credentials: IbkrFlexCredentials,
+    config: AppConfig,
+    on_progress: Callable[[str, float], None] | None = None,
 ) -> str:
-    for _ in range(config.ibkr.max_poll_attempts):
+    for attempt in range(config.ibkr.max_poll_attempts):
+        if on_progress:
+            # Spends most of its allotted band waiting on IBKR to finish
+            # generating the statement, which is usually the slowest step.
+            fraction_done = attempt / config.ibkr.max_poll_attempts
+            on_progress("Waiting for IBKR to respond", 10.0 + 30.0 * fraction_done)
         response = requests.get(
             statement_url,
             params={"v": "3", "t": credentials.token.get_secret_value(), "q": reference_code},
@@ -102,7 +116,9 @@ def _poll_flex_statement(
     raise FlexApiError("timeout", message)
 
 
-def fetch_flex_statement(credentials: IbkrFlexCredentials, config: AppConfig) -> str:
+def fetch_flex_statement(
+    credentials: IbkrFlexCredentials, config: AppConfig, on_progress: Callable[[str, float], None] | None = None
+) -> str:
     """Run the SendRequest -> GetStatement exchange and return the raw statement XML.
 
     Parameters
@@ -111,14 +127,17 @@ def fetch_flex_statement(credentials: IbkrFlexCredentials, config: AppConfig) ->
         The IBKR Flex Web Service token and query id.
     config
         Application configuration; `config.ibkr` is read.
+    on_progress
+        Called with a short step description and a 0-100 percentage as the
+        exchange proceeds, for a live sync-progress display. Optional.
 
     Returns
     -------
     str
         The raw `<FlexQueryResponse>` XML.
     """
-    reference_code, statement_url = _send_flex_request(credentials, config)
-    return _poll_flex_statement(reference_code, statement_url, credentials, config)
+    reference_code, statement_url = _send_flex_request(credentials, config, on_progress)
+    return _poll_flex_statement(reference_code, statement_url, credentials, config, on_progress)
 
 
 def parse_statement(xml_text: str) -> ParsedStatement:
@@ -170,7 +189,8 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
     xml_text
         The raw statement XML to archive.
     received_at
-        The local wall-clock time the statement was received.
+        The naive-UTC time the statement was received (see
+        `models.py`'s storage convention).
     config
         Application configuration; `config.ibkr.raw_statement_dir` is read.
 
@@ -191,7 +211,7 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
 
 
 def last_synced_at(config: AppConfig) -> datetime | None:
-    """Look up the local wall-clock time of the most recent sync.
+    """Look up the naive-UTC time of the most recent sync.
 
     Parameters
     ----------

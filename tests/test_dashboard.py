@@ -268,6 +268,7 @@ def test_dollar_chart_series_uses_a_fixed_rate_override_for_hysa(tmp_path) -> No
 
     expected_hysa_day2 = 1000.0 * (1 + 0.10 / 365)
     assert result["hysa_value_usd"].to_list() == pytest.approx([1000.0, expected_hysa_day2])
+    assert result["hysa_rate_pct"].to_list() == pytest.approx([10.0, 10.0])
 
 
 def test_dollar_chart_series_uses_the_selected_bank_for_hysa(tmp_path) -> None:
@@ -356,6 +357,7 @@ def test_growth_of_100_chart_indexes_every_series_to_100_at_the_start(tmp_path) 
     assert result["cpi_index"].to_list() == pytest.approx([100.0, 101.0])
     expected_hysa_day2 = (1 + config.returns.hysa_annual_rate / 365) * 100
     assert result["hysa_index"].to_list() == pytest.approx([100.0, expected_hysa_day2])
+    assert result["hysa_rate_pct"].to_list() == pytest.approx([config.returns.hysa_annual_rate * 100] * 2)
 
 
 def test_growth_of_100_chart_benchmark_and_hysa_are_unaffected_by_a_later_deposit(tmp_path) -> None:

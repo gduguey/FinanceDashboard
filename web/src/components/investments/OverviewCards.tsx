@@ -57,12 +57,11 @@ function StatSkeleton({ big }: { big?: boolean }) {
   )
 }
 
-// NEW_TASKS.md 6.1: one hero Value card (current value, gain split
-// realized/unrealized, plus money-in-from-you and dividends-received
-// context) instead of a flat list of same-sized cards — the fact that
-// matters most should look like it matters most. The secondary row
-// (XIRR, dollar alpha, TWR, risk) fills out evenly instead of leaving an
-// orphaned single card on its own row.
+// One hero Value card (current value, gain split realized/unrealized,
+// plus money-in-from-you and dividends-received context) instead of a
+// flat list of same-sized cards — the fact that matters most should look
+// like it matters most. The secondary row (XIRR, dollar alpha, TWR, risk)
+// fills out evenly instead of leaving an orphaned single card on its own row.
 export function OverviewCards() {
   const { data, isLoading, isError } = useOverview()
   const risk = useRisk()
@@ -116,7 +115,10 @@ export function OverviewCards() {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
-              <MiniStat label="Money in (deposits)" value={formatUsd(data.total_deposited_usd)} />
+              <MiniStat
+                label="Money in (deposits)"
+                value={formatUsd(data.total_deposited_usd - data.total_withdrawn_usd)}
+              />
               <MiniStat label="Dividends received" value={formatUsd(data.total_dividends_usd)} />
               <MiniStat label="Realized gain" value={formatUsd(data.realized_gain_usd)} />
               <MiniStat label="Unrealized gain" value={formatUsd(data.unrealized_gain_usd)} />

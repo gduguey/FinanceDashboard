@@ -9,9 +9,9 @@ import { api } from '@/lib/api'
 import { formatDate } from '@/lib/format'
 import { useDataQuality } from '@/hooks/usePortfolioData'
 
-// NEW_TASKS.md 6.9: a monitoring tool you can't trust is worse than none —
-// surface the last price sync per symbol, and make the ledger exportable
-// so your financial history never lives only in this local cache.
+// A monitoring tool you can't trust is worse than none — surface the last
+// price sync per symbol, and make the ledger exportable so your financial
+// history never lives only in this local cache.
 export function DataQualityPanel() {
   const { data, isLoading, isError } = useDataQuality()
   const { sorted, sort, toggleSort } = useSortableRows(data, 'symbol')

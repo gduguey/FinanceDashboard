@@ -36,10 +36,10 @@ export function InvestmentsPage() {
           <SectionTitle>Performance vs. benchmarks</SectionTitle>
           <div className="flex flex-wrap items-center gap-4">
             <BenchmarkPicker />
+            <HysaSettingsPanel />
           </div>
           <DollarChart />
           <GrowthOf100Chart />
-          <HysaSettingsPanel />
           <MonthlyPnlChart />
         </section>
 
