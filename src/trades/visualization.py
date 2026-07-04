@@ -1,24 +1,42 @@
-"""All charting lives here. Every function takes data already computed by
-`transactions.py` / `returns.py` and returns a `plotly.graph_objects.Figure` —
-no aggregation or fetching happens in this module.
+"""All charting lives here.
+
+Every function takes data already computed by `transactions.py` /
+`returns.py` and returns a `plotly.graph_objects.Figure` — no aggregation
+or fetching happens in this module.
 """
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
+from typing import TYPE_CHECKING
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from trades.config import ReturnsConfig
+if TYPE_CHECKING:
+    import numpy as np
+    import polars as pl
+
+    from trades.config import AppConfig
 
 
-def plot_monthly_invested(monthly_df: pd.DataFrame) -> go.Figure:
-    """Stacked bar of USD invested per month, one series per symbol."""
-    symbols = [c for c in monthly_df.columns if c != "Total"]
+def plot_monthly_invested(monthly_df: pl.DataFrame) -> go.Figure:
+    """Render a stacked bar of USD invested per month, one series per symbol.
+
+    Parameters
+    ----------
+    monthly_df
+        One row per month (see `transactions.monthly_invested`), with a
+        `month` column, one column per symbol, and a `Total` column.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        The stacked bar chart.
+    """
+    symbols = [column for column in monthly_df.columns if column not in {"Total", "month"}]
     fig = go.Figure()
     for symbol in symbols:
-        fig.add_trace(go.Bar(x=monthly_df.index, y=monthly_df[symbol], name=symbol))
+        fig.add_trace(go.Bar(x=monthly_df["month"], y=monthly_df[symbol], name=symbol))
     fig.update_layout(
         title="Monthly invested, by symbol",
         xaxis_title="Month",
@@ -28,9 +46,21 @@ def plot_monthly_invested(monthly_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def plot_daily_investment_timeline(daily_df: pd.DataFrame) -> go.Figure:
-    """Bars of USD invested per investment day plus a cumulative-invested
-    line; hovering a bar also shows the gap since the previous buy."""
+def plot_daily_investment_timeline(daily_df: pl.DataFrame) -> go.Figure:
+    """Render bars of USD invested per investment day plus a cumulative-invested line.
+
+    Hovering a bar also shows the gap since the previous buy.
+
+    Parameters
+    ----------
+    daily_df
+        One row per investment day (see `transactions.daily_investment_timeline`).
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        The combined bar-and-line chart.
+    """
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     fig.add_trace(
         go.Bar(
@@ -38,10 +68,9 @@ def plot_daily_investment_timeline(daily_df: pd.DataFrame) -> go.Figure:
             y=daily_df["usd_spent"],
             name="Invested that day",
             marker_color="steelblue",
-            customdata=daily_df[["days_since_previous_investment"]].to_numpy(),
+            customdata=daily_df.select("days_since_previous_investment").to_numpy(),
             hovertemplate=(
-                "%{x|%Y-%m-%d}<br>Invested: $%{y:,.2f}"
-                "<br>Days since prior buy: %{customdata[0]}<extra></extra>"
+                "%{x|%Y-%m-%d}<br>Invested: $%{y:,.2f}<br>Days since prior buy: %{customdata[0]}<extra></extra>"
             ),
         ),
         secondary_y=False,
@@ -52,7 +81,7 @@ def plot_daily_investment_timeline(daily_df: pd.DataFrame) -> go.Figure:
             y=daily_df["cumulative_usd_spent"],
             name="Cumulative invested",
             mode="lines+markers",
-            line=dict(color="firebrick"),
+            line={"color": "firebrick"},
         ),
         secondary_y=True,
     )
@@ -62,44 +91,76 @@ def plot_daily_investment_timeline(daily_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def plot_investment_pie(options: dict[str, pd.Series]) -> go.Figure:
-    """Pie chart with a dropdown menu switching between the given (label ->
-    series) breakdowns, e.g. "whole portfolio by symbol" vs "SYMBOL by date"."""
+def plot_investment_pie(options: dict[str, pl.DataFrame]) -> go.Figure:
+    """Render a pie chart with a dropdown menu to switch between breakdowns.
+
+    Parameters
+    ----------
+    options
+        Label -> two-column breakdown (see `transactions.pie_chart_options`);
+        the first column supplies pie labels, the second supplies values.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        The pie chart with a dropdown selector.
+    """
     labels = list(options.keys())
-    default = options[labels[0]]
+    default_label_column, default_value_column = options[labels[0]].columns
     fig = go.Figure(
-        data=[go.Pie(labels=[str(i) for i in default.index], values=default.to_numpy().tolist())]
+        data=[
+            go.Pie(
+                labels=options[labels[0]][default_label_column].cast(str).to_list(),
+                values=options[labels[0]][default_value_column].to_list(),
+            )
+        ]
     )
     buttons = [
-        dict(
-            label=label,
-            method="update",
-            args=[
-                {
-                    "labels": [[str(i) for i in series.index]],
-                    "values": [series.to_numpy().tolist()],
-                },
+        {
+            "label": label,
+            "method": "update",
+            "args": [
+                {"labels": [df[df.columns[0]].cast(str).to_list()], "values": [df[df.columns[1]].to_list()]},
                 {"title": label},
             ],
-        )
-        for label, series in options.items()
+        }
+        for label, df in options.items()
     ]
     fig.update_layout(
         title=labels[0],
-        updatemenus=[dict(active=0, buttons=buttons, x=1.2, y=1, xanchor="left")],
+        updatemenus=[{"active": 0, "buttons": buttons, "x": 1.2, "y": 1, "xanchor": "left"}],
     )
     return fig
 
 
 def plot_return_curve(
-    returns_df: pd.DataFrame,
+    returns_df: pl.DataFrame,
     trend_x: np.ndarray,
     trend_y: np.ndarray,
-    config: ReturnsConfig,
+    config: AppConfig,
 ) -> go.Figure:
-    """Per-trade annualized return vs. days held, with a fitted trend line
-    and a flat line for the HYSA benchmark defined by `config.hysa_annual_rate`."""
-    hysa_annual_rate = config.hysa_annual_rate
+    """Render per-trade annualized return vs. days held, with a fitted trend line.
+
+    Also draws a flat line for the HYSA benchmark defined by
+    `config.returns.hysa_annual_rate`.
+
+    Parameters
+    ----------
+    returns_df
+        A returns table (see `returns.build_returns_table`).
+    trend_x
+        Trend-line x-coordinates (see `returns.fit_trend`).
+    trend_y
+        Trend-line y-coordinates (see `returns.fit_trend`).
+    config
+        Application configuration; `config.returns.hysa_annual_rate` is read.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        The scatter plot with trend and benchmark lines.
+    """
+    hysa_annual_rate = config.returns.hysa_annual_rate
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -111,14 +172,10 @@ def plot_return_curve(
             hovertemplate="%{text}<br>Days held: %{x}<br>Annualized: %{y:.1f}%<extra></extra>",
         )
     )
-    fig.add_trace(
-        go.Scatter(
-            x=trend_x, y=trend_y, mode="lines", name="Trend", line=dict(color="black", dash="dash")
-        )
-    )
+    fig.add_trace(go.Scatter(x=trend_x, y=trend_y, mode="lines", name="Trend", line={"color": "black", "dash": "dash"}))
     fig.add_hline(
         y=hysa_annual_rate * 100,
-        line=dict(color="green", dash="dot"),
+        line={"color": "green", "dash": "dot"},
         annotation_text=f"{hysa_annual_rate:.0%} HYSA benchmark",
     )
     fig.update_layout(
@@ -129,14 +186,22 @@ def plot_return_curve(
     return fig
 
 
-def render_table(df: pd.DataFrame, title: str) -> go.Figure:
-    """Quick, presentable rendering of a DataFrame for notebook display."""
-    fig = go.Figure(
-        data=[
-            go.Table(
-                header=dict(values=list(df.columns)), cells=dict(values=[df[c] for c in df.columns])
-            )
-        ]
-    )
+def render_table(df: pl.DataFrame, title: str) -> go.Figure:
+    """Render a DataFrame as a table, for notebook display.
+
+    Parameters
+    ----------
+    df
+        The data to render.
+    title
+        The chart title.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        The table figure.
+    """
+    cell_values = [df[column].to_list() for column in df.columns]
+    fig = go.Figure(data=[go.Table(header={"values": df.columns}, cells={"values": cell_values})])
     fig.update_layout(title=title)
     return fig

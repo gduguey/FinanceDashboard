@@ -1,6 +1,6 @@
 # The IBKR Flex Web Service
 
-`src/trades/brokers/ibkr.py` pulls a Flex Query via IBKR's Flex Web
+`src/trades/brokers/ibkr/` pulls a Flex Query via IBKR's Flex Web
 Service — an XML API, separate from the interactive TWS API and the
 Yahoo price API in `prices.py`. The query ("Trade History API" in this
 account) includes Trades, Cash Report, Open Positions, and (once enabled
@@ -42,19 +42,17 @@ Polling stops and raises after `config.max_poll_attempts`.
 The query's **Period** (currently "Last 365 Calendar Days", set in IBKR's
 web UI — the API has no from/to-date parameters) bounds every call to a
 window; it never means "since I last asked." Two consequences in
-`sync_ibkr_account`:
+`brokers/ibkr/main.py:sync_ibkr_account`:
 
 - **A pull missed for longer than the window covers is a permanent gap.**
   Before merging a new pull in, `sync_ibkr_account` checks that its
-  `fromDate` connects to the last cached ledger event's date with no
-  unaccounted weekday in between, raising `TradeHistoryGapError` if not
-  (a holiday can false-positive this — cheap insurance, never a silent
-  loss). Backfill a gap with a one-off custom-date-range query, then sync
-  again.
+  `fromDate` doesn't leave a gap after the last cached ledger event's
+  date, raising `TradeHistoryGapError` if it does. Backfill a gap with a
+  one-off custom-date-range query, then sync again.
 - **Ledger events dedupe by `event_id`** (`ibkr:{transactionID}`, or
   `:fee` suffixed for the commission event — see
-  `preprocessing.standardize_ibkr_ledger`), so re-syncing overlapping
-  history only adds what's genuinely new.
+  `brokers/ibkr/preprocessing.py:standardize_ibkr_ledger`), so re-syncing
+  overlapping history only adds what's genuinely new.
 
 `<OpenPosition>`/`<CashReportCurrency>` rows aren't parsed into anything
 today — they're a state snapshot, not an event — but stay in
@@ -70,9 +68,9 @@ today — they're a state snapshot, not an event — but stay in
   "The ledger").
 
 Writes are atomic (temp file + rename); a network response is validated
-through `IbkrTrade`/`IbkrCashTransaction`, then through `LedgerEvent`
-once `preprocessing.py` maps it onto the ledger shape, before it can
-reach disk.
+through `IbkrTrade`/`IbkrCashTransaction` (`brokers/ibkr/models.py`),
+then through `LedgerEvent` once `brokers/ibkr/preprocessing.py` maps it
+onto the ledger shape, before it can reach disk.
 
 ## Why the ledger is disposable
 
