@@ -1,9 +1,11 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from trades.config import (
-    AggregationConfig,
     AppConfig,
+    DashboardConfig,
     IbkrFlexApiConfig,
     IbkrFlexCredentials,
     LedgerConfig,
@@ -18,11 +20,11 @@ def test_ledger_config_default_cash_symbol() -> None:
 def test_app_config_composes_every_sub_config() -> None:
     config = AppConfig()
     assert config.ledger.cash_symbol == "CASH"
-    assert config.aggregation.same_day_price_tolerance == pytest.approx(0.0001)
     assert config.prices.request_timeout_seconds == pytest.approx(10.0)
     assert config.cpi.series_id == "CPIAUCSL"
     assert config.returns.hysa_annual_rate == pytest.approx(0.04)
     assert config.ibkr.max_poll_attempts == 10
+    assert config.dashboard.settings_path.name == "dashboard_settings.json"
 
 
 def test_app_config_is_frozen() -> None:
@@ -31,18 +33,19 @@ def test_app_config_is_frozen() -> None:
         config.returns = ReturnsConfig(hysa_annual_rate=0.05)
 
 
-def test_aggregation_config_default_tolerance() -> None:
-    assert AggregationConfig().same_day_price_tolerance == pytest.approx(0.0001)
-
-
-def test_aggregation_config_rejects_non_positive_tolerance() -> None:
-    with pytest.raises(ValidationError):
-        AggregationConfig(same_day_price_tolerance=0)
+def test_returns_config_default_benchmark_symbol() -> None:
+    assert ReturnsConfig().benchmark_symbol == "VOO"
 
 
 def test_returns_config_rejects_negative_hysa_rate() -> None:
     with pytest.raises(ValidationError):
         ReturnsConfig(hysa_annual_rate=-0.01)
+
+
+def test_dashboard_config_is_frozen() -> None:
+    config = DashboardConfig()
+    with pytest.raises(ValidationError):
+        config.settings_path = Path("x.json")
 
 
 def test_config_objects_are_frozen() -> None:

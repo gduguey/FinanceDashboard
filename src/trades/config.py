@@ -33,19 +33,6 @@ class LedgerConfig(BaseModel):
     long_term_holding_days: int = Field(default=365, gt=0)
 
 
-class AggregationConfig(BaseModel):
-    """Controls how same-day, same-symbol fills are merged."""
-
-    model_config = ConfigDict(frozen=True)
-
-    same_day_price_tolerance: float = Field(
-        default=0.0001,
-        gt=0,
-        lt=1,
-        description="Max relative $/share difference for two same-day fills to be merged.",
-    )
-
-
 class PriceApiConfig(BaseModel):
     """Where price history is cached and how the Yahoo Finance API is called."""
 
@@ -68,6 +55,37 @@ class CpiConfig(BaseModel):
     series_id: str = Field(default="CPIAUCSL", min_length=1)
     csv_url_template: str = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"  # noqa: RUF027
     request_timeout_seconds: float = Field(default=10.0, gt=0)
+
+
+class SymbolSearchConfig(BaseModel):
+    """How Yahoo Finance's public ticker-search endpoint is called.
+
+    Nothing here is cached: a symbol search is a live, on-demand lookup
+    for the frontend's benchmark picker, not data the app replays against.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    search_url: str = "https://query2.finance.yahoo.com/v1/finance/search"
+    request_headers: dict[str, str] = Field(
+        default_factory=lambda: {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
+    )
+    request_timeout_seconds: float = Field(default=10.0, gt=0)
+    max_results: int = Field(default=8, gt=0)
+
+
+class HysaRatesConfig(BaseModel):
+    """Where the HYSA bank-rate-history cache lives and how apyarchives.com is scraped."""
+
+    model_config = ConfigDict(frozen=True)
+
+    cache_dir: Path = _REPO_ROOT / "data" / "hysa_rates"
+    source_url: str = "https://www.apyarchives.com"
+    request_headers: dict[str, str] = Field(
+        default_factory=lambda: {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
+    )
+    request_timeout_seconds: float = Field(default=15.0, gt=0)
+    default_bank_id: str = Field(default="ally-bank", min_length=1)
 
 
 class TimezoneConfig(BaseModel):
@@ -95,13 +113,37 @@ class TimezoneConfig(BaseModel):
 
 
 class ReturnsConfig(BaseModel):
-    """The return/annualization math and the cash benchmark to compare against."""
+    """The annualization convention and the counterfactual benchmarks to compare against.
+
+    `hysa_annual_rate` stands in for a real HYSA rate time series until
+    `market_data.hysa_rates` is implemented — `counterfactuals.hysa_counterfactual_value`
+    takes a `rate_lookup` callable specifically so this constant can be
+    swapped for a real series later without changing that function.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    annualization_days: int = Field(default=365, gt=0)
+    annualization_days: int = Field(
+        default=365,
+        gt=0,
+        description="Minimum holding period before a raw return gets projected to a yearly rate.",
+    )
+    days_per_year: int = Field(
+        default=365,
+        gt=0,
+        description="Day-count basis for converting an annual rate to a daily one (XIRR's exponent, HYSA compounding).",
+    )
     hysa_annual_rate: float = Field(default=0.04, ge=0)
-    trend_fit_kind: Literal["linear", "mean"] = "linear"
+    benchmark_symbol: str = Field(default="VOO", min_length=1, description="The all-equity counterfactual symbol.")
+    xirr_tolerance: float = Field(
+        default=1e-6, gt=0, description="How close to zero XIRR's net-present-value search must land to accept a rate."
+    )
+    xirr_max_newton_iterations: int = Field(
+        default=100, gt=0, description="Newton-Raphson attempts before XIRR falls back to bisection."
+    )
+    xirr_max_bisection_iterations: int = Field(
+        default=200, gt=0, description="Bisection attempts before XIRR gives up and raises."
+    )
 
 
 class IbkrFlexCredentials(BaseSettings):
@@ -153,15 +195,31 @@ class IbkrFlexApiConfig(BaseModel):
         return self.cache_dir / "raw_statements"
 
 
+class DashboardConfig(BaseModel):
+    """Where dashboard-only, user-editable settings (e.g. a target allocation) are persisted.
+
+    These aren't fetched data (see `docs/architecture.md`'s caching rule)
+    and aren't a code-level tunable either — they're settings a user
+    changes from the frontend, so `dashboard.py` reads/writes a small JSON
+    file here instead of holding them as a hardcoded default.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    settings_path: Path = _REPO_ROOT / "data" / "dashboard_settings.json"
+
+
 class AppConfig(BaseModel):
     """Every sub-config for the application, composed into one object."""
 
     model_config = ConfigDict(frozen=True)
 
     ledger: LedgerConfig = Field(default_factory=LedgerConfig)
-    aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     prices: PriceApiConfig = Field(default_factory=PriceApiConfig)
     cpi: CpiConfig = Field(default_factory=CpiConfig)
+    hysa_rates: HysaRatesConfig = Field(default_factory=HysaRatesConfig)
+    symbol_search: SymbolSearchConfig = Field(default_factory=SymbolSearchConfig)
     returns: ReturnsConfig = Field(default_factory=ReturnsConfig)
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)

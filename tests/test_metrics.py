@@ -112,7 +112,7 @@ def test_lot_returns_accepts_a_lazyframe() -> None:
 
 def test_xirr_recovers_a_known_rate_for_a_single_flow() -> None:
     # $1000 out on day 0, $1100 back exactly 1 year later -> 10%.
-    rate = xirr([date(2025, 1, 1), date(2026, 1, 1)], [-1000.0, 1100.0])
+    rate = xirr([date(2025, 1, 1), date(2026, 1, 1)], [-1000.0, 1100.0], CONFIG)
     assert rate == pytest.approx(0.10, abs=1e-4)
 
 
@@ -121,6 +121,7 @@ def test_xirr_handles_multiple_deposits() -> None:
     rate = xirr(
         [date(2025, 1, 1), date(2025, 7, 1), date(2026, 1, 1)],
         [-500.0, -500.0, 1100.0],
+        CONFIG,
     )
     npv = sum(
         amount / (1 + rate) ** ((d - date(2025, 1, 1)).days / 365)
@@ -136,19 +137,20 @@ def test_xirr_is_unaffected_by_an_internal_reallocation() -> None:
     with_reallocation = xirr(
         [date(2025, 1, 1), date(2025, 6, 1), date(2025, 6, 1), date(2026, 1, 1)],
         [-1000.0, -50.0, 50.0, 1100.0],
+        CONFIG,
     )
-    without_reallocation = xirr([date(2025, 1, 1), date(2026, 1, 1)], [-1000.0, 1100.0])
+    without_reallocation = xirr([date(2025, 1, 1), date(2026, 1, 1)], [-1000.0, 1100.0], CONFIG)
     assert with_reallocation == pytest.approx(without_reallocation, abs=1e-6)
 
 
 def test_xirr_raises_with_fewer_than_two_cashflows() -> None:
     with pytest.raises(ValueError, match="at least 2"):
-        xirr([date(2025, 1, 1)], [-1000.0])
+        xirr([date(2025, 1, 1)], [-1000.0], CONFIG)
 
 
 def test_xirr_raises_when_all_cashflows_share_a_sign() -> None:
     with pytest.raises(ValueError, match="negative and a positive"):
-        xirr([date(2025, 1, 1), date(2026, 1, 1)], [1000.0, 1100.0])
+        xirr([date(2025, 1, 1), date(2026, 1, 1)], [1000.0, 1100.0], CONFIG)
 
 
 def _closed_lot(lot_id: str, realized_gain: float, symbol: str = "VOO") -> ClosedLot:
@@ -223,7 +225,7 @@ def test_symbol_metrics_excludes_drip_buys_from_invested_but_includes_the_divide
         ),
     )
     result = replay_ledger(ledger, CONFIG)
-    metrics = symbol_metrics(ledger, result, "BND", lambda symbol, as_of: 100.0, date(2026, 1, 1))
+    metrics = symbol_metrics(ledger, result, "BND", lambda symbol, as_of: 100.0, date(2026, 1, 1), CONFIG)
     assert metrics.invested == pytest.approx(1000.0)
     assert metrics.dividends_received == pytest.approx(50.0)
     assert metrics.current_value == pytest.approx(10.5 * 100.0)
@@ -236,21 +238,21 @@ def test_symbol_metrics_of_a_fully_closed_symbol_has_no_terminal_value() -> None
         _event("s1", "2025-06-01", "SELL", symbol="VOO", shares=10.0, price=120.0, amount=1200.0),
     )
     result = replay_ledger(ledger, CONFIG)
-    metrics = symbol_metrics(ledger, result, "VOO", lambda symbol, as_of: 999.0, date(2026, 1, 1))
+    metrics = symbol_metrics(ledger, result, "VOO", lambda symbol, as_of: 999.0, date(2026, 1, 1), CONFIG)
     assert metrics.status == "closed"
     assert metrics.current_value == pytest.approx(0.0)
     assert metrics.unrealized_gain == pytest.approx(0.0)
     assert metrics.realized_gain == pytest.approx(10.0 * (120.0 - 100.0))
     assert metrics.proceeds_received == pytest.approx(1200.0)
-    expected_xirr = xirr([date(2025, 1, 1), date(2025, 6, 1)], [-1000.0, 1200.0])
+    expected_xirr = xirr([date(2025, 1, 1), date(2025, 6, 1)], [-1000.0, 1200.0], CONFIG)
     assert metrics.xirr == pytest.approx(expected_xirr)
 
 
 def test_symbol_metrics_open_position_xirr_includes_current_value_as_terminal_flow() -> None:
     ledger = _ledger(_event("b1", "2025-01-01", "BUY", symbol="VOO", shares=10.0, price=100.0, amount=1000.0))
     result = replay_ledger(ledger, CONFIG)
-    metrics = symbol_metrics(ledger, result, "VOO", lambda symbol, as_of: 110.0, date(2026, 1, 1))
-    expected_xirr = xirr([date(2025, 1, 1), date(2026, 1, 1)], [-1000.0, 1100.0])
+    metrics = symbol_metrics(ledger, result, "VOO", lambda symbol, as_of: 110.0, date(2026, 1, 1), CONFIG)
+    expected_xirr = xirr([date(2025, 1, 1), date(2026, 1, 1)], [-1000.0, 1100.0], CONFIG)
     assert metrics.xirr == pytest.approx(expected_xirr)
 
 

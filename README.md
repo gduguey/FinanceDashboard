@@ -107,6 +107,15 @@ Everything you see reads from the same local caches as the notebook — the
 API layer never fetches anything on its own except when you click Sync
 (see `src/trades/api.py`'s docstring for why that split matters).
 
+To kill a running API server:
+
+```bash
+# Find PID of the running API
+lsof -i :8000
+# Kill it
+kill <PID>
+```
+
 ## Repo layout
 
 ```
