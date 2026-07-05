@@ -17,7 +17,19 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from accounting.models import Account, Category, CategoryClassification, ManualOverride, OtherAsset, Rule, Tag
+from accounting.models import (
+    Account,
+    Budget,
+    Category,
+    CategoryClassification,
+    ManualOverride,
+    OpeningBalance,
+    OtherAsset,
+    PostingSplit,
+    Rule,
+    SimulatorScenario,
+    Tag,
+)
 from trades.utils.io_utils import write_json_atomic
 
 if TYPE_CHECKING:
@@ -79,6 +91,61 @@ def slugify(text: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
 
 
+OTHER_SUBCATEGORY_SUFFIX = ":other"
+
+
+def _is_other_subcategory(category: Category) -> bool:
+    return category.category_id.endswith(OTHER_SUBCATEGORY_SUFFIX)
+
+
+def normalize_categories(categories: dict[str, Category]) -> dict[str, Category]:
+    """Enforce the "Other" catch-all subcategory invariant after any edit to the category tree.
+
+    Whenever a top-level category ends up with at least one *real*
+    (non-"Other") subcategory, it must also have an "Other" one —
+    auto-created here if missing, so adding a category's first subcategory
+    never requires remembering to add a catch-all too, and "Other" can't
+    be removed by hand while real subcategories still exist (this just
+    re-adds it on the next save). Conversely, "Other" left as a category's
+    *only* subcategory is pointless — it's removed here, collapsing the
+    category back to having none, since "Other" only makes sense alongside
+    real subcategories, never alone.
+
+    Parameters
+    ----------
+    categories
+        The full proposed category tree, as a client would submit it.
+
+    Returns
+    -------
+    dict[str, Category]
+        The same tree, with every top-level category's "Other" subcategory added or removed as needed.
+    """
+    result = dict(categories)
+    children_by_parent: dict[str, list[Category]] = {}
+    for category in categories.values():
+        if category.parent_category_id is not None:
+            children_by_parent.setdefault(category.parent_category_id, []).append(category)
+
+    for parent_id, children in children_by_parent.items():
+        parent = categories.get(parent_id)
+        if parent is None:
+            continue
+        other_id = f"{parent_id}{OTHER_SUBCATEGORY_SUFFIX}"
+        has_real_children = any(not _is_other_subcategory(child) for child in children)
+        if has_real_children and other_id not in result:
+            result[other_id] = Category(
+                category_id=other_id,
+                name="Other",
+                classification=parent.classification,
+                parent_category_id=parent_id,
+                color=parent.color,
+            )
+        elif not has_real_children and other_id in result:
+            del result[other_id]
+    return result
+
+
 def default_categories() -> dict[str, Category]:
     """Build the starting category tree (see `ACCOUNTING_PLAN.md` Part 6).
 
@@ -106,7 +173,7 @@ def default_categories() -> dict[str, Category]:
                     parent_category_id=top_id,
                     color=color,
                 )
-    return categories
+    return normalize_categories(categories)
 
 
 def default_accounts() -> dict[str, Account]:
@@ -192,6 +259,10 @@ class AccountingStore(BaseModel):
     tags: dict[str, Tag] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
     other_assets: list[OtherAsset] = Field(default_factory=list)
+    opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)
+    budgets: list[Budget] = Field(default_factory=list)
+    simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
+    posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
 
 
 def load_store(config: AccountingConfig) -> AccountingStore:

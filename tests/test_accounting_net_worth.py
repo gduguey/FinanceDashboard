@@ -5,7 +5,7 @@ import pytest
 
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import DisplayCurrency
-from accounting.models import Account, OtherAsset, Posting
+from accounting.models import Account, OpeningBalance, OtherAsset, Posting
 
 SCHEMA = Posting.polars_schema
 
@@ -180,6 +180,30 @@ def test_net_worth_converts_a_eur_other_asset_into_eur_display() -> None:
         DisplayCurrency("EUR", {"USD": 1.0, "EUR": 1.10}),
     )
     assert summary.other_assets_total == pytest.approx(1000.0)
+
+
+def test_net_worth_adds_an_opening_balance_once_as_of_reaches_it() -> None:
+    accounts = {SAVINGS.account_id: SAVINGS}
+    opening_balances = {
+        SAVINGS.account_id: OpeningBalance(account_id=SAVINGS.account_id, amount=500.0, as_of_date=datetime(2026, 6, 1))
+    }
+    before = net_worth_summary(_postings(), accounts, [], date(2026, 5, 31), opening_balances=opening_balances)
+    after = net_worth_summary(_postings(), accounts, [], date(2026, 6, 1), opening_balances=opening_balances)
+    assert before.assets == pytest.approx(0.0)
+    assert after.assets == pytest.approx(500.0)
+
+
+def test_net_worth_opening_balance_adds_on_top_of_posting_derived_balance() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "sofi:savings:3680", 200.0, posted_at="2026-06-15"),
+        _posting("p2", "t1", "uncategorized:expense", -200.0, posted_at="2026-06-15"),
+    )
+    accounts = {SAVINGS.account_id: SAVINGS, UNCATEGORIZED_EXPENSE.account_id: UNCATEGORIZED_EXPENSE}
+    opening_balances = {
+        SAVINGS.account_id: OpeningBalance(account_id=SAVINGS.account_id, amount=500.0, as_of_date=datetime(2026, 6, 1))
+    }
+    summary = net_worth_summary(postings, accounts, [], date(2026, 6, 30), opening_balances=opening_balances)
+    assert summary.assets == pytest.approx(700.0)
 
 
 def test_net_worth_converts_a_usd_other_asset_into_eur_display() -> None:

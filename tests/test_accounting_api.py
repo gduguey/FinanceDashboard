@@ -127,6 +127,232 @@ def test_manual_override_wins_over_no_rule_match(client) -> None:
     assert updated_payroll["category_id"] == "income:salary"
 
 
+def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    posting_id = payroll["posting_id"]
+
+    client.put(f"/api/accounting/postings/{posting_id}/override", json={"category_id": "income:salary"})
+    response = client.put(f"/api/accounting/postings/{posting_id}/override", json={"subcategory_id": "income:bonus"})
+    assert response.status_code == 200
+    assert response.json()["category_id"] == "income:salary"
+    assert response.json()["subcategory_id"] == "income:bonus"
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == posting_id)
+    assert updated_payroll["category_id"] == "income:salary"
+    assert updated_payroll["subcategory_id"] == "income:bonus"
+
+
+def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    response = client.put(
+        f"/api/accounting/postings/{payroll['posting_id']}/split",
+        json=[
+            {"amount": 1400.0, "category_id": "income:salary", "description": "Wage"},
+            {"amount": 100.0, "category_id": "income:reimbursement", "description": "Expense reimbursement"},
+        ],
+    )
+    assert response.status_code == 200
+
+    updated = client.get("/api/accounting/postings").json()
+    assert not any(p["posting_id"] == payroll["posting_id"] for p in updated)
+    legs = [p for p in updated if p["posting_id"].startswith(f"{payroll['posting_id']}:split:")]
+    assert sorted(leg["amount"] for leg in legs) == pytest.approx([100.0, 1400.0])
+    assert {leg["category_id"] for leg in legs} == {"income:salary", "income:reimbursement"}
+
+
+def test_put_posting_split_rejects_legs_that_dont_sum_correctly(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    response = client.put(
+        f"/api/accounting/postings/{payroll['posting_id']}/split",
+        json=[{"amount": 100.0}, {"amount": 100.0}],
+    )
+    assert response.status_code == 400
+
+
+def test_delete_posting_split_restores_the_original_posting(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    client.put(
+        f"/api/accounting/postings/{payroll['posting_id']}/split",
+        json=[{"amount": 1000.0}, {"amount": 500.0}],
+    )
+    client.delete(f"/api/accounting/postings/{payroll['posting_id']}/split")
+
+    updated = client.get("/api/accounting/postings").json()
+    assert any(p["posting_id"] == payroll["posting_id"] for p in updated)
+
+
+def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    paystub_text = (
+        "Pay Date: 06/30/2026\nGross Pay: $2,000.00\nTotal Taxes: $500.00\nNet Pay: $1,500.00\n"
+        "Direct Deposit\nChecking ending in 9579 $1,500.00\n"
+    )
+    monkeypatch.setattr(accounting_api, "extract_paystub_pdf_text", lambda _pdf_bytes: paystub_text)
+
+    response = client.post(
+        "/api/accounting/import/paystub", files={"file": ("paystub.pdf", b"%PDF-fake", "application/pdf")}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["statement"]["gross_pay"] == pytest.approx(2000.0)
+
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    assert body["is_fully_matched"]
+    assert body["matches"][0]["posting_id"] == payroll["posting_id"]
+
+
+def test_import_paystub_400s_on_unrecognized_text(client, monkeypatch) -> None:
+    monkeypatch.setattr(accounting_api, "extract_paystub_pdf_text", lambda _pdf_bytes: "not a paystub at all")
+    response = client.post(
+        "/api/accounting/import/paystub", files={"file": ("paystub.pdf", b"%PDF-fake", "application/pdf")}
+    )
+    assert response.status_code == 400
+
+
+class _FakeLLMProvider:
+    def __init__(self, response: str) -> None:
+        self._response = response
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        return self._response
+
+
+def test_ai_suggest_category_applies_a_valid_suggestion(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+
+    response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"category_id": "income:salary", "subcategory_id": None, "applied": True}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] == "income:salary"
+
+
+def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    fake_response = '{"category_id": "not-a-real-category", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+
+    response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+    assert response.status_code == 200
+    assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] is None
+
+
+def test_ai_suggest_category_503s_when_no_provider_is_configured(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    monkeypatch.setattr(accounting_api, "_llm_providers", list)
+    response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+    assert response.status_code == 503
+
+
+def test_ai_suggest_category_404s_for_an_unknown_posting(client, monkeypatch) -> None:
+    monkeypatch.setattr(accounting_api, "_llm_providers", list)
+    response = client.post("/api/accounting/postings/does-not-exist/ai-suggest-category")
+    assert response.status_code == 404
+
+
 def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
     client.post(
         "/api/accounting/import",
@@ -217,11 +443,115 @@ def test_put_categories_replaces_the_whole_tree(client) -> None:
     assert list(store["categories"].keys()) == ["expense:custom"]
 
 
+def test_put_categories_auto_creates_other_for_a_categorys_first_subcategory(client) -> None:
+    response = client.put(
+        "/api/accounting/categories",
+        json={
+            "expense:custom": {
+                "category_id": "expense:custom",
+                "name": "Custom",
+                "classification": "expense",
+                "color": "#000000",
+            },
+            "expense:custom:gadgets": {
+                "category_id": "expense:custom:gadgets",
+                "name": "Gadgets",
+                "classification": "expense",
+                "parent_category_id": "expense:custom",
+                "color": "#000000",
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert "expense:custom:other" in response.json()
+
+
+def test_put_categories_removes_other_once_it_is_left_alone(client) -> None:
+    client.put(
+        "/api/accounting/categories",
+        json={
+            "expense:custom": {
+                "category_id": "expense:custom",
+                "name": "Custom",
+                "classification": "expense",
+                "color": "#000000",
+            },
+            "expense:custom:gadgets": {
+                "category_id": "expense:custom:gadgets",
+                "name": "Gadgets",
+                "classification": "expense",
+                "parent_category_id": "expense:custom",
+                "color": "#000000",
+            },
+        },
+    )
+    response = client.put(
+        "/api/accounting/categories",
+        json={
+            "expense:custom": {
+                "category_id": "expense:custom",
+                "name": "Custom",
+                "classification": "expense",
+                "color": "#000000",
+            },
+            "expense:custom:other": {
+                "category_id": "expense:custom:other",
+                "name": "Other",
+                "classification": "expense",
+                "parent_category_id": "expense:custom",
+                "color": "#000000",
+            },
+        },
+    )
+    assert "expense:custom:other" not in response.json()
+
+
 def test_put_other_assets_persists(client) -> None:
     response = client.put("/api/accounting/other-assets", json=[{"asset_id": "car", "name": "Car", "value": 15000.0}])
     assert response.status_code == 200
     body = client.get("/api/accounting/net-worth").json()
     assert body["other_assets_total"] == pytest.approx(15000.0)
+
+
+def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payment = next(p for p in postings if p["amount"] < 0)
+    client.put(f"/api/accounting/postings/{payment['posting_id']}/override", json={"category_id": "expense:admin-fees"})
+
+    response = client.put(
+        "/api/accounting/budgets",
+        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:admin-fees", "amount": 100.0}],
+    )
+    assert response.status_code == 200
+    assert "expense:admin-fees" in [b["category_id"] for b in client.get("/api/accounting/store").json()["budgets"]]
+
+    comparison = client.get("/api/accounting/budgets/comparison", params={"month": "2026-06"}).json()
+    assert len(comparison) == 1
+    assert comparison[0]["budgeted"] == pytest.approx(100.0)
+    assert comparison[0]["actual"] == pytest.approx(70.0)
+
+
+def test_get_budget_comparison_rejects_a_malformed_month(client) -> None:
+    response = client.get("/api/accounting/budgets/comparison", params={"month": "not-a-month"})
+    assert response.status_code == 400
+
+
+def test_get_suggested_budget_amount_returns_zero_with_no_history(client) -> None:
+    response = client.get(
+        "/api/accounting/budgets/suggested-amount", params={"category_id": "expense:food-drink", "month": "2026-06"}
+    )
+    assert response.status_code == 200
+    assert response.json()["suggested_amount"] == pytest.approx(0.0)
 
 
 def test_rebuild_with_nothing_imported_is_a_404(client) -> None:
@@ -399,6 +729,62 @@ def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) ->
     assert renamed.json()["name"] == "Renamed"
 
 
+def test_get_supported_import_kinds_lists_registered_standardizers(client) -> None:
+    response = client.get("/api/accounting/supported-import-kinds")
+    assert response.status_code == 200
+    pairs = {(row["institution"], row["account_kind"]) for row in response.json()}
+    assert ("Chase", "checking") in pairs
+    assert ("BNP", "checking") not in pairs
+
+
+def test_put_opening_balance_is_reflected_in_net_worth(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    response = client.put(
+        "/api/accounting/accounts/bnp:checking:0001/opening-balance",
+        json={"account_id": "bnp:checking:0001", "amount": 250.0, "as_of_date": "2026-01-01T00:00:00"},
+    )
+    assert response.status_code == 200
+    net_worth = client.get("/api/accounting/net-worth", params={"as_of": "2026-06-01"}).json()
+    row = next(r for r in net_worth["accounts"] if r["account_id"] == "bnp:checking:0001")
+    assert row["balance"] == pytest.approx(250.0)
+
+    delete_response = client.delete("/api/accounting/accounts/bnp:checking:0001/opening-balance")
+    assert delete_response.status_code == 200
+    net_worth_after = client.get("/api/accounting/net-worth", params={"as_of": "2026-06-01"}).json()
+    row_after = next(r for r in net_worth_after["accounts"] if r["account_id"] == "bnp:checking:0001")
+    assert row_after["balance"] == pytest.approx(0.0)
+
+
+def test_net_worth_history_by_account_returns_a_row_per_account_per_date(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    response = client.get(
+        "/api/accounting/net-worth/history/by-account",
+        params={"start": "2026-06-28", "end": "2026-06-30", "interval_days": 1},
+    )
+    assert response.status_code == 200
+    rows = response.json()
+    dates = {row["date"] for row in rows if row["account_id"] == "chase:checking:9579"}
+    assert dates == {"2026-06-28", "2026-06-29", "2026-06-30"}
+
+
 def test_delete_account_removes_an_account_with_no_postings(client) -> None:
     client.post(
         "/api/accounting/accounts",
@@ -493,6 +879,62 @@ def test_import_sofi_statement_pdf_registers_every_account_it_describes(client, 
 
     store = client.get("/api/accounting/store").json()
     assert store["accounts"]["sofi:savings:3680"]["meta"]["apy_pct"] == "0.0"
+
+
+def test_get_simulator_projection_computes_compound_growth(client) -> None:
+    response = client.get(
+        "/api/accounting/simulator/project",
+        params={"initial_capital": 1000.0, "monthly_contribution": 0.0, "horizon_years": 1, "annual_rate_pct": 12.0},
+    )
+    assert response.status_code == 200
+    points = response.json()
+    assert points[0]["balance"] == pytest.approx(1000.0)
+    assert points[12]["balance"] == pytest.approx(1000.0 * (1.01**12))
+
+
+def test_put_simulator_scenarios_persists(client) -> None:
+    response = client.put(
+        "/api/accounting/simulator/scenarios",
+        json=[
+            {
+                "scenario_id": "s1",
+                "name": "Base case",
+                "initial_capital": 1000.0,
+                "monthly_contribution": 100.0,
+                "horizon_years": 10,
+                "annual_rate_pct": 6.0,
+            }
+        ],
+    )
+    assert response.status_code == 200
+    store = client.get("/api/accounting/store").json()
+    assert store["simulator_scenarios"][0]["name"] == "Base case"
+
+
+def test_interest_summary_reports_savings_interest_earned(client, monkeypatch) -> None:
+    statement_text = (
+        "Savings Account - 3680\n"
+        "DATE TYPE DESCRIPTION AMOUNT BALANCE\n"
+        "Apr 30, 2026 Interest Earned Interest earned $7.70 $107.70\n"
+        "Transaction ID: 50-1\n"
+    )
+    monkeypatch.setattr(
+        ingest_module,
+        "standardize_sofi_statement_pdf",
+        lambda _pdf_bytes: standardize_sofi_statement_text(statement_text),
+    )
+    client.post(
+        "/api/accounting/import/sofi-statement-pdf", files={"file": ("statement.pdf", b"%PDF-fake", "application/pdf")}
+    )
+    response = client.get("/api/accounting/interest-summary", params={"as_of": "2026-04-30"})
+    assert response.status_code == 200
+    rows = response.json()
+    savings_row = next(row for row in rows if row["account_id"] == "sofi:savings:3680")
+    assert savings_row["interest_earned_this_year"] == pytest.approx(7.70)
+    # The fake statement has only this one row, so the ledger-derived balance
+    # is the interest posting alone — not the statement's own BALANCE column,
+    # which would need an earlier deposit row this fixture doesn't include.
+    assert savings_row["current_balance"] == pytest.approx(7.70)
 
 
 def test_monthly_income_expense_reports_both_sides(client) -> None:

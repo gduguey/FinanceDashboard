@@ -66,6 +66,59 @@ export interface OtherAsset {
   note: string
 }
 
+export interface OpeningBalance {
+  account_id: string
+  amount: number
+  as_of_date: string
+}
+
+export interface Budget {
+  budget_id: string
+  month: string
+  category_id: string
+  amount: number
+  currency: CurrencyCode
+}
+
+export interface BudgetComparisonRow {
+  category_id: string
+  category_name: string
+  color: string
+  budgeted: number
+  actual: number
+  currency: CurrencyCode
+}
+
+export type CompoundingFrequency = 'annually' | 'monthly' | 'daily'
+
+export interface SimulatorScenario {
+  scenario_id: string
+  name: string
+  initial_capital: number
+  monthly_contribution: number
+  horizon_years: number
+  annual_rate_pct: number
+  compounding_frequency: CompoundingFrequency
+  currency: CurrencyCode
+}
+
+export interface ProjectionPoint {
+  month: number
+  balance: number
+  contributions_to_date: number
+}
+
+export interface InterestAccountRow {
+  account_id: string
+  account_name: string
+  currency: CurrencyCode
+  apy_pct: number
+  interest_earned_this_year: number
+  current_balance: number
+  projected_next_12_months: number
+  benchmark_apy_pct: number | null
+}
+
 export interface Posting {
   posting_id: string
   transaction_id: string
@@ -88,12 +141,50 @@ export interface ManualOverride {
   tag_ids?: string[] | null
 }
 
+export interface EarningsDeposit {
+  label: string
+  account_last4: string | null
+  amount: number
+}
+
+export interface EarningsStatement {
+  pay_date: string
+  gross_pay: number
+  taxes_withheld: number
+  net_pay: number
+  deposits: EarningsDeposit[]
+}
+
+export interface DepositMatch {
+  label: string
+  amount: number
+  account_last4: string | null
+  posting_id: string | null
+  account_id: string | null
+}
+
+export interface PaystubReconciliationResult {
+  statement: EarningsStatement
+  matches: DepositMatch[]
+  is_fully_matched: boolean
+}
+
+export interface PostingSplitLeg {
+  amount: number
+  category_id: string | null
+  subcategory_id: string | null
+  description: string
+}
+
 export interface AccountingStore {
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
   rules: Rule[]
   other_assets: OtherAsset[]
+  opening_balances: Record<string, OpeningBalance>
+  budgets: Budget[]
+  simulator_scenarios: SimulatorScenario[]
 }
 
 export interface ExchangeRateSyncResult {
@@ -158,6 +249,13 @@ export interface NetWorthSummary {
 export interface NetWorthHistoryPoint {
   date: string
   net_worth: number
+}
+
+export interface NetWorthHistoryByAccountPoint {
+  date: string
+  account_id: string
+  account_name: string
+  balance: number
 }
 
 export interface TransferSuggestion {

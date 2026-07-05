@@ -6,6 +6,7 @@ import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/componen
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ResponsiveContainer } from 'recharts'
+import { PieChartLegend } from '@/components/shared/PieChartLegend'
 import { formatCurrency, formatDate } from '@/lib/format'
 import {
   UNCATEGORIZED_EXPENSE_CATEGORY_ID,
@@ -266,11 +267,8 @@ export function CategoryDrilldownPie({
         ) : !grandTotal ? (
           <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">No transactions in this period</div>
         ) : (
-          <>
-            <p className="text-sm text-muted-foreground">
-              Total: <span className="font-medium text-foreground">{formatCurrency(grandTotal, displayCurrency)}</span>
-            </p>
-            <ResponsiveContainer width="100%" height={360}>
+          <div className="flex gap-4">
+            <ResponsiveContainer width="100%" height={360} className="flex-1">
               <PieChart>
                 {rings.map((ring, index) => {
                   const innerRadius = INNER_START + index * bandWidth + 2
@@ -305,7 +303,14 @@ export function CategoryDrilldownPie({
                 />
               </PieChart>
             </ResponsiveContainer>
-          </>
+            <PieChartLegend
+              total={grandTotal}
+              slices={rings[rings.length - 1].slices}
+              showPercent={showPercent}
+              displayCurrency={displayCurrency}
+              onSliceClick={(slice) => handleSliceClick(rings[rings.length - 1].level, slice)}
+            />
+          </div>
         )}
       </CardContent>
     </Card>

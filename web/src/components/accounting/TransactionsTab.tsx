@@ -1,34 +1,116 @@
-import { useMemo } from 'react'
-import { RotateCcw } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
+import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
-import { useSetPostingOverride } from '@/hooks/useAccountingData'
+import { useAiSuggestCategory, useDeletePostingSplit, useSetPostingOverride } from '@/hooks/useAccountingData'
 import type { Account, Category, Posting, Tag } from '@/types/accounting'
 
 const ALL = '__all__'
+const UNCATEGORIZED = '__uncategorized__'
+const NO_SUBCATEGORY = '__no_subcategory__'
+const SPLIT_LEG_PATTERN = /^(.+):split:\d+$/
+
+// A split leg's own id encodes the original posting it came from — used to
+// offer "undo split" on a leg row instead of "split" (splitting a leg
+// further isn't supported; undo and re-split from scratch instead).
+function splitOriginalId(postingId: string): string | null {
+  return SPLIT_LEG_PATTERN.exec(postingId)?.[1] ?? null
+}
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 interface FilterState {
   search: string
   accountFilter: string
+  accountExclude: boolean
   categoryFilter: string
+  categoryExclude: boolean
+  subcategoryFilter: string
+  subcategoryExclude: boolean
   tagFilter: string
+  tagExclude: boolean
   startDate: string
   endDate: string
 }
 
 function defaultFilterState(): FilterState {
-  return { search: '', accountFilter: ALL, categoryFilter: ALL, tagFilter: ALL, startDate: '', endDate: '' }
+  return {
+    search: '',
+    accountFilter: ALL,
+    accountExclude: false,
+    categoryFilter: ALL,
+    categoryExclude: false,
+    subcategoryFilter: ALL,
+    subcategoryExclude: false,
+    tagFilter: ALL,
+    tagExclude: false,
+    startDate: '',
+    endDate: '',
+  }
+}
+
+// A filter value paired with an "Is"/"Not" toggle — the "show everything
+// but this one" mode the equality filters below share. `undefined`/unset
+// values from a filter state persisted before this field existed are
+// treated as "no filter", never as "matches nothing".
+function matchesFilter(actual: boolean, filterValue: string | undefined, exclude: boolean | undefined): boolean {
+  if (!filterValue || filterValue === ALL) return true
+  return exclude ? !actual : actual
+}
+
+function FilterSelect({
+  value,
+  exclude,
+  items,
+  width,
+  onValueChange,
+  onExcludeChange,
+}: {
+  value: string
+  exclude: boolean
+  items: Record<string, string>
+  width: string
+  onValueChange: (value: string) => void
+  onExcludeChange: (exclude: boolean) => void
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <Select value={value} onValueChange={(next) => next && onValueChange(next)}>
+        <SelectTrigger size="sm" className={width}>
+          <SelectValue items={items} />
+        </SelectTrigger>
+        <SelectContent>
+          {Object.entries(items).map(([id, name]) => (
+            <SelectItem key={id} value={id}>
+              {name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {value !== ALL && (
+        <Button
+          type="button"
+          variant={exclude ? 'default' : 'outline'}
+          size="sm"
+          className="h-8 px-2 text-xs"
+          onClick={() => onExcludeChange(!exclude)}
+          title={exclude ? 'Excluding this — click to include instead' : 'Including this — click to exclude instead'}
+        >
+          {exclude ? 'Not' : 'Is'}
+        </Button>
+      )}
+    </div>
+  )
 }
 
 function TransactionsTable({
@@ -47,7 +129,28 @@ function TransactionsTable({
   onlyUncategorized: boolean
 }) {
   const [filters, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
+  const [splitting, setSplitting] = useState<Posting | null>(null)
+  const [aiMessages, setAiMessages] = useState<Record<string, string>>({})
   const setOverride = useSetPostingOverride()
+  const deleteSplit = useDeletePostingSplit()
+  const aiSuggest = useAiSuggestCategory()
+
+  async function runAiSuggest(postingId: string) {
+    setAiMessages((prev) => ({ ...prev, [postingId]: 'Asking the AI…' }))
+    try {
+      const result = await aiSuggest.mutateAsync(postingId)
+      setAiMessages((prev) => {
+        if (!result.applied) return { ...prev, [postingId]: 'No confident suggestion' }
+        const { [postingId]: _removed, ...rest } = prev
+        return rest
+      })
+    } catch (error) {
+      setAiMessages((prev) => ({
+        ...prev,
+        [postingId]: error instanceof Error ? error.message : 'AI suggestion failed',
+      }))
+    }
+  }
 
   const realAccounts = Object.values(accounts)
     .filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id))
@@ -55,12 +158,22 @@ function TransactionsTable({
   const topLevelCategories = Object.values(categories)
     .filter((category) => category.parent_category_id === null)
     .sort((a, b) => a.name.localeCompare(b.name))
+  const subcategories = Object.values(categories)
+    .filter((category) => category.parent_category_id !== null)
+    .map((category) => ({ ...category, parentName: categories[category.parent_category_id ?? '']?.name ?? '' }))
+    .sort((a, b) => a.parentName.localeCompare(b.parentName) || a.name.localeCompare(b.name))
   const tagOptions = Object.values(tags).sort((a, b) => a.name.localeCompare(b.name))
 
   const accountItems = { [ALL]: 'All accounts', ...Object.fromEntries(realAccounts.map((a) => [a.account_id, a.name])) }
   const categoryItems = {
     [ALL]: 'All categories',
+    [UNCATEGORIZED]: 'Uncategorized',
     ...Object.fromEntries(topLevelCategories.map((c) => [c.category_id, c.name])),
+  }
+  const subcategoryItems = {
+    [ALL]: 'All subcategories',
+    [NO_SUBCATEGORY]: 'None',
+    ...Object.fromEntries(subcategories.map((c) => [c.category_id, `${c.parentName} › ${c.name}`])),
   }
   const tagItems = { [ALL]: 'All tags', ...Object.fromEntries(tagOptions.map((t) => [t.tag_id, t.name])) }
 
@@ -69,9 +182,20 @@ function TransactionsTable({
       .filter((posting) => !PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id))
       .filter((posting) => !onlyUncategorized || posting.category_id === null)
       .filter((posting) => posting.description.toLowerCase().includes(filters.search.toLowerCase()))
-      .filter((posting) => filters.accountFilter === ALL || posting.account_id === filters.accountFilter)
-      .filter((posting) => filters.categoryFilter === ALL || posting.category_id === filters.categoryFilter)
-      .filter((posting) => filters.tagFilter === ALL || posting.tag_ids.includes(filters.tagFilter))
+      .filter((posting) => matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude))
+      .filter((posting) => {
+        const actual =
+          filters.categoryFilter === UNCATEGORIZED ? posting.category_id === null : posting.category_id === filters.categoryFilter
+        return matchesFilter(actual, filters.categoryFilter, filters.categoryExclude)
+      })
+      .filter((posting) => {
+        const actual =
+          filters.subcategoryFilter === NO_SUBCATEGORY
+            ? posting.subcategory_id === null
+            : posting.subcategory_id === filters.subcategoryFilter
+        return matchesFilter(actual, filters.subcategoryFilter, filters.subcategoryExclude)
+      })
+      .filter((posting) => matchesFilter(posting.tag_ids.includes(filters.tagFilter), filters.tagFilter, filters.tagExclude))
       .filter((posting) => !filters.startDate || posting.posted_at.slice(0, 10) >= filters.startDate)
       .filter((posting) => !filters.endDate || posting.posted_at.slice(0, 10) <= filters.endDate)
   }, [postings, filters, onlyUncategorized])
@@ -89,45 +213,38 @@ function TransactionsTable({
             value={filters.search}
             onChange={(event) => setFilters({ ...filters, search: event.target.value })}
           />
-          <Select value={filters.accountFilter} onValueChange={(value) => value && setFilters({ ...filters, accountFilter: value })}>
-            <SelectTrigger size="sm" className="w-40">
-              <SelectValue items={accountItems} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>All accounts</SelectItem>
-              {realAccounts.map((account) => (
-                <SelectItem key={account.account_id} value={account.account_id}>
-                  {account.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={filters.categoryFilter} onValueChange={(value) => value && setFilters({ ...filters, categoryFilter: value })}>
-            <SelectTrigger size="sm" className="w-40">
-              <SelectValue items={categoryItems} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>All categories</SelectItem>
-              {topLevelCategories.map((category) => (
-                <SelectItem key={category.category_id} value={category.category_id}>
-                  {category.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={filters.tagFilter} onValueChange={(value) => value && setFilters({ ...filters, tagFilter: value })}>
-            <SelectTrigger size="sm" className="w-36">
-              <SelectValue items={tagItems} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>All tags</SelectItem>
-              {tagOptions.map((tag) => (
-                <SelectItem key={tag.tag_id} value={tag.tag_id}>
-                  {tag.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <FilterSelect
+            value={filters.accountFilter}
+            exclude={filters.accountExclude}
+            items={accountItems}
+            width="w-40"
+            onValueChange={(value) => setFilters({ ...filters, accountFilter: value })}
+            onExcludeChange={(exclude) => setFilters({ ...filters, accountExclude: exclude })}
+          />
+          <FilterSelect
+            value={filters.categoryFilter}
+            exclude={filters.categoryExclude}
+            items={categoryItems}
+            width="w-40"
+            onValueChange={(value) => setFilters({ ...filters, categoryFilter: value })}
+            onExcludeChange={(exclude) => setFilters({ ...filters, categoryExclude: exclude })}
+          />
+          <FilterSelect
+            value={filters.subcategoryFilter}
+            exclude={filters.subcategoryExclude}
+            items={subcategoryItems}
+            width="w-40"
+            onValueChange={(value) => setFilters({ ...filters, subcategoryFilter: value })}
+            onExcludeChange={(exclude) => setFilters({ ...filters, subcategoryExclude: exclude })}
+          />
+          <FilterSelect
+            value={filters.tagFilter}
+            exclude={filters.tagExclude}
+            items={tagItems}
+            width="w-36"
+            onValueChange={(value) => setFilters({ ...filters, tagFilter: value })}
+            onExcludeChange={(exclude) => setFilters({ ...filters, tagExclude: exclude })}
+          />
           <Input
             type="date"
             className="w-36"
@@ -176,10 +293,13 @@ function TransactionsTable({
                 <SortableTableHead active={sort.key === 'tag_ids'} desc={sort.desc} onClick={() => toggleSort('tag_ids')}>
                   Tags
                 </SortableTableHead>
+                <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sorted.map((posting) => (
+              {sorted.map((posting) => {
+                const originalId = splitOriginalId(posting.posting_id)
+                return (
                 <TableRow key={posting.posting_id}>
                   <TableCell className="whitespace-nowrap text-muted-foreground">
                     {formatDate(posting.posted_at.slice(0, 10))}
@@ -196,12 +316,20 @@ function TransactionsTable({
                       categories={categories}
                       classification={posting.amount >= 0 ? 'income' : 'expense'}
                       value={posting.category_id}
-                      onChange={(categoryId) =>
+                      onChange={(categoryId) => {
+                        // A category with any subcategories always has an
+                        // "Other" catch-all (backend-enforced) — defaulting
+                        // to it here means picking a category alone already
+                        // fully categorizes the row, so it doesn't need a
+                        // second, separate subcategory step before leaving
+                        // "Needs categorizing".
+                        const otherId = categoryId ? `${categoryId}:other` : null
+                        const subcategoryId = otherId && categories[otherId] ? otherId : null
                         setOverride.mutate({
                           postingId: posting.posting_id,
-                          override: { category_id: categoryId, subcategory_id: null },
+                          override: { category_id: categoryId, subcategory_id: subcategoryId },
                         })
-                      }
+                      }}
                     />
                   </TableCell>
                   <TableCell>
@@ -221,12 +349,41 @@ function TransactionsTable({
                       onChange={(tagIds) => setOverride.mutate({ postingId: posting.posting_id, override: { tag_ids: tagIds } })}
                     />
                   </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-0.5">
+                      {posting.category_id === null && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title={aiMessages[posting.posting_id] || 'AI suggestion'}
+                          disabled={aiSuggest.isPending}
+                          onClick={() => runAiSuggest(posting.posting_id)}
+                        >
+                          <Sparkles className="size-3.5 text-muted-foreground" />
+                        </Button>
+                      )}
+                      {originalId ? (
+                        <Button variant="ghost" size="icon" title="Undo split" onClick={() => deleteSplit.mutate(originalId)}>
+                          <Undo2 className="size-3.5 text-muted-foreground" />
+                        </Button>
+                      ) : (
+                        <Button variant="ghost" size="icon" title="Split transaction" onClick={() => setSplitting(posting)}>
+                          <Scissors className="size-3.5 text-muted-foreground" />
+                        </Button>
+                      )}
+                    </div>
+                    {aiMessages[posting.posting_id] && (
+                      <p className="max-w-32 text-[10px] text-muted-foreground">{aiMessages[posting.posting_id]}</p>
+                    )}
+                  </TableCell>
                 </TableRow>
-              ))}
+                )
+              })}
             </TableBody>
           </Table>
         )}
       </CardContent>
+      {splitting && <PostingSplitDialog posting={splitting} categories={categories} onClose={() => setSplitting(null)} />}
     </Card>
   )
 }

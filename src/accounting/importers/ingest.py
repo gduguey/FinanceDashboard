@@ -41,6 +41,19 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
 _SOFI_STATEMENT_PDF_ACCOUNT_KIND = "statement_pdf"
 
 
+def supported_import_kinds() -> set[tuple[str, str]]:
+    """Every `(institution, account_kind)` pair with a registered CSV standardizer.
+
+    Returns
+    -------
+    set[tuple[str, str]]
+        Exactly the keys of `_STANDARDIZERS` — used to flag accounts in the
+        UI that were created (manually, or discovered from an older import)
+        without any code path able to actually parse a statement for them.
+    """
+    return set(_STANDARDIZERS.keys())
+
+
 class UnsupportedImportError(ValueError):
     """No standardizer exists for the given institution/account-kind combination."""
 

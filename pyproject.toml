@@ -24,6 +24,10 @@ api = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
 ]
+llm = [
+    "google-genai>=1.0",
+    "mistralai>=1.0",
+]
 
 [dependency-groups]
 dev = [

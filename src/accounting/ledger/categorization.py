@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.models import Account, ManualOverride, Posting
+from accounting.models import Account, ManualOverride, Posting, PostingSplit
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID, slugify
 
 if TYPE_CHECKING:
@@ -197,6 +197,48 @@ def apply_rules(
         else pl.DataFrame(schema=Posting.polars_schema)
     )
     return resolved_frame, accounts
+
+
+def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]) -> pl.DataFrame:
+    """Replace each split posting with its legs — the one place a `Transaction` grows past two `Posting`s.
+
+    A paycheck-shaped bank deposit categorized as one lump sum can't be
+    broken into wage + reimbursement any other way: `category_id` is
+    still one-per-posting, so the posting itself has to become several.
+    Each leg gets a synthetic id (`f"{posting_id}:split:{n}"`) so
+    `ManualOverride`/`apply_manual_overrides` can still target one leg
+    independently afterward, same as any other posting.
+
+    Parameters
+    ----------
+    postings
+        The posting ledger, already passed through `apply_rules`.
+    splits
+        Every persisted split, keyed by the *original* `posting_id`.
+
+    Returns
+    -------
+    polars.DataFrame
+        The same postings, with each split posting's row replaced by its legs.
+    """
+    if not splits:
+        return postings
+    rows = []
+    for row in postings.to_dicts():
+        split = splits.get(row["posting_id"])
+        if split is None:
+            rows.append(row)
+            continue
+        for index, leg in enumerate(split.legs):
+            rows.append({
+                **row,
+                "posting_id": f"{row['posting_id']}:split:{index}",
+                "amount": leg.amount,
+                "category_id": leg.category_id,
+                "subcategory_id": leg.subcategory_id,
+                "description": leg.description or row["description"],
+            })
+    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
 
 
 def apply_manual_overrides(postings: pl.DataFrame, overrides: dict[str, ManualOverride]) -> pl.DataFrame:

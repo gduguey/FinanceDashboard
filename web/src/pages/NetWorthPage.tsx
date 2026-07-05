@@ -8,8 +8,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
+import { InterestTrackingPanel } from '@/components/accounting/InterestTrackingPanel'
 import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
 import { formatCurrency, signColor } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
@@ -236,7 +238,10 @@ export function NetWorthPage() {
     <div className="flex-1 overflow-y-auto">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-white/95 px-8 py-5 backdrop-blur-sm">
         <h1 className="text-lg font-semibold tracking-tight text-foreground">Net Worth</h1>
-        <DisplayCurrencyToggle />
+        <div className="flex items-center gap-2">
+          <DisplayCurrencyToggle />
+          <ExchangeRateSyncButton />
+        </div>
       </div>
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
@@ -277,6 +282,8 @@ export function NetWorthPage() {
             </Card>
 
             <AddOtherAssetForm otherAssets={data.other_assets} />
+
+            <InterestTrackingPanel />
 
             <ExchangeRatePanel />
           </>

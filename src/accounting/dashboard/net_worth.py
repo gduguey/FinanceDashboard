@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     import polars as pl
 
-    from accounting.models import Account, AccountKind, CurrencyCode, OtherAsset
+    from accounting.models import Account, AccountKind, CurrencyCode, OpeningBalance, OtherAsset
 
 _VIRTUAL_KINDS = {"income_source", "expense_payee"}
 _LIABILITY_KINDS = {"credit_card", "loan"}
@@ -70,6 +70,7 @@ def net_worth_summary(
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
     external_investment_value_usd: float | None = None,
+    opening_balances: dict[str, OpeningBalance] | None = None,
 ) -> NetWorthSummary:
     """Assemble the full net-worth view: every real account's balance, grouped, plus manually-added assets.
 
@@ -100,6 +101,11 @@ def net_worth_summary(
         isn't available (e.g. `trades` has never been synced) — treated as
         zero rather than raised on, since a missing investment value
         shouldn't block seeing the rest of net worth.
+    opening_balances
+        Manually-entered starting balances for accounts that already held
+        money before their first posting (see `models.OpeningBalance`),
+        keyed by `account_id`. Added on top of the posting-derived balance,
+        but only once `as_of` reaches that balance's own `as_of_date`.
 
     Returns
     -------
@@ -108,6 +114,16 @@ def net_worth_summary(
     """
     balances = cast("pl.DataFrame", account_balances(postings, as_of))
     balance_by_account = dict(zip(balances["account_id"].to_list(), balances["balance"].to_list(), strict=True))
+    opening_balances = opening_balances or {}
+
+    def base_balance(account: Account) -> float:
+        if account.kind == "external_investment":
+            return external_investment_value_usd or 0.0
+        balance = balance_by_account.get(account.account_id, 0.0)
+        opening = opening_balances.get(account.account_id)
+        if opening is not None and as_of >= opening.as_of_date.date():
+            balance += opening.amount
+        return balance
 
     rows = [
         AccountBalanceRow(
@@ -115,11 +131,7 @@ def net_worth_summary(
             name=account.name,
             kind=account.kind,
             parent_account_id=account.parent_account_id,
-            balance=(
-                external_investment_value_usd or 0.0
-                if account.kind == "external_investment"
-                else balance_by_account.get(account.account_id, 0.0)
-            ),
+            balance=base_balance(account),
             currency=account.currency,
         )
         for account in accounts.values()

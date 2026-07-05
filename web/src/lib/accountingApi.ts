@@ -2,6 +2,8 @@ import { ApiError } from '@/lib/api'
 import type {
   Account,
   AccountingStore,
+  Budget,
+  BudgetComparisonRow,
   Category,
   CategoryTotalRow,
   CurrentExchangeRate,
@@ -10,13 +12,20 @@ import type {
   ExchangeRateHistoryPoint,
   ExchangeRateSyncResult,
   ImportResult,
+  InterestAccountRow,
   ManualOverride,
   MonthlyIncomeExpenseRow,
+  NetWorthHistoryByAccountPoint,
   NetWorthHistoryPoint,
   NetWorthSummary,
+  OpeningBalance,
   OtherAsset,
+  PaystubReconciliationResult,
   Posting,
+  PostingSplitLeg,
+  ProjectionPoint,
   Rule,
+  SimulatorScenario,
   SofiStatementImportResult,
   SpendCurvePoint,
   Tag,
@@ -82,8 +91,19 @@ export const accountingApi = {
     request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
   deleteAccount: (accountId: string) =>
     request<{ account_id: string }>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+  putOpeningBalance: (accountId: string, openingBalance: OpeningBalance) =>
+    request<OpeningBalance>(
+      `/api/accounting/accounts/${encodeURIComponent(accountId)}/opening-balance`,
+      jsonInit('PUT', openingBalance),
+    ),
+  deleteOpeningBalance: (accountId: string) =>
+    request<{ account_id: string }>(`/api/accounting/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
+      method: 'DELETE',
+    }),
   detect: (header: string[], filename: string) =>
     request<DetectedAccount | null>('/api/accounting/detect', jsonInit('POST', { header, filename })),
+  supportedImportKinds: () =>
+    request<{ institution: string; account_kind: string }[]>('/api/accounting/supported-import-kinds'),
   importCsv: (file: File, info: ImportAccountInfo) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -102,16 +122,39 @@ export const accountingApi = {
       body: formData,
     })
   },
+  importPaystub: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return request<PaystubReconciliationResult>('/api/accounting/import/paystub', { method: 'POST', body: formData })
+  },
   rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
   postings: () => request<Posting[]>('/api/accounting/postings'),
   putPostingOverride: (postingId: string, override: ManualOverride) =>
     request<ManualOverride>(`/api/accounting/postings/${encodeURIComponent(postingId)}/override`, jsonInit('PUT', override)),
+  putPostingSplit: (postingId: string, legs: PostingSplitLeg[]) =>
+    request<{ posting_id: string; legs: PostingSplitLeg[] }>(
+      `/api/accounting/postings/${encodeURIComponent(postingId)}/split`,
+      jsonInit('PUT', legs),
+    ),
+  deletePostingSplit: (postingId: string) =>
+    request<{ posting_id: string }>(`/api/accounting/postings/${encodeURIComponent(postingId)}/split`, {
+      method: 'DELETE',
+    }),
+  aiSuggestCategory: (postingId: string) =>
+    request<{ category_id: string | null; subcategory_id: string | null; applied: boolean }>(
+      `/api/accounting/postings/${encodeURIComponent(postingId)}/ai-suggest-category`,
+      { method: 'POST' },
+    ),
   transferSuggestions: () => request<TransferSuggestion[]>('/api/accounting/transfer-suggestions'),
   netWorth: (asOf?: string, displayCurrency?: string) =>
     request<NetWorthSummary>(`/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
     request<NetWorthHistoryPoint[]>(
       `/api/accounting/net-worth/history${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
+    ),
+  netWorthHistoryByAccount: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
+    request<NetWorthHistoryByAccountPoint[]>(
+      `/api/accounting/net-worth/history/by-account${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
     ),
   categoryTotals: (start: string, end: string, accountIds?: string[], tagId?: string, displayCurrency?: string) =>
     request<CategoryTotalRow[]>(
@@ -124,5 +167,34 @@ export const accountingApi = {
   spendCurve: (month: string, lookbackMonths?: number, displayCurrency?: string) =>
     request<SpendCurvePoint[]>(
       `/api/accounting/income-statement/spend-curve${queryString({ month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
+    ),
+  putBudgets: (budgets: Budget[]) => request<Budget[]>('/api/accounting/budgets', jsonInit('PUT', budgets)),
+  budgetComparison: (month: string, displayCurrency?: string) =>
+    request<BudgetComparisonRow[]>(
+      `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,
+    ),
+  suggestedBudgetAmount: (categoryId: string, month: string, lookbackMonths?: number, displayCurrency?: string) =>
+    request<{ suggested_amount: number }>(
+      `/api/accounting/budgets/suggested-amount${queryString({ category_id: categoryId, month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
+    ),
+  interestSummary: (asOf?: string) =>
+    request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),
+  putSimulatorScenarios: (scenarios: SimulatorScenario[]) =>
+    request<SimulatorScenario[]>('/api/accounting/simulator/scenarios', jsonInit('PUT', scenarios)),
+  simulatorProject: (
+    initialCapital: number,
+    monthlyContribution: number,
+    horizonYears: number,
+    annualRatePct: number,
+    compoundingFrequency: SimulatorScenario['compounding_frequency'],
+  ) =>
+    request<ProjectionPoint[]>(
+      `/api/accounting/simulator/project${queryString({
+        initial_capital: initialCapital,
+        monthly_contribution: monthlyContribution,
+        horizon_years: horizonYears,
+        annual_rate_pct: annualRatePct,
+        compounding_frequency: compoundingFrequency,
+      })}`,
     ),
 }

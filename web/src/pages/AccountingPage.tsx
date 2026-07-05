@@ -3,6 +3,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { DashboardTab } from '@/components/accounting/DashboardTab'
 import { TransactionsTab } from '@/components/accounting/TransactionsTab'
 import { CategoriesTab } from '@/components/accounting/CategoriesTab'
@@ -62,7 +63,10 @@ export function AccountingPage() {
     <div className="flex-1 overflow-y-auto">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-white/95 px-8 py-5 backdrop-blur-sm">
         <h1 className="text-lg font-semibold tracking-tight text-foreground">Accounting</h1>
-        <DisplayCurrencyToggle />
+        <div className="flex items-center gap-2">
+          <DisplayCurrencyToggle />
+          <ExchangeRateSyncButton />
+        </div>
       </div>
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">

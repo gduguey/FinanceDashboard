@@ -1,8 +1,9 @@
 import { useCallback, useState } from 'react'
-import { CheckCircle2, Upload, XCircle } from 'lucide-react'
+import { CheckCircle2, Upload, X, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
+import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { accountingApi } from '@/lib/accountingApi'
 import {
@@ -102,6 +103,10 @@ export function ImportPage() {
     setPending((prev) => prev.map((entry) => (entry.key === key ? ({ ...entry, ...patch } as PendingImport) : entry)))
   }
 
+  function dismissEntry(key: string) {
+    setPending((prev) => prev.filter((entry) => entry.key !== key))
+  }
+
   async function confirmCsvImport(entry: PendingCsvImport) {
     updateEntry(entry.key, { status: 'importing' })
     try {
@@ -172,7 +177,16 @@ export function ImportPage() {
 
         {pending.map((entry) =>
           entry.kind === 'pdf' ? (
-            <div key={entry.key} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-4">
+            <div key={entry.key} className="relative flex flex-wrap items-center gap-3 rounded-lg border border-border p-4">
+              <button
+                type="button"
+                onClick={() => dismissEntry(entry.key)}
+                disabled={entry.status === 'importing'}
+                className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                title="Abandon this import"
+              >
+                <X className="size-3.5" />
+              </button>
               <div className="min-w-0 flex-1 text-sm font-medium text-foreground">{entry.file.name}</div>
               <span className="text-xs text-muted-foreground">SoFi monthly statement — checking, savings, and every vault</span>
               <Button size="sm" disabled={entry.status === 'importing' || entry.status === 'done'} onClick={() => confirmPdfImport(entry)}>
@@ -191,7 +205,16 @@ export function ImportPage() {
               )}
             </div>
           ) : (
-            <div key={entry.key} className="flex flex-wrap items-end gap-3 rounded-lg border border-border p-4">
+            <div key={entry.key} className="relative flex flex-wrap items-end gap-3 rounded-lg border border-border p-4">
+              <button
+                type="button"
+                onClick={() => dismissEntry(entry.key)}
+                disabled={entry.status === 'importing'}
+                className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                title="Abandon this import"
+              >
+                <X className="size-3.5" />
+              </button>
               <div className="min-w-0 flex-1 basis-full text-sm font-medium text-foreground">{entry.file.name}</div>
 
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -295,6 +318,8 @@ export function ImportPage() {
         {store && (
           <AccountsManagementTable accounts={store.accounts} accountIdsWithPostings={accountIdsWithPostings} />
         )}
+
+        <PaystubReconciliationCard />
       </div>
     </div>
   )

@@ -88,14 +88,24 @@ function ClassificationSection({
                 </button>
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                {children.map((child) => (
-                  <Badge key={child.category_id} variant="outline" className="gap-1">
-                    {child.name}
-                    <button onClick={() => removeCategory(child.category_id)} className="text-muted-foreground/60 hover:text-destructive">
-                      <Trash2 className="size-2.5" />
-                    </button>
-                  </Badge>
-                ))}
+                {children.map((child) => {
+                  // "Other" is a backend-managed catch-all (see
+                  // `store.normalize_categories`) — auto-created the moment
+                  // a category gets its first real subcategory, and
+                  // auto-removed once no real ones are left, so it's never
+                  // something to delete by hand.
+                  const isOther = child.category_id.endsWith(':other')
+                  return (
+                    <Badge key={child.category_id} variant="outline" className="gap-1">
+                      {child.name}
+                      {!isOther && (
+                        <button onClick={() => removeCategory(child.category_id)} className="text-muted-foreground/60 hover:text-destructive">
+                          <Trash2 className="size-2.5" />
+                        </button>
+                      )}
+                    </Badge>
+                  )
+                })}
                 <Input
                   className="h-6 w-32 text-xs"
                   placeholder="+ subcategory"

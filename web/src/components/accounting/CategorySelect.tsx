@@ -38,6 +38,10 @@ export function CategorySelect({
   )
 }
 
+// Once a category has any subcategories, the backend guarantees it also has
+// an "Other" catch-all (see `accounting.store.normalize_categories`) — so
+// "None" is never offered here: a category with subcategories always has a
+// selectable one, even if it's just "Other".
 export function SubcategorySelect({
   categories,
   categoryId,
@@ -52,17 +56,16 @@ export function SubcategorySelect({
   const children = Object.values(categories)
     .filter((category) => category.parent_category_id === categoryId)
     .sort((a, b) => a.name.localeCompare(b.name))
-  const items = { [NO_CATEGORY]: 'None', ...Object.fromEntries(children.map((c) => [c.category_id, c.name])) }
   if (!categoryId || children.length === 0) {
     return <span className="text-xs text-muted-foreground">—</span>
   }
+  const items = Object.fromEntries(children.map((c) => [c.category_id, c.name]))
   return (
-    <Select value={value ?? NO_CATEGORY} onValueChange={(next) => onChange(next === NO_CATEGORY ? null : next)}>
+    <Select value={value ?? undefined} onValueChange={(next) => next && onChange(next)}>
       <SelectTrigger size="sm" className="w-40">
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={NO_CATEGORY}>None</SelectItem>
         {children.map((category) => (
           <SelectItem key={category.category_id} value={category.category_id}>
             {category.name}

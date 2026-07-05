@@ -198,6 +198,101 @@ class OtherAsset(BaseModel):
     note: str = ""
 
 
+class OpeningBalance(BaseModel):
+    """The balance a real account already had the day before its postings start, e.g. a vault opened outside this app.
+
+    A `Posting` can only ever reflect money moving *through* the ledger, so
+    a brand-new account with real money already in it (added here rather
+    than discovered via import) would otherwise show a $0 balance until its
+    first posting. This is added on top of the posting-derived balance in
+    `dashboard.net_worth`, contributing nothing for any `as_of` before
+    `as_of_date` — the account simply didn't exist to this ledger yet.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    account_id: str = Field(min_length=1)
+    amount: float
+    as_of_date: datetime
+
+
+class Budget(BaseModel):
+    """One month's spending target for one top-level expense category.
+
+    Actual spend against a budget is never stored here or on the postings
+    it covers — a posting's own `category_id` already determines which
+    budget it counts against for whichever month it landed in, so
+    "actual" is always computed fresh from
+    `dashboard.income_statement.category_totals`, the same on-demand way
+    an account's balance comes from summing its postings rather than a
+    cached figure that could drift out of sync.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    budget_id: str = Field(min_length=1)
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    category_id: str = Field(min_length=1)
+    amount: float
+    currency: CurrencyCode = "USD"
+
+
+class SimulatorScenario(BaseModel):
+    """A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`).
+
+    Every field here is one of the projector's five inputs, plus a name to
+    tell saved scenarios apart — nothing here is itself computed; the
+    projection is always run fresh from these inputs, never cached.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scenario_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    initial_capital: float
+    monthly_contribution: float
+    horizon_years: float
+    annual_rate_pct: float
+    compounding_frequency: Literal["annually", "monthly", "daily"] = "monthly"
+    currency: CurrencyCode = "USD"
+
+
+class EarningsDeposit(BaseModel):
+    """One destination a paystub's pay actually lands in — a wage deposit, or a separate reimbursement.
+
+    `account_last4` is the bank account digits the paystub itself prints
+    next to a deposit line, when it prints one at all — used to match
+    against a real `Account.account_id`'s own trailing digits (see the
+    `{institution}:{kind}:{last4}` convention) during reconciliation.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str = Field(min_length=1)
+    account_last4: str | None = None
+    amount: float
+
+
+class EarningsStatement(BaseModel):
+    """A parsed paystub: gross pay, taxes withheld, and where the net pay actually landed.
+
+    Deliberately doesn't try to capture every line item a paystub has —
+    only what `dashboard.paystub.reconcile_earnings_statement` needs: the
+    totals, and the per-destination-account split, since one paycheck can
+    land in more than one account (a direct-deposit split, or wage plus a
+    separately-deposited expense reimbursement) — the case that motivates
+    splitting one bank posting into several (`PostingSplit`).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    pay_date: datetime
+    gross_pay: float
+    taxes_withheld: float
+    net_pay: float
+    deposits: list[EarningsDeposit] = Field(min_length=1)
+
+
 class ManualOverride(BaseModel):
     """A user's direct edit to one posting, always winning over whatever a rule would have produced.
 
@@ -215,6 +310,40 @@ class ManualOverride(BaseModel):
     category_id: str | None = None
     subcategory_id: str | None = None
     tag_ids: list[str] | None = None
+
+
+class PostingSplitLeg(BaseModel):
+    """One piece of a posting split into several independently-categorized legs.
+
+    A paycheck landing as one $3,200 bank deposit might really be $3,000
+    wage plus $200 expense reimbursement — two different things that
+    happen to have arrived in one transfer. `amount` keeps the sign
+    convention of the posting being split (same account, same direction).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    amount: float
+    category_id: str | None = None
+    subcategory_id: str | None = None
+    description: str = ""
+
+
+class PostingSplit(BaseModel):
+    """A user's decision to break one posting into several legs, keyed by the original posting's id.
+
+    `legs` must sum to exactly the original posting's `amount` — enforced
+    where a split is written (the ledger still has to balance), not here,
+    since validating that requires looking up the posting this describes.
+    Never baked into the ledger cache itself, for the same reason
+    `ManualOverride` isn't: re-importing a statement or rebuilding from
+    raw archives can never silently erase a split a user set up.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    posting_id: str = Field(min_length=1)
+    legs: list[PostingSplitLeg] = Field(min_length=2)
 
 
 class Posting(BaseModel):

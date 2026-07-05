@@ -40,6 +40,56 @@ def account_balances(postings: pl.DataFrame | pl.LazyFrame, as_of: date | None =
     return result.collect() if was_eager else result
 
 
+def account_balances_over_time(postings: pl.DataFrame | pl.LazyFrame, dates: list[date]) -> pl.DataFrame | pl.LazyFrame:
+    """Every account's running balance as of each requested date — the per-account net worth history series.
+
+    One vectorized as-of join rather than calling `account_balances` once
+    per date (which would be `len(dates)` full-ledger filter+group-bys): a
+    per-account daily cumulative sum, cross-joined against every requested
+    date, then backward-filled to the latest cumulative value at or before
+    that date. An account with no postings yet on a given date gets 0, not
+    a missing row.
+
+    Parameters
+    ----------
+    postings
+        The full posting ledger.
+    dates
+        Every date a balance is needed for.
+
+    Returns
+    -------
+    polars.DataFrame or polars.LazyFrame
+        Columns `account_id`, `date`, `balance`, `currency`. Same type as `postings`.
+    """
+    was_eager = isinstance(postings, pl.DataFrame)
+    lazy = postings.lazy().with_columns(posted_date=pl.col("posted_at").dt.date())
+    per_day = (
+        lazy
+        .group_by("account_id", "posted_date")
+        .agg(day_amount=pl.col("amount").sum(), currency=pl.col("currency").first())
+        .sort("account_id", "posted_date")
+        .with_columns(balance=pl.col("day_amount").cum_sum().over("account_id"))
+    )
+    account_currency = per_day.group_by("account_id").agg(currency=pl.col("currency").first())
+    grid = per_day.select("account_id").unique().join(pl.LazyFrame({"date": sorted(dates)}), how="cross")
+    result = (
+        grid
+        .sort("account_id", "date")
+        .join_asof(
+            per_day.select("account_id", "posted_date", "balance").sort("account_id", "posted_date"),
+            left_on="date",
+            right_on="posted_date",
+            by="account_id",
+            strategy="backward",
+        )
+        .drop("posted_date")
+        .with_columns(pl.col("balance").fill_null(0.0))
+        .join(account_currency, on="account_id", how="left")
+    )
+    return result.collect() if was_eager else result
+
+
 def unbalanced_transactions(postings: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     """Find every transaction whose postings don't sum to zero within one currency.
 

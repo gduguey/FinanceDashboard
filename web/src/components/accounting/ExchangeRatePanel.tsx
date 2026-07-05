@@ -1,10 +1,9 @@
 import { Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { RefreshCw } from 'lucide-react'
-import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { formatDate } from '@/lib/format'
-import { useCurrencies, useCurrentExchangeRate, useExchangeRateHistory, useSyncExchangeRates } from '@/hooks/useAccountingData'
+import { useCurrencies, useCurrentExchangeRate, useExchangeRateHistory } from '@/hooks/useAccountingData'
 import type { CurrencyCode } from '@/types/accounting'
 
 const BASE_CURRENCY: CurrencyCode = 'USD'
@@ -61,7 +60,6 @@ function OneCurrencyPanel({ currency }: { currency: CurrencyCode }) {
 
 export function ExchangeRatePanel() {
   const { data: currencies } = useCurrencies()
-  const sync = useSyncExchangeRates()
   const nonBaseCurrencies = (currencies ?? []).filter((currency) => currency.code !== BASE_CURRENCY)
 
   return (
@@ -73,10 +71,7 @@ export function ExchangeRatePanel() {
           IAS 21 "average rate" translations are built on.
         </CardDescription>
         <CardAction>
-          <Button variant="outline" size="sm" onClick={() => sync.mutate()} disabled={sync.isPending}>
-            <RefreshCw className={sync.isPending ? 'animate-spin' : ''} />
-            {sync.isPending ? 'Syncing…' : 'Sync'}
-          </Button>
+          <ExchangeRateSyncButton />
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-6">

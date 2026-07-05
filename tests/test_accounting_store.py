@@ -1,11 +1,12 @@
 from accounting.config import AccountingConfig
-from accounting.models import ManualOverride
+from accounting.models import Category, ManualOverride
 from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     default_categories,
     load_overrides,
     load_store,
+    normalize_categories,
     save_overrides,
     save_store,
     slugify,
@@ -66,6 +67,41 @@ def test_save_then_load_overrides_round_trips(tmp_path) -> None:
     save_overrides({"p1": ManualOverride(category_id="expense:food-drink")}, config)
     reloaded = load_overrides(config)
     assert reloaded["p1"].category_id == "expense:food-drink"
+
+
+def test_normalize_categories_adds_other_when_a_first_real_subcategory_appears() -> None:
+    parent = Category(category_id="expense:shopping", name="Shopping", classification="expense", color="#111111")
+    clothing = Category(
+        category_id="expense:shopping:clothing",
+        name="Clothing",
+        classification="expense",
+        parent_category_id="expense:shopping",
+        color="#111111",
+    )
+    result = normalize_categories({parent.category_id: parent, clothing.category_id: clothing})
+    other = result["expense:shopping:other"]
+    assert other.name == "Other"
+    assert other.parent_category_id == "expense:shopping"
+    assert other.color == parent.color
+
+
+def test_normalize_categories_removes_other_once_it_is_the_sole_subcategory() -> None:
+    parent = Category(category_id="expense:shopping", name="Shopping", classification="expense", color="#111111")
+    other = Category(
+        category_id="expense:shopping:other",
+        name="Other",
+        classification="expense",
+        parent_category_id="expense:shopping",
+        color="#111111",
+    )
+    result = normalize_categories({parent.category_id: parent, other.category_id: other})
+    assert "expense:shopping:other" not in result
+
+
+def test_normalize_categories_leaves_a_category_with_no_subcategories_alone() -> None:
+    parent = Category(category_id="income:salary", name="Salary", classification="income", color="#222222")
+    result = normalize_categories({parent.category_id: parent})
+    assert result == {parent.category_id: parent}
 
 
 def test_load_store_backfills_a_missing_placeholder_account(tmp_path) -> None:

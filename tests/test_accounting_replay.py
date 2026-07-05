@@ -3,7 +3,12 @@ from datetime import date, datetime
 import polars as pl
 import pytest
 
-from accounting.ledger.replay import account_balances, unbalanced_transactions, validate_balanced
+from accounting.ledger.replay import (
+    account_balances,
+    account_balances_over_time,
+    unbalanced_transactions,
+    validate_balanced,
+)
 
 SCHEMA = {
     "posting_id": pl.Utf8,
@@ -59,6 +64,28 @@ def test_account_balances_truncates_to_as_of() -> None:
     balances = account_balances(postings, as_of=date(2026, 1, 15))
     checking = balances.filter(pl.col("account_id") == "chase:checking:9579").row(0, named=True)
     assert checking["balance"] == pytest.approx(100.0)
+
+
+def test_account_balances_over_time_gives_zero_before_the_first_posting() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", 100.0, posted_at="2026-02-01T00:00:00"),
+        _posting("p2", "t1", "uncategorized:income", -100.0, posted_at="2026-02-01T00:00:00"),
+    )
+    result = account_balances_over_time(postings, [date(2026, 1, 1), date(2026, 2, 15)])
+    checking = result.filter(pl.col("account_id") == "chase:checking:9579").sort("date")
+    assert checking["balance"].to_list() == pytest.approx([0.0, 100.0])
+
+
+def test_account_balances_over_time_carries_the_running_balance_forward() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "a", 100.0, posted_at="2026-01-01T00:00:00"),
+        _posting("p2", "t1", "b", -100.0, posted_at="2026-01-01T00:00:00"),
+        _posting("p3", "t2", "a", 50.0, posted_at="2026-01-10T00:00:00"),
+        _posting("p4", "t2", "b", -50.0, posted_at="2026-01-10T00:00:00"),
+    )
+    result = account_balances_over_time(postings, [date(2026, 1, 5), date(2026, 1, 20)])
+    account_a = result.filter(pl.col("account_id") == "a").sort("date")
+    assert account_a["balance"].to_list() == pytest.approx([100.0, 150.0])
 
 
 def test_account_balances_preserves_lazy_type() -> None:

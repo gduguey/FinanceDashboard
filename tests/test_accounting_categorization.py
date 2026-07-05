@@ -6,11 +6,12 @@ import pytest
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame
 from accounting.ledger.categorization import (
     apply_manual_overrides,
+    apply_posting_splits,
     apply_rules,
     detect_sofi_internal_account_transfer,
     detect_vault_transfer,
 )
-from accounting.models import Account, ManualOverride, Rule
+from accounting.models import Account, ManualOverride, PostingSplit, PostingSplitLeg, Rule
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 
@@ -149,3 +150,51 @@ def test_apply_manual_overrides_sets_a_category_by_posting_id() -> None:
     result = apply_manual_overrides(postings, {real_posting_id: ManualOverride(category_id="expense:subscriptions")})
     row = result.filter(pl.col("posting_id") == real_posting_id).row(0, named=True)
     assert row["category_id"] == "expense:subscriptions"
+
+
+def test_apply_posting_splits_with_no_splits_returns_the_same_data() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(3200.0, "PAYCHECK"))
+    )
+    result = apply_posting_splits(postings, {})
+    assert result["amount"].to_list() == postings["amount"].to_list()
+
+
+def test_apply_posting_splits_replaces_one_posting_with_its_legs() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(3200.0, "PAYCHECK"))
+    )
+    real_posting_id = postings.filter(pl.col("account_id") == "chase:checking:9579").row(0, named=True)["posting_id"]
+    split = PostingSplit(
+        posting_id=real_posting_id,
+        legs=[
+            PostingSplitLeg(amount=3000.0, category_id="income:salary", description="Wage"),
+            PostingSplitLeg(amount=200.0, category_id="income:reimbursement", description="Expense reimbursement"),
+        ],
+    )
+    result = apply_posting_splits(postings, {real_posting_id: split})
+
+    assert real_posting_id not in result["posting_id"].to_list()
+    legs = result.filter(pl.col("account_id") == "chase:checking:9579").sort("amount")
+    assert legs["amount"].to_list() == pytest.approx([200.0, 3000.0])
+    assert legs["category_id"].to_list() == ["income:reimbursement", "income:salary"]
+    # Every leg keeps the original transaction id, so the transaction as a
+    # whole (this account's legs plus its counterparty) still sums to zero.
+    assert legs["transaction_id"].n_unique() == 1
+
+
+def test_apply_posting_splits_legs_are_independently_overridable() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(3200.0, "PAYCHECK"))
+    )
+    real_posting_id = postings.filter(pl.col("account_id") == "chase:checking:9579").row(0, named=True)["posting_id"]
+    split = PostingSplit(
+        posting_id=real_posting_id,
+        legs=[PostingSplitLeg(amount=3000.0), PostingSplitLeg(amount=200.0)],
+    )
+    split_postings = apply_posting_splits(postings, {real_posting_id: split})
+    first_leg_id = f"{real_posting_id}:split:0"
+
+    result = apply_manual_overrides(split_postings, {first_leg_id: ManualOverride(category_id="income:bonus")})
+    row = result.filter(pl.col("posting_id") == first_leg_id).row(0, named=True)
+    assert row["category_id"] == "income:bonus"

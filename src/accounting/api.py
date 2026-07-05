@@ -11,16 +11,18 @@ API layer too.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import polars as pl
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from accounting.config import AccountingConfig
-from accounting.dashboard import income_statement
+from accounting.dashboard import budgets, income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
+from accounting.dashboard.paystub import reconcile_earnings_statement
 from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
     UnsupportedImportError,
@@ -28,24 +30,45 @@ from accounting.importers.ingest import (
     ingest_sofi_statement_pdf,
     load_ledger,
     rebuild_from_raw_statements,
+    supported_import_kinds,
 )
-from accounting.ledger.categorization import apply_manual_overrides, apply_rules
-from accounting.ledger.currency import DisplayCurrency
+from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
+from accounting.ledger.categorization import apply_manual_overrides, apply_posting_splits, apply_rules
+from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.ledger.replay import account_balances_over_time
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
+from accounting.llm import categorize
+from accounting.llm.gemini import GeminiProvider
+from accounting.llm.mistral import MistralProvider
+from accounting.llm.provider import LLMProvider, LLMProviderError, complete_with_fallback
+from accounting.llm.settings import LLMCredentials
 from accounting.market_data import exchange_rates
 from accounting.models import (
     BASE_CURRENCY,
     SUPPORTED_CURRENCIES,
     Account,
     AccountKind,
+    Budget,
     Category,
+    CategoryClassification,
     CurrencyCode,
     ManualOverride,
+    OpeningBalance,
     OtherAsset,
+    PostingSplit,
+    PostingSplitLeg,
     Rule,
+    SimulatorScenario,
     Tag,
 )
-from accounting.store import AccountingStore, load_overrides, load_store, save_overrides, save_store
+from accounting.store import (
+    AccountingStore,
+    load_overrides,
+    load_store,
+    normalize_categories,
+    save_overrides,
+    save_store,
+)
 
 
 class _State:
@@ -80,6 +103,7 @@ def _resolved_postings_and_store(config: AccountingConfig) -> tuple[Any, Any]:
     if accounts != store.accounts:
         store = store.model_copy(update={"accounts": accounts})
         save_store(store, config)
+    resolved = apply_posting_splits(resolved, store.posting_splits)
     overrides = load_overrides(config)
     resolved = apply_manual_overrides(resolved, overrides)
     return resolved, store
@@ -111,8 +135,8 @@ def get_store() -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        `accounts`, `categories`, `tags` (each a dict keyed by id),
-        `rules`, `other_assets` (each a list).
+        `accounts`, `categories`, `tags`, `opening_balances` (each a dict
+        keyed by id), `rules`, `other_assets`, `budgets` (each a list).
     """
     _postings, store = _resolved_postings_and_store(state.config)
     return {
@@ -121,6 +145,12 @@ def get_store() -> dict[str, Any]:
         "tags": {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()},
         "rules": [rule.model_dump(mode="json") for rule in store.rules],
         "other_assets": [asset.model_dump(mode="json") for asset in store.other_assets],
+        "opening_balances": {
+            account_id: balance.model_dump(mode="json") for account_id, balance in store.opening_balances.items()
+        },
+        "budgets": [budget.model_dump(mode="json") for budget in store.budgets],
+        "simulator_scenarios": [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios],
+        "posting_splits": {pid: split.model_dump(mode="json") for pid, split in store.posting_splits.items()},
     }
 
 
@@ -246,15 +276,17 @@ def get_exchange_rate_history(currency: CurrencyCode) -> list[dict[str, Any]]:
 
 @router.put("/categories")
 def put_categories(categories: dict[str, Category]) -> dict[str, Any]:
-    """Replace the whole category tree.
+    """Replace the whole category tree, enforcing the "Other" catch-all subcategory invariant.
 
     Returns
     -------
     dict[str, Any]
-        The categories just persisted, keyed by `category_id`.
+        The categories just persisted, keyed by `category_id` — may
+        include an "Other" subcategory the caller didn't submit, or omit
+        one it did (see `store.normalize_categories`).
     """
     store = load_store(state.config)
-    store = store.model_copy(update={"categories": categories})
+    store = store.model_copy(update={"categories": normalize_categories(categories)})
     save_store(store, state.config)
     return {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()}
 
@@ -302,6 +334,57 @@ def put_other_assets(other_assets: list[OtherAsset]) -> list[dict[str, Any]]:
     store = store.model_copy(update={"other_assets": other_assets})
     save_store(store, state.config)
     return [asset.model_dump(mode="json") for asset in store.other_assets]
+
+
+@router.put("/budgets")
+def put_budgets(budgets: list[Budget]) -> list[dict[str, Any]]:
+    """Replace the whole budget list, across every month.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The budgets just persisted.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"budgets": budgets})
+    save_store(store, state.config)
+    return [budget.model_dump(mode="json") for budget in store.budgets]
+
+
+@router.put("/simulator/scenarios")
+def put_simulator_scenarios(scenarios: list[SimulatorScenario]) -> list[dict[str, Any]]:
+    """Replace the whole saved-scenario list.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The scenarios just persisted.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"simulator_scenarios": scenarios})
+    save_store(store, state.config)
+    return [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios]
+
+
+@router.get("/simulator/project")
+def get_simulator_projection(
+    initial_capital: float,
+    monthly_contribution: float,
+    horizon_years: float,
+    annual_rate_pct: float,
+    compounding_frequency: simulator.CompoundingFrequency = "monthly",
+) -> list[dict[str, Any]]:
+    """Project a compound-interest scenario forward, month by month.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `dashboard.simulator.ProjectionPoint`.
+    """
+    points = simulator.project(
+        initial_capital, monthly_contribution, horizon_years, annual_rate_pct, compounding_frequency
+    )
+    return [vars(point) for point in points]
 
 
 @router.post("/accounts")
@@ -411,6 +494,46 @@ def delete_account(account_id: str) -> dict[str, str]:
     return {"account_id": account_id}
 
 
+@router.put("/accounts/{account_id}/opening-balance")
+def put_opening_balance(account_id: str, opening_balance: OpeningBalance) -> dict[str, Any]:
+    """Set the balance an account already held the day before its first posting.
+
+    Returns
+    -------
+    dict[str, Any]
+        The opening balance just persisted.
+
+    Raises
+    ------
+    HTTPException
+        404 if the account doesn't exist; 400 if `opening_balance.account_id` doesn't match the path.
+    """
+    store = load_store(state.config)
+    if account_id not in store.accounts:
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
+    if opening_balance.account_id != account_id:
+        raise HTTPException(status_code=400, detail="account_id in the body must match the URL")
+    store = store.model_copy(update={"opening_balances": {**store.opening_balances, account_id: opening_balance}})
+    save_store(store, state.config)
+    return opening_balance.model_dump(mode="json")
+
+
+@router.delete("/accounts/{account_id}/opening-balance")
+def delete_opening_balance(account_id: str) -> dict[str, str]:
+    """Remove an account's opening balance, if it has one.
+
+    Returns
+    -------
+    dict[str, str]
+        `{"account_id": ...}` of the account whose opening balance was cleared.
+    """
+    store = load_store(state.config)
+    remaining = {aid: value for aid, value in store.opening_balances.items() if aid != account_id}
+    store = store.model_copy(update={"opening_balances": remaining})
+    save_store(store, state.config)
+    return {"account_id": account_id}
+
+
 class DetectRequest(BaseModel):
     """Request body for `POST /api/accounting/detect`."""
 
@@ -429,6 +552,22 @@ def post_detect(request: DetectRequest) -> dict[str, Any] | None:
     """
     detected = detect_bank_account(request.header, request.filename)
     return None if detected is None else vars(detected)
+
+
+@router.get("/supported-import-kinds")
+def get_supported_import_kinds() -> list[dict[str, str]]:
+    """List every `(institution, account_kind)` pair with a registered CSV standardizer.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        One `{"institution": ..., "account_kind": ...}` dict per supported pair — lets the UI flag any
+        registered account that has no importer able to actually parse a statement for it.
+    """
+    return [
+        {"institution": institution, "account_kind": account_kind}
+        for institution, account_kind in sorted(supported_import_kinds())
+    ]
 
 
 @router.post("/import")
@@ -508,6 +647,52 @@ async def post_sofi_statement_pdf(file: UploadFile) -> dict[str, Any]:
     }
 
 
+@router.post("/import/paystub")
+async def post_paystub_reconciliation(file: UploadFile) -> dict[str, Any]:
+    """Parse a paystub PDF and reconcile its deposits against real bank postings near pay day.
+
+    Read-only — never applies anything automatically. Once a deposit is
+    matched, use `PUT /postings/{posting_id}/split` to actually split it
+    into wage/reimbursement legs.
+
+    Returns
+    -------
+    dict[str, Any]
+        `statement` (the parsed `EarningsStatement`), `matches` (one
+        `{label, amount, account_last4, posting_id, account_id}` per
+        deposit — `posting_id`/`account_id` `None` if unmatched), and `is_fully_matched`.
+
+    Raises
+    ------
+    HTTPException
+        400 if the PDF's text doesn't match this module's expected paystub layout — see `importers.paystub`'s
+        docstring: its patterns are a generic starting point, not tuned against every payroll provider.
+    """
+    pdf_bytes = await file.read()
+    text = extract_paystub_pdf_text(pdf_bytes)
+    try:
+        statement = parse_earnings_statement_text(text)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    postings, store = _resolved_postings_and_store(state.config)
+    result = reconcile_earnings_statement(statement, postings, store.accounts)
+    return {
+        "statement": statement.model_dump(mode="json"),
+        "matches": [
+            {
+                "label": match.deposit.label,
+                "amount": match.deposit.amount,
+                "account_last4": match.deposit.account_last4,
+                "posting_id": match.posting_id,
+                "account_id": match.account_id,
+            }
+            for match in result.matches
+        ],
+        "is_fully_matched": result.is_fully_matched,
+    }
+
+
 @router.post("/rebuild")
 def post_rebuild() -> dict[str, Any]:
     """Recompute the whole posting ledger from every archived raw CSV.
@@ -544,17 +729,194 @@ def get_postings() -> list[dict[str, Any]]:
 
 @router.put("/postings/{posting_id}/override")
 def put_posting_override(posting_id: str, override: ManualOverride) -> dict[str, Any]:
-    """Upsert one posting's manual override, always winning over whatever a rule would produce.
+    """Upsert one posting's manual override, merging into any override already stored for it.
+
+    A request only ever carries the fields the caller actually means to
+    change (e.g. setting a subcategory sends just `subcategory_id`) — so a
+    field absent from this request must fall back to whatever was already
+    stored, never reset to `None`, or an earlier edit (like a manually-set
+    category) would be wiped out by a later, unrelated one (like picking a
+    subcategory). `model_fields_set` is what distinguishes "the caller sent
+    this field, possibly as null, to clear it" from "the caller didn't
+    mention this field at all".
 
     Returns
     -------
     dict[str, Any]
-        The override just persisted.
+        The override just persisted, merged with any prior one.
     """
     overrides = load_overrides(state.config)
+    existing = overrides.get(posting_id)
+    if existing is not None:
+        merged = existing.model_dump()
+        merged.update(override.model_dump(include=override.model_fields_set))
+        override = ManualOverride(**merged)
     overrides[posting_id] = override
     save_overrides(overrides, state.config)
     return override.model_dump(mode="json")
+
+
+_SPLIT_ZERO_SUM_TOLERANCE = 1e-6
+
+
+def _current_amount_for_split(postings: pl.DataFrame, posting_id: str) -> float | None:
+    """Return the amount a split of `posting_id` must sum to — its own amount, or (if already split) its legs' total.
+
+    Returns
+    -------
+    float or None
+        `None` if no posting or split leg with this id exists at all.
+    """
+    direct = postings.filter(pl.col("posting_id") == posting_id)
+    if not direct.is_empty():
+        return float(direct["amount"][0])
+    legs = postings.filter(pl.col("posting_id").str.starts_with(f"{posting_id}:split:"))
+    if legs.is_empty():
+        return None
+    return float(legs["amount"].sum())
+
+
+@router.put("/postings/{posting_id}/split")
+def put_posting_split(posting_id: str, legs: list[PostingSplitLeg]) -> dict[str, Any]:
+    """Split one posting into several independently-categorized legs, e.g. a paycheck into wage + reimbursement.
+
+    Overwrites any split already stored for this posting — unlike
+    `put_posting_override`'s field-level merge, a split is one coherent
+    set of legs, not independently-settable fields, so there's nothing
+    meaningful to merge.
+
+    Returns
+    -------
+    dict[str, Any]
+        The split just persisted.
+
+    Raises
+    ------
+    HTTPException
+        404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    current_amount = _current_amount_for_split(postings, posting_id)
+    if current_amount is None:
+        raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
+    total = sum(leg.amount for leg in legs)
+    if abs(total - current_amount) > _SPLIT_ZERO_SUM_TOLERANCE:
+        raise HTTPException(
+            status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
+        )
+    split = PostingSplit(posting_id=posting_id, legs=legs)
+    store = store.model_copy(update={"posting_splits": {**store.posting_splits, posting_id: split}})
+    save_store(store, state.config)
+    return split.model_dump(mode="json")
+
+
+@router.delete("/postings/{posting_id}/split")
+def delete_posting_split(posting_id: str) -> dict[str, str]:
+    """Undo a posting split, restoring the single original posting.
+
+    Returns
+    -------
+    dict[str, str]
+        `{"posting_id": ...}`.
+    """
+    store = load_store(state.config)
+    remaining = {pid: split for pid, split in store.posting_splits.items() if pid != posting_id}
+    store = store.model_copy(update={"posting_splits": remaining})
+    save_store(store, state.config)
+    return {"posting_id": posting_id}
+
+
+_MAX_FEW_SHOT_EXAMPLES = 20
+
+
+def _llm_providers() -> list[LLMProvider]:
+    """Build the default-Gemini-then-Mistral fallback chain from whichever API keys `.env` actually has set.
+
+    Returns
+    -------
+    list[LLMProvider]
+        Gemini first (if `GEMINI_API_KEY` is set), then Mistral (if `MISTRAL_API_KEY` is set) — empty if neither is.
+    """
+    credentials = LLMCredentials()
+    providers: list[LLMProvider] = []
+    if credentials.gemini_api_key is not None:
+        providers.append(GeminiProvider(credentials.gemini_api_key.get_secret_value()))
+    if credentials.mistral_api_key is not None:
+        providers.append(MistralProvider(credentials.mistral_api_key.get_secret_value()))
+    return providers
+
+
+Example = tuple[str, str, str | None]
+
+
+def _few_shot_examples(postings: pl.DataFrame, classification: CategoryClassification) -> list[Example]:
+    """Return already-categorized postings on `classification`'s side, as `(description, category_id, subcategory_id)`.
+
+    Returns
+    -------
+    list[tuple[str, str, str | None]]
+        Up to `_MAX_FEW_SHOT_EXAMPLES` examples.
+    """
+    categorized = postings.filter(pl.col("category_id").is_not_null()).select(
+        "description", "amount", "category_id", "subcategory_id"
+    )
+    return [
+        (row["description"], row["category_id"], row["subcategory_id"])
+        for row in categorized.to_dicts()
+        if (row["amount"] >= 0) == (classification == "income")
+    ][:_MAX_FEW_SHOT_EXAMPLES]
+
+
+@router.post("/postings/{posting_id}/ai-suggest-category")
+def post_ai_suggest_category(posting_id: str) -> dict[str, Any]:
+    """Ask an LLM to suggest a category for one posting, from already-categorized examples — never automatic.
+
+    Only ever called when the user clicks the "AI suggestion" button —
+    nothing in this module calls it on its own. The suggestion is
+    validated against real category/subcategory ids before being applied
+    (see `llm.categorize.parse_and_validate_suggestion`) and, if valid,
+    persisted as a manual override exactly as if the user had picked it
+    from the dropdown themselves.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"category_id", "subcategory_id", "applied"}` — `applied` is `False` if no provider returned a
+        usable suggestion, in which case nothing about the posting is changed.
+
+    Raises
+    ------
+    HTTPException
+        404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    target = postings.filter(pl.col("posting_id") == posting_id)
+    if target.is_empty():
+        raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
+    target_row = target.row(0, named=True)
+    classification: CategoryClassification = "income" if target_row["amount"] >= 0 else "expense"
+
+    system_prompt, user_prompt = categorize.build_prompt(
+        target_row["description"], classification, store.categories, _few_shot_examples(postings, classification)
+    )
+    try:
+        raw_response = complete_with_fallback(_llm_providers(), system_prompt, user_prompt)
+    except LLMProviderError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    category_id, subcategory_id = categorize.parse_and_validate_suggestion(
+        raw_response, store.categories, classification
+    )
+    if category_id is None:
+        return {"category_id": None, "subcategory_id": None, "applied": False}
+
+    overrides = load_overrides(state.config)
+    existing = overrides.get(posting_id)
+    suggested = {"category_id": category_id, "subcategory_id": subcategory_id}
+    merged = {**(existing.model_dump() if existing else {}), **suggested}
+    overrides[posting_id] = ManualOverride(**merged)
+    save_overrides(overrides, state.config)
+    return {"category_id": category_id, "subcategory_id": subcategory_id, "applied": True}
 
 
 @router.get("/transfer-suggestions")
@@ -570,8 +932,8 @@ def get_transfer_suggestions() -> list[dict[str, Any]]:
     return find_unmatched_transfer_candidates(postings).to_dicts()
 
 
-def _external_investment_value_usd() -> float | None:
-    """Look up the tracked investment portfolio's current value from the live `trades` server.
+def _external_investment_values_usd(dates: list[date]) -> dict[date, float] | None:
+    """Look up the tracked investment portfolio's value as of each requested date, from the live `trades` server.
 
     Imported lazily, and reads the *running* `trades.api` app's own
     `app.state.config` (the same one its own endpoints use, so this
@@ -579,21 +941,77 @@ def _external_investment_value_usd() -> float | None:
     for) rather than a disconnected default — this is the one place
     accounting code reaches into trades at all.
 
+    Uses `trades.dashboard.valuation.daily_portfolio_values` (one batched,
+    O(unique event dates) computation) rather than calling `overview_cards`
+    once per date — that would replay the whole ledger per point, and net
+    worth history can ask for a year of daily points. The valuation range
+    is widened back to the ledger's own first event so a request whose
+    window starts after investing began still sees that day's real value,
+    not 0 (`daily_portfolio_values` only considers events inside the range
+    it's given).
+
+    Parameters
+    ----------
+    dates
+        Every date a value is needed for.
+
     Returns
     -------
-    float or None
-        The portfolio's value, or `None` if trades has never been synced.
+    dict[date, float] or None
+        Portfolio value for each requested date (0.0 for dates before the
+        first investment event), or `None` if trades has never been synced.
     """
     from trades import api as trades_api  # noqa: PLC0415
-    from trades import dashboard as trades_dashboard  # noqa: PLC0415
     from trades.brokers.ibkr import main as trades_main  # noqa: PLC0415
+    from trades.dashboard.valuation import daily_portfolio_values, make_price_lookup  # noqa: PLC0415
 
     trades_config = trades_api.app.state.config
     ledger = trades_main.load_ledger(trades_config)
     if ledger.is_empty():
         return None
-    cards = trades_dashboard.overview_cards(ledger, trades_config, datetime.now(tz=UTC).date())
-    return cards.value_usd
+    first_event_date = cast("date", ledger["event_datetime"].dt.date().min())
+    start = min(first_event_date, *dates)
+    end = max(dates)
+    price_lookup = make_price_lookup(trades_config)
+    daily = cast("pl.DataFrame", daily_portfolio_values(ledger, price_lookup, start, end, trades_config))
+    return dict(zip(daily["date"].to_list(), daily["value"].to_list(), strict=True))
+
+
+def _benchmark_apy_pct(as_of: date) -> float | None:
+    """Look up `trades`'s published HYSA rate as of a date, as a percent, to compare vault/savings APYs against.
+
+    Imported lazily, reading the *running* `trades.api` app's own
+    `app.state.config` — the same reasoning as `_external_investment_values_usd`.
+
+    Returns
+    -------
+    float or None
+        The benchmark rate as a percent (e.g. `4.2`), or `None` if `trades` has no rate configured.
+    """
+    from trades import api as trades_api  # noqa: PLC0415
+    from trades.dashboard.settings import hysa_rate_lookup  # noqa: PLC0415
+
+    trades_config = trades_api.app.state.config
+    try:
+        rate = hysa_rate_lookup(trades_config)(as_of)
+    except Exception:  # noqa: BLE001 - a missing/misconfigured HYSA rate shouldn't block the rest of the view
+        return None
+    return rate * 100
+
+
+@router.get("/interest-summary")
+def get_interest_summary(as_of: date | None = None) -> list[dict[str, Any]]:
+    """Every savings/vault account's year-to-date interest, current APY, balance, and a one-year projection.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `dashboard.interest.InterestAccountRow`.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    resolved_as_of = as_of or datetime.now(tz=UTC).date()
+    rows = interest.interest_summary(postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of))
+    return [vars(row) for row in rows]
 
 
 @router.get("/net-worth")
@@ -608,13 +1026,15 @@ def get_net_worth(as_of: date | None = None, display_currency: CurrencyCode = "U
     postings, store = _resolved_postings_and_store(state.config)
     has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
+    external_values = _external_investment_values_usd([resolved_as_of]) if has_external_investment else None
     summary = net_worth_summary(
         postings,
         store.accounts,
         store.other_assets,
         resolved_as_of,
         _display_currency(display_currency, store, resolved_as_of),
-        external_investment_value_usd=_external_investment_value_usd() if has_external_investment else None,
+        external_investment_value_usd=(external_values or {}).get(resolved_as_of) if external_values else None,
+        opening_balances=store.opening_balances,
     )
     return {
         "as_of": summary.as_of.isoformat(),
@@ -646,8 +1066,8 @@ def get_net_worth_history(
     """
     postings, store = _resolved_postings_and_store(state.config)
     has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
-    external_value = _external_investment_value_usd() if has_external_investment else None
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
+    external_values = _external_investment_values_usd(dates) if has_external_investment else None
     return [
         {
             "date": day.isoformat(),
@@ -657,11 +1077,65 @@ def get_net_worth_history(
                 store.other_assets,
                 day,
                 _display_currency(display_currency, store, day),
-                external_value,
+                external_investment_value_usd=(external_values or {}).get(day, 0.0) if external_values else None,
+                opening_balances=store.opening_balances,
             ).net_worth,
         }
         for day in dates
     ]
+
+
+_VIRTUAL_ACCOUNT_KINDS = {"income_source", "expense_payee"}
+
+
+@router.get("/net-worth/history/by-account")
+def get_net_worth_history_by_account(
+    start: date, end: date, interval_days: int = 1, display_currency: CurrencyCode = "USD"
+) -> list[dict[str, Any]]:
+    """Return every real account's own balance as of a regularly-spaced series of dates.
+
+    The per-account counterpart to `get_net_worth_history` — same dates,
+    same as-of-date exchange rate handling, but one row per (date,
+    account) instead of one aggregate net-worth figure per date, for the
+    net worth chart's "detailed" per-account view.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One `{"date", "account_id", "account_name", "balance"}` per point
+        per account, `balance` already converted into `display_currency`.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
+    real_accounts = {
+        account_id: account
+        for account_id, account in store.accounts.items()
+        if account.kind not in _VIRTUAL_ACCOUNT_KINDS
+    }
+    has_external_investment = any(account.kind == "external_investment" for account in real_accounts.values())
+    external_values = _external_investment_values_usd(dates) if has_external_investment else None
+
+    balances = cast("pl.DataFrame", account_balances_over_time(postings, dates))
+    balance_lookup = {(row["account_id"], row["date"]): row["balance"] for row in balances.to_dicts()}
+
+    rows: list[dict[str, Any]] = []
+    for day in dates:
+        display = _display_currency(display_currency, store, day)
+        for account_id, account in real_accounts.items():
+            if account.kind == "external_investment":
+                native = (external_values or {}).get(day, 0.0)
+            else:
+                native = balance_lookup.get((account_id, day), 0.0)
+                opening = store.opening_balances.get(account_id)
+                if opening is not None and day >= opening.as_of_date.date():
+                    native += opening.amount
+            rows.append({
+                "date": day.isoformat(),
+                "account_id": account_id,
+                "account_name": account.name,
+                "balance": convert(native, account.currency, display.code, display.rates_to_base),
+            })
+    return rows
 
 
 @router.get("/income-statement/category-totals")
@@ -723,3 +1197,51 @@ def get_spend_curve(
     return income_statement.spend_curve_vs_average(
         postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
     ).to_dicts()
+
+
+@router.get("/budgets/comparison")
+def get_budget_comparison(month: str, display_currency: CurrencyCode = "USD") -> list[dict[str, Any]]:
+    """Every category budgeted for one month, actual spend next to the target.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `dashboard.budgets.BudgetComparisonRow`.
+
+    Raises
+    ------
+    HTTPException
+        400 if `month` isn't `"YYYY-MM"`.
+    """
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
+    postings, store = _resolved_postings_and_store(state.config)
+    rows = budgets.budget_comparison(
+        postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
+    )
+    return [vars(row) for row in rows]
+
+
+@router.get("/budgets/suggested-amount")
+def get_suggested_budget_amount(
+    category_id: str, month: str, lookback_months: int = 3, display_currency: CurrencyCode = "USD"
+) -> dict[str, float]:
+    """Suggest a budget for a category from its trailing months' actual spend.
+
+    Returns
+    -------
+    dict[str, float]
+        `{"suggested_amount": ...}`.
+
+    Raises
+    ------
+    HTTPException
+        400 if `month` isn't `"YYYY-MM"`.
+    """
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
+    postings, store = _resolved_postings_and_store(state.config)
+    amount = budgets.suggested_budget_amount(
+        postings, store.accounts, category_id, month, lookback_months, _display_currency(display_currency, store)
+    )
+    return {"suggested_amount": amount}

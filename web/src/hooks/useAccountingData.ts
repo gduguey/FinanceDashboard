@@ -1,12 +1,25 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { accountingApi, type AccountUpdate, type ImportAccountInfo } from '@/lib/accountingApi'
-import type { Account, Category, CurrencyCode, ManualOverride, OtherAsset, Rule, Tag } from '@/types/accounting'
+import type {
+  Account,
+  Budget,
+  Category,
+  CurrencyCode,
+  ManualOverride,
+  OpeningBalance,
+  OtherAsset,
+  PostingSplitLeg,
+  Rule,
+  SimulatorScenario,
+  Tag,
+} from '@/types/accounting'
 
 const BASE_CURRENCY: CurrencyCode = 'USD'
 
 const keys = {
   store: ['accounting', 'store'],
   currencies: ['accounting', 'currencies'],
+  supportedImportKinds: ['accounting', 'supported-import-kinds'],
   currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
   exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
   postings: ['accounting', 'postings'],
@@ -15,6 +28,14 @@ const keys = {
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) => [
     'accounting',
     'net-worth-history',
+    start,
+    end,
+    intervalDays ?? {},
+    displayCurrency ?? {},
+  ],
+  netWorthHistoryByAccount: (start: string, end: string, intervalDays?: number, displayCurrency?: string) => [
+    'accounting',
+    'net-worth-history-by-account',
     start,
     end,
     intervalDays ?? {},
@@ -43,6 +64,36 @@ const keys = {
     lookbackMonths ?? {},
     displayCurrency ?? {},
   ],
+  budgetComparison: (month: string, displayCurrency?: string) => [
+    'accounting',
+    'budget-comparison',
+    month,
+    displayCurrency ?? {},
+  ],
+  suggestedBudgetAmount: (categoryId: string, month: string, lookbackMonths?: number, displayCurrency?: string) => [
+    'accounting',
+    'suggested-budget-amount',
+    categoryId,
+    month,
+    lookbackMonths ?? {},
+    displayCurrency ?? {},
+  ],
+  interestSummary: (asOf?: string) => ['accounting', 'interest-summary', asOf ?? {}],
+  simulatorProject: (
+    initialCapital: number,
+    monthlyContribution: number,
+    horizonYears: number,
+    annualRatePct: number,
+    compoundingFrequency: string,
+  ) => [
+    'accounting',
+    'simulator-project',
+    initialCapital,
+    monthlyContribution,
+    horizonYears,
+    annualRatePct,
+    compoundingFrequency,
+  ],
 }
 
 function useInvalidateAccounting() {
@@ -53,6 +104,9 @@ function useInvalidateAccounting() {
 export const useAccountingStore = () => useQuery({ queryKey: keys.store, queryFn: accountingApi.store })
 
 export const useCurrencies = () => useQuery({ queryKey: keys.currencies, queryFn: accountingApi.currencies })
+
+export const useSupportedImportKinds = () =>
+  useQuery({ queryKey: keys.supportedImportKinds, queryFn: accountingApi.supportedImportKinds })
 
 export const useCurrentExchangeRate = (currency: string) =>
   useQuery({
@@ -103,6 +157,19 @@ export const useNetWorthHistory = (start: string, end: string, intervalDays?: nu
     queryFn: () => accountingApi.netWorthHistory(start, end, intervalDays, displayCurrency),
   })
 
+export const useNetWorthHistoryByAccount = (
+  start: string,
+  end: string,
+  intervalDays?: number,
+  displayCurrency?: string,
+  enabled = true,
+) =>
+  useQuery({
+    queryKey: keys.netWorthHistoryByAccount(start, end, intervalDays, displayCurrency),
+    queryFn: () => accountingApi.netWorthHistoryByAccount(start, end, intervalDays, displayCurrency),
+    enabled,
+  })
+
 export const useCategoryTotals = (
   start: string,
   end: string,
@@ -126,6 +193,42 @@ export const useSpendCurve = (month: string, lookbackMonths?: number, displayCur
     queryKey: keys.spendCurve(month, lookbackMonths, displayCurrency),
     queryFn: () => accountingApi.spendCurve(month, lookbackMonths, displayCurrency),
   })
+
+export const useBudgetComparison = (month: string, displayCurrency?: string) =>
+  useQuery({
+    queryKey: keys.budgetComparison(month, displayCurrency),
+    queryFn: () => accountingApi.budgetComparison(month, displayCurrency),
+  })
+
+export const useSuggestedBudgetAmount = (categoryId: string, month: string, lookbackMonths?: number, displayCurrency?: string) =>
+  useQuery({
+    queryKey: keys.suggestedBudgetAmount(categoryId, month, lookbackMonths, displayCurrency),
+    queryFn: () => accountingApi.suggestedBudgetAmount(categoryId, month, lookbackMonths, displayCurrency),
+  })
+
+export const useInterestSummary = (asOf?: string) =>
+  useQuery({ queryKey: keys.interestSummary(asOf), queryFn: () => accountingApi.interestSummary(asOf) })
+
+export const useSimulatorProjection = (
+  initialCapital: number,
+  monthlyContribution: number,
+  horizonYears: number,
+  annualRatePct: number,
+  compoundingFrequency: SimulatorScenario['compounding_frequency'],
+) =>
+  useQuery({
+    queryKey: keys.simulatorProject(initialCapital, monthlyContribution, horizonYears, annualRatePct, compoundingFrequency),
+    queryFn: () =>
+      accountingApi.simulatorProject(initialCapital, monthlyContribution, horizonYears, annualRatePct, compoundingFrequency),
+  })
+
+export function useSetSimulatorScenarios() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (scenarios: SimulatorScenario[]) => accountingApi.putSimulatorScenarios(scenarios),
+    onSuccess: invalidate,
+  })
+}
 
 export function useSyncExchangeRates() {
   const invalidate = useInvalidateAccounting()
@@ -164,6 +267,14 @@ export function useSetOtherAssets() {
   })
 }
 
+export function useSetBudgets() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (budgets: Budget[]) => accountingApi.putBudgets(budgets),
+    onSuccess: invalidate,
+  })
+}
+
 export function useCreateAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -189,6 +300,23 @@ export function useDeleteAccount() {
   })
 }
 
+export function useSetOpeningBalance() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ accountId, openingBalance }: { accountId: string; openingBalance: OpeningBalance }) =>
+      accountingApi.putOpeningBalance(accountId, openingBalance),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteOpeningBalance() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (accountId: string) => accountingApi.deleteOpeningBalance(accountId),
+    onSuccess: invalidate,
+  })
+}
+
 export function useImportCsv() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -205,6 +333,11 @@ export function useImportSofiStatementPdf() {
   })
 }
 
+// Read-only — reconciliation applies nothing, so no cache invalidation on success.
+export function useImportPaystub() {
+  return useMutation({ mutationFn: (file: File) => accountingApi.importPaystub(file) })
+}
+
 export function useRebuildLedger() {
   const invalidate = useInvalidateAccounting()
   return useMutation({ mutationFn: accountingApi.rebuild, onSuccess: invalidate })
@@ -215,6 +348,31 @@ export function useSetPostingOverride() {
   return useMutation({
     mutationFn: ({ postingId, override }: { postingId: string; override: ManualOverride }) =>
       accountingApi.putPostingOverride(postingId, override),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetPostingSplit() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ postingId, legs }: { postingId: string; legs: PostingSplitLeg[] }) =>
+      accountingApi.putPostingSplit(postingId, legs),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeletePostingSplit() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (postingId: string) => accountingApi.deletePostingSplit(postingId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useAiSuggestCategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (postingId: string) => accountingApi.aiSuggestCategory(postingId),
     onSuccess: invalidate,
   })
 }

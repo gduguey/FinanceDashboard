@@ -16,24 +16,24 @@ export function InstitutionCombobox({
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const matches = knownInstitutions.filter((institution) => institution.toLowerCase().includes(value.toLowerCase()))
-  const exactMatch = knownInstitutions.some((institution) => institution.toLowerCase() === value.toLowerCase())
 
   return (
     <div className="relative">
       <Input
-        className="w-40"
+        className="w-40 text-foreground"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onFocus={() => setIsOpen(true)}
         onBlur={() => setIsOpen(false)}
         placeholder="e.g. Chase"
       />
-      {isOpen && value && (matches.length > 0 || !exactMatch) && (
+      {isOpen && value && matches.length > 0 && (
         <ul className="absolute z-20 mt-1 w-48 rounded-md border border-border bg-white py-1 text-sm shadow-md">
           {matches.map((institution) => (
             <li key={institution}>
               <button
-                className="block w-full px-3 py-1.5 text-left hover:bg-muted"
+                type="button"
+                className="block w-full px-3 py-1.5 text-left text-foreground hover:bg-muted"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onChange(institution)}
               >
@@ -41,17 +41,6 @@ export function InstitutionCombobox({
               </button>
             </li>
           ))}
-          {!exactMatch && (
-            <li>
-              <button
-                className="block w-full px-3 py-1.5 text-left text-primary hover:bg-muted"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => onChange(value)}
-              >
-                Add “{value}”
-              </button>
-            </li>
-          )}
         </ul>
       )}
     </div>

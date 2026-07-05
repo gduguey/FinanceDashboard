@@ -1,19 +1,35 @@
 import { useState } from 'react'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useCreateAccount, useDeleteAccount, useUpdateAccount } from '@/hooks/useAccountingData'
+import {
+  useCreateAccount,
+  useDeleteAccount,
+  useSetOpeningBalance,
+  useSupportedImportKinds,
+  useUpdateAccount,
+} from '@/hooks/useAccountingData'
 import type { Account } from '@/types/accounting'
 
 const VIRTUAL_KINDS = new Set(['income_source', 'expense_payee'])
 
 function emptyDraft(): AccountFormValue {
-  return { institution: '', kind: 'checking', currency: 'USD', accountId: '', name: '' }
+  return {
+    institution: '',
+    kind: 'checking',
+    currency: 'USD',
+    last4: '',
+    accountId: '',
+    name: '',
+    parentAccountId: null,
+    openingBalance: '',
+  }
 }
 
 function AccountDialog({
@@ -21,6 +37,8 @@ function AccountDialog({
   initial,
   locked,
   knownInstitutions,
+  parentAccountOptions,
+  showOpeningBalance,
   onClose,
   onSave,
 }: {
@@ -28,11 +46,13 @@ function AccountDialog({
   initial: AccountFormValue
   locked: boolean
   knownInstitutions: string[]
+  parentAccountOptions: Account[]
+  showOpeningBalance: boolean
   onClose: () => void
   onSave: (value: AccountFormValue) => void
 }) {
   const [draft, setDraft] = useState(initial)
-  const canSave = locked ? draft.name.length > 0 : draft.institution && draft.kind && draft.accountId && draft.name
+  const canSave = locked ? draft.name.length > 0 : draft.institution && draft.kind && draft.last4 && draft.name
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -40,7 +60,14 @@ function AccountDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        <AccountForm value={draft} onChange={setDraft} knownInstitutions={knownInstitutions} locked={locked} />
+        <AccountForm
+          value={draft}
+          onChange={setDraft}
+          knownInstitutions={knownInstitutions}
+          parentAccountOptions={parentAccountOptions}
+          locked={locked}
+          showOpeningBalance={showOpeningBalance}
+        />
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             Cancel
@@ -70,13 +97,18 @@ export function AccountsManagementTable({
   const createAccount = useCreateAccount()
   const updateAccount = useUpdateAccount()
   const deleteAccount = useDeleteAccount()
+  const setOpeningBalance = useSetOpeningBalance()
+  const { data: supportedImportKinds } = useSupportedImportKinds()
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const rows = Object.values(accounts).filter((account) => !VIRTUAL_KINDS.has(account.kind))
+  const parentAccountOptions = rows.filter((account) => account.kind !== 'vault')
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'name')
   const knownInstitutions = [...new Set(rows.map((account) => account.institution))].sort()
+  const supportedKinds = new Set((supportedImportKinds ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`))
+  const hasNoImporter = (account: Account) => !supportedKinds.has(`${account.institution}:${account.kind}`)
 
   async function handleCreate(value: AccountFormValue) {
     setError(null)
@@ -87,10 +119,21 @@ export function AccountsManagementTable({
         kind: value.kind,
         institution: value.institution,
         currency: value.currency,
-        parent_account_id: null,
+        parent_account_id: value.parentAccountId,
         external_ref: null,
         meta: {},
       })
+      const amount = Number.parseFloat(value.openingBalance)
+      if (value.openingBalance.trim() && !Number.isNaN(amount)) {
+        await setOpeningBalance.mutateAsync({
+          accountId: value.accountId,
+          openingBalance: {
+            account_id: value.accountId,
+            amount,
+            as_of_date: new Date().toISOString(),
+          },
+        })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create account')
     }
@@ -159,7 +202,22 @@ export function AccountsManagementTable({
                 return (
                   <TableRow key={account.account_id}>
                     <TableCell className="text-muted-foreground">{account.institution}</TableCell>
-                    <TableCell className="font-medium">{account.name}</TableCell>
+                    <TableCell className="font-medium">
+                      <span className="flex items-center gap-1.5">
+                        {account.name}
+                        {hasNoImporter(account) && (
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <AlertTriangle className="size-3.5 text-amber-500" />
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              No CSV parsing rule registered for {account.institution} {account.kind} — imports for
+                              this account must be added to the codebase first.
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </span>
+                    </TableCell>
                     <TableCell className="text-muted-foreground">{account.kind}</TableCell>
                     <TableCell className="text-muted-foreground">{account.currency}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{account.account_id}</TableCell>
@@ -187,6 +245,8 @@ export function AccountsManagementTable({
           initial={emptyDraft()}
           locked={false}
           knownInstitutions={knownInstitutions}
+          parentAccountOptions={parentAccountOptions}
+          showOpeningBalance
           onClose={() => setAdding(false)}
           onSave={handleCreate}
         />
@@ -198,11 +258,16 @@ export function AccountsManagementTable({
             institution: editing.institution,
             kind: editing.kind,
             currency: editing.currency,
+            last4: editing.account_id.split(':').pop() ?? '',
             accountId: editing.account_id,
             name: editing.name,
+            parentAccountId: editing.parent_account_id,
+            openingBalance: '',
           }}
           locked={accountIdsWithPostings.has(editing.account_id)}
           knownInstitutions={knownInstitutions}
+          parentAccountOptions={parentAccountOptions.filter((account) => account.account_id !== editing.account_id)}
+          showOpeningBalance={false}
           onClose={() => setEditing(null)}
           onSave={(value) => handleUpdate(editing.account_id, value)}
         />
