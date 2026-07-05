@@ -84,26 +84,23 @@ router = APIRouter(prefix="/api/accounting")
 
 
 def _resolved_postings_and_store(config: AccountingConfig) -> tuple[Any, Any]:
-    """Load the raw ledger, resolve it against the current rules and manual overrides, persisting new accounts.
+    """Load the raw ledger and resolve it against the current rules and manual overrides.
 
-    Rule-driven account creation (a newly-seen vault, a rule's declared
-    counterparty) is the one place this module writes as a side effect of
-    a read — an unavoidable consequence of accounts being allowed to
-    auto-vivify at all. Manual overrides are never written back here; they
-    already live in their own file and are only ever applied on top.
+    A rule only ever repoints a posting at an account that already exists
+    in the store, never creates one — so unlike importing a statement
+    (which does register a new account), this is a pure read with no side
+    effect to persist. Manual overrides are never written back here
+    either; they already live in their own file and are only ever applied
+    on top.
 
     Returns
     -------
     tuple[polars.DataFrame, accounting.store.AccountingStore]
-        The fully resolved postings, and the store (with any newly
-        discovered accounts already persisted).
+        The fully resolved postings, and the current store.
     """
     raw = load_ledger(config)
     store = load_store(config)
-    resolved, accounts = apply_rules(raw, store.rules, store.accounts)
-    if accounts != store.accounts:
-        store = store.model_copy(update={"accounts": accounts})
-        save_store(store, config)
+    resolved = apply_rules(raw, store.rules, store.accounts)
     resolved = apply_posting_splits(resolved, store.posting_splits)
     overrides = load_overrides(config)
     resolved = apply_manual_overrides(resolved, overrides)

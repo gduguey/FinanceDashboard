@@ -100,7 +100,7 @@ export function AccountingPage() {
             </TabsContent>
 
             <TabsContent value="rules">
-              <RulesTab rules={store.rules} />
+              <RulesTab rules={store.rules} accounts={store.accounts} />
             </TabsContent>
           </Tabs>
         )}

@@ -4,13 +4,7 @@ import polars as pl
 import pytest
 
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame
-from accounting.ledger.categorization import (
-    apply_manual_overrides,
-    apply_posting_splits,
-    apply_rules,
-    detect_sofi_internal_account_transfer,
-    detect_vault_transfer,
-)
+from accounting.ledger.categorization import apply_manual_overrides, apply_posting_splits, apply_rules
 from accounting.models import Account, ManualOverride, PostingSplit, PostingSplitLeg, Rule
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
@@ -29,108 +23,103 @@ def _placeholder_pair(source: str, row_id: str, account_id: str, leg: RawLeg) ->
 SOFI_SAVINGS = Account(
     account_id="sofi:savings:3680", name="SoFi Savings", kind="savings", institution="SoFi", currency="USD"
 )
+EQORE_ACCOUNT = Account(
+    account_id="employer:eqore",
+    name="EQORE Inc. (Employer)",
+    kind="income_source",
+    institution="external",
+    currency="USD",
+)
 EQORE_RULE = Rule(
     rule_id="eqore-payroll",
     description_contains="EQORE Inc.",
     counterparty_account_id="employer:eqore",
-    counterparty_account_name="EQORE Inc. (Employer)",
-    counterparty_account_kind="income_source",
     category_id="income:salary",
 )
-
-
-def test_detect_vault_transfer_recognizes_to_and_from() -> None:
-    assert detect_vault_transfer("To Travel Vault") == "Travel"
-    assert detect_vault_transfer("From House Vault") == "House"
-
-
-def test_detect_vault_transfer_ignores_unrelated_descriptions() -> None:
-    assert detect_vault_transfer("MARKET BASKET 00000281") is None
-
-
-def test_apply_rules_creates_a_vault_account_from_a_sofi_savings_transfer() -> None:
-    postings = postings_to_frame(
-        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(-250.0, "To Travel Vault"))
-    )
-    resolved, accounts = apply_rules(postings, [], {"sofi:savings:3680": SOFI_SAVINGS})
-
-    vault_id = "sofi:savings:3680:vault:travel"
-    assert vault_id in accounts
-    assert accounts[vault_id].parent_account_id == "sofi:savings:3680"
-    assert set(resolved["account_id"].unique().to_list()) == {"sofi:savings:3680", vault_id}
-    assert resolved.filter(pl.col("account_id") == vault_id)["amount"].to_list() == pytest.approx([250.0])
 
 
 def test_apply_rules_matches_a_rule_and_sets_category() -> None:
     postings = postings_to_frame(
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
     )
-    resolved, accounts = apply_rules(postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS})
+    resolved = apply_rules(postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT})
 
-    assert "employer:eqore" in accounts
     real_leg = resolved.filter(pl.col("account_id") == "sofi:savings:3680").row(0, named=True)
     assert real_leg["category_id"] == "income:salary"
     counterparty_leg = resolved.filter(pl.col("account_id") == "employer:eqore").row(0, named=True)
     assert counterparty_leg["amount"] == pytest.approx(-2000.0)
 
 
+def test_apply_rules_does_not_match_when_the_counterparty_account_does_not_exist() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    resolved = apply_rules(postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS})
+    counterparties = set(resolved["account_id"].unique().to_list()) - {"sofi:savings:3680"}
+    assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
+
+
+def test_apply_rules_repoints_a_transfer_to_a_pre_created_vault_account() -> None:
+    """A vault is an ordinary account + an ordinary rule — no vault-specific matching exists."""
+    vault = Account(
+        account_id="sofi:savings:3680:vault:travel",
+        name="Travel Vault",
+        kind="vault",
+        institution="SoFi",
+        currency="USD",
+        parent_account_id="sofi:savings:3680",
+    )
+    vault_rule = Rule(
+        rule_id="travel-vault", description_contains="Travel Vault", counterparty_account_id=vault.account_id
+    )
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(-250.0, "To Travel Vault"))
+    )
+    resolved = apply_rules(postings, [vault_rule], {"sofi:savings:3680": SOFI_SAVINGS, vault.account_id: vault})
+    assert set(resolved["account_id"].unique().to_list()) == {"sofi:savings:3680", vault.account_id}
+    assert resolved.filter(pl.col("account_id") == vault.account_id)["amount"].to_list() == pytest.approx([250.0])
+
+
 def test_apply_rules_respects_a_rule_scoped_to_one_account() -> None:
+    chase_card = Account(
+        account_id="chase:credit_card:8235",
+        name="Chase Credit Card",
+        kind="credit_card",
+        institution="Chase",
+        currency="USD",
+    )
     scoped_rule = Rule(
         rule_id="chase-card-payoff",
         description_contains="Payment to Chase card ending in 8235",
         account_id="chase:checking:9579",
         counterparty_account_id="chase:credit_card:8235",
-        counterparty_account_name="Chase Credit Card",
-        counterparty_account_kind="credit_card",
     )
     matching = postings_to_frame(
         _placeholder_pair(
             "chase-checking", "1", "chase:checking:9579", _leg(-70.0, "Payment to Chase card ending in 8235")
         )
     )
-    _resolved, accounts = apply_rules(matching, [scoped_rule], {})
-    assert "chase:credit_card:8235" in accounts
+    resolved = apply_rules(matching, [scoped_rule], {"chase:credit_card:8235": chase_card})
+    assert "chase:credit_card:8235" in resolved["account_id"].unique().to_list()
 
     elsewhere = postings_to_frame(
         _placeholder_pair(
             "chase-checking", "2", "some:other:account", _leg(-70.0, "Payment to Chase card ending in 8235")
         )
     )
-    resolved_elsewhere, accounts_elsewhere = apply_rules(elsewhere, [scoped_rule], {})
-    assert "chase:credit_card:8235" not in accounts_elsewhere
-    counterparties = set(resolved_elsewhere["account_id"].unique().to_list()) - {"some:other:account"}
-    assert counterparties == {UNCATEGORIZED_EXPENSE_ACCOUNT_ID}
+    resolved_elsewhere = apply_rules(elsewhere, [scoped_rule], {"chase:credit_card:8235": chase_card})
+    assert set(resolved_elsewhere["account_id"].unique().to_list()) - {"some:other:account"} == {
+        UNCATEGORIZED_EXPENSE_ACCOUNT_ID
+    }
 
 
 def test_apply_rules_leaves_unmatched_postings_as_placeholders() -> None:
     postings = postings_to_frame(
         _placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(-9.79, "TELLO US"))
     )
-    resolved, accounts = apply_rules(postings, [EQORE_RULE], {})
+    resolved = apply_rules(postings, [EQORE_RULE], {})
     counterparties = set(resolved["account_id"].unique().to_list()) - {"chase:checking:9579"}
     assert counterparties == {UNCATEGORIZED_EXPENSE_ACCOUNT_ID}
-    assert accounts == {}
-
-
-def test_detect_sofi_internal_account_transfer_recognizes_to_checking_and_savings() -> None:
-    assert detect_sofi_internal_account_transfer("To Savings - 3680") == ("Savings", "3680")
-    assert detect_sofi_internal_account_transfer("To Checking - 9169") == ("Checking", "9169")
-
-
-def test_detect_sofi_internal_account_transfer_ignores_unrelated_descriptions() -> None:
-    assert detect_sofi_internal_account_transfer("To Travel Vault") is None
-
-
-def test_apply_rules_repoints_a_sofi_checking_to_savings_transfer() -> None:
-    checking = Account(
-        account_id="sofi:checking:9169", name="SoFi Checking", kind="checking", institution="SoFi", currency="USD"
-    )
-    postings = postings_to_frame(
-        _placeholder_pair("sofi-statement-pdf", "1", "sofi:checking:9169", _leg(-300.08, "To Savings - 3680"))
-    )
-    resolved, accounts = apply_rules(postings, [], {"sofi:checking:9169": checking, "sofi:savings:3680": SOFI_SAVINGS})
-    assert set(resolved["account_id"].unique().to_list()) == {"sofi:checking:9169", "sofi:savings:3680"}
-    assert accounts == {"sofi:checking:9169": checking, "sofi:savings:3680": SOFI_SAVINGS}
 
 
 def test_apply_manual_overrides_with_no_overrides_returns_the_same_data() -> None:

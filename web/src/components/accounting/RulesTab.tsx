@@ -10,14 +10,75 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { useSetRules } from '@/hooks/useAccountingData'
-import type { Rule } from '@/types/accounting'
+import type { Account, Rule } from '@/types/accounting'
 
-function RuleEditDialog({ rule, onClose, onSave }: { rule: Rule; onClose: () => void; onSave: (rule: Rule) => void }) {
+// The two placeholder counterparties every posting starts pointed at (see
+// `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
+// aren't things a rule ever repoints a posting *to* — a rule's whole job is
+// to repoint a posting away from one of these, so they're excluded from the
+// counterparty picker.
+const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
+const NO_COUNTERPARTY = '__none__'
+
+function counterpartyOptions(accounts: Record<string, Account>): Account[] {
+  return Object.values(accounts)
+    .filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function CounterpartySelect({
+  accounts,
+  value,
+  onChange,
+  disabled,
+}: {
+  accounts: Account[]
+  value: string | null
+  onChange: (accountId: string | null) => void
+  disabled?: boolean
+}) {
+  const items = {
+    [NO_COUNTERPARTY]: 'None',
+    ...Object.fromEntries(accounts.map((account) => [account.account_id, account.name])),
+  }
+  return (
+    <Select
+      value={value ?? NO_COUNTERPARTY}
+      onValueChange={(next) => onChange(next === NO_COUNTERPARTY ? null : (next ?? null))}
+      disabled={disabled}
+    >
+      <SelectTrigger size="sm" className="w-48">
+        <SelectValue items={items} />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={NO_COUNTERPARTY}>None</SelectItem>
+        {accounts.map((account) => (
+          <SelectItem key={account.account_id} value={account.account_id}>
+            {account.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+function RuleEditDialog({
+  rule,
+  accounts,
+  onClose,
+  onSave,
+}: {
+  rule: Rule
+  accounts: Account[]
+  onClose: () => void
+  onSave: (rule: Rule) => void
+}) {
   const [draft, setDraft] = useState(rule)
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -34,10 +95,11 @@ function RuleEditDialog({ rule, onClose, onSave }: { rule: Rule; onClose: () => 
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Counterparty name
-            <Input
-              value={draft.counterparty_account_name ?? ''}
-              onChange={(event) => setDraft((prev) => ({ ...prev, counterparty_account_name: event.target.value }))}
+            Counterparty
+            <CounterpartySelect
+              accounts={accounts}
+              value={draft.counterparty_account_id}
+              onChange={(accountId) => setDraft((prev) => ({ ...prev, counterparty_account_id: accountId }))}
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -75,11 +137,17 @@ function RuleEditDialog({ rule, onClose, onSave }: { rule: Rule; onClose: () => 
   )
 }
 
-export function RulesTab({ rules }: { rules: Rule[] }) {
+export function RulesTab({ rules, accounts }: { rules: Rule[]; accounts: Record<string, Account> }) {
   const setRules = useSetRules()
   const [editing, setEditing] = useState<Rule | null>(null)
-  const [draft, setDraft] = useState({ descriptionContains: '', counterpartyAccountId: '', counterpartyAccountName: '' })
+  const [draft, setDraft] = useState<{ descriptionContains: string; counterpartyAccountId: string | null }>({
+    descriptionContains: '',
+    counterpartyAccountId: null,
+  })
   const { sorted, sort, toggleSort } = useSortableRows(rules, 'priority')
+  const options = counterpartyOptions(accounts)
+  const counterpartyName = (rule: Rule) =>
+    (rule.counterparty_account_id && accounts[rule.counterparty_account_id]?.name) || '—'
 
   function addRule() {
     if (!draft.descriptionContains || !draft.counterpartyAccountId) return
@@ -90,14 +158,11 @@ export function RulesTab({ rules }: { rules: Rule[] }) {
       category_id: null,
       subcategory_id: null,
       counterparty_account_id: draft.counterpartyAccountId,
-      counterparty_account_name: draft.counterpartyAccountName || draft.counterpartyAccountId,
-      counterparty_account_kind: 'expense_payee',
-      counterparty_parent_account_id: null,
       priority: 100,
       description: '',
     }
     setRules.mutate([...rules, rule])
-    setDraft({ descriptionContains: '', counterpartyAccountId: '', counterpartyAccountName: '' })
+    setDraft({ descriptionContains: '', counterpartyAccountId: null })
   }
 
   function removeRule(ruleId: string) {
@@ -124,13 +189,7 @@ export function RulesTab({ rules }: { rules: Rule[] }) {
               >
                 If description contains
               </SortableTableHead>
-              <SortableTableHead
-                active={sort.key === 'counterparty_account_name'}
-                desc={sort.desc}
-                onClick={() => toggleSort('counterparty_account_name')}
-              >
-                Counterparty
-              </SortableTableHead>
+              <TableHead>Counterparty</TableHead>
               <TableHead>Notes</TableHead>
               <SortableTableHead active={sort.key === 'priority'} desc={sort.desc} onClick={() => toggleSort('priority')}>
                 Priority
@@ -142,7 +201,7 @@ export function RulesTab({ rules }: { rules: Rule[] }) {
             {sorted.map((rule) => (
               <TableRow key={rule.rule_id}>
                 <TableCell className="font-medium">{rule.description_contains}</TableCell>
-                <TableCell className="text-muted-foreground">{rule.counterparty_account_name}</TableCell>
+                <TableCell className="text-muted-foreground">{counterpartyName(rule)}</TableCell>
                 <TableCell className="max-w-xs truncate text-muted-foreground">{rule.description || '—'}</TableCell>
                 <TableCell className="text-muted-foreground">{rule.priority}</TableCell>
                 <TableCell className="flex gap-1">
@@ -168,21 +227,11 @@ export function RulesTab({ rules }: { rules: Rule[] }) {
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Counterparty account id
-            <Input
-              className="w-48"
+            Counterparty
+            <CounterpartySelect
+              accounts={options}
               value={draft.counterpartyAccountId}
-              onChange={(event) => setDraft((prev) => ({ ...prev, counterpartyAccountId: event.target.value }))}
-              placeholder="e.g. payee:netflix"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Counterparty name
-            <Input
-              className="w-48"
-              value={draft.counterpartyAccountName}
-              onChange={(event) => setDraft((prev) => ({ ...prev, counterpartyAccountName: event.target.value }))}
-              placeholder="e.g. Netflix"
+              onChange={(accountId) => setDraft((prev) => ({ ...prev, counterpartyAccountId: accountId }))}
             />
           </label>
           <Button size="sm" onClick={addRule}>
@@ -190,7 +239,9 @@ export function RulesTab({ rules }: { rules: Rule[] }) {
           </Button>
         </div>
       </CardContent>
-      {editing && <RuleEditDialog rule={editing} onClose={() => setEditing(null)} onSave={saveRule} />}
+      {editing && (
+        <RuleEditDialog rule={editing} accounts={options} onClose={() => setEditing(null)} onSave={saveRule} />
+      )}
     </Card>
   )
 }

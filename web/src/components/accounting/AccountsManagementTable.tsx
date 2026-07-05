@@ -17,7 +17,13 @@ import {
 } from '@/hooks/useAccountingData'
 import type { Account } from '@/types/accounting'
 
-const VIRTUAL_KINDS = new Set(['income_source', 'expense_payee'])
+// The two placeholder counterparties every posting starts pointed at (see
+// `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
+// aren't a real account or counterparty a user manages — they're re-seeded
+// by the backend if ever missing — so they're the only accounts hidden here.
+// Every other `income_source`/`expense_payee` counterparty a user creates
+// (an employer, a payee) is a normal row, manageable the same as any account.
+const SYSTEM_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 function emptyDraft(): AccountFormValue {
   return {
@@ -103,12 +109,16 @@ export function AccountsManagementTable({
   const [editing, setEditing] = useState<Account | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const rows = Object.values(accounts).filter((account) => !VIRTUAL_KINDS.has(account.kind))
+  const rows = Object.values(accounts).filter((account) => !SYSTEM_ACCOUNT_IDS.has(account.account_id))
   const parentAccountOptions = rows.filter((account) => account.kind !== 'vault')
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'name')
   const knownInstitutions = [...new Set(rows.map((account) => account.institution))].sort()
   const supportedKinds = new Set((supportedImportKinds ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`))
-  const hasNoImporter = (account: Account) => !supportedKinds.has(`${account.institution}:${account.kind}`)
+  const isCounterpartyKind = (kind: Account['kind']) => kind === 'income_source' || kind === 'expense_payee'
+  // A counterparty (employer, payee) is never imported into, so it never
+  // needs a CSV parsing rule — only real, importable accounts do.
+  const hasNoImporter = (account: Account) =>
+    !isCounterpartyKind(account.kind) && !supportedKinds.has(`${account.institution}:${account.kind}`)
 
   async function handleCreate(value: AccountFormValue) {
     setError(null)

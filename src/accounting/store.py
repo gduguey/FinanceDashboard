@@ -203,48 +203,6 @@ def default_accounts() -> dict[str, Account]:
     }
 
 
-def default_rules() -> list[Rule]:
-    """Seed rules recognizing the counterparties already known from `ACCOUNTING_PLAN.md` Part 2.
-
-    Returns
-    -------
-    list[Rule]
-        Starting rules for the Chase checking/credit-card payoff, EQORE
-        Inc. payroll, and the Interactive Brokers transfer — the concrete
-        cases the plan was built around. Left for a user to edit or extend
-        from the UI; not exhaustive by design.
-    """
-    salary_category = f"income:{slugify('Salary')}"
-    return [
-        Rule(
-            rule_id="chase-card-payoff",
-            description_contains="Payment to Chase card ending in 8235",
-            account_id="chase:checking:9579",
-            counterparty_account_id="chase:credit_card:8235",
-            counterparty_account_name="Chase Credit Card (...8235)",
-            counterparty_account_kind="credit_card",
-            priority=0,
-        ),
-        Rule(
-            rule_id="eqore-payroll",
-            description_contains="EQORE Inc.",
-            counterparty_account_id="employer:eqore",
-            counterparty_account_name="EQORE Inc. (Employer)",
-            counterparty_account_kind="income_source",
-            category_id=salary_category,
-            priority=0,
-        ),
-        Rule(
-            rule_id="interactive-brokers-transfer",
-            description_contains="INTERACTIVE BROK",
-            counterparty_account_id="external:interactive-brokers",
-            counterparty_account_name="Interactive Brokers",
-            counterparty_account_kind="external_investment",
-            priority=0,
-        ),
-    ]
-
-
 class AccountingStore(BaseModel):
     """Every persisted accounting entity that isn't a posting: accounts, categories, tags, rules, other assets.
 
@@ -273,8 +231,10 @@ def load_store(config: AccountingConfig) -> AccountingStore:
     A fresh install has no `store.json` yet, but still needs the two
     uncategorized placeholder accounts and the default category tree to be
     usable immediately — those are backfilled here rather than requiring a
-    separate setup step. Rules are only seeded once, since an empty rule
-    list a user has deliberately emptied out should stay empty.
+    separate setup step. No rule is seeded: every rule necessarily points
+    at one person's own account/employer/payee, so there's nothing generic
+    enough to start a fresh install with — a user writes their own from
+    the Rules tab, after creating the counterparty account it points at.
 
     Parameters
     ----------
@@ -289,7 +249,7 @@ def load_store(config: AccountingConfig) -> AccountingStore:
     if config.store_path.exists():
         store = AccountingStore.model_validate_json(config.store_path.read_text())
     else:
-        store = AccountingStore(categories=default_categories(), accounts=default_accounts(), rules=default_rules())
+        store = AccountingStore(categories=default_categories(), accounts=default_accounts())
         save_store(store, config)
         return store
 
