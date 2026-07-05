@@ -51,9 +51,6 @@ export interface Rule {
   category_id: string | null
   subcategory_id: string | null
   counterparty_account_id: string | null
-  counterparty_account_name: string | null
-  counterparty_account_kind: AccountKind | null
-  counterparty_parent_account_id: string | null
   priority: number
   description: string
 }

@@ -40,7 +40,7 @@ def test_load_store_with_no_file_yet_seeds_defaults(tmp_path) -> None:
     assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in store.accounts
     assert UNCATEGORIZED_INCOME_ACCOUNT_ID in store.accounts
     assert "expense:food-drink" in store.categories
-    assert any(rule.rule_id == "eqore-payroll" for rule in store.rules)
+    assert store.rules == []
 
 
 def test_load_store_seeds_only_once_and_persists(tmp_path) -> None:

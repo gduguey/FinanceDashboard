@@ -34,7 +34,7 @@ def test_get_store_seeds_default_categories_and_placeholder_accounts(client) -> 
     body = client.get("/api/accounting/store").json()
     assert "expense:food-drink" in body["categories"]
     assert "uncategorized:expense" in body["accounts"]
-    assert any(rule["rule_id"] == "eqore-payroll" for rule in body["rules"])
+    assert body["rules"] == []
 
 
 def test_detect_returns_a_guess_for_a_known_shape(client) -> None:
@@ -446,6 +446,34 @@ def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
 
 def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(trades_api.app.state, "config", AppConfig(ibkr={"cache_dir": tmp_path / "empty-ibkr"}))
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "external:interactive-brokers",
+            "name": "Interactive Brokers",
+            "kind": "external_investment",
+            "institution": "external",
+            "currency": "USD",
+            "parent_account_id": None,
+            "external_ref": None,
+            "meta": {},
+        },
+    )
+    client.put(
+        "/api/accounting/rules",
+        json=[
+            {
+                "rule_id": "interactive-brokers-transfer",
+                "description_contains": "INTERACTIVE BROK",
+                "account_id": None,
+                "category_id": None,
+                "subcategory_id": None,
+                "counterparty_account_id": "external:interactive-brokers",
+                "priority": 0,
+                "description": "",
+            }
+        ],
+    )
     sofi_savings_csv = (
         "Date,Description,Type,Amount,Current balance,Status\n"
         "2026-07-01,INTERACTIVE BROK,DIRECT_PAY,-2500,14.21,Posted\n"

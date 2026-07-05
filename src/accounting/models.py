@@ -154,13 +154,17 @@ class Rule(BaseModel):
     Every field on the trigger side must match for the rule to apply
     (`description_contains` is a case-insensitive substring check;
     `account_id`, when set, restricts the rule to postings on that one
-    account). `counterparty_account_id`/`counterparty_account_name`/
-    `counterparty_account_kind` describe the real account this posting's
-    placeholder counterparty should be repointed at — created on first
-    match if it doesn't exist yet (e.g. a new vault). `priority` breaks ties
-    when more than one rule matches; the lowest number wins. `description`
-    is a free-text note on what the rule is actually for — purely for a
-    human re-reading the rule list later, never read by the matching logic.
+    account). `counterparty_account_id`, when set, must name an *existing*
+    account (real or virtual) — a rule only ever repoints a posting's
+    placeholder counterparty at an account already known to the store,
+    never creates one; add the counterparty account first (see
+    `Account`), then reference it here. This applies to a vault the same
+    as anything else: create it as an ordinary `vault`-kind account
+    (parented at its savings account) first, then write one rule per
+    vault name. `priority` breaks ties when more than one rule matches;
+    the lowest number wins. `description` is a free-text note on what the
+    rule is actually for — purely for a human re-reading the rule list
+    later, never read by the matching logic.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -171,9 +175,6 @@ class Rule(BaseModel):
     category_id: str | None = None
     subcategory_id: str | None = None
     counterparty_account_id: str | None = None
-    counterparty_account_name: str | None = None
-    counterparty_account_kind: AccountKind | None = None
-    counterparty_parent_account_id: str | None = None
     priority: int = 0
     description: str = ""
 
