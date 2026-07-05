@@ -94,7 +94,26 @@ export interface AccountingStore {
   tags: Record<string, Tag>
   rules: Rule[]
   other_assets: OtherAsset[]
-  eur_usd_rate: number
+}
+
+export interface ExchangeRateSyncResult {
+  as_of: string
+  base_currency: CurrencyCode
+  rates_to_base: Record<CurrencyCode, number>
+}
+
+export interface CurrentExchangeRate {
+  currency: CurrencyCode
+  base_currency: CurrencyCode
+  rate_to_base: number
+  as_of: string
+  window_days: number
+}
+
+export interface ExchangeRateHistoryPoint {
+  date: string
+  rate: number
+  smoothed_rate: number
 }
 
 export interface DetectedAccount {

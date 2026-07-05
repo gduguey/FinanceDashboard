@@ -1,10 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { accountingApi, type AccountUpdate, type ImportAccountInfo } from '@/lib/accountingApi'
-import type { Account, Category, ManualOverride, OtherAsset, Rule, Tag } from '@/types/accounting'
+import type { Account, Category, CurrencyCode, ManualOverride, OtherAsset, Rule, Tag } from '@/types/accounting'
+
+const BASE_CURRENCY: CurrencyCode = 'USD'
 
 const keys = {
   store: ['accounting', 'store'],
   currencies: ['accounting', 'currencies'],
+  currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
+  exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
   postings: ['accounting', 'postings'],
   transferSuggestions: ['accounting', 'transfer-suggestions'],
   netWorth: (asOf?: string, displayCurrency?: string) => ['accounting', 'net-worth', asOf ?? {}, displayCurrency ?? {}],
@@ -16,12 +20,13 @@ const keys = {
     intervalDays ?? {},
     displayCurrency ?? {},
   ],
-  categoryTotals: (start: string, end: string, accountIds?: string[], displayCurrency?: string) => [
+  categoryTotals: (start: string, end: string, accountIds?: string[], tagId?: string, displayCurrency?: string) => [
     'accounting',
     'category-totals',
     start,
     end,
     accountIds ?? [],
+    tagId ?? {},
     displayCurrency ?? {},
   ],
   monthlyIncomeExpense: (start: string, end: string, displayCurrency?: string) => [
@@ -49,6 +54,41 @@ export const useAccountingStore = () => useQuery({ queryKey: keys.store, queryFn
 
 export const useCurrencies = () => useQuery({ queryKey: keys.currencies, queryFn: accountingApi.currencies })
 
+export const useCurrentExchangeRate = (currency: string) =>
+  useQuery({
+    queryKey: keys.currentExchangeRate(currency),
+    queryFn: () => accountingApi.currentExchangeRate(currency),
+    retry: false,
+  })
+
+export const useExchangeRateHistory = (currency: string) =>
+  useQuery({
+    queryKey: keys.exchangeRateHistory(currency),
+    queryFn: () => accountingApi.exchangeRateHistory(currency),
+    retry: false,
+  })
+
+// A client-side rates-to-base table, for the one place this app converts
+// currencies outside a backend response — mixing accounts and other
+// assets into one allocation pie. Every non-base `CurrencyCode` needs its
+// own smoothed rate synced first; a currency with none just contributes
+// no rate (see `convertCurrency`, which would then leave its amounts
+// unconverted rather than throwing mid-render).
+export function useRatesToBase(nonBaseCurrencies: CurrencyCode[]) {
+  const results = useQueries({
+    queries: nonBaseCurrencies.map((code) => ({
+      queryKey: keys.currentExchangeRate(code),
+      queryFn: () => accountingApi.currentExchangeRate(code),
+      retry: false,
+    })),
+  })
+  const ratesToBase: Record<string, number> = { [BASE_CURRENCY]: 1 }
+  for (const result of results) {
+    if (result.data) ratesToBase[result.data.currency] = result.data.rate_to_base
+  }
+  return ratesToBase
+}
+
 export const usePostings = () => useQuery({ queryKey: keys.postings, queryFn: accountingApi.postings })
 
 export const useTransferSuggestions = () =>
@@ -63,10 +103,16 @@ export const useNetWorthHistory = (start: string, end: string, intervalDays?: nu
     queryFn: () => accountingApi.netWorthHistory(start, end, intervalDays, displayCurrency),
   })
 
-export const useCategoryTotals = (start: string, end: string, accountIds?: string[], displayCurrency?: string) =>
+export const useCategoryTotals = (
+  start: string,
+  end: string,
+  accountIds?: string[],
+  tagId?: string,
+  displayCurrency?: string,
+) =>
   useQuery({
-    queryKey: keys.categoryTotals(start, end, accountIds, displayCurrency),
-    queryFn: () => accountingApi.categoryTotals(start, end, accountIds, displayCurrency),
+    queryKey: keys.categoryTotals(start, end, accountIds, tagId, displayCurrency),
+    queryFn: () => accountingApi.categoryTotals(start, end, accountIds, tagId, displayCurrency),
   })
 
 export const useMonthlyIncomeExpense = (start: string, end: string, displayCurrency?: string) =>
@@ -81,9 +127,9 @@ export const useSpendCurve = (month: string, lookbackMonths?: number, displayCur
     queryFn: () => accountingApi.spendCurve(month, lookbackMonths, displayCurrency),
   })
 
-export function useSetExchangeRate() {
+export function useSyncExchangeRates() {
   const invalidate = useInvalidateAccounting()
-  return useMutation({ mutationFn: (rate: number) => accountingApi.setExchangeRate(rate), onSuccess: invalidate })
+  return useMutation({ mutationFn: accountingApi.syncExchangeRates, onSuccess: invalidate })
 }
 
 export function useSetCategories() {

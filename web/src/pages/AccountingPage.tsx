@@ -79,7 +79,7 @@ export function AccountingPage() {
             </TabsList>
 
             <TabsContent value="dashboard">
-              <DashboardTab postings={postings ?? []} accounts={store.accounts} displayCurrency={displayCurrency} />
+              <DashboardTab postings={postings ?? []} accounts={store.accounts} tags={store.tags} displayCurrency={displayCurrency} />
             </TabsContent>
 
             <TabsContent value="transactions" className="space-y-6">

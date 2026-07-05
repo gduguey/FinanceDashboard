@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from accounting.config import AccountingConfig
 from accounting.dashboard import income_statement
-from accounting.dashboard.net_worth import net_worth_series, net_worth_summary
+from accounting.dashboard.net_worth import net_worth_summary
 from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
     UnsupportedImportError,
@@ -32,7 +32,9 @@ from accounting.importers.ingest import (
 from accounting.ledger.categorization import apply_manual_overrides, apply_rules
 from accounting.ledger.currency import DisplayCurrency
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
+from accounting.market_data import exchange_rates
 from accounting.models import (
+    BASE_CURRENCY,
     SUPPORTED_CURRENCIES,
     Account,
     AccountKind,
@@ -43,7 +45,7 @@ from accounting.models import (
     Rule,
     Tag,
 )
-from accounting.store import load_overrides, load_store, save_overrides, save_store
+from accounting.store import AccountingStore, load_overrides, load_store, save_overrides, save_store
 
 
 class _State:
@@ -110,7 +112,7 @@ def get_store() -> dict[str, Any]:
     -------
     dict[str, Any]
         `accounts`, `categories`, `tags` (each a dict keyed by id),
-        `rules`, `other_assets` (each a list), `eur_usd_rate`.
+        `rules`, `other_assets` (each a list).
     """
     _postings, store = _resolved_postings_and_store(state.config)
     return {
@@ -119,7 +121,6 @@ def get_store() -> dict[str, Any]:
         "tags": {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()},
         "rules": [rule.model_dump(mode="json") for rule in store.rules],
         "other_assets": [asset.model_dump(mode="json") for asset in store.other_assets],
-        "eur_usd_rate": store.eur_usd_rate,
     }
 
 
@@ -135,25 +136,112 @@ def get_currencies() -> list[dict[str, Any]]:
     return [currency.model_dump(mode="json") for currency in SUPPORTED_CURRENCIES.values()]
 
 
-class ExchangeRateUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/settings/exchange-rate`."""
+def _display_currency(
+    code: CurrencyCode, store: AccountingStore | None = None, as_of: date | None = None
+) -> DisplayCurrency:
+    """Build a `DisplayCurrency` from the cached exchange-rate history's smoothed rate as of a date.
 
-    eur_usd_rate: float = Field(gt=0)
+    Only ever requires history for the currencies actually in play —
+    `code` itself, plus every account's and other-asset's own currency
+    when `store` is given — never every `CurrencyCode` this app could
+    theoretically support, so a store with no EUR accounts yet isn't
+    blocked from a USD-only net worth just because EUR was never synced.
 
-
-@router.put("/settings/exchange-rate")
-def put_exchange_rate(update: ExchangeRateUpdate) -> dict[str, float]:
-    """Set the one EUR/USD rate this app uses to convert amounts into a display currency.
+    Parameters
+    ----------
+    code
+        The currency to display aggregates in.
+    store
+        The accounting store, to find every currency actually in use;
+        `None` (e.g. a standalone rate lookup) only requires `code` itself.
+    as_of
+        The date to compute the smoothed rate as of; defaults to today.
 
     Returns
     -------
-    dict[str, float]
-        `{"eur_usd_rate": ...}`, the value just persisted.
+    DisplayCurrency
+
+    Raises
+    ------
+    HTTPException
+        400 if exchange rates have never been synced (or lack history for
+        a needed currency) — sync first, rather than silently guessing a rate.
     """
-    store = load_store(state.config)
-    store = store.model_copy(update={"eur_usd_rate": update.eur_usd_rate})
-    save_store(store, state.config)
-    return {"eur_usd_rate": store.eur_usd_rate}
+    needed = {code}
+    if store is not None:
+        needed.update(account.currency for account in store.accounts.values())
+        needed.update(asset.currency for asset in store.other_assets)
+    history = exchange_rates.load_rate_history(state.config)
+    try:
+        rates = exchange_rates.current_rates_to_base(history, as_of or datetime.now(tz=UTC).date(), needed)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return DisplayCurrency(code, rates)
+
+
+@router.post("/sync-exchange-rates")
+def post_sync_exchange_rates() -> dict[str, Any]:
+    """Re-fetch exchange-rate history from Frankfurter and overwrite the cache.
+
+    Returns
+    -------
+    dict[str, Any]
+        `as_of`, and every non-base currency's freshly smoothed rate into `accounting.models.BASE_CURRENCY`.
+    """
+    history = exchange_rates.update_rate_history_cache(state.config)
+    as_of = datetime.now(tz=UTC).date()
+    rates = exchange_rates.current_rates_to_base(history, as_of)
+    return {"as_of": as_of.isoformat(), "base_currency": BASE_CURRENCY, "rates_to_base": rates}
+
+
+@router.get("/exchange-rates/current")
+def get_current_exchange_rate(currency: CurrencyCode) -> dict[str, Any]:
+    """Return the smoothed rate this app currently uses for one currency, and how it's computed.
+
+    Returns
+    -------
+    dict[str, Any]
+        `currency`, `base_currency`, `rate_to_base`, `as_of`, `window_days`.
+    """
+    as_of = datetime.now(tz=UTC).date()
+    display = _display_currency(currency, as_of=as_of)
+    return {
+        "currency": currency,
+        "base_currency": BASE_CURRENCY,
+        "rate_to_base": display.rates_to_base[currency],
+        "as_of": as_of.isoformat(),
+        "window_days": exchange_rates.DEFAULT_SMOOTHING_WINDOW_DAYS,
+    }
+
+
+@router.get("/exchange-rates/history")
+def get_exchange_rate_history(currency: CurrencyCode) -> list[dict[str, Any]]:
+    """Return the cached daily rate history for one currency, alongside the smoothed value at each point.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One `{"date", "rate", "smoothed_rate"}` per cached day, oldest first.
+
+    Raises
+    ------
+    HTTPException
+        400 if exchange rates have never been synced.
+    """
+    history = exchange_rates.load_rate_history(state.config)
+    series = history.filter(pl.col("currency") == currency).sort("date")
+    if series.is_empty():
+        raise HTTPException(
+            status_code=400, detail=f"No exchange-rate history for {currency!r} — sync exchange rates first."
+        )
+    return [
+        {
+            "date": row["date"].isoformat(),
+            "rate": row["rate_to_base"],
+            "smoothed_rate": exchange_rates.smoothed_rate_as_of(history, currency, row["date"]),
+        }
+        for row in series.iter_rows(named=True)
+    ]
 
 
 @router.put("/categories")
@@ -519,13 +607,13 @@ def get_net_worth(as_of: date | None = None, display_currency: CurrencyCode = "U
     """
     postings, store = _resolved_postings_and_store(state.config)
     has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
+    resolved_as_of = as_of or datetime.now(tz=UTC).date()
     summary = net_worth_summary(
         postings,
         store.accounts,
         store.other_assets,
-        as_of or datetime.now(tz=UTC).date(),
-        display_currency=display_currency,
-        eur_usd_rate=store.eur_usd_rate,
+        resolved_as_of,
+        _display_currency(display_currency, store, resolved_as_of),
         external_investment_value_usd=_external_investment_value_usd() if has_external_investment else None,
     )
     return {
@@ -542,9 +630,14 @@ def get_net_worth(as_of: date | None = None, display_currency: CurrencyCode = "U
 
 @router.get("/net-worth/history")
 def get_net_worth_history(
-    start: date, end: date, interval_days: int = 7, display_currency: CurrencyCode = "USD"
+    start: date, end: date, interval_days: int = 1, display_currency: CurrencyCode = "USD"
 ) -> list[dict[str, Any]]:
     """Return net worth as of a regularly-spaced series of dates, for a history chart.
+
+    Each point uses that date's own smoothed exchange rate (see
+    `market_data.exchange_rates`), not today's — a EUR account's value ten
+    months ago is converted at what the rate actually was ten months ago,
+    not backdated with today's rate.
 
     Returns
     -------
@@ -553,22 +646,31 @@ def get_net_worth_history(
     """
     postings, store = _resolved_postings_and_store(state.config)
     has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
+    external_value = _external_investment_value_usd() if has_external_investment else None
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
-    series = net_worth_series(
-        postings,
-        store.accounts,
-        store.other_assets,
-        dates,
-        display_currency=display_currency,
-        eur_usd_rate=store.eur_usd_rate,
-        external_investment_value_usd=_external_investment_value_usd() if has_external_investment else None,
-    )
-    return [{"date": day.isoformat(), "net_worth": net_worth} for day, net_worth in series]
+    return [
+        {
+            "date": day.isoformat(),
+            "net_worth": net_worth_summary(
+                postings,
+                store.accounts,
+                store.other_assets,
+                day,
+                _display_currency(display_currency, store, day),
+                external_value,
+            ).net_worth,
+        }
+        for day in dates
+    ]
 
 
 @router.get("/income-statement/category-totals")
 def get_category_totals(
-    start: date, end: date, account_ids: str | None = None, display_currency: CurrencyCode = "USD"
+    start: date,
+    end: date,
+    account_ids: str | None = None,
+    tag_id: str | None = None,
+    display_currency: CurrencyCode = "USD",
 ) -> list[dict[str, Any]]:
     """Sum real income/expense postings by classification, category, and subcategory.
 
@@ -585,8 +687,8 @@ def get_category_totals(
         store.categories,
         start,
         end,
-        parsed_account_ids,
-        DisplayCurrency(display_currency, store.eur_usd_rate),
+        income_statement.Scope(parsed_account_ids, tag_id),
+        _display_currency(display_currency, store),
     )
     return totals.to_dicts()
 
@@ -602,7 +704,7 @@ def get_monthly_income_expense(start: date, end: date, display_currency: Currenc
     """
     postings, store = _resolved_postings_and_store(state.config)
     return income_statement.monthly_income_expense(
-        postings, store.accounts, start, end, DisplayCurrency(display_currency, store.eur_usd_rate)
+        postings, store.accounts, start, end, _display_currency(display_currency, store)
     ).to_dicts()
 
 
@@ -619,5 +721,5 @@ def get_spend_curve(
     """
     postings, store = _resolved_postings_and_store(state.config)
     return income_statement.spend_curve_vs_average(
-        postings, store.accounts, month, lookback_months, DisplayCurrency(display_currency, store.eur_usd_rate)
+        postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
     ).to_dicts()

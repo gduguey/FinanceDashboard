@@ -5,15 +5,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
+import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
 import { formatCurrency, signColor } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
-import { useAccountingStore, useNetWorth, useSetOtherAssets } from '@/hooks/useAccountingData'
+import { useCurrencies, useNetWorth, useRatesToBase, useSetOtherAssets } from '@/hooks/useAccountingData'
 import type { CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
 
 function StatCard({ label, value, colorClass }: { label: string; value: string; colorClass?: string }) {
@@ -31,34 +32,71 @@ function StatCard({ label, value, colorClass }: { label: string; value: string; 
   )
 }
 
+interface DisplayRow {
+  key: string
+  name: string
+  kind: string
+  currency: CurrencyCode
+  balance: number
+  parentAccountId: string | null
+  otherAssetId: string | null
+}
+
 // Vaults are their own `Account` rows (see ACCOUNTING_PLAN.md) rather than a
 // soft overlay on their parent's balance, so they need an explicit
 // parent-then-children sort here to render nested instead of alphabetized
-// away from the account they belong to.
-function orderedAccounts(accounts: NetWorthAccountRow[]): { row: NetWorthAccountRow; depth: number }[] {
-  const byParent = new Map<string | null, NetWorthAccountRow[]>()
-  for (const row of accounts) {
-    const key = row.parent_account_id
+// away from the account they belong to. Other assets never have a parent,
+// so they always fall out at the top level alongside real accounts.
+function orderedRows(rows: DisplayRow[]): { row: DisplayRow; depth: number }[] {
+  const byParent = new Map<string | null, DisplayRow[]>()
+  for (const row of rows) {
+    const key = row.parentAccountId
     byParent.set(key, [...(byParent.get(key) ?? []), row])
   }
-  const result: { row: NetWorthAccountRow; depth: number }[] = []
+  const result: { row: DisplayRow; depth: number }[] = []
   function visit(parentId: string | null, depth: number) {
     for (const row of byParent.get(parentId) ?? []) {
       result.push({ row, depth })
-      visit(row.account_id, depth + 1)
+      visit(row.key, depth + 1)
     }
   }
   visit(null, 0)
   return result
 }
 
-function AccountsTable({ accounts }: { accounts: NetWorthAccountRow[] }) {
-  const { sorted, sort, toggleSort } = useSortableRows(accounts, 'balance')
-  // Sorting flattens the parent/vault nesting — only show it in the default,
-  // unsorted view where "grouped under its parent" is the point.
-  const rows = sort.key === 'balance' && sort.desc ? orderedAccounts(accounts) : sorted.map((row) => ({ row, depth: 0 }))
+function AccountsTable({
+  accounts,
+  otherAssets,
+  onRemoveOtherAsset,
+}: {
+  accounts: NetWorthAccountRow[]
+  otherAssets: OtherAsset[]
+  onRemoveOtherAsset: (assetId: string) => void
+}) {
+  const rows: DisplayRow[] = [
+    ...accounts.map((row) => ({
+      key: row.account_id,
+      name: row.name,
+      kind: row.kind,
+      currency: row.currency,
+      balance: row.balance,
+      parentAccountId: row.parent_account_id,
+      otherAssetId: null,
+    })),
+    ...otherAssets.map((asset) => ({
+      key: `other-asset:${asset.asset_id}`,
+      name: asset.name,
+      kind: 'other_asset',
+      currency: asset.currency,
+      balance: asset.value,
+      parentAccountId: null,
+      otherAssetId: asset.asset_id,
+    })),
+  ]
+  const { sorted, sort, toggleSort } = useSortableRows(rows, 'balance')
+  const displayRows = sort.key === 'balance' && sort.desc ? orderedRows(rows) : sorted.map((row) => ({ row, depth: 0 }))
 
-  if (!accounts.length) {
+  if (!rows.length) {
     return <p className="py-6 text-center text-sm text-muted-foreground">No accounts yet — import a statement to start.</p>
   }
   return (
@@ -77,18 +115,26 @@ function AccountsTable({ accounts }: { accounts: NetWorthAccountRow[] }) {
           <SortableTableHead align="right" active={sort.key === 'balance'} desc={sort.desc} onClick={() => toggleSort('balance')}>
             Balance
           </SortableTableHead>
+          <TableHead className="w-8" />
         </TableRow>
       </TableHeader>
       <TableBody>
-        {rows.map(({ row, depth }) => (
-          <TableRow key={row.account_id}>
+        {displayRows.map(({ row, depth }) => (
+          <TableRow key={row.key}>
             <TableCell style={{ paddingLeft: `${depth * 20 + 16}px` }} className="font-medium">
               {row.name}
             </TableCell>
-            <TableCell className="text-muted-foreground">{row.kind}</TableCell>
+            <TableCell className="text-muted-foreground">{row.kind === 'other_asset' ? 'other asset' : row.kind}</TableCell>
             <TableCell className="text-muted-foreground">{row.currency}</TableCell>
             <TableCell className={`text-right tabular-nums ${signColor(row.balance)}`}>
               {formatCurrency(row.balance, row.currency)}
+            </TableCell>
+            <TableCell>
+              {row.otherAssetId && (
+                <Button variant="ghost" size="icon" onClick={() => onRemoveOtherAsset(row.otherAssetId!)}>
+                  <Trash2 className="size-3.5 text-muted-foreground" />
+                </Button>
+              )}
             </TableCell>
           </TableRow>
         ))}
@@ -97,7 +143,7 @@ function AccountsTable({ accounts }: { accounts: NetWorthAccountRow[] }) {
   )
 }
 
-function OtherAssetsPanel({ otherAssets }: { otherAssets: OtherAsset[] }) {
+function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
   const setOtherAssets = useSetOtherAssets()
   const [draft, setDraft] = useState<{ name: string; value: string; currency: CurrencyCode; note: string }>({
     name: '',
@@ -119,34 +165,12 @@ function OtherAssetsPanel({ otherAssets }: { otherAssets: OtherAsset[] }) {
     setDraft({ name: '', value: '', currency: draft.currency, note: '' })
   }
 
-  function removeAsset(assetId: string) {
-    setOtherAssets.mutate(otherAssets.filter((asset) => asset.asset_id !== assetId))
-  }
-
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Other assets</CardTitle>
+        <CardTitle>Add another asset</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {otherAssets.length > 0 && (
-          <Table>
-            <TableBody>
-              {otherAssets.map((asset) => (
-                <TableRow key={asset.asset_id}>
-                  <TableCell className="font-medium">{asset.name}</TableCell>
-                  <TableCell className="text-muted-foreground">{asset.note}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatCurrency(asset.value, asset.currency)}</TableCell>
-                  <TableCell className="w-8">
-                    <Button variant="ghost" size="icon" onClick={() => removeAsset(asset.asset_id)}>
-                      <Trash2 className="size-3.5 text-muted-foreground" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+      <CardContent>
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Name
@@ -170,7 +194,7 @@ function OtherAssetsPanel({ otherAssets }: { otherAssets: OtherAsset[] }) {
             Currency
             <Select value={draft.currency} onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}>
               <SelectTrigger size="sm" className="w-20">
-                <SelectValue />
+                <SelectValue items={{ USD: 'USD', EUR: 'EUR' }} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="USD">USD</SelectItem>
@@ -198,7 +222,15 @@ function OtherAssetsPanel({ otherAssets }: { otherAssets: OtherAsset[] }) {
 export function NetWorthPage() {
   const { displayCurrency } = useDisplayCurrency()
   const { data, isLoading } = useNetWorth(undefined, displayCurrency)
-  const { data: store } = useAccountingStore()
+  const { data: currencies } = useCurrencies()
+  const nonBaseCurrencies = (currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD')
+  const ratesToBase = useRatesToBase(nonBaseCurrencies)
+  const setOtherAssets = useSetOtherAssets()
+
+  function removeOtherAsset(assetId: string) {
+    if (!data) return
+    setOtherAssets.mutate(data.other_assets.filter((asset) => asset.asset_id !== assetId))
+  }
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -230,8 +262,9 @@ export function NetWorthPage() {
             <NetWorthHistoryChart displayCurrency={displayCurrency} />
             <NetWorthAllocationPie
               accounts={data.accounts}
+              otherAssets={data.other_assets}
               displayCurrency={displayCurrency}
-              eurUsdRate={store?.eur_usd_rate ?? 1.08}
+              ratesToBase={ratesToBase}
             />
 
             <Card>
@@ -239,11 +272,13 @@ export function NetWorthPage() {
                 <CardTitle>Accounts</CardTitle>
               </CardHeader>
               <CardContent>
-                <AccountsTable accounts={data.accounts} />
+                <AccountsTable accounts={data.accounts} otherAssets={data.other_assets} onRemoveOtherAsset={removeOtherAsset} />
               </CardContent>
             </Card>
 
-            <OtherAssetsPanel otherAssets={data.other_assets} />
+            <AddOtherAssetForm otherAssets={data.other_assets} />
+
+            <ExchangeRatePanel />
           </>
         )}
       </div>

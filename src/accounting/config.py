@@ -41,3 +41,13 @@ class AccountingConfig(BaseModel):
     def overrides_path(self) -> Path:
         """Where manual per-posting categorization overrides are persisted, under `data_dir`."""
         return self.data_dir / "manual_overrides.json"
+
+    @property
+    def exchange_rates_raw_dir(self) -> Path:
+        """Where every fetched exchange-rate-history response is archived verbatim, under `data_dir`."""
+        return self.data_dir / "exchange_rates" / "raw"
+
+    @property
+    def exchange_rates_csv_path(self) -> Path:
+        """Where the derived daily exchange-rate history is cached, under `data_dir`."""
+        return self.data_dir / "exchange_rates" / "rates.csv"

@@ -159,7 +159,7 @@ export function TaxSettingsControls() {
         <>
           <Select value={regime} onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}>
             <SelectTrigger size="sm" className="w-56">
-              <SelectValue />
+              <SelectValue items={REGIME_LABELS} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>

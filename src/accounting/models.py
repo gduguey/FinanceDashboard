@@ -69,9 +69,23 @@ SUPPORTED_CURRENCIES: dict[CurrencyCode, Currency] = {
     "USD": Currency(code="USD", symbol="$", decimal_places=2),
     "EUR": Currency(code="EUR", symbol="€", decimal_places=2),
 }
-"""The two currencies every `currency: CurrencyCode` field elsewhere in this
-package maps into — the registry `Currency` is the single record of, so a
-symbol or a decimal-places convention is only ever declared once.
+"""Every currency a `currency: CurrencyCode` field elsewhere in this package
+can hold — the registry `Currency` is the single record of, so a symbol or
+decimal-places convention is only ever declared once. Adding a currency is
+exactly two edits: a new arm on `CurrencyCode`, and a new entry here; every
+rate lookup, chart, and dropdown is driven by this dict, never a hardcoded
+pair (see `ledger.currency.convert` and `market_data.exchange_rates`).
+"""
+
+BASE_CURRENCY: CurrencyCode = "USD"
+"""The currency every exchange rate in this app is expressed relative to.
+
+A rate table is always `dict[CurrencyCode, float]` mapping a currency code
+to how many `BASE_CURRENCY` units one unit of it is worth (`BASE_CURRENCY`
+itself always maps to `1.0`) — converting between any two supported
+currencies is always a trip through this one shared base, never a direct
+N² table of every pair. See `market_data.exchange_rates` (fetches this from
+one currency at a time relative to `BASE_CURRENCY`) and `ledger.currency.convert`.
 """
 
 

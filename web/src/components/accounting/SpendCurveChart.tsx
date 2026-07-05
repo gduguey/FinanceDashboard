@@ -1,22 +1,22 @@
-import { useState } from 'react'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/shared/ChartCard'
-import { Input } from '@/components/ui/input'
+import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
 import { formatCurrency } from '@/lib/format'
+import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSpendCurve } from '@/hooks/useAccountingData'
-import type { CurrencyCode } from '@/types/accounting'
+import type { CurrencyCode, Posting } from '@/types/accounting'
 
 const CURRENT_MONTH = new Date().toISOString().slice(0, 7)
 
-export function SpendCurveChart({ displayCurrency }: { displayCurrency: CurrencyCode }) {
-  const [month, setMonth] = useState(CURRENT_MONTH)
+export function SpendCurveChart({ displayCurrency, postings }: { displayCurrency: CurrencyCode; postings: Posting[] }) {
+  const [month, setMonth] = usePersistedState('accounting.spend-curve-month', CURRENT_MONTH)
   const { data, isLoading } = useSpendCurve(`${month}-01`, 3, displayCurrency)
 
   return (
     <ChartCard
       title="Monthly spend, day by day"
       description="Cumulative spend this month vs. the average of the previous 3 months"
-      action={<Input type="month" className="w-36" value={month} onChange={(event) => setMonth(event.target.value)} />}
+      action={<MonthSelect value={month} onChange={setMonth} months={availableMonths(postings)} className="w-40" />}
       isLoading={isLoading}
       isEmpty={!data?.length}
     >

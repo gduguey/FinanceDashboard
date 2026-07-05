@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
-from accounting.ledger.currency import convert
+from accounting.ledger.currency import DisplayCurrency, convert
 from accounting.ledger.replay import account_balances
 
 if TYPE_CHECKING:
@@ -68,8 +68,7 @@ def net_worth_summary(
     accounts: dict[str, Account],
     other_assets: list[OtherAsset],
     as_of: date,
-    display_currency: CurrencyCode = "USD",
-    eur_usd_rate: float = 1.08,
+    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
     external_investment_value_usd: float | None = None,
 ) -> NetWorthSummary:
     """Assemble the full net-worth view: every real account's balance, grouped, plus manually-added assets.
@@ -94,11 +93,8 @@ def net_worth_summary(
         Manually-entered net-worth lines with no transaction history.
     as_of
         The date to value every account as of.
-    display_currency
-        The currency the four aggregate totals are converted into.
-    eur_usd_rate
-        How many US dollars one euro buys, for converting any account or
-        asset whose own currency differs from `display_currency`.
+    display
+        The currency (and rate table) the four aggregate totals are converted into.
     external_investment_value_usd
         The tracked investment portfolio's current value, or `None` if it
         isn't available (e.g. `trades` has never been synced) — treated as
@@ -131,7 +127,7 @@ def net_worth_summary(
     ]
 
     def to_display(amount: float, currency: CurrencyCode) -> float:
-        return convert(amount, currency, display_currency, eur_usd_rate)
+        return convert(amount, currency, display.code, display.rates_to_base)
 
     assets = sum(to_display(row.balance, row.currency) for row in rows if row.kind not in _LIABILITY_KINDS)
     liabilities = sum(-to_display(row.balance, row.currency) for row in rows if row.kind in _LIABILITY_KINDS)
@@ -139,7 +135,7 @@ def net_worth_summary(
 
     return NetWorthSummary(
         as_of=as_of,
-        display_currency=display_currency,
+        display_currency=display.code,
         assets=assets,
         liabilities=liabilities,
         other_assets_total=other_assets_total,
@@ -147,52 +143,3 @@ def net_worth_summary(
         accounts=sorted(rows, key=lambda row: row.name),
         other_assets=list(other_assets),
     )
-
-
-def net_worth_series(
-    postings: pl.DataFrame,
-    accounts: dict[str, Account],
-    other_assets: list[OtherAsset],
-    dates: list[date],
-    display_currency: CurrencyCode = "USD",
-    eur_usd_rate: float = 1.08,
-    external_investment_value_usd: float | None = None,
-) -> list[tuple[date, float]]:
-    """Compute net worth as of every date in `dates`, for a net-worth-over-time chart.
-
-    `external_investment_value_usd` and every `other_assets` entry are
-    held constant across the whole series — neither has a tracked
-    history here, only a current value, so every historical point uses
-    today's figure for them rather than pretending to know the past.
-
-    Parameters
-    ----------
-    postings
-        The full, resolved posting ledger.
-    accounts
-        Every known account, keyed by `account_id`.
-    other_assets
-        Manually-entered net-worth lines, applied at today's value throughout.
-    dates
-        The dates to compute net worth as of.
-    display_currency
-        The currency each point is converted into.
-    eur_usd_rate
-        How many US dollars one euro buys.
-    external_investment_value_usd
-        Today's tracked investment value, held constant across the series.
-
-    Returns
-    -------
-    list[tuple[datetime.date, float]]
-        One `(date, net_worth)` pair per entry in `dates`, in the same order.
-    """
-    return [
-        (
-            day,
-            net_worth_summary(
-                postings, accounts, other_assets, day, display_currency, eur_usd_rate, external_investment_value_usd
-            ).net_worth,
-        )
-        for day in dates
-    ]

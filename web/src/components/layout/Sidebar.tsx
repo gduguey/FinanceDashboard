@@ -4,9 +4,9 @@ import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
   { label: 'Import', icon: Upload, path: '/import' },
-  { label: 'Net Worth', icon: Scale, path: '/net-worth' },
-  { label: 'Investments', icon: LineChart, path: '/investments' },
   { label: 'Accounting', icon: Calculator, path: '/accounting' },
+  { label: 'Investments', icon: LineChart, path: '/investments' },
+  { label: 'Net Worth', icon: Scale, path: '/net-worth' },
   { label: 'Budget', icon: Wallet, path: '/budget' },
   { label: 'Simulator', icon: FlaskConical, path: '/simulator' },
 ]

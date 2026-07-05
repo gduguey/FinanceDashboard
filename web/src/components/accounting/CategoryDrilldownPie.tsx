@@ -275,7 +275,6 @@ export function CategoryDrilldownPie({
                 {rings.map((ring, index) => {
                   const innerRadius = INNER_START + index * bandWidth + 2
                   const outerRadius = INNER_START + (index + 1) * bandWidth
-                  const ringTotal = ring.slices.reduce((sum, slice) => sum + slice.value, 0)
                   return (
                     <Pie
                       key={ring.level}
@@ -286,12 +285,7 @@ export function CategoryDrilldownPie({
                       outerRadius={outerRadius}
                       paddingAngle={1}
                       onClick={(entry) => handleSliceClick(ring.level, entry as unknown as RingSlice)}
-                      label={({ name, value }) => {
-                        const percent = ringTotal ? (Number(value) / ringTotal) * 100 : 0
-                        if (percent < 5) return ''
-                        return showPercent ? `${name} ${percent.toFixed(0)}%` : `${name}`
-                      }}
-                      labelLine={false}
+                      label={false}
                       cursor="pointer"
                     >
                       {ring.slices.map((slice) => (

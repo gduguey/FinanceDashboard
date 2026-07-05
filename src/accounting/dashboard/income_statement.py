@@ -11,6 +11,7 @@ applied here to exclude transfers from income/expense instead.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,18 @@ if TYPE_CHECKING:
 _VIRTUAL_KINDS = ["income_source", "expense_payee"]
 UNCATEGORIZED_INCOME_ID = "uncategorized:income-category"
 UNCATEGORIZED_EXPENSE_ID = "uncategorized:expense-category"
+
+
+@dataclass(frozen=True)
+class Scope:
+    """Which postings a breakdown should include — bundled so `category_totals` stays within one param budget.
+
+    `None` on either field means "don't restrict by this" — the same
+    all-inclusive default as passing nothing.
+    """
+
+    account_ids: list[str] | None = None
+    tag_id: str | None = None
 
 
 def _real_income_expense_legs(
@@ -60,28 +73,20 @@ def _real_income_expense_legs(
         },
         schema={"account_id": pl.Utf8, "account_currency": pl.Utf8},
     )
+    rate_table = pl.DataFrame(
+        {"account_currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
+        schema={"account_currency": pl.Utf8, "rate_to_base": pl.Float64},
+    )
     legs = (
         postings
         .join(sibling_flags, on="transaction_id", how="left")
         .filter(pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids))
         .drop("any_virtual_sibling")
         .join(real_currencies, on="account_id", how="left")
+        .join(rate_table, on="account_currency", how="left")
     )
-    if display.code == "USD":
-        converted = (
-            pl
-            .when(pl.col("account_currency") == "EUR")
-            .then(pl.col("amount") * display.eur_usd_rate)
-            .otherwise(pl.col("amount"))
-        )
-    else:
-        converted = (
-            pl
-            .when(pl.col("account_currency") == "USD")
-            .then(pl.col("amount") / display.eur_usd_rate)
-            .otherwise(pl.col("amount"))
-        )
-    return legs.with_columns(amount=converted).drop("account_currency")
+    converted = pl.col("amount") * pl.col("rate_to_base") / display.rates_to_base[display.code]
+    return legs.with_columns(amount=converted).drop("account_currency", "rate_to_base")
 
 
 def category_totals(
@@ -90,7 +95,7 @@ def category_totals(
     categories: dict[str, Category],
     start: date,
     end: date,
-    account_ids: list[str] | None = None,
+    scope: Scope = Scope(),  # noqa: B008
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
 ) -> pl.DataFrame:
     """Sum real income/expense postings by classification, category, and subcategory.
@@ -113,8 +118,8 @@ def category_totals(
         First day to include, inclusive.
     end
         Last day to include, inclusive.
-    account_ids
-        Only include postings on one of these accounts; `None` means every account.
+    scope
+        Which accounts/tag to restrict to; see `Scope`.
     display
         The currency (and rate) every posting's amount is converted into before summing.
 
@@ -128,8 +133,10 @@ def category_totals(
     legs = _real_income_expense_legs(postings, accounts, display).filter(
         (pl.col("posted_at").dt.date() >= start) & (pl.col("posted_at").dt.date() <= end)
     )
-    if account_ids is not None:
-        legs = legs.filter(pl.col("account_id").is_in(account_ids))
+    if scope.account_ids is not None:
+        legs = legs.filter(pl.col("account_id").is_in(scope.account_ids))
+    if scope.tag_id is not None:
+        legs = legs.filter(pl.col("tag_ids").list.contains(scope.tag_id))
     if legs.is_empty():
         return pl.DataFrame(
             schema={

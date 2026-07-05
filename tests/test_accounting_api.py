@@ -1,3 +1,6 @@
+from datetime import date, timedelta
+
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
@@ -5,6 +8,8 @@ from accounting import api as accounting_api
 from accounting.config import AccountingConfig
 from accounting.importers import ingest as ingest_module
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
+from accounting.market_data import exchange_rates
+from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
 from trades import api as trades_api
 from trades.config import AppConfig
 
@@ -243,7 +248,34 @@ def test_get_currencies_lists_usd_and_eur(client) -> None:
     assert {currency["code"] for currency in body} == {"USD", "EUR"}
 
 
-def test_put_exchange_rate_persists_and_affects_net_worth(client) -> None:
+def _fake_rate_history():
+    today = date.today()
+    return pl.DataFrame(
+        {
+            "date": [today - timedelta(days=1), today],
+            "currency": ["EUR", "EUR"],
+            "rate_to_base": [1.9, 2.1],
+        },
+        schema=RATE_HISTORY_SCHEMA,
+    )
+
+
+def _mock_fetch(monkeypatch) -> None:
+    monkeypatch.setattr(
+        exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _fake_rate_history()
+    )
+
+
+def test_sync_exchange_rates_persists_the_fetched_history(client, monkeypatch) -> None:
+    _mock_fetch(monkeypatch)
+    response = client.post("/api/accounting/sync-exchange-rates")
+    assert response.status_code == 200
+    assert response.json()["rates_to_base"]["EUR"] == pytest.approx(2.0)
+
+
+def test_net_worth_succeeds_for_a_eur_account_once_rates_are_synced(client, monkeypatch) -> None:
+    _mock_fetch(monkeypatch)
+    client.post("/api/accounting/sync-exchange-rates")
     client.post(
         "/api/accounting/accounts",
         json={
@@ -254,10 +286,42 @@ def test_put_exchange_rate_persists_and_affects_net_worth(client) -> None:
             "currency": "EUR",
         },
     )
-    response = client.put("/api/accounting/settings/exchange-rate", json={"eur_usd_rate": 2.0})
+    response = client.get("/api/accounting/net-worth")
     assert response.status_code == 200
-    assert response.json() == {"eur_usd_rate": 2.0}
-    assert client.get("/api/accounting/store").json()["eur_usd_rate"] == pytest.approx(2.0)
+
+
+def test_net_worth_400s_when_a_needed_currency_was_never_synced(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "EUR",
+        },
+    )
+    response = client.get("/api/accounting/net-worth")
+    assert response.status_code == 400
+
+
+def test_get_current_exchange_rate_after_sync(client, monkeypatch) -> None:
+    _mock_fetch(monkeypatch)
+    client.post("/api/accounting/sync-exchange-rates")
+    response = client.get("/api/accounting/exchange-rates/current", params={"currency": "EUR"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rate_to_base"] == pytest.approx(2.0)
+    assert body["base_currency"] == "USD"
+
+
+def test_get_exchange_rate_history_after_sync(client, monkeypatch) -> None:
+    _mock_fetch(monkeypatch)
+    client.post("/api/accounting/sync-exchange-rates")
+    response = client.get("/api/accounting/exchange-rates/history", params={"currency": "EUR"})
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["rate"] for row in body] == pytest.approx([1.9, 2.1])
 
 
 def test_post_account_creates_a_new_account(client) -> None:

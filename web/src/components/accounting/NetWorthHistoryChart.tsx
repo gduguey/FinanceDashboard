@@ -13,12 +13,15 @@ function startOfHistoryWindow(): string {
 const TODAY = new Date().toISOString().slice(0, 10)
 
 export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: CurrencyCode }) {
-  const { data, isLoading } = useNetWorthHistory(startOfHistoryWindow(), TODAY, 7, displayCurrency)
+  // Daily granularity, like `trades`' own value-over-time charts — a
+  // weekly sample would smear over exactly the kind of single-day jump
+  // (a big transfer, a statement import) this chart exists to show.
+  const { data, isLoading } = useNetWorthHistory(startOfHistoryWindow(), TODAY, 1, displayCurrency)
 
   return (
     <ChartCard
       title="Net worth over time"
-      description="Last 12 months — drag the handles below the chart to zoom into a range"
+      description="Last 12 months, daily — drag the handles below the chart to zoom into a range"
       isLoading={isLoading}
       isEmpty={!data?.length}
     >

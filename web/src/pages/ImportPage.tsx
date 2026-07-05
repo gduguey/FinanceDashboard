@@ -1,9 +1,7 @@
 import { useCallback, useState } from 'react'
 import { CheckCircle2, Upload, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { InstitutionCombobox } from '@/components/accounting/InstitutionCombobox'
 import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { accountingApi } from '@/lib/accountingApi'
@@ -14,7 +12,7 @@ import {
   usePostings,
   useRebuildLedger,
 } from '@/hooks/useAccountingData'
-import type { CurrencyCode } from '@/types/accounting'
+import type { Account, CurrencyCode } from '@/types/accounting'
 
 const MAX_FILES_PER_DROP = 8
 
@@ -30,6 +28,8 @@ interface PendingCsvImport {
   status: 'pending' | 'importing' | 'done' | 'error'
   message?: string
 }
+
+const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 interface PendingPdfImport {
   key: string
@@ -63,32 +63,40 @@ export function ImportPage() {
   const importSofiPdf = useImportSofiStatementPdf()
   const rebuild = useRebuildLedger()
 
-  const handleFiles = useCallback(async (files: FileList) => {
-    const accepted = Array.from(files).slice(0, MAX_FILES_PER_DROP)
-    const entries = await Promise.all(
-      accepted.map(async (file): Promise<PendingImport> => {
-        const key = `${file.name}-${file.size}-${Math.random()}`
-        if (file.name.toLowerCase().endsWith('.pdf')) {
-          return { key, kind: 'pdf', file, status: 'pending' }
-        }
-        const firstLine = await readFirstLine(file)
-        const header = firstLine.split(',').map((column) => column.trim())
-        const detected = await accountingApi.detect(header, file.name).catch(() => null)
-        return {
-          key,
-          kind: 'csv',
-          file,
-          institution: detected?.institution ?? '',
-          accountKind: detected?.account_kind ?? '',
-          accountId: detected?.account_id ?? '',
-          name: detected?.account_name ?? '',
-          currency: 'USD',
-          status: 'pending',
-        }
-      }),
-    )
-    setPending((prev) => [...prev, ...entries])
-  }, [])
+  const handleFiles = useCallback(
+    async (files: FileList) => {
+      const accepted = Array.from(files).slice(0, MAX_FILES_PER_DROP)
+      const entries = await Promise.all(
+        accepted.map(async (file): Promise<PendingImport> => {
+          const key = `${file.name}-${file.size}-${Math.random()}`
+          if (file.name.toLowerCase().endsWith('.pdf')) {
+            return { key, kind: 'pdf', file, status: 'pending' }
+          }
+          const firstLine = await readFirstLine(file)
+          const header = firstLine.split(',').map((column) => column.trim())
+          const detected = await accountingApi.detect(header, file.name).catch(() => null)
+          // Only trust the detected account if it's actually registered —
+          // a filename/header match against a known shape doesn't mean
+          // this exact account exists yet; the user picks from the ones
+          // that do, or adds it below first.
+          const matchedAccount = detected ? store?.accounts[detected.account_id] : undefined
+          return {
+            key,
+            kind: 'csv',
+            file,
+            institution: matchedAccount?.institution ?? '',
+            accountKind: matchedAccount?.kind ?? '',
+            accountId: matchedAccount?.account_id ?? '',
+            name: matchedAccount?.name ?? '',
+            currency: matchedAccount?.currency ?? 'USD',
+            status: 'pending',
+          }
+        }),
+      )
+      setPending((prev) => [...prev, ...entries])
+    },
+    [store],
+  )
 
   function updateEntry(key: string, patch: Partial<PendingImport>) {
     setPending((prev) => prev.map((entry) => (entry.key === key ? ({ ...entry, ...patch } as PendingImport) : entry)))
@@ -123,7 +131,11 @@ export function ImportPage() {
     }
   }
 
-  const knownInstitutions = store ? [...new Set(Object.values(store.accounts).map((account) => account.institution))].sort() : []
+  const registeredAccounts = store ? Object.values(store.accounts).filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id)) : []
+  const institutions = [...new Set(registeredAccounts.map((account) => account.institution))].sort()
+  function accountsForInstitution(institution: string): Account[] {
+    return registeredAccounts.filter((account) => account.institution === institution).sort((a, b) => a.name.localeCompare(b.name))
+  }
   const accountIdsWithPostings = new Set((postings ?? []).map((posting) => posting.account_id))
 
   return (
@@ -184,29 +196,54 @@ export function ImportPage() {
 
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 Institution
-                <InstitutionCombobox
+                <Select
                   value={entry.institution}
-                  onChange={(institution) => updateEntry(entry.key, { institution })}
-                  knownInstitutions={knownInstitutions}
-                />
-              </label>
-
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Currency
-                <Select value={entry.currency} onValueChange={(value) => value && updateEntry(entry.key, { currency: value as CurrencyCode })}>
-                  <SelectTrigger size="sm" className="w-20">
-                    <SelectValue />
+                  onValueChange={(institution) => institution && updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '' })}
+                >
+                  <SelectTrigger size="sm" className="w-36">
+                    <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="USD">USD</SelectItem>
-                    <SelectItem value="EUR">EUR</SelectItem>
+                    {institutions.map((institution) => (
+                      <SelectItem key={institution} value={institution}>
+                        {institution}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </label>
 
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 Name
-                <Input className="w-52" value={entry.name} onChange={(event) => updateEntry(entry.key, { name: event.target.value })} />
+                <Select
+                  value={entry.accountId}
+                  onValueChange={(accountId) => {
+                    const account = accountId ? store?.accounts[accountId] : undefined
+                    if (account) {
+                      updateEntry(entry.key, {
+                        accountId: account.account_id,
+                        accountKind: account.kind,
+                        name: account.name,
+                        currency: account.currency,
+                      })
+                    }
+                  }}
+                  disabled={!entry.institution}
+                >
+                  <SelectTrigger size="sm" className="w-52">
+                    <SelectValue
+                      placeholder="Choose an account…"
+                      items={Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name]))}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accountsForInstitution(entry.institution).map((account) => (
+                      <SelectItem key={account.account_id} value={account.account_id}>
+                        {account.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </label>
 
               <Button
@@ -224,9 +261,9 @@ export function ImportPage() {
               </Button>
               {entry.status === 'importing' && <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />}
 
-              {!entry.accountKind || !entry.accountId ? (
+              {entry.institution && accountsForInstitution(entry.institution).length === 0 ? (
                 <p className="basis-full text-xs text-amber-600">
-                  Couldn't recognize this file's account automatically — add the account below first, matching its institution and name, then re-drop the file.
+                  No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
                 </p>
               ) : null}
 

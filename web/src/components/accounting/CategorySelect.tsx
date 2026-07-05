@@ -3,10 +3,9 @@ import type { Category, CategoryClassification } from '@/types/accounting'
 
 export const NO_CATEGORY = '__none__'
 
-// Shows the category's display name once selected, never its id — Radix's
-// Select renders whichever SelectItem's children matched the current
-// value, so as long as every SelectItem's child is `category.name` (never
-// the id) this can't regress into showing the raw id again.
+// Passes an explicit `value -> label` map to `SelectValue` (see its own
+// comment in components/ui/select.tsx) so the selected category shows its
+// display name, never its raw id.
 export function CategorySelect({
   categories,
   classification,
@@ -21,10 +20,11 @@ export function CategorySelect({
   const topLevel = Object.values(categories)
     .filter((category) => category.classification === classification && category.parent_category_id === null)
     .sort((a, b) => a.name.localeCompare(b.name))
+  const items = { [NO_CATEGORY]: 'Uncategorized', ...Object.fromEntries(topLevel.map((c) => [c.category_id, c.name])) }
   return (
     <Select value={value ?? NO_CATEGORY} onValueChange={(next) => onChange(next === NO_CATEGORY ? null : next)}>
       <SelectTrigger size="sm" className="w-44">
-        <SelectValue placeholder="Uncategorized" />
+        <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={NO_CATEGORY}>Uncategorized</SelectItem>
@@ -52,13 +52,14 @@ export function SubcategorySelect({
   const children = Object.values(categories)
     .filter((category) => category.parent_category_id === categoryId)
     .sort((a, b) => a.name.localeCompare(b.name))
+  const items = { [NO_CATEGORY]: 'None', ...Object.fromEntries(children.map((c) => [c.category_id, c.name])) }
   if (!categoryId || children.length === 0) {
     return <span className="text-xs text-muted-foreground">—</span>
   }
   return (
     <Select value={value ?? NO_CATEGORY} onValueChange={(next) => onChange(next === NO_CATEGORY ? null : next)}>
       <SelectTrigger size="sm" className="w-40">
-        <SelectValue placeholder="None" />
+        <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>
         <SelectItem value={NO_CATEGORY}>None</SelectItem>

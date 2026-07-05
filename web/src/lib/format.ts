@@ -48,6 +48,16 @@ export function formatMonth(value: string): string {
   })
 }
 
+// e.g. "2026-03" -> "March 2026" — for month pickers, where the full name
+// reads better than an axis tick's abbreviated one.
+export function formatMonthLong(value: string): string {
+  const [year, month] = value.split('-')
+  return new Date(Number(year), Number(month) - 1, 1).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+  })
+}
+
 export function formatRelativeTime(iso: string | null): string {
   if (!iso) return 'never'
   const diffMs = Date.now() - new Date(iso).getTime()

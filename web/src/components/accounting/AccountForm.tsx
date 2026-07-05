@@ -1,6 +1,7 @@
 import { InstitutionCombobox } from '@/components/accounting/InstitutionCombobox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useCurrencies } from '@/hooks/useAccountingData'
 import type { AccountKind, CurrencyCode } from '@/types/accounting'
 
 // Every real, importable account kind — excludes the virtual
@@ -8,6 +9,7 @@ import type { AccountKind, CurrencyCode } from '@/types/accounting'
 // (owned by `trades`, never created here) and `other_asset` (that's a
 // manually-entered net-worth line, not an importable account).
 const ACCOUNT_KINDS: AccountKind[] = ['checking', 'savings', 'credit_card', 'vault', 'cash', 'loan']
+const ACCOUNT_KIND_ITEMS: Record<string, string> = Object.fromEntries(ACCOUNT_KINDS.map((kind) => [kind, kind]))
 
 export interface AccountFormValue {
   institution: string
@@ -29,6 +31,8 @@ export function AccountForm({
   locked: boolean
 }) {
   const conventionHint = value.institution && value.accountId ? null : `e.g. ${(value.institution || 'chase').toLowerCase()}:${value.kind}:1234`
+  const { data: currencies } = useCurrencies()
+  const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
 
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -48,7 +52,7 @@ export function AccountForm({
         Account kind
         <Select value={value.kind} onValueChange={(next) => next && onChange({ ...value, kind: next as AccountKind })} disabled={locked}>
           <SelectTrigger size="sm" className="w-32">
-            <SelectValue />
+            <SelectValue items={ACCOUNT_KIND_ITEMS} />
           </SelectTrigger>
           <SelectContent>
             {ACCOUNT_KINDS.map((kind) => (
@@ -63,11 +67,14 @@ export function AccountForm({
         Currency
         <Select value={value.currency} onValueChange={(next) => next && onChange({ ...value, currency: next as CurrencyCode })} disabled={locked}>
           <SelectTrigger size="sm" className="w-20">
-            <SelectValue />
+            <SelectValue items={currencyItems} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="USD">USD</SelectItem>
-            <SelectItem value="EUR">EUR</SelectItem>
+            {(currencies ?? []).map((currency) => (
+              <SelectItem key={currency.code} value={currency.code}>
+                {currency.code}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </label>

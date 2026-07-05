@@ -1,14 +1,17 @@
-"""Convert an amount between the two supported currencies, using one stored EUR/USD rate.
+"""Convert an amount between any two supported currencies, via one shared base-currency rate table.
 
-Two currencies is a closed set — `convert` is a plain three-way branch, not
-a general exchange-rate graph, and stays that way until a third currency
-is ever actually needed.
+Adding a new `CurrencyCode` (see `accounting.models`) never touches this
+file — `convert` only ever needs a `rates_to_base` entry for whichever
+codes it's asked to convert between, so nothing here hardcodes which
+currencies exist.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from accounting.models import BASE_CURRENCY
 
 if TYPE_CHECKING:
     from accounting.models import CurrencyCode
@@ -16,20 +19,26 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class DisplayCurrency:
-    """A currency to aggregate into, plus the one rate needed to get there.
+    """A currency to aggregate into, plus the rate table needed to get there.
 
     Bundles the two values every aggregation function
     (`dashboard.net_worth`, `dashboard.income_statement`) always needs
     together — a display currency is meaningless to convert into without
-    the rate, so callers never pass one without the other.
+    rates for the currencies actually involved, so callers never pass one
+    without the other. `rates_to_base` maps every relevant `CurrencyCode`
+    to how many `BASE_CURRENCY` units one unit of it is worth
+    (`BASE_CURRENCY` itself always maps to `1.0`) — see
+    `market_data.exchange_rates.current_rates_to_base`.
     """
 
-    code: CurrencyCode = "USD"
-    eur_usd_rate: float = 1.08
+    code: CurrencyCode = BASE_CURRENCY
+    rates_to_base: dict[CurrencyCode, float] = field(default_factory=lambda: {BASE_CURRENCY: 1.0})
 
 
-def convert(amount: float, from_currency: CurrencyCode, to_currency: CurrencyCode, eur_usd_rate: float) -> float:
-    """Convert a signed amount from one supported currency to the other.
+def convert(
+    amount: float, from_currency: CurrencyCode, to_currency: CurrencyCode, rates_to_base: dict[CurrencyCode, float]
+) -> float:
+    """Convert a signed amount from one supported currency to another, through the shared base currency.
 
     Parameters
     ----------
@@ -39,9 +48,10 @@ def convert(amount: float, from_currency: CurrencyCode, to_currency: CurrencyCod
         The currency `amount` is denominated in.
     to_currency
         The currency to convert into.
-    eur_usd_rate
-        How many US dollars one euro buys — the single stored rate every
-        conversion in this app uses, in either direction.
+    rates_to_base
+        Every relevant currency's rate into `accounting.models.BASE_CURRENCY`
+        (which itself must map to `1.0`) — see `DisplayCurrency`. A missing
+        entry for `from_currency`/`to_currency` raises `KeyError`.
 
     Returns
     -------
@@ -50,6 +60,5 @@ def convert(amount: float, from_currency: CurrencyCode, to_currency: CurrencyCod
     """
     if from_currency == to_currency:
         return amount
-    if from_currency == "EUR" and to_currency == "USD":
-        return amount * eur_usd_rate
-    return amount / eur_usd_rate
+    amount_in_base = amount * rates_to_base[from_currency]
+    return amount_in_base / rates_to_base[to_currency]

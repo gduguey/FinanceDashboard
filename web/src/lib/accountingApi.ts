@@ -4,8 +4,11 @@ import type {
   AccountingStore,
   Category,
   CategoryTotalRow,
+  CurrentExchangeRate,
   Currency,
   DetectedAccount,
+  ExchangeRateHistoryPoint,
+  ExchangeRateSyncResult,
   ImportResult,
   ManualOverride,
   MonthlyIncomeExpenseRow,
@@ -63,8 +66,11 @@ function queryString(params: Record<string, string | number | undefined>): strin
 export const accountingApi = {
   store: () => request<AccountingStore>('/api/accounting/store'),
   currencies: () => request<Currency[]>('/api/accounting/currencies'),
-  setExchangeRate: (eurUsdRate: number) =>
-    request<{ eur_usd_rate: number }>('/api/accounting/settings/exchange-rate', jsonInit('PUT', { eur_usd_rate: eurUsdRate })),
+  syncExchangeRates: () => request<ExchangeRateSyncResult>('/api/accounting/sync-exchange-rates', { method: 'POST' }),
+  currentExchangeRate: (currency: string) =>
+    request<CurrentExchangeRate>(`/api/accounting/exchange-rates/current${queryString({ currency })}`),
+  exchangeRateHistory: (currency: string) =>
+    request<ExchangeRateHistoryPoint[]>(`/api/accounting/exchange-rates/history${queryString({ currency })}`),
   putCategories: (categories: Record<string, Category>) =>
     request<Record<string, Category>>('/api/accounting/categories', jsonInit('PUT', categories)),
   putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
@@ -107,9 +113,9 @@ export const accountingApi = {
     request<NetWorthHistoryPoint[]>(
       `/api/accounting/net-worth/history${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
     ),
-  categoryTotals: (start: string, end: string, accountIds?: string[], displayCurrency?: string) =>
+  categoryTotals: (start: string, end: string, accountIds?: string[], tagId?: string, displayCurrency?: string) =>
     request<CategoryTotalRow[]>(
-      `/api/accounting/income-statement/category-totals${queryString({ start, end, account_ids: accountIds?.join(','), display_currency: displayCurrency })}`,
+      `/api/accounting/income-statement/category-totals${queryString({ start, end, account_ids: accountIds?.join(','), tag_id: tagId, display_currency: displayCurrency })}`,
     ),
   monthlyIncomeExpense: (start: string, end: string, displayCurrency?: string) =>
     request<MonthlyIncomeExpenseRow[]>(

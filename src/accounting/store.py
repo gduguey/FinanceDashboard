@@ -180,10 +180,9 @@ def default_rules() -> list[Rule]:
 class AccountingStore(BaseModel):
     """Every persisted accounting entity that isn't a posting: accounts, categories, tags, rules, other assets.
 
-    `eur_usd_rate` is the one exchange rate this app knows — how many US
-    dollars one euro buys — set once by the user and used everywhere an
-    amount needs converting into a display currency (see
-    `ledger.currency.convert`); it is never fetched automatically.
+    Exchange rates are not stored here — they're fetched and cached by
+    `market_data.exchange_rates`, keyed by date, not something this store
+    holds a single current value of.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -193,7 +192,6 @@ class AccountingStore(BaseModel):
     tags: dict[str, Tag] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
     other_assets: list[OtherAsset] = Field(default_factory=list)
-    eur_usd_rate: float = Field(default=1.08, gt=0)
 
 
 def load_store(config: AccountingConfig) -> AccountingStore:

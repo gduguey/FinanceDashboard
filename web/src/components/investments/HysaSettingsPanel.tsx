@@ -132,7 +132,13 @@ export function HysaSettingsPanel() {
         <span className="text-sm font-medium">HYSA counterfactual rate</span>
         <Select value={selectedValue} onValueChange={handleBankChange}>
           <SelectTrigger size="sm" className="w-56">
-            <SelectValue placeholder="Choose a bank" />
+            <SelectValue
+              placeholder="Choose a bank"
+              items={{
+                ...Object.fromEntries((rates?.banks ?? []).map((bank: HysaBank) => [bank.bank_id, bank.bank_name])),
+                [CUSTOM_RATE]: 'Custom fixed rate…',
+              }}
+            />
           </SelectTrigger>
           <SelectContent>
             {rates?.banks.map((bank: HysaBank) => (

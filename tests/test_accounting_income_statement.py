@@ -6,6 +6,7 @@ import pytest
 from accounting.dashboard.income_statement import (
     UNCATEGORIZED_EXPENSE_ID,
     UNCATEGORIZED_INCOME_ID,
+    Scope,
     category_totals,
     monthly_income_expense,
     spend_curve_vs_average,
@@ -24,6 +25,7 @@ def _posting(
     posted_at: str = "2026-06-01",
     category_id: str | None = None,
     subcategory_id: str | None = None,
+    tag_ids: list[str] | None = None,
 ) -> dict:
     return {
         "posting_id": posting_id,
@@ -35,7 +37,7 @@ def _posting(
         "category_id": category_id,
         "subcategory_id": subcategory_id,
         "budget_id": None,
-        "tag_ids": [],
+        "tag_ids": tag_ids or [],
         "description": "",
         "meta": {},
     }
@@ -109,6 +111,20 @@ def test_category_totals_sums_a_categorized_expense_leg() -> None:
     assert row["amount"] == pytest.approx(50.0)
 
 
+def test_category_totals_scoped_to_a_tag_excludes_untagged_legs() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -50.0, category_id="expense:food", tag_ids=["tag:japan-trip"]),
+        _posting("p2", "t1", "uncategorized:expense", 50.0),
+        _posting("p3", "t2", "chase:checking:9579", -30.0, category_id="expense:food"),
+        _posting("p4", "t2", "uncategorized:expense", 30.0),
+    )
+    totals = category_totals(
+        postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30), scope=Scope(tag_id="tag:japan-trip")
+    )
+    row = totals.row(0, named=True)
+    assert row["amount"] == pytest.approx(50.0)
+
+
 def test_category_totals_excludes_transfers_between_two_real_accounts() -> None:
     postings = _postings(
         _posting("p1", "t1", "chase:checking:9579", -500.0),
@@ -138,7 +154,12 @@ def test_category_totals_converts_a_eur_expense_into_the_display_currency() -> N
         _posting("p2", "t1", "uncategorized:expense", 100.0),
     )
     totals = category_totals(
-        postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30), display=DisplayCurrency("USD", 1.10)
+        postings,
+        ACCOUNTS,
+        CATEGORIES,
+        date(2026, 6, 1),
+        date(2026, 6, 30),
+        display=DisplayCurrency("USD", {"USD": 1.0, "EUR": 1.10}),
     )
     row = totals.row(0, named=True)
     assert row["amount"] == pytest.approx(110.0)
