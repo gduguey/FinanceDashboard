@@ -14,12 +14,24 @@ const currencyFormatters: Record<string, Intl.NumberFormat> = {
   EUR: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }),
 }
 
+const compactCurrencyFormatters: Record<string, Intl.NumberFormat> = {
+  USD: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 0 }),
+  EUR: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 0 }),
+}
+
 // Every amount in this app is stored in one of two currencies (see
 // `accounting.models.CurrencyCode`) — this always formats in that native
 // currency, never converting; conversion only ever happens server-side,
 // where an aggregate is computed into a chosen display currency.
 export function formatCurrency(value: number, currency: string): string {
   return (currencyFormatters[currency] ?? usd).format(value)
+}
+
+// For chart axis ticks, where "$1,234,567" is both wider than the axis
+// gutter and more precision than a tick label needs — "$1.2M" instead,
+// with no decimals below a million.
+export function formatCurrencyCompact(value: number, currency: string): string {
+  return (compactCurrencyFormatters[currency] ?? usdCompact).format(value)
 }
 
 export function formatPercent(value: number | null | undefined, digits = 2): string {

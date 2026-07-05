@@ -5,6 +5,7 @@ import type {
   Budget,
   Category,
   CurrencyCode,
+  GeneralBudget,
   ManualOverride,
   OpeningBalance,
   OtherAsset,
@@ -275,6 +276,14 @@ export function useSetBudgets() {
   })
 }
 
+export function useSetGeneralBudgets() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (generalBudgets: Record<string, GeneralBudget>) => accountingApi.putGeneralBudgets(generalBudgets),
+    onSuccess: invalidate,
+  })
+}
+
 export function useCreateAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -372,7 +381,8 @@ export function useDeletePostingSplit() {
 export function useAiSuggestCategory() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (postingId: string) => accountingApi.aiSuggestCategory(postingId),
+    mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
+      accountingApi.aiSuggestCategory(postingId, lockCategoryId),
     onSuccess: invalidate,
   })
 }

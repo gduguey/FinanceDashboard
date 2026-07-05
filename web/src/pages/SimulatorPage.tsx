@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
@@ -228,11 +228,11 @@ export function SimulatorPage() {
                       tickLine={false}
                     />
                     <YAxis
-                      tickFormatter={(v) => formatCurrency(v, displayCurrency)}
+                      tickFormatter={(v) => formatCurrencyCompact(v, displayCurrency)}
                       tick={{ fontSize: 12 }}
                       axisLine={false}
                       tickLine={false}
-                      width={72}
+                      width={64}
                     />
                     <Tooltip
                       formatter={(value, name) => [

@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame, row_hash
+from accounting.importers.sofi.csv_v2 import is_sofi_csv_v2, standardize_sofi_csv_v2
 from accounting.importers.sofi.models import SofiRow
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
@@ -39,6 +40,8 @@ def standardize_sofi_savings(csv_text: str, account_id: str) -> pl.DataFrame:
     polars.DataFrame
         Posting-shaped rows, two per input row, validated through `Posting`.
     """
+    if is_sofi_csv_v2(csv_text):
+        return standardize_sofi_csv_v2(csv_text, account_id)
     postings: list[Posting] = []
     for raw in csv.DictReader(io.StringIO(csv_text)):
         row = SofiRow.model_validate(raw)

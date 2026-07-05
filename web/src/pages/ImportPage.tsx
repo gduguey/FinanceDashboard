@@ -26,6 +26,8 @@ interface PendingCsvImport {
   accountId: string
   name: string
   currency: CurrencyCode
+  parentAccountId: string | null
+  isNewAccount: boolean
   status: 'pending' | 'importing' | 'done' | 'error'
   message?: string
 }
@@ -42,10 +44,10 @@ interface PendingPdfImport {
 
 type PendingImport = PendingCsvImport | PendingPdfImport
 
-function readFirstLine(file: File): Promise<string> {
+function readFirstLines(file: File, count: number): Promise<string[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result ?? '').split(/\r?\n/, 1)[0] ?? '')
+    reader.onload = () => resolve(String(reader.result ?? '').split(/\r?\n/).slice(0, count))
     reader.onerror = () => reject(reader.error)
     reader.readAsText(file.slice(0, 4096))
   })
@@ -73,23 +75,29 @@ export function ImportPage() {
           if (file.name.toLowerCase().endsWith('.pdf')) {
             return { key, kind: 'pdf', file, status: 'pending' }
           }
-          const firstLine = await readFirstLine(file)
-          const header = firstLine.split(',').map((column) => column.trim())
-          const detected = await accountingApi.detect(header, file.name).catch(() => null)
-          // Only trust the detected account if it's actually registered —
-          // a filename/header match against a known shape doesn't mean
-          // this exact account exists yet; the user picks from the ones
-          // that do, or adds it below first.
-          const matchedAccount = detected ? store?.accounts[detected.account_id] : undefined
+          const [headerLine, firstDataLine] = await readFirstLines(file, 2)
+          const header = (headerLine ?? '').split(',').map((column) => column.trim())
+          const firstDataRow = firstDataLine
+            ? Object.fromEntries(header.map((column, index) => [column, (firstDataLine.split(',')[index] ?? '').trim()]))
+            : undefined
+          const detected = await accountingApi.detect(header, file.name, firstDataRow).catch(() => null)
+          // A detected account may or may not be registered yet — a
+          // brand-new vault CSV, for instance, describes an account
+          // nobody's created here before. Either way, the detected
+          // guess (not just an already-registered match) is what
+          // pre-fills the form, since that's the whole point of detecting.
+          const existingAccount = detected ? store?.accounts[detected.account_id] : undefined
           return {
             key,
             kind: 'csv',
             file,
-            institution: matchedAccount?.institution ?? '',
-            accountKind: matchedAccount?.kind ?? '',
-            accountId: matchedAccount?.account_id ?? '',
-            name: matchedAccount?.name ?? '',
-            currency: matchedAccount?.currency ?? 'USD',
+            institution: existingAccount?.institution ?? detected?.institution ?? '',
+            accountKind: existingAccount?.kind ?? detected?.account_kind ?? '',
+            accountId: existingAccount?.account_id ?? detected?.account_id ?? '',
+            name: existingAccount?.name ?? detected?.account_name ?? '',
+            currency: existingAccount?.currency ?? 'USD',
+            parentAccountId: existingAccount?.parent_account_id ?? detected?.parent_account_id ?? null,
+            isNewAccount: Boolean(detected) && !existingAccount,
             status: 'pending',
           }
         }),
@@ -118,6 +126,7 @@ export function ImportPage() {
           account_id: entry.accountId,
           account_name: entry.name,
           currency: entry.currency,
+          parent_account_id: entry.parentAccountId,
         },
       })
       updateEntry(entry.key, { status: 'done', message: `${result.new_posting_count} new postings` })
@@ -137,7 +146,12 @@ export function ImportPage() {
   }
 
   const registeredAccounts = store ? Object.values(store.accounts).filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id)) : []
-  const institutions = [...new Set(registeredAccounts.map((account) => account.institution))].sort()
+  const institutions = [
+    ...new Set([
+      ...registeredAccounts.map((account) => account.institution),
+      ...pending.filter((entry): entry is PendingCsvImport => entry.kind === 'csv' && Boolean(entry.institution)).map((entry) => entry.institution),
+    ]),
+  ].sort()
   function accountsForInstitution(institution: string): Account[] {
     return registeredAccounts.filter((account) => account.institution === institution).sort((a, b) => a.name.localeCompare(b.name))
   }
@@ -221,7 +235,10 @@ export function ImportPage() {
                 Institution
                 <Select
                   value={entry.institution}
-                  onValueChange={(institution) => institution && updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '' })}
+                  onValueChange={(institution) =>
+                    institution &&
+                    updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '', isNewAccount: false })
+                  }
                 >
                   <SelectTrigger size="sm" className="w-36">
                     <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
@@ -237,7 +254,7 @@ export function ImportPage() {
               </label>
 
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Name
+                Account name
                 <Select
                   value={entry.accountId}
                   onValueChange={(accountId) => {
@@ -248,6 +265,8 @@ export function ImportPage() {
                         accountKind: account.kind,
                         name: account.name,
                         currency: account.currency,
+                        parentAccountId: account.parent_account_id,
+                        isNewAccount: false,
                       })
                     }
                   }}
@@ -256,10 +275,16 @@ export function ImportPage() {
                   <SelectTrigger size="sm" className="w-52">
                     <SelectValue
                       placeholder="Choose an account…"
-                      items={Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name]))}
+                      items={{
+                        ...Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name])),
+                        ...(entry.isNewAccount ? { [entry.accountId]: `${entry.name} (new)` } : {}),
+                      }}
                     />
                   </SelectTrigger>
                   <SelectContent>
+                    {entry.isNewAccount && (
+                      <SelectItem value={entry.accountId}>{entry.name} (new)</SelectItem>
+                    )}
                     {accountsForInstitution(entry.institution).map((account) => (
                       <SelectItem key={account.account_id} value={account.account_id}>
                         {account.name}
@@ -284,7 +309,12 @@ export function ImportPage() {
               </Button>
               {entry.status === 'importing' && <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />}
 
-              {entry.institution && accountsForInstitution(entry.institution).length === 0 ? (
+              {entry.isNewAccount && (
+                <p className="basis-full text-xs text-muted-foreground">
+                  This account isn't registered yet — importing will create "{entry.name}" automatically.
+                </p>
+              )}
+              {entry.institution && !entry.isNewAccount && accountsForInstitution(entry.institution).length === 0 ? (
                 <p className="basis-full text-xs text-amber-600">
                   No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
                 </p>
@@ -315,11 +345,11 @@ export function ImportPage() {
           </p>
         </div>
 
+        <PaystubReconciliationCard />
+
         {store && (
           <AccountsManagementTable accounts={store.accounts} accountIdsWithPostings={accountIdsWithPostings} />
         )}
-
-        <PaystubReconciliationCard />
       </div>
     </div>
   )

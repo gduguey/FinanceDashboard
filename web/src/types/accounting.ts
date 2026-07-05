@@ -80,6 +80,12 @@ export interface Budget {
   currency: CurrencyCode
 }
 
+export interface GeneralBudget {
+  category_id: string
+  amount: number
+  currency: CurrencyCode
+}
+
 export interface BudgetComparisonRow {
   category_id: string
   category_name: string
@@ -147,12 +153,18 @@ export interface EarningsDeposit {
   amount: number
 }
 
+export interface EarningsLineItem {
+  label: string
+  amount: number
+}
+
 export interface EarningsStatement {
   pay_date: string
   gross_pay: number
   taxes_withheld: number
   net_pay: number
   deposits: EarningsDeposit[]
+  reimbursement_lines: EarningsLineItem[]
 }
 
 export interface DepositMatch {
@@ -163,10 +175,24 @@ export interface DepositMatch {
   account_id: string | null
 }
 
+export interface ProposedSplitLeg {
+  amount: number
+  category_id: string | null
+  subcategory_id: string | null
+  description: string
+}
+
+export interface ProposedSplit {
+  posting_id: string
+  account_id: string
+  legs: ProposedSplitLeg[]
+}
+
 export interface PaystubReconciliationResult {
   statement: EarningsStatement
   matches: DepositMatch[]
   is_fully_matched: boolean
+  proposed_splits: ProposedSplit[]
 }
 
 export interface PostingSplitLeg {
@@ -184,6 +210,7 @@ export interface AccountingStore {
   other_assets: OtherAsset[]
   opening_balances: Record<string, OpeningBalance>
   budgets: Budget[]
+  general_budgets: Record<string, GeneralBudget>
   simulator_scenarios: SimulatorScenario[]
 }
 
@@ -212,6 +239,7 @@ export interface DetectedAccount {
   account_kind: AccountKind
   account_id: string
   account_name: string
+  parent_account_id: string | null
 }
 
 export interface ImportResult {

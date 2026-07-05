@@ -22,6 +22,7 @@ from accounting.models import (
     Budget,
     Category,
     CategoryClassification,
+    GeneralBudget,
     ManualOverride,
     OpeningBalance,
     OtherAsset,
@@ -261,6 +262,7 @@ class AccountingStore(BaseModel):
     other_assets: list[OtherAsset] = Field(default_factory=list)
     opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)
     budgets: list[Budget] = Field(default_factory=list)
+    general_budgets: dict[str, GeneralBudget] = Field(default_factory=dict)
     simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
     posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
 

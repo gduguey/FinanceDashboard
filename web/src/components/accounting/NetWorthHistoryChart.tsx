@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { colorForIndex } from '@/lib/colors'
-import { formatCurrency, formatDate } from '@/lib/format'
+import { formatCurrency, formatCurrencyCompact, formatDate } from '@/lib/format'
 import { useNetWorthHistory, useNetWorthHistoryByAccount } from '@/hooks/useAccountingData'
 import type { CurrencyCode, NetWorthHistoryByAccountPoint } from '@/types/accounting'
 
@@ -86,11 +86,11 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
                 <CartesianGrid vertical={false} stroke="var(--border)" />
                 <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
                 <YAxis
-                  tickFormatter={(v) => formatCurrency(v, displayCurrency)}
+                  tickFormatter={(v) => formatCurrencyCompact(v, displayCurrency)}
                   tick={{ fontSize: 12 }}
                   axisLine={false}
                   tickLine={false}
-                  width={72}
+                  width={64}
                 />
                 <Tooltip
                   formatter={(value, name) => [

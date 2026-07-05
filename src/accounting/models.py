@@ -237,6 +237,22 @@ class Budget(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+class GeneralBudget(BaseModel):
+    """A category's spending target applied to every month alike, independent of any per-month `Budget` rows.
+
+    The Budget page's "General" mode edits these; its "Per month" mode
+    edits `Budget` instead — the two are stored completely separately (see
+    `store.AccountingStore`), never merged or falling back to one
+    another, so switching modes never silently overwrites the other.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    category_id: str = Field(min_length=1)
+    amount: float
+    currency: CurrencyCode = "USD"
+
+
 class SimulatorScenario(BaseModel):
     """A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`).
 
@@ -273,15 +289,31 @@ class EarningsDeposit(BaseModel):
     amount: float
 
 
+class EarningsLineItem(BaseModel):
+    """One named line under a paystub's reimbursements section, for one pay period.
+
+    Unlike `EarningsDeposit`, this isn't tied to a bank account — it's a
+    paystub's own breakdown of *why* money was paid out (a specific
+    reimbursement), used to propose splitting a matched deposit into
+    named legs (see `dashboard.paystub.propose_posting_splits`).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str = Field(min_length=1)
+    amount: float
+
+
 class EarningsStatement(BaseModel):
     """A parsed paystub: gross pay, taxes withheld, and where the net pay actually landed.
 
     Deliberately doesn't try to capture every line item a paystub has —
-    only what `dashboard.paystub.reconcile_earnings_statement` needs: the
-    totals, and the per-destination-account split, since one paycheck can
-    land in more than one account (a direct-deposit split, or wage plus a
-    separately-deposited expense reimbursement) — the case that motivates
-    splitting one bank posting into several (`PostingSplit`).
+    only what `dashboard.paystub.reconcile_earnings_statement` and
+    `propose_posting_splits` need: the totals, the per-destination-account
+    split (one paycheck can land in more than one account), and the
+    reimbursement breakdown, since a paycheck-shaped deposit is often wage
+    plus one or more separate reimbursements arriving together — the case
+    that motivates splitting one bank posting into several (`PostingSplit`).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -291,6 +323,7 @@ class EarningsStatement(BaseModel):
     taxes_withheld: float
     net_pay: float
     deposits: list[EarningsDeposit] = Field(min_length=1)
+    reimbursement_lines: list[EarningsLineItem] = Field(default_factory=list)
 
 
 class ManualOverride(BaseModel):

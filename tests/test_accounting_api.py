@@ -258,6 +258,18 @@ def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monke
     assert body["is_fully_matched"]
     assert body["matches"][0]["posting_id"] == payroll["posting_id"]
 
+    assert len(body["proposed_splits"]) == 1
+    proposal = body["proposed_splits"][0]
+    assert proposal["posting_id"] == payroll["posting_id"]
+    assert proposal["legs"] == [
+        {
+            "amount": pytest.approx(1500.0),
+            "category_id": "income:salary",
+            "subcategory_id": None,
+            "description": "Salary",
+        }
+    ]
+
 
 def test_import_paystub_400s_on_unrecognized_text(client, monkeypatch) -> None:
     monkeypatch.setattr(accounting_api, "extract_paystub_pdf_text", lambda _pdf_bytes: "not a paystub at all")
@@ -326,6 +338,68 @@ def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monk
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] is None
+
+
+def test_ai_suggest_category_with_lock_category_id_only_fills_the_subcategory(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    client.put(
+        f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:reimbursement"}
+    )
+
+    fake_response = '{"category_id": "income:reimbursement", "subcategory_id": "income:reimbursement:employer"}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+
+    response = client.post(
+        f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category",
+        params={"lock_category_id": "income:reimbursement"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "category_id": "income:reimbursement",
+        "subcategory_id": "income:reimbursement:employer",
+        "applied": True,
+    }
+
+
+def test_ai_suggest_category_with_lock_category_id_discards_a_disagreeing_guess(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    client.put(f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:salary"})
+
+    fake_response = '{"category_id": "income:reimbursement", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+
+    response = client.post(
+        f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category",
+        params={"lock_category_id": "income:salary"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] == "income:salary"  # untouched, never overwritten
 
 
 def test_ai_suggest_category_503s_when_no_provider_is_configured(client, monkeypatch) -> None:
@@ -544,6 +618,21 @@ def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> No
 def test_get_budget_comparison_rejects_a_malformed_month(client) -> None:
     response = client.get("/api/accounting/budgets/comparison", params={"month": "not-a-month"})
     assert response.status_code == 400
+
+
+def test_put_general_budgets_persists_separately_from_per_month_budgets(client) -> None:
+    client.put(
+        "/api/accounting/budgets",
+        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}],
+    )
+    response = client.put(
+        "/api/accounting/general-budgets",
+        json={"expense:food-drink": {"category_id": "expense:food-drink", "amount": 500.0}},
+    )
+    assert response.status_code == 200
+    store = client.get("/api/accounting/store").json()
+    assert store["general_budgets"]["expense:food-drink"]["amount"] == pytest.approx(500.0)
+    assert store["budgets"][0]["amount"] == pytest.approx(100.0)
 
 
 def test_get_suggested_budget_amount_returns_zero_with_no_history(client) -> None:

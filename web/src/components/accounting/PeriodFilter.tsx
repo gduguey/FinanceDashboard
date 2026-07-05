@@ -111,7 +111,7 @@ export function PeriodFilterBar({
   return (
     <div className="flex flex-wrap items-end gap-2">
       <Select value={filter.granularity} onValueChange={(value) => value && filter.setGranularity(value as PeriodGranularity)}>
-        <SelectTrigger size="sm" className="w-28">
+        <SelectTrigger size="sm" className="min-w-28">
           <SelectValue items={GRANULARITY_ITEMS} />
         </SelectTrigger>
         <SelectContent>
@@ -133,7 +133,7 @@ export function PeriodFilterBar({
       )}
 
       <Select value={filter.accountId ?? '__all__'} onValueChange={(value) => filter.setAccountId(value === '__all__' ? null : value)}>
-        <SelectTrigger size="sm" className="w-40">
+        <SelectTrigger size="sm" className="min-w-40">
           <SelectValue items={accountItems} />
         </SelectTrigger>
         <SelectContent>
@@ -147,7 +147,7 @@ export function PeriodFilterBar({
       </Select>
 
       <Select value={filter.tagId ?? '__all__'} onValueChange={(value) => filter.setTagId(value === '__all__' ? null : value)}>
-        <SelectTrigger size="sm" className="w-36">
+        <SelectTrigger size="sm" className="min-w-36">
           <SelectValue items={tagItems} />
         </SelectTrigger>
         <SelectContent>

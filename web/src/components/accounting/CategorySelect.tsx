@@ -1,12 +1,17 @@
+import { memo } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { Category, CategoryClassification } from '@/types/accounting'
 
 export const NO_CATEGORY = '__none__'
 
+// Rendered once per row in transaction tables that can run into the
+// thousands, so it's memoized — re-renders only when its own props
+// (not some unrelated sibling row's state) actually change.
+//
 // Passes an explicit `value -> label` map to `SelectValue` (see its own
 // comment in components/ui/select.tsx) so the selected category shows its
 // display name, never its raw id.
-export function CategorySelect({
+export const CategorySelect = memo(function CategorySelect({
   categories,
   classification,
   value,
@@ -23,7 +28,7 @@ export function CategorySelect({
   const items = { [NO_CATEGORY]: 'Uncategorized', ...Object.fromEntries(topLevel.map((c) => [c.category_id, c.name])) }
   return (
     <Select value={value ?? NO_CATEGORY} onValueChange={(next) => onChange(next === NO_CATEGORY ? null : next)}>
-      <SelectTrigger size="sm" className="w-44">
+      <SelectTrigger size="sm" className="min-w-44">
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>
@@ -36,13 +41,15 @@ export function CategorySelect({
       </SelectContent>
     </Select>
   )
-}
+})
 
 // Once a category has any subcategories, the backend guarantees it also has
 // an "Other" catch-all (see `accounting.store.normalize_categories`) — so
 // "None" is never offered here: a category with subcategories always has a
 // selectable one, even if it's just "Other".
-export function SubcategorySelect({
+//
+// Memoized for the same reason as `CategorySelect` above.
+export const SubcategorySelect = memo(function SubcategorySelect({
   categories,
   categoryId,
   value,
@@ -62,7 +69,7 @@ export function SubcategorySelect({
   const items = Object.fromEntries(children.map((c) => [c.category_id, c.name]))
   return (
     <Select value={value ?? undefined} onValueChange={(next) => next && onChange(next)}>
-      <SelectTrigger size="sm" className="w-40">
+      <SelectTrigger size="sm" className="min-w-40">
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>
@@ -74,4 +81,4 @@ export function SubcategorySelect({
       </SelectContent>
     </Select>
   )
-}
+})

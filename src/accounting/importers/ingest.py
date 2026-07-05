@@ -36,6 +36,11 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "credit_card"): standardize_chase_credit_card,
     ("SoFi", "checking"): standardize_sofi_checking,
     ("SoFi", "savings"): standardize_sofi_savings,
+    # A vault's raw CSV is structurally identical to the newer SoFi
+    # savings/checking export (see `importers.sofi.csv_v2`) — registered
+    # separately only because `account_kind` for a vault account is
+    # itself `"vault"`, not `"savings"`.
+    ("SoFi", "vault"): standardize_sofi_savings,
 }
 
 _SOFI_STATEMENT_PDF_ACCOUNT_KIND = "statement_pdf"

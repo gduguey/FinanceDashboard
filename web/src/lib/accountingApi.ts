@@ -3,6 +3,7 @@ import type {
   Account,
   AccountingStore,
   Budget,
+  GeneralBudget,
   BudgetComparisonRow,
   Category,
   CategoryTotalRow,
@@ -53,6 +54,7 @@ export interface ImportAccountInfo {
   account_id: string
   account_name: string
   currency?: string
+  parent_account_id?: string | null
 }
 
 export interface AccountUpdate {
@@ -100,8 +102,11 @@ export const accountingApi = {
     request<{ account_id: string }>(`/api/accounting/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
       method: 'DELETE',
     }),
-  detect: (header: string[], filename: string) =>
-    request<DetectedAccount | null>('/api/accounting/detect', jsonInit('POST', { header, filename })),
+  detect: (header: string[], filename: string, firstDataRow?: Record<string, string>) =>
+    request<DetectedAccount | null>(
+      '/api/accounting/detect',
+      jsonInit('POST', { header, filename, first_data_row: firstDataRow }),
+    ),
   supportedImportKinds: () =>
     request<{ institution: string; account_kind: string }[]>('/api/accounting/supported-import-kinds'),
   importCsv: (file: File, info: ImportAccountInfo) => {
@@ -112,6 +117,7 @@ export const accountingApi = {
     formData.append('account_id', info.account_id)
     formData.append('account_name', info.account_name)
     if (info.currency) formData.append('currency', info.currency)
+    if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
   },
   importSofiStatementPdf: (file: File) => {
@@ -140,9 +146,9 @@ export const accountingApi = {
     request<{ posting_id: string }>(`/api/accounting/postings/${encodeURIComponent(postingId)}/split`, {
       method: 'DELETE',
     }),
-  aiSuggestCategory: (postingId: string) =>
+  aiSuggestCategory: (postingId: string, lockCategoryId?: string | null) =>
     request<{ category_id: string | null; subcategory_id: string | null; applied: boolean }>(
-      `/api/accounting/postings/${encodeURIComponent(postingId)}/ai-suggest-category`,
+      `/api/accounting/postings/${encodeURIComponent(postingId)}/ai-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
       { method: 'POST' },
     ),
   transferSuggestions: () => request<TransferSuggestion[]>('/api/accounting/transfer-suggestions'),
@@ -169,6 +175,8 @@ export const accountingApi = {
       `/api/accounting/income-statement/spend-curve${queryString({ month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
     ),
   putBudgets: (budgets: Budget[]) => request<Budget[]>('/api/accounting/budgets', jsonInit('PUT', budgets)),
+  putGeneralBudgets: (generalBudgets: Record<string, GeneralBudget>) =>
+    request<Record<string, GeneralBudget>>('/api/accounting/general-budgets', jsonInit('PUT', generalBudgets)),
   budgetComparison: (month: string, displayCurrency?: string) =>
     request<BudgetComparisonRow[]>(
       `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,

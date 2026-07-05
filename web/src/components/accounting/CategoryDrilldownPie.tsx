@@ -4,10 +4,12 @@ import { Cell, Pie, PieChart, Tooltip } from 'recharts'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import { ResponsiveContainer } from 'recharts'
 import { PieChartLegend } from '@/components/shared/PieChartLegend'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import {
   UNCATEGORIZED_EXPENSE_CATEGORY_ID,
   UNCATEGORIZED_INCOME_CATEGORY_ID,
@@ -146,6 +148,7 @@ function SubcategoryTable({
     return posting.category_id === selection.categoryId && posting.subcategory_id === selection.subcategoryId
   })
   const total = rows.reduce((sum, row) => sum + Math.abs(row.amount), 0)
+  const { sorted, sort, toggleSort } = useSortableRows(rows, 'posted_at')
 
   return (
     <div className="space-y-2">
@@ -156,14 +159,22 @@ function SubcategoryTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead>Description</TableHead>
-              <TableHead className="text-right">Amount</TableHead>
-              <TableHead className="text-right">% of subcategory</TableHead>
+              <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
+                Date
+              </SortableTableHead>
+              <SortableTableHead active={sort.key === 'description'} desc={sort.desc} onClick={() => toggleSort('description')}>
+                Description
+              </SortableTableHead>
+              <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                Amount
+              </SortableTableHead>
+              <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                % of subcategory
+              </SortableTableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((posting) => (
+            {sorted.map((posting) => (
               <TableRow key={posting.posting_id}>
                 <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
                 <TableCell className="max-w-xs truncate">{posting.description}</TableCell>

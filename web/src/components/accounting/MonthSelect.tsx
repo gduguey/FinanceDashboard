@@ -28,7 +28,7 @@ export function MonthSelect({
 
   return (
     <Select value={value} onValueChange={(next) => next && onChange(next)}>
-      <SelectTrigger size="sm" className={className ?? 'w-40'}>
+      <SelectTrigger size="sm" className={className ?? 'min-w-40'}>
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>

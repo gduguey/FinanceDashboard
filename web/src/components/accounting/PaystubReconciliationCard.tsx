@@ -1,20 +1,153 @@
 import { useState } from 'react'
-import { CheckCircle2, Upload, XCircle } from 'lucide-react'
+import { CheckCircle2, Trash2, Upload, XCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
+import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { formatCurrency } from '@/lib/format'
-import { useImportPaystub } from '@/hooks/useAccountingData'
-import type { PaystubReconciliationResult } from '@/types/accounting'
+import { useAccountingStore, useImportPaystub, useSetPostingOverride, useSetPostingSplit } from '@/hooks/useAccountingData'
+import type { ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
 
-// Read-only: parses a paystub PDF and checks its deposits against real
-// bank postings near pay day, but never applies a split itself — once a
-// deposit is matched here, the user still uses the Split action on
-// Transactions to actually break that posting into wage/reimbursement
-// legs, since reconciling and committing to a specific split are two
-// separate decisions.
+const AMOUNT_TOLERANCE = 0.005
+
+interface DraftLeg {
+  amount: string
+  categoryId: string | null
+  subcategoryId: string | null
+  description: string
+}
+
+function toDraftLegs(legs: ProposedSplitLeg[]): DraftLeg[] {
+  return legs.map((leg) => ({
+    amount: String(leg.amount),
+    categoryId: leg.category_id,
+    subcategoryId: leg.subcategory_id,
+    description: leg.description,
+  }))
+}
+
+// Renders one matched deposit's proposed split (salary vs. reimbursement
+// legs), editable before the user commits to it. Applying calls the same
+// endpoints the Transactions split dialog uses — a single-leg proposal
+// just overrides the posting's category, since `PostingSplit` requires at
+// least two legs.
+function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
+  const store = useAccountingStore()
+  const [legs, setLegs] = useState<DraftLeg[]>(() => toDraftLegs(proposal.legs))
+  const [applied, setApplied] = useState(false)
+  const setSplit = useSetPostingSplit()
+  const setOverride = useSetPostingOverride()
+
+  const depositAmount = proposal.legs.reduce((sum, leg) => sum + leg.amount, 0)
+  const total = legs.reduce((sum, leg) => sum + (Number.parseFloat(leg.amount) || 0), 0)
+  const remaining = depositAmount - total
+  const canApply = Math.abs(remaining) < AMOUNT_TOLERANCE && legs.length >= 1
+
+  function updateLeg(index: number, patch: Partial<DraftLeg>) {
+    setLegs(legs.map((leg, i) => (i === index ? { ...leg, ...patch } : leg)))
+  }
+
+  function addLeg() {
+    setLegs([...legs, { amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }])
+  }
+
+  function removeLeg(index: number) {
+    setLegs(legs.filter((_, i) => i !== index))
+  }
+
+  async function handleApply() {
+    if (legs.length >= 2) {
+      await setSplit.mutateAsync({
+        postingId: proposal.posting_id,
+        legs: legs.map((leg) => ({
+          amount: Number.parseFloat(leg.amount) || 0,
+          category_id: leg.categoryId,
+          subcategory_id: leg.subcategoryId,
+          description: leg.description,
+        })),
+      })
+    } else {
+      await setOverride.mutateAsync({
+        postingId: proposal.posting_id,
+        override: { category_id: legs[0].categoryId, subcategory_id: legs[0].subcategoryId },
+      })
+    }
+    setApplied(true)
+  }
+
+  if (!store.data) return null
+  const isPending = setSplit.isPending || setOverride.isPending
+
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <div className="space-y-2">
+        {legs.map((leg, index) => (
+          <div key={index} className="flex items-end gap-2">
+            <Input
+              type="number"
+              className="w-24"
+              disabled={applied}
+              value={leg.amount}
+              onChange={(event) => updateLeg(index, { amount: event.target.value })}
+            />
+            <CategorySelect
+              categories={store.data.categories}
+              classification="income"
+              value={leg.categoryId}
+              onChange={(categoryId) => updateLeg(index, { categoryId, subcategoryId: null })}
+            />
+            <SubcategorySelect
+              categories={store.data.categories}
+              categoryId={leg.categoryId}
+              value={leg.subcategoryId}
+              onChange={(subcategoryId) => updateLeg(index, { subcategoryId })}
+            />
+            <Input
+              className="flex-1"
+              placeholder="Description"
+              disabled={applied}
+              value={leg.description}
+              onChange={(event) => updateLeg(index, { description: event.target.value })}
+            />
+            {legs.length > 1 && !applied && (
+              <Button variant="ghost" size="icon" onClick={() => removeLeg(index)}>
+                <Trash2 className="size-3.5 text-muted-foreground" />
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-between text-sm">
+        <Button variant="outline" size="sm" disabled={applied} onClick={addLeg}>
+          + Add leg
+        </Button>
+        <div className="flex items-center gap-3">
+          <span className={Math.abs(remaining) > AMOUNT_TOLERANCE ? 'text-destructive' : 'text-muted-foreground'}>
+            Remaining: {formatCurrency(remaining, 'USD')}
+          </span>
+          {applied ? (
+            <span className="flex items-center gap-1 text-emerald-600">
+              <CheckCircle2 className="size-3.5" /> Applied
+            </span>
+          ) : (
+            <Button size="sm" disabled={!canApply || isPending} onClick={handleApply}>
+              Apply
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Read-only parse + reconciliation, but `proposed_splits` lets the user
+// review, edit, and apply a categorization for each matched deposit right
+// here — applying calls the same split/override endpoints Transactions
+// uses, so nothing about a posting changes until the user clicks Apply.
 export function PaystubReconciliationCard() {
   const importPaystub = useImportPaystub()
-  const [result, setResult] = useState<PaystubReconciliationResult | null>(null)
+  const [result, setResult] = useState<Awaited<ReturnType<typeof importPaystub.mutateAsync>> | null>(null)
 
   async function handleFile(file: File) {
     setResult(null)
@@ -30,9 +163,10 @@ export function PaystubReconciliationCard() {
       <CardHeader>
         <CardTitle>Reconcile a paystub</CardTitle>
         <CardDescription>
-          Upload a paystub PDF to check its deposits against real bank postings near pay day — read-only, applies
-          nothing on its own. Paystub layouts vary a lot by payroll provider, so this may need its parsing patterns
-          adjusted for yours (see <code>accounting/importers/paystub.py</code>).
+          Upload a paystub PDF to check its deposits against real bank postings near pay day, and review a proposed
+          salary/reimbursement split for each matched deposit before applying it. Paystub layouts vary a lot by
+          payroll provider, so this may need its parsing patterns adjusted for yours (see{' '}
+          <code>accounting/importers/paystub.py</code>).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -60,7 +194,7 @@ export function PaystubReconciliationCard() {
         )}
 
         {result && (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
               Gross {formatCurrency(result.statement.gross_pay, 'USD')} · Taxes{' '}
               {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net{' '}
@@ -83,6 +217,15 @@ export function PaystubReconciliationCard() {
                 </li>
               ))}
             </ul>
+
+            {result.proposed_splits.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Proposed categorization</p>
+                {result.proposed_splits.map((proposal) => (
+                  <ProposedSplitEditor key={proposal.posting_id} proposal={proposal} />
+                ))}
+              </div>
+            )}
           </div>
         )}
       </CardContent>

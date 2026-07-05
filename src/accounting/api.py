@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from accounting.config import AccountingConfig
 from accounting.dashboard import budgets, income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
-from accounting.dashboard.paystub import reconcile_earnings_statement
+from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
     UnsupportedImportError,
@@ -52,6 +52,7 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CurrencyCode,
+    GeneralBudget,
     ManualOverride,
     OpeningBalance,
     OtherAsset,
@@ -151,6 +152,7 @@ def get_store() -> dict[str, Any]:
         "budgets": [budget.model_dump(mode="json") for budget in store.budgets],
         "simulator_scenarios": [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios],
         "posting_splits": {pid: split.model_dump(mode="json") for pid, split in store.posting_splits.items()},
+        "general_budgets": {cat_id: budget.model_dump(mode="json") for cat_id, budget in store.general_budgets.items()},
     }
 
 
@@ -351,6 +353,25 @@ def put_budgets(budgets: list[Budget]) -> list[dict[str, Any]]:
     return [budget.model_dump(mode="json") for budget in store.budgets]
 
 
+@router.put("/general-budgets")
+def put_general_budgets(general_budgets: dict[str, GeneralBudget]) -> dict[str, Any]:
+    """Replace the whole general-budget map, keyed by `category_id` — the same amount applies to every month.
+
+    Stored, edited, and displayed completely separately from `Budget`'s
+    per-month rows (see `models.GeneralBudget`); this never falls back to
+    or overwrites a per-month budget, or vice versa.
+
+    Returns
+    -------
+    dict[str, Any]
+        The general budgets just persisted.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"general_budgets": general_budgets})
+    save_store(store, state.config)
+    return {cat_id: budget.model_dump(mode="json") for cat_id, budget in store.general_budgets.items()}
+
+
 @router.put("/simulator/scenarios")
 def put_simulator_scenarios(scenarios: list[SimulatorScenario]) -> list[dict[str, Any]]:
     """Replace the whole saved-scenario list.
@@ -539,18 +560,19 @@ class DetectRequest(BaseModel):
 
     header: list[str]
     filename: str
+    first_data_row: dict[str, str] | None = None
 
 
 @router.post("/detect")
 def post_detect(request: DetectRequest) -> dict[str, Any] | None:
-    """Guess the institution, account kind, and account id a CSV's header and filename describe.
+    """Guess the institution, account kind, and account id a CSV's header, filename, and first row describe.
 
     Returns
     -------
     dict[str, Any] or None
         The best guess, or `None` if nothing matched.
     """
-    detected = detect_bank_account(request.header, request.filename)
+    detected = detect_bank_account(request.header, request.filename, request.first_data_row)
     return None if detected is None else vars(detected)
 
 
@@ -578,6 +600,7 @@ async def post_import(
     account_id: Annotated[str, Form()],
     account_name: Annotated[str, Form()],
     currency: Annotated[str, Form()] = "USD",
+    parent_account_id: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     """Register the account if it's new, then archive and import the uploaded CSV.
 
@@ -600,6 +623,7 @@ async def post_import(
             kind=account_kind_literal,
             institution=institution,
             currency=currency,  # type: ignore[arg-type]
+            parent_account_id=parent_account_id,
         )
         store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
         save_store(store, state.config)
@@ -651,16 +675,20 @@ async def post_sofi_statement_pdf(file: UploadFile) -> dict[str, Any]:
 async def post_paystub_reconciliation(file: UploadFile) -> dict[str, Any]:
     """Parse a paystub PDF and reconcile its deposits against real bank postings near pay day.
 
-    Read-only — never applies anything automatically. Once a deposit is
-    matched, use `PUT /postings/{posting_id}/split` to actually split it
-    into wage/reimbursement legs.
+    Read-only — never applies anything automatically. `proposed_splits`
+    suggests how to categorize each matched deposit (salary vs.
+    reimbursement legs), for the user to review, edit, and confirm; use
+    `PUT /postings/{posting_id}/split` (or `/override` for a single-leg
+    proposal) to actually apply one.
 
     Returns
     -------
     dict[str, Any]
         `statement` (the parsed `EarningsStatement`), `matches` (one
         `{label, amount, account_last4, posting_id, account_id}` per
-        deposit — `posting_id`/`account_id` `None` if unmatched), and `is_fully_matched`.
+        deposit — `posting_id`/`account_id` `None` if unmatched),
+        `is_fully_matched`, and `proposed_splits` (one per matched
+        deposit — see `dashboard.paystub.ProposedSplit`).
 
     Raises
     ------
@@ -677,6 +705,7 @@ async def post_paystub_reconciliation(file: UploadFile) -> dict[str, Any]:
 
     postings, store = _resolved_postings_and_store(state.config)
     result = reconcile_earnings_statement(statement, postings, store.accounts)
+    proposed_splits = propose_posting_splits(statement, result.matches)
     return {
         "statement": statement.model_dump(mode="json"),
         "matches": [
@@ -690,6 +719,14 @@ async def post_paystub_reconciliation(file: UploadFile) -> dict[str, Any]:
             for match in result.matches
         ],
         "is_fully_matched": result.is_fully_matched,
+        "proposed_splits": [
+            {
+                "posting_id": proposal.posting_id,
+                "account_id": proposal.account_id,
+                "legs": [vars(leg) for leg in proposal.legs],
+            }
+            for proposal in proposed_splits
+        ],
     }
 
 
@@ -868,15 +905,27 @@ def _few_shot_examples(postings: pl.DataFrame, classification: CategoryClassific
 
 
 @router.post("/postings/{posting_id}/ai-suggest-category")
-def post_ai_suggest_category(posting_id: str) -> dict[str, Any]:
+def post_ai_suggest_category(posting_id: str, lock_category_id: str | None = None) -> dict[str, Any]:
     """Ask an LLM to suggest a category for one posting, from already-categorized examples — never automatic.
 
-    Only ever called when the user clicks the "AI suggestion" button —
-    nothing in this module calls it on its own. The suggestion is
-    validated against real category/subcategory ids before being applied
-    (see `llm.categorize.parse_and_validate_suggestion`) and, if valid,
+    Only ever called when the user clicks the "AI suggestion" button, or
+    by the bulk-suggest action over a filtered set of postings — nothing
+    in this module calls it on its own. The suggestion is validated
+    against real category/subcategory ids before being applied (see
+    `llm.categorize.parse_and_validate_suggestion`) and, if valid,
     persisted as a manual override exactly as if the user had picked it
     from the dropdown themselves.
+
+    Parameters
+    ----------
+    posting_id
+        The posting to suggest a category for.
+    lock_category_id
+        If given, the posting already has this category and only its
+        subcategory is missing — the suggestion is discarded (treated as
+        unapplied) unless the LLM's own top-level guess agrees with it, so
+        this call can never change a category the user (or an earlier
+        rule) already assigned.
 
     Returns
     -------
@@ -908,6 +957,8 @@ def post_ai_suggest_category(posting_id: str) -> dict[str, Any]:
         raw_response, store.categories, classification
     )
     if category_id is None:
+        return {"category_id": None, "subcategory_id": None, "applied": False}
+    if lock_category_id is not None and category_id != lock_category_id:
         return {"category_id": None, "subcategory_id": None, "applied": False}
 
     overrides = load_overrides(state.config)
