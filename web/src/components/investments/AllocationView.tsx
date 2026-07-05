@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Legend, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatPercent, formatUsd } from '@/lib/format'

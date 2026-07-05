@@ -3,7 +3,7 @@
 Every endpoint below calls `dashboard.py` (which composes `ledger.*` and
 `market_data.*`) and serializes the result — no aggregation happens in
 this module itself, matching the split documented in
-docs/architecture.md.
+docs/trades/architecture.md.
 
 GET endpoints only ever read what's already cached on disk — they never
 make a network call, with one exception: `GET /api/symbols/search` is a

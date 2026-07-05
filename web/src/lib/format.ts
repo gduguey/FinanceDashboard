@@ -9,6 +9,19 @@ export function formatUsd(value: number, compact = false): string {
   return compact ? usdCompact.format(value) : usd.format(value)
 }
 
+const currencyFormatters: Record<string, Intl.NumberFormat> = {
+  USD: usd,
+  EUR: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR' }),
+}
+
+// Every amount in this app is stored in one of two currencies (see
+// `accounting.models.CurrencyCode`) — this always formats in that native
+// currency, never converting; conversion only ever happens server-side,
+// where an aggregate is computed into a chosen display currency.
+export function formatCurrency(value: number, currency: string): string {
+  return (currencyFormatters[currency] ?? usd).format(value)
+}
+
 export function formatPercent(value: number | null | undefined, digits = 2): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—'
   const sign = value > 0 ? '+' : ''

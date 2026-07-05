@@ -36,7 +36,6 @@ _EXPENSE_TAXONOMY: dict[str, list[str]] = {
     "Subscriptions": ["Phone & Internet", "Software", "Streaming"],
     "Travel": ["Flights", "Lodging", "Activities"],
     "Admin & Fees": ["Bank Fees", "Visa & Immigration", "Taxes", "Legal & Equity", "Shipping & Postal"],
-    "Uncategorized": [],
 }
 
 _INCOME_TAXONOMY: dict[str, list[str]] = {
@@ -179,7 +178,13 @@ def default_rules() -> list[Rule]:
 
 
 class AccountingStore(BaseModel):
-    """Every persisted accounting entity that isn't a posting: accounts, categories, tags, rules, other assets."""
+    """Every persisted accounting entity that isn't a posting: accounts, categories, tags, rules, other assets.
+
+    `eur_usd_rate` is the one exchange rate this app knows — how many US
+    dollars one euro buys — set once by the user and used everywhere an
+    amount needs converting into a display currency (see
+    `ledger.currency.convert`); it is never fetched automatically.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -188,6 +193,7 @@ class AccountingStore(BaseModel):
     tags: dict[str, Tag] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
     other_assets: list[OtherAsset] = Field(default_factory=list)
+    eur_usd_rate: float = Field(default=1.08, gt=0)
 
 
 def load_store(config: AccountingConfig) -> AccountingStore:

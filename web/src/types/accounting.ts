@@ -12,14 +12,23 @@ export type AccountKind =
 
 export type CategoryClassification = 'income' | 'expense'
 
+export type CurrencyCode = 'USD' | 'EUR'
+
+export interface Currency {
+  code: CurrencyCode
+  symbol: string
+  decimal_places: number
+}
+
 export interface Account {
   account_id: string
   name: string
   kind: AccountKind
   institution: string
-  currency: string
+  currency: CurrencyCode
   parent_account_id: string | null
   external_ref: string | null
+  meta: Record<string, string>
 }
 
 export interface Category {
@@ -46,12 +55,14 @@ export interface Rule {
   counterparty_account_kind: AccountKind | null
   counterparty_parent_account_id: string | null
   priority: number
+  description: string
 }
 
 export interface OtherAsset {
   asset_id: string
   name: string
-  value_usd: number
+  value: number
+  currency: CurrencyCode
   note: string
 }
 
@@ -61,7 +72,7 @@ export interface Posting {
   account_id: string
   posted_at: string
   amount: number
-  currency: string
+  currency: CurrencyCode
   category_id: string | null
   subcategory_id: string | null
   budget_id: string | null
@@ -83,6 +94,7 @@ export interface AccountingStore {
   tags: Record<string, Tag>
   rules: Rule[]
   other_assets: OtherAsset[]
+  eur_usd_rate: number
 }
 
 export interface DetectedAccount {
@@ -98,22 +110,35 @@ export interface ImportResult {
   total_posting_count: number
 }
 
+export interface SofiStatementImportResult {
+  account_ids: string[]
+  new_posting_count: number
+  total_posting_count: number
+}
+
 export interface NetWorthAccountRow {
   account_id: string
   name: string
   kind: AccountKind
   parent_account_id: string | null
-  balance_usd: number
+  balance: number
+  currency: CurrencyCode
 }
 
 export interface NetWorthSummary {
   as_of: string
-  assets_usd: number
-  liabilities_usd: number
-  other_assets_usd: number
-  net_worth_usd: number
+  display_currency: CurrencyCode
+  assets: number
+  liabilities: number
+  other_assets_total: number
+  net_worth: number
   accounts: NetWorthAccountRow[]
   other_assets: OtherAsset[]
+}
+
+export interface NetWorthHistoryPoint {
+  date: string
+  net_worth: number
 }
 
 export interface TransferSuggestion {
@@ -121,7 +146,32 @@ export interface TransferSuggestion {
   posting_id: string
   posted_at: string
   other_account_id: string
-  other_posting_id: string
   other_posted_at: string
+  other_posting_id: string
   amount: number
 }
+
+export interface CategoryTotalRow {
+  classification: CategoryClassification
+  category_id: string
+  category_name: string
+  subcategory_id: string | null
+  subcategory_name: string | null
+  color: string
+  amount: number
+}
+
+export interface MonthlyIncomeExpenseRow {
+  month: string
+  income: number
+  expense: number
+}
+
+export interface SpendCurvePoint {
+  day: number
+  current_month_cumulative: number
+  average_previous_months_cumulative: number
+}
+
+export const UNCATEGORIZED_INCOME_CATEGORY_ID = 'uncategorized:income-category'
+export const UNCATEGORIZED_EXPENSE_CATEGORY_ID = 'uncategorized:expense-category'

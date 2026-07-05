@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 _PLACEHOLDER_ACCOUNT_IDS = {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID}
 _VAULT_TRANSFER = re.compile(r"^(?:To|From)\s+(.+?)\s+Vault$", re.IGNORECASE)
+_SOFI_INTERNAL_TRANSFER = re.compile(r"^To (Checking|Savings) - (\d+)$", re.IGNORECASE)
 _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per transaction
 
 
@@ -49,6 +50,28 @@ def detect_vault_transfer(description: str) -> str | None:
     """
     match = _VAULT_TRANSFER.match(description.strip())
     return match.group(1) if match else None
+
+
+def detect_sofi_internal_account_transfer(description: str) -> tuple[str, str] | None:
+    """Recognize a SoFi statement PDF's "To Checking - 1234"/"To Savings - 5678" transfer.
+
+    Only the "To ..." side ever reaches this point — `importers.sofi.statement_pdf`
+    already drops the mirrored "From ..." row on the other account as a
+    duplicate of the same real-world transfer, the same double-booking fix
+    already applied to Chase's "Payment Thank You" rows.
+
+    Parameters
+    ----------
+    description
+        A posting's description text.
+
+    Returns
+    -------
+    tuple[str, str] or None
+        `(account_kind, last_four_digits)`, e.g. `("Savings", "3680")`, or `None` if it doesn't match.
+    """
+    match = _SOFI_INTERNAL_TRANSFER.match(description.strip())
+    return (match.group(1), match.group(2)) if match else None
 
 
 def _vault_account(vault_name: str, parent: Account) -> Account:
@@ -91,10 +114,21 @@ def _resolve_counterparty(
     real_leg: dict[str, object], accounts: dict[str, Account]
 ) -> tuple[Account, str | None, str | None] | None:
     real_account = accounts.get(str(real_leg["account_id"]))
-    if real_account is not None and real_account.kind == "savings":
-        vault_name = detect_vault_transfer(str(real_leg["description"]))
+    if real_account is None:
+        return None
+    description = str(real_leg["description"])
+    if real_account.kind == "savings":
+        vault_name = detect_vault_transfer(description)
         if vault_name is not None:
             return _vault_account(vault_name, real_account), None, None
+    if real_account.kind in {"checking", "savings"}:
+        internal_transfer = detect_sofi_internal_account_transfer(description)
+        if internal_transfer is not None:
+            kind, last4 = internal_transfer
+            target_account_id = f"sofi:{kind.lower()}:{last4}"
+            target_account = accounts.get(target_account_id)
+            if target_account is not None:
+                return target_account, None, None
     return None
 
 

@@ -3,11 +3,11 @@ import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { label: 'Investments', icon: LineChart, path: '/investments' },
+  { label: 'Import', icon: Upload, path: '/import' },
   { label: 'Net Worth', icon: Scale, path: '/net-worth' },
+  { label: 'Investments', icon: LineChart, path: '/investments' },
   { label: 'Accounting', icon: Calculator, path: '/accounting' },
   { label: 'Budget', icon: Wallet, path: '/budget' },
-  { label: 'Import', icon: Upload, path: '/import' },
   { label: 'Simulator', icon: FlaskConical, path: '/simulator' },
 ]
 

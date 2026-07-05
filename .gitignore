@@ -25,6 +25,7 @@ data/
 .pytest_cache/
 .mypy_cache/
 .claude/
+.ipynb_checkpoints/
 
 AGENTS.md
 CLAUDE.md

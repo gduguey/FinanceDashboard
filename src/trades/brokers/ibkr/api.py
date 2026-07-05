@@ -2,7 +2,7 @@
 
 Fetches the "Trade History API" Flex Query (Cash Report + Open Positions +
 Trades) via IBKR's Flex Web Service and parses the response. See
-docs/ibkr_flex_api.md for how the two-step SendRequest/GetStatement
+docs/trades/ibkr_flex_api.md for how the two-step SendRequest/GetStatement
 protocol and its error codes work.
 """
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from trades.config import AppConfig, IbkrFlexCredentials
 
-# IBKR's own documented Flex Web Service v3 error codes (docs/ibkr_flex_api.md)
+# IBKR's own documented Flex Web Service v3 error codes (docs/trades/ibkr_flex_api.md)
 # — protocol facts, not tunable parameters.
 _RETRYABLE_GENERATING_CODES = frozenset({"1001", "1004", "1005", "1006", "1007", "1008", "1009", "1019", "1021"})
 _RETRYABLE_THROTTLED_CODES = frozenset({"1018"})

@@ -19,7 +19,9 @@ from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.checking import standardize_sofi_checking
 from accounting.importers.sofi.savings import standardize_sofi_savings
+from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_pdf
 from accounting.models import Posting
+from accounting.store import load_store, save_store
 from trades.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from accounting.config import AccountingConfig
+    from accounting.models import Account
 
 _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
@@ -34,6 +37,8 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("SoFi", "checking"): standardize_sofi_checking,
     ("SoFi", "savings"): standardize_sofi_savings,
 }
+
+_SOFI_STATEMENT_PDF_ACCOUNT_KIND = "statement_pdf"
 
 
 class UnsupportedImportError(ValueError):
@@ -102,11 +107,43 @@ def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _raw_statement_path(institution: str, account_id: str, config: AccountingConfig) -> Path:
+def _raw_statement_path(institution: str, account_id: str, config: AccountingConfig, suffix: str = "csv") -> Path:
     directory = config.raw_statement_dir / institution / account_id
     directory.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
-    return directory / f"{timestamp}.csv"
+    return directory / f"{timestamp}.{suffix}"
+
+
+def _merge_discovered_accounts(discovered: dict[str, Account], config: AccountingConfig) -> None:
+    """Add newly-seen accounts to the store, and refresh `meta` on ones already known.
+
+    Unlike a rule's counterparty (only ever created the first time it's
+    matched), a statement PDF's checking/savings/vault accounts are
+    already fully known every time it's parsed — re-importing a later
+    month must keep updating `meta["apy_pct"]` without ever touching a
+    user-edited `name`.
+
+    Parameters
+    ----------
+    discovered
+        Every account this statement describes, keyed by `account_id`.
+    config
+        Application configuration; the store is read and, if anything
+        changed, written back.
+    """
+    store = load_store(config)
+    accounts = dict(store.accounts)
+    changed = False
+    for account_id, discovered_account in discovered.items():
+        existing = accounts.get(account_id)
+        if existing is None:
+            accounts[account_id] = discovered_account
+            changed = True
+        elif existing.meta != {**existing.meta, **discovered_account.meta}:
+            accounts[account_id] = existing.model_copy(update={"meta": {**existing.meta, **discovered_account.meta}})
+            changed = True
+    if changed:
+        save_store(store.model_copy(update={"accounts": accounts}), config)
 
 
 def ingest_csv(
@@ -115,7 +152,7 @@ def ingest_csv(
     """Archive one uploaded CSV verbatim, standardize it, and merge the result into the ledger.
 
     The raw file is saved before parsing even starts, so a parse failure
-    never loses the upload — per `docs/architecture.md`'s "cache raw,
+    never loses the upload — per `docs/trades/architecture.md`'s "cache raw,
     derive everything else" rule, applied here the same way it already is
     for IBKR statements.
 
@@ -159,6 +196,52 @@ def ingest_csv(
     )
 
 
+@dataclass(frozen=True)
+class SofiStatementIngestResult:
+    """What happened when one SoFi monthly statement PDF was ingested."""
+
+    account_ids: list[str]
+    new_posting_count: int
+    total_posting_count: int
+
+
+def ingest_sofi_statement_pdf(pdf_bytes: bytes, config: AccountingConfig) -> SofiStatementIngestResult:
+    """Archive one uploaded SoFi statement PDF, standardize it, and merge the result into the ledger.
+
+    Unlike `ingest_csv`, one PDF describes several accounts at once
+    (checking, savings, every vault) — every account it names is
+    registered or refreshed via `_merge_discovered_accounts` as part of
+    this call, rather than by the caller beforehand.
+
+    Parameters
+    ----------
+    pdf_bytes
+        The raw PDF file contents, exactly as uploaded.
+    config
+        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
+
+    Returns
+    -------
+    SofiStatementIngestResult
+        Every account id the statement described, and how many postings were newly added.
+    """
+    path = _raw_statement_path("SoFi", _SOFI_STATEMENT_PDF_ACCOUNT_KIND, config, suffix="pdf")
+    path.write_bytes(pdf_bytes)
+
+    new_postings, discovered_accounts = standardize_sofi_statement_pdf(pdf_bytes)
+    _merge_discovered_accounts(discovered_accounts, config)
+
+    existing = load_ledger(config)
+    merged = _merge_ledger(existing, new_postings)
+    _write_ledger(merged, config)
+
+    return SofiStatementIngestResult(
+        account_ids=sorted(discovered_accounts),
+        new_posting_count=len(merged) - len(existing),
+        total_posting_count=len(merged),
+    )
+
+
 def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     """Recompute the whole ledger from every archived raw CSV.
 
@@ -185,13 +268,14 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     UnsupportedImportError
         If an archived directory's institution/account-kind has no registered standardizer.
     """
-    raw_paths = sorted(config.raw_statement_dir.glob("*/*/*.csv"))
-    if not raw_paths:
+    csv_paths = sorted(config.raw_statement_dir.glob("*/*/*.csv"))
+    pdf_paths = sorted(config.raw_statement_dir.glob(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"))
+    if not csv_paths and not pdf_paths:
         message = f"No archived raw statements under {config.raw_statement_dir}"
         raise FileNotFoundError(message)
 
     frames = [pl.DataFrame(schema=Posting.polars_schema)]
-    for path in raw_paths:
+    for path in csv_paths:
         institution = path.parent.parent.name
         account_id = path.parent.name
         account_kind = account_id.split(":")[1]
@@ -200,6 +284,14 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
             message = f"No importer for institution={institution!r}, account_kind={account_kind!r}."
             raise UnsupportedImportError(message)
         frames.append(standardizer(path.read_text(encoding="utf-8"), account_id))
+
+    discovered_accounts: dict[str, Account] = {}
+    for path in pdf_paths:
+        pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(path.read_bytes())
+        frames.append(pdf_postings)
+        discovered_accounts.update(pdf_accounts)
+    if discovered_accounts:
+        _merge_discovered_accounts(discovered_accounts, config)
 
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
     _write_ledger(ledger, config)

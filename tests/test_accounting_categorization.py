@@ -4,7 +4,12 @@ import polars as pl
 import pytest
 
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame
-from accounting.ledger.categorization import apply_manual_overrides, apply_rules, detect_vault_transfer
+from accounting.ledger.categorization import (
+    apply_manual_overrides,
+    apply_rules,
+    detect_sofi_internal_account_transfer,
+    detect_vault_transfer,
+)
 from accounting.models import Account, ManualOverride, Rule
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
@@ -104,6 +109,27 @@ def test_apply_rules_leaves_unmatched_postings_as_placeholders() -> None:
     counterparties = set(resolved["account_id"].unique().to_list()) - {"chase:checking:9579"}
     assert counterparties == {UNCATEGORIZED_EXPENSE_ACCOUNT_ID}
     assert accounts == {}
+
+
+def test_detect_sofi_internal_account_transfer_recognizes_to_checking_and_savings() -> None:
+    assert detect_sofi_internal_account_transfer("To Savings - 3680") == ("Savings", "3680")
+    assert detect_sofi_internal_account_transfer("To Checking - 9169") == ("Checking", "9169")
+
+
+def test_detect_sofi_internal_account_transfer_ignores_unrelated_descriptions() -> None:
+    assert detect_sofi_internal_account_transfer("To Travel Vault") is None
+
+
+def test_apply_rules_repoints_a_sofi_checking_to_savings_transfer() -> None:
+    checking = Account(
+        account_id="sofi:checking:9169", name="SoFi Checking", kind="checking", institution="SoFi", currency="USD"
+    )
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-statement-pdf", "1", "sofi:checking:9169", _leg(-300.08, "To Savings - 3680"))
+    )
+    resolved, accounts = apply_rules(postings, [], {"sofi:checking:9169": checking, "sofi:savings:3680": SOFI_SAVINGS})
+    assert set(resolved["account_id"].unique().to_list()) == {"sofi:checking:9169", "sofi:savings:3680"}
+    assert accounts == {"sofi:checking:9169": checking, "sofi:savings:3680": SOFI_SAVINGS}
 
 
 def test_apply_manual_overrides_with_no_overrides_returns_the_same_data() -> None:

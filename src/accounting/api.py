@@ -14,16 +14,35 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
+import polars as pl
 from fastapi import APIRouter, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from accounting.config import AccountingConfig
-from accounting.dashboard.net_worth import net_worth_summary
+from accounting.dashboard import income_statement
+from accounting.dashboard.net_worth import net_worth_series, net_worth_summary
 from accounting.importers.detect import detect_bank_account
-from accounting.importers.ingest import UnsupportedImportError, ingest_csv, load_ledger, rebuild_from_raw_statements
+from accounting.importers.ingest import (
+    UnsupportedImportError,
+    ingest_csv,
+    ingest_sofi_statement_pdf,
+    load_ledger,
+    rebuild_from_raw_statements,
+)
 from accounting.ledger.categorization import apply_manual_overrides, apply_rules
+from accounting.ledger.currency import DisplayCurrency
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
-from accounting.models import Account, Category, ManualOverride, OtherAsset, Rule, Tag
+from accounting.models import (
+    SUPPORTED_CURRENCIES,
+    Account,
+    AccountKind,
+    Category,
+    CurrencyCode,
+    ManualOverride,
+    OtherAsset,
+    Rule,
+    Tag,
+)
 from accounting.store import load_overrides, load_store, save_overrides, save_store
 
 
@@ -64,6 +83,25 @@ def _resolved_postings_and_store(config: AccountingConfig) -> tuple[Any, Any]:
     return resolved, store
 
 
+def _account_has_postings(account_id: str, config: AccountingConfig) -> bool:
+    """Check whether any imported posting has ever been assigned to this account.
+
+    Used to enforce the accounts-CRUD rule: an account's institution,
+    kind, and currency (and the account itself) may only be edited or
+    deleted before any real transaction has landed on it — afterward,
+    only its display name may change.
+
+    Returns
+    -------
+    bool
+        `True` if at least one posting in the raw ledger references this account.
+    """
+    ledger = load_ledger(config)
+    if ledger.is_empty():
+        return False
+    return bool(ledger.filter(pl.col("account_id") == account_id).height > 0)
+
+
 @router.get("/store")
 def get_store() -> dict[str, Any]:
     """Return every persisted accounting entity: accounts, categories, tags, rules, other assets.
@@ -72,7 +110,7 @@ def get_store() -> dict[str, Any]:
     -------
     dict[str, Any]
         `accounts`, `categories`, `tags` (each a dict keyed by id),
-        `rules`, `other_assets` (each a list).
+        `rules`, `other_assets` (each a list), `eur_usd_rate`.
     """
     _postings, store = _resolved_postings_and_store(state.config)
     return {
@@ -81,7 +119,41 @@ def get_store() -> dict[str, Any]:
         "tags": {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()},
         "rules": [rule.model_dump(mode="json") for rule in store.rules],
         "other_assets": [asset.model_dump(mode="json") for asset in store.other_assets],
+        "eur_usd_rate": store.eur_usd_rate,
     }
+
+
+@router.get("/currencies")
+def get_currencies() -> list[dict[str, Any]]:
+    """List every currency this app knows how to hold money in.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One entry per supported currency, `{"code", "symbol", "decimal_places"}`.
+    """
+    return [currency.model_dump(mode="json") for currency in SUPPORTED_CURRENCIES.values()]
+
+
+class ExchangeRateUpdate(BaseModel):
+    """Request body for `PUT /api/accounting/settings/exchange-rate`."""
+
+    eur_usd_rate: float = Field(gt=0)
+
+
+@router.put("/settings/exchange-rate")
+def put_exchange_rate(update: ExchangeRateUpdate) -> dict[str, float]:
+    """Set the one EUR/USD rate this app uses to convert amounts into a display currency.
+
+    Returns
+    -------
+    dict[str, float]
+        `{"eur_usd_rate": ...}`, the value just persisted.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"eur_usd_rate": update.eur_usd_rate})
+    save_store(store, state.config)
+    return {"eur_usd_rate": store.eur_usd_rate}
 
 
 @router.put("/categories")
@@ -144,6 +216,113 @@ def put_other_assets(other_assets: list[OtherAsset]) -> list[dict[str, Any]]:
     return [asset.model_dump(mode="json") for asset in store.other_assets]
 
 
+@router.post("/accounts")
+def post_account(account: Account) -> dict[str, Any]:
+    """Register a new account.
+
+    Returns
+    -------
+    dict[str, Any]
+        The account just persisted.
+
+    Raises
+    ------
+    HTTPException
+        409 if an account with this id already exists.
+    """
+    store = load_store(state.config)
+    if account.account_id in store.accounts:
+        raise HTTPException(status_code=409, detail=f"Account {account.account_id!r} already exists")
+    store = store.model_copy(update={"accounts": {**store.accounts, account.account_id: account}})
+    save_store(store, state.config)
+    return account.model_dump(mode="json")
+
+
+class AccountUpdate(BaseModel):
+    """Request body for `PUT /api/accounting/accounts/{account_id}`.
+
+    `institution`, `kind`, and `currency` may only differ from the
+    account's current values while it has no postings yet — enforced in
+    `put_account`, not here, since that check needs the ledger.
+    """
+
+    name: str
+    institution: str
+    kind: AccountKind
+    currency: CurrencyCode
+    meta: dict[str, str] = Field(default_factory=dict)
+
+
+@router.put("/accounts/{account_id}")
+def put_account(account_id: str, update: AccountUpdate) -> dict[str, Any]:
+    """Update an account — full edit if it has no postings yet, name/meta-only afterward.
+
+    Returns
+    -------
+    dict[str, Any]
+        The account after the update.
+
+    Raises
+    ------
+    HTTPException
+        404 if the account doesn't exist; 400 if institution/kind/currency
+        changed on an account that already has postings.
+    """
+    store = load_store(state.config)
+    existing = store.accounts.get(account_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
+
+    locked_fields_changed = (
+        update.institution != existing.institution
+        or update.kind != existing.kind
+        or update.currency != existing.currency
+    )
+    if locked_fields_changed and _account_has_postings(account_id, state.config):
+        raise HTTPException(
+            status_code=400,
+            detail="This account already has transactions — only its display name and meta can be edited",
+        )
+
+    updated = existing.model_copy(
+        update={
+            "name": update.name,
+            "institution": update.institution,
+            "kind": update.kind,
+            "currency": update.currency,
+            "meta": update.meta,
+        }
+    )
+    store = store.model_copy(update={"accounts": {**store.accounts, account_id: updated}})
+    save_store(store, state.config)
+    return updated.model_dump(mode="json")
+
+
+@router.delete("/accounts/{account_id}")
+def delete_account(account_id: str) -> dict[str, str]:
+    """Delete an account, as long as it has no postings yet.
+
+    Returns
+    -------
+    dict[str, str]
+        `{"account_id": ...}` of the account just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if the account doesn't exist; 400 if it already has postings.
+    """
+    store = load_store(state.config)
+    if account_id not in store.accounts:
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
+    if _account_has_postings(account_id, state.config):
+        raise HTTPException(status_code=400, detail="This account already has transactions and can't be deleted")
+    remaining = {aid: account for aid, account in store.accounts.items() if aid != account_id}
+    store = store.model_copy(update={"accounts": remaining})
+    save_store(store, state.config)
+    return {"account_id": account_id}
+
+
 class DetectRequest(BaseModel):
     """Request body for `POST /api/accounting/detect`."""
 
@@ -193,7 +372,7 @@ async def post_import(
             name=account_name,
             kind=account_kind_literal,
             institution=institution,
-            currency=currency,
+            currency=currency,  # type: ignore[arg-type]
         )
         store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
         save_store(store, state.config)
@@ -205,6 +384,37 @@ async def post_import(
         raise HTTPException(status_code=400, detail=str(error)) from error
     return {
         "account_id": result.account_id,
+        "new_posting_count": result.new_posting_count,
+        "total_posting_count": result.total_posting_count,
+    }
+
+
+@router.post("/import/sofi-statement-pdf")
+async def post_sofi_statement_pdf(file: UploadFile) -> dict[str, Any]:
+    """Archive and import a SoFi monthly statement PDF — checking, savings, and every vault in one file.
+
+    SoFi Vaults have no CSV export; their interest and transfers only ever
+    show up here. Registers or refreshes every account the statement
+    describes itself — unlike `post_import`, no institution/account-kind/
+    account-id form fields are needed from the caller.
+
+    Returns
+    -------
+    dict[str, Any]
+        `account_ids`, `new_posting_count`, `total_posting_count`.
+
+    Raises
+    ------
+    HTTPException
+        400 if the PDF has no recognizable SoFi savings account section.
+    """
+    pdf_bytes = await file.read()
+    try:
+        result = ingest_sofi_statement_pdf(pdf_bytes, state.config)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {
+        "account_ids": result.account_ids,
         "new_posting_count": result.new_posting_count,
         "total_posting_count": result.total_posting_count,
     }
@@ -299,7 +509,7 @@ def _external_investment_value_usd() -> float | None:
 
 
 @router.get("/net-worth")
-def get_net_worth(as_of: date | None = None) -> dict[str, Any]:
+def get_net_worth(as_of: date | None = None, display_currency: CurrencyCode = "USD") -> dict[str, Any]:
     """Return the full net-worth view: every account's balance, grouped, plus manually-added assets.
 
     Returns
@@ -314,14 +524,100 @@ def get_net_worth(as_of: date | None = None) -> dict[str, Any]:
         store.accounts,
         store.other_assets,
         as_of or datetime.now(tz=UTC).date(),
+        display_currency=display_currency,
+        eur_usd_rate=store.eur_usd_rate,
         external_investment_value_usd=_external_investment_value_usd() if has_external_investment else None,
     )
     return {
         "as_of": summary.as_of.isoformat(),
-        "assets_usd": summary.assets_usd,
-        "liabilities_usd": summary.liabilities_usd,
-        "other_assets_usd": summary.other_assets_usd,
-        "net_worth_usd": summary.net_worth_usd,
+        "display_currency": summary.display_currency,
+        "assets": summary.assets,
+        "liabilities": summary.liabilities,
+        "other_assets_total": summary.other_assets_total,
+        "net_worth": summary.net_worth,
         "accounts": [vars(row) for row in summary.accounts],
         "other_assets": [asset.model_dump(mode="json") for asset in summary.other_assets],
     }
+
+
+@router.get("/net-worth/history")
+def get_net_worth_history(
+    start: date, end: date, interval_days: int = 7, display_currency: CurrencyCode = "USD"
+) -> list[dict[str, Any]]:
+    """Return net worth as of a regularly-spaced series of dates, for a history chart.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One `{"date": ..., "net_worth": ...}` per point, oldest first.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
+    dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
+    series = net_worth_series(
+        postings,
+        store.accounts,
+        store.other_assets,
+        dates,
+        display_currency=display_currency,
+        eur_usd_rate=store.eur_usd_rate,
+        external_investment_value_usd=_external_investment_value_usd() if has_external_investment else None,
+    )
+    return [{"date": day.isoformat(), "net_worth": net_worth} for day, net_worth in series]
+
+
+@router.get("/income-statement/category-totals")
+def get_category_totals(
+    start: date, end: date, account_ids: str | None = None, display_currency: CurrencyCode = "USD"
+) -> list[dict[str, Any]]:
+    """Sum real income/expense postings by classification, category, and subcategory.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `dashboard.income_statement.category_totals`.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    parsed_account_ids = account_ids.split(",") if account_ids else None
+    totals = income_statement.category_totals(
+        postings,
+        store.accounts,
+        store.categories,
+        start,
+        end,
+        parsed_account_ids,
+        DisplayCurrency(display_currency, store.eur_usd_rate),
+    )
+    return totals.to_dicts()
+
+
+@router.get("/income-statement/monthly")
+def get_monthly_income_expense(start: date, end: date, display_currency: CurrencyCode = "USD") -> list[dict[str, Any]]:
+    """Sum real income and real expense per calendar month.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `dashboard.income_statement.monthly_income_expense`.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    return income_statement.monthly_income_expense(
+        postings, store.accounts, start, end, DisplayCurrency(display_currency, store.eur_usd_rate)
+    ).to_dicts()
+
+
+@router.get("/income-statement/spend-curve")
+def get_spend_curve(
+    month: date, lookback_months: int = 3, display_currency: CurrencyCode = "USD"
+) -> list[dict[str, Any]]:
+    """Cumulative daily spend through one month, next to the average of the prior months.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `dashboard.income_statement.spend_curve_vs_average`.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    return income_statement.spend_curve_vs_average(
+        postings, store.accounts, month, lookback_months, DisplayCurrency(display_currency, store.eur_usd_rate)
+    ).to_dicts()

@@ -14,6 +14,8 @@ from accounting.models import Posting
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from accounting.models import CurrencyCode
+
 
 def parse_us_date(text: str) -> date:
     """Parse a `MM/DD/YYYY` date string, Chase's format in every export.
@@ -42,7 +44,7 @@ class RawLeg:
 
     posted_at: datetime
     amount: float
-    currency: str
+    currency: CurrencyCode
     description: str
     meta: dict[str, str]
 
@@ -65,14 +67,22 @@ def row_hash(*parts: str) -> str:
 
 
 def posting_pair(
-    *, source: str, row_id: str, account_id: str, counterparty_account_id: str, leg: RawLeg
+    *,
+    source: str,
+    row_id: str,
+    account_id: str,
+    counterparty_account_id: str,
+    leg: RawLeg,
+    category_id: str | None = None,
 ) -> list[Posting]:
     """Build the two postings — real account plus placeholder counterparty — for one imported row.
 
     The counterparty leg carries none of `leg.meta` (the dedup hash and
     source-format facts belong to the row that was actually parsed, not
-    its balancing placeholder) and no category — Phase 1 never
-    categorizes; that's `ledger.categorization`'s job once a rule exists.
+    its balancing placeholder). `category_id`, when given, is set on the
+    real leg only — for a row whose category is a structural fact of the
+    source format itself (e.g. a statement's own "Interest Earned" rows)
+    rather than something `ledger.categorization` has to infer from text.
 
     Parameters
     ----------
@@ -86,6 +96,8 @@ def posting_pair(
         The placeholder (or, later, resolved) counterparty account.
     leg
         The row's date, signed amount, currency, description, and provenance meta.
+    category_id
+        A category to set on the real leg immediately, bypassing rule matching.
 
     Returns
     -------
@@ -103,6 +115,7 @@ def posting_pair(
             currency=leg.currency,
             description=leg.description,
             meta=leg.meta,
+            category_id=category_id,
         ),
         Posting(
             posting_id=f"{transaction_id}:1",

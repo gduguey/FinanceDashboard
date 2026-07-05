@@ -51,6 +51,29 @@ and for which categories even make sense to show when categorizing a
 posting whose amount is positive vs. negative.
 """
 
+CurrencyCode = Literal["USD", "EUR"]
+"""Every currency this app knows how to hold money in or convert between."""
+
+
+class Currency(BaseModel):
+    """One supported currency's display metadata — never a value on its own, only ever attached to one."""
+
+    model_config = ConfigDict(frozen=True)
+
+    code: CurrencyCode
+    symbol: str = Field(min_length=1)
+    decimal_places: int = 2
+
+
+SUPPORTED_CURRENCIES: dict[CurrencyCode, Currency] = {
+    "USD": Currency(code="USD", symbol="$", decimal_places=2),
+    "EUR": Currency(code="EUR", symbol="€", decimal_places=2),
+}
+"""The two currencies every `currency: CurrencyCode` field elsewhere in this
+package maps into — the registry `Currency` is the single record of, so a
+symbol or a decimal-places convention is only ever declared once.
+"""
+
 
 class Account(BaseModel):
     """One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
@@ -60,6 +83,10 @@ class Account(BaseModel):
     `external_investment` kind, naming where its value actually comes from
     (currently always `"trades"`, meaning `trades.dashboard.overview_cards`)
     since this account's balance is never derived from its own postings.
+    `meta` holds facts about the account itself rather than any one
+    posting — currently just `apy_pct`, the interest rate last seen on a
+    statement, carried here because it describes the account's terms, not
+    a single transaction.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -68,9 +95,10 @@ class Account(BaseModel):
     name: str = Field(min_length=1)
     kind: AccountKind
     institution: str = Field(min_length=1)
-    currency: str = Field(min_length=1)
+    currency: CurrencyCode
     parent_account_id: str | None = None
     external_ref: str | None = None
+    meta: dict[str, str] = Field(default_factory=dict)
 
 
 class Category(BaseModel):
@@ -116,7 +144,9 @@ class Rule(BaseModel):
     `counterparty_account_kind` describe the real account this posting's
     placeholder counterparty should be repointed at — created on first
     match if it doesn't exist yet (e.g. a new vault). `priority` breaks ties
-    when more than one rule matches; the lowest number wins.
+    when more than one rule matches; the lowest number wins. `description`
+    is a free-text note on what the rule is actually for — purely for a
+    human re-reading the rule list later, never read by the matching logic.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -131,6 +161,7 @@ class Rule(BaseModel):
     counterparty_account_kind: AccountKind | None = None
     counterparty_parent_account_id: str | None = None
     priority: int = 0
+    description: str = ""
 
 
 class OtherAsset(BaseModel):
@@ -139,14 +170,17 @@ class OtherAsset(BaseModel):
     Unlike everything else in this module, this is a preference-like
     record a user types in directly rather than something derived from a
     posting; it lives in the same store for convenience, not because it's a
-    fact about what happened.
+    fact about what happened. `value` is in `currency`, not necessarily
+    the display currency any given page is showing totals in — conversion
+    happens where it's aggregated, in `dashboard.net_worth`.
     """
 
     model_config = ConfigDict(frozen=True)
 
     asset_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    value_usd: float
+    value: float
+    currency: CurrencyCode = "USD"
     note: str = ""
 
 
@@ -191,7 +225,7 @@ class Posting(BaseModel):
     account_id: str = Field(min_length=1)
     posted_at: datetime
     amount: float
-    currency: str = Field(min_length=1)
+    currency: CurrencyCode
     category_id: str | None = None
     subcategory_id: str | None = None
     budget_id: str | None = None
