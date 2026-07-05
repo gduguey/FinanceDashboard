@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from accounting.api import router as accounting_router
 from trades import dashboard
 from trades.brokers.ibkr import api, main
 from trades.config import AppConfig, IbkrFlexCredentials, TaxRegime
@@ -54,6 +55,7 @@ class SyncProgress:
 app = FastAPI(title="Investments API")
 app.state.config = AppConfig()
 app.state.sync_progress = SyncProgress(step="Idle", percent=0.0, done=True)
+app.include_router(accounting_router)
 
 # Lock to prevent concurrent syncs: /api/sync writes to caches and the ledger,
 # so concurrent requests would step on each other's writes.
