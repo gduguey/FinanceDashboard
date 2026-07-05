@@ -427,6 +427,45 @@ def test_ai_suggest_category_404s_for_an_unknown_posting(client, monkeypatch) ->
     assert response.status_code == 404
 
 
+def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
+    class _NoCredentials:
+        gemini_api_key = None
+        mistral_api_key = None
+
+    monkeypatch.setattr(accounting_api, "LLMCredentials", _NoCredentials)
+
+    body = client.get("/api/accounting/llm-usage").json()
+    assert body["gemini"] == {
+        "configured": False,
+        "used_count": 0,
+        "period": "daily",
+        "is_limited": False,
+        "last_error": None,
+    }
+    assert body["mistral"]["period"] == "monthly"
+
+
+def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monkeypatch) -> None:
+    class _FakeCredentials:
+        gemini_api_key = object()
+        mistral_api_key = None
+
+    monkeypatch.setattr(accounting_api, "LLMCredentials", _FakeCredentials)
+
+    from accounting.llm.usage import record_call  # noqa: PLC0415
+
+    record_call("gemini", accounting_api.state.config.llm_usage_path, error="429 RESOURCE_EXHAUSTED")
+
+    body = client.get("/api/accounting/llm-usage").json()
+    assert body["gemini"] == {
+        "configured": True,
+        "used_count": 1,
+        "period": "daily",
+        "is_limited": True,
+        "last_error": "429 RESOURCE_EXHAUSTED",
+    }
+
+
 def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
     client.post(
         "/api/accounting/import",

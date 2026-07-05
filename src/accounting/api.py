@@ -42,6 +42,7 @@ from accounting.llm.gemini import GeminiProvider
 from accounting.llm.mistral import MistralProvider
 from accounting.llm.provider import LLMProvider, LLMProviderError, complete_with_fallback
 from accounting.llm.settings import LLMCredentials
+from accounting.llm.usage import RESET_PERIOD, TrackedProvider, load_usage
 from accounting.market_data import exchange_rates
 from accounting.models import (
     BASE_CURRENCY,
@@ -866,6 +867,10 @@ _MAX_FEW_SHOT_EXAMPLES = 20
 def _llm_providers() -> list[LLMProvider]:
     """Build the default-Gemini-then-Mistral fallback chain from whichever API keys `.env` actually has set.
 
+    Every provider is wrapped in `TrackedProvider` so each call's outcome
+    is recorded to `llm_usage.json` regardless of which provider in the
+    chain ends up being tried (see `get_llm_usage`).
+
     Returns
     -------
     list[LLMProvider]
@@ -874,10 +879,52 @@ def _llm_providers() -> list[LLMProvider]:
     credentials = LLMCredentials()
     providers: list[LLMProvider] = []
     if credentials.gemini_api_key is not None:
-        providers.append(GeminiProvider(credentials.gemini_api_key.get_secret_value()))
+        providers.append(
+            TrackedProvider(
+                GeminiProvider(credentials.gemini_api_key.get_secret_value()), "gemini", state.config.llm_usage_path
+            )
+        )
     if credentials.mistral_api_key is not None:
-        providers.append(MistralProvider(credentials.mistral_api_key.get_secret_value()))
+        providers.append(
+            TrackedProvider(
+                MistralProvider(credentials.mistral_api_key.get_secret_value()),
+                "mistral",
+                state.config.llm_usage_path,
+            )
+        )
     return providers
+
+
+@router.get("/llm-usage")
+def get_llm_usage() -> dict[str, Any]:
+    """Return each LLM provider's self-tracked call count this period, and whether it's currently rate-limited.
+
+    Returns
+    -------
+    dict[str, Any]
+        Keyed by provider name (`"gemini"`, `"mistral"`). Each entry has
+        `configured` (whether an API key is set for it at all),
+        `used_count`, `period` (`"daily"` or `"monthly"` — see
+        `llm.usage.RESET_PERIOD`), `is_limited`, and `last_error` (the
+        provider's own error text from the last refused call, `None` if
+        it hasn't been refused since its count last reset).
+    """
+    credentials = LLMCredentials()
+    configured = {
+        "gemini": credentials.gemini_api_key is not None,
+        "mistral": credentials.mistral_api_key is not None,
+    }
+    usage = load_usage(state.config.llm_usage_path)
+    return {
+        provider: {
+            "configured": configured[provider],
+            "used_count": entry.used_count,
+            "period": RESET_PERIOD[provider],
+            "is_limited": entry.is_limited,
+            "last_error": entry.last_error,
+        }
+        for provider, entry in usage.items()
+    }
 
 
 Example = tuple[str, str, str | None]

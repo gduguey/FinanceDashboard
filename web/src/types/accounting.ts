@@ -293,6 +293,16 @@ export interface TransferSuggestion {
   amount: number
 }
 
+export interface LlmProviderUsage {
+  configured: boolean
+  used_count: number
+  period: 'daily' | 'monthly'
+  is_limited: boolean
+  last_error: string | null
+}
+
+export type LlmUsage = Record<string, LlmProviderUsage>
+
 export interface CategoryTotalRow {
   classification: CategoryClassification
   category_id: string

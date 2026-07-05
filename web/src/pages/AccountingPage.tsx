@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { DashboardTab } from '@/components/accounting/DashboardTab'
+import { LlmUsageBanner } from '@/components/accounting/LlmUsageBanner'
 import { TransactionsTab } from '@/components/accounting/TransactionsTab'
 import { CategoriesTab } from '@/components/accounting/CategoriesTab'
 import { TagsTab } from '@/components/accounting/TagsTab'
@@ -87,6 +88,7 @@ export function AccountingPage() {
             </TabsContent>
 
             <TabsContent value="transactions" className="space-y-6">
+              <LlmUsageBanner />
               <TransferSuggestionsPanel />
               <TransactionsTab postings={postings ?? []} accounts={store.accounts} categories={store.categories} tags={store.tags} />
             </TabsContent>
