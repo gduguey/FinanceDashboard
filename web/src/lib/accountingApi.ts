@@ -14,6 +14,7 @@ import type {
   ExchangeRateSyncResult,
   ImportResult,
   InterestAccountRow,
+  LlmUsage,
   ManualOverride,
   MonthlyIncomeExpenseRow,
   NetWorthHistoryByAccountPoint,
@@ -77,6 +78,7 @@ function queryString(params: Record<string, string | number | undefined>): strin
 export const accountingApi = {
   store: () => request<AccountingStore>('/api/accounting/store'),
   currencies: () => request<Currency[]>('/api/accounting/currencies'),
+  llmUsage: () => request<LlmUsage>('/api/accounting/llm-usage'),
   syncExchangeRates: () => request<ExchangeRateSyncResult>('/api/accounting/sync-exchange-rates', { method: 'POST' }),
   currentExchangeRate: (currency: string) =>
     request<CurrentExchangeRate>(`/api/accounting/exchange-rates/current${queryString({ currency })}`),

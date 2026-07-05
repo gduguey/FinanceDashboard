@@ -20,6 +20,7 @@ const BASE_CURRENCY: CurrencyCode = 'USD'
 const keys = {
   store: ['accounting', 'store'],
   currencies: ['accounting', 'currencies'],
+  llmUsage: ['accounting', 'llm-usage'],
   supportedImportKinds: ['accounting', 'supported-import-kinds'],
   currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
   exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
@@ -105,6 +106,8 @@ function useInvalidateAccounting() {
 export const useAccountingStore = () => useQuery({ queryKey: keys.store, queryFn: accountingApi.store })
 
 export const useCurrencies = () => useQuery({ queryKey: keys.currencies, queryFn: accountingApi.currencies })
+
+export const useLlmUsage = () => useQuery({ queryKey: keys.llmUsage, queryFn: accountingApi.llmUsage })
 
 export const useSupportedImportKinds = () =>
   useQuery({ queryKey: keys.supportedImportKinds, queryFn: accountingApi.supportedImportKinds })
