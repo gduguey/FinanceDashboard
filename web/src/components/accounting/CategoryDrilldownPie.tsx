@@ -338,10 +338,10 @@ export function CategoryDrilldownPie({
             </ResponsiveContainer>
             <PieChartLegend
               total={grandTotal}
-              slices={rings[rings.length - 1].slices}
+              slices={rings[0].slices}
               showPercent={showPercent}
               displayCurrency={displayCurrency}
-              onSliceClick={(slice) => handleSliceClick(rings[rings.length - 1].level, slice)}
+              onSliceClick={(slice) => handleSliceClick(rings[0].level, slice)}
             />
           </div>
         )}

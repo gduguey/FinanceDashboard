@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { useSetRecurringAdditions, useSetWithdrawalPriorities } from '@/hooks/useAccountingData'
 import type {
   Goal,
@@ -153,11 +154,10 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
               </Select>
               <label className="flex items-center gap-1 text-xs text-muted-foreground">
                 Until (optional)
-                <Input
-                  type="date"
-                  className="w-36"
+                <OptionalDateInput
                   value={addition.end_date ?? ''}
-                  onChange={(event) => update(addition.addition_id, { end_date: event.target.value || null })}
+                  onChange={(value) => update(addition.addition_id, { end_date: value || null })}
+                  placeholder="No end date"
                 />
               </label>
               <Select

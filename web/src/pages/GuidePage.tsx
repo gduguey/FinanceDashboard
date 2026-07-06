@@ -15,6 +15,7 @@ import {
   Upload,
   Wallet,
 } from 'lucide-react'
+import { PageHeader } from '@/components/layout/PageHeader'
 
 // Investments deliberately has no anchor here — it isn't one more topic in
 // this walkthrough, it's a separate, unrelated part of the app (see the
@@ -114,18 +115,7 @@ function AccountKindTable() {
 export function GuidePage() {
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 border-b border-border bg-white/95 backdrop-blur-sm">
-        <div className="flex items-center justify-between px-8 py-5">
-          <h1 className="text-lg font-semibold tracking-tight text-foreground">How this app works</h1>
-        </div>
-        <nav className="flex flex-wrap gap-x-5 gap-y-1 px-8 pb-3 text-sm text-muted-foreground">
-          {SECTIONS.map((section) => (
-            <a key={section.id} href={`#${section.id}`} className="transition-colors hover:text-foreground">
-              {section.label}
-            </a>
-          ))}
-        </nav>
-      </div>
+      <PageHeader title="How this app works" sections={SECTIONS} />
 
       <div className="mx-auto max-w-4xl space-y-10 px-8 py-8">
         <div className="rounded-lg border border-foreground/10 bg-gradient-to-br from-muted/60 to-transparent p-5">

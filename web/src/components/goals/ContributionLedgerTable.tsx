@@ -7,9 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { convertCurrency } from '@/lib/currency'
 import { formatCurrency } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useSetGoalContributions, useSimulateContribution } from '@/hooks/useAccountingData'
+import { useCurrencies, useRatesToBase, useSetGoalContributions, useSimulateContribution } from '@/hooks/useAccountingData'
 import type { Goal, GoalContribution } from '@/types/accounting'
 
 const ALL = '__all__'
@@ -32,6 +33,8 @@ export function ContributionLedgerTable({
 }) {
   const setContributions = useSetGoalContributions()
   const simulate = useSimulateContribution()
+  const { data: currencies } = useCurrencies()
+  const ratesToBase = useRatesToBase((currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD'))
   const [goalFilter, setGoalFilter] = useState(ALL)
   const [originFilter, setOriginFilter] = useState(ALL)
   const [goalExclude, setGoalExclude] = useState(false)
@@ -78,13 +81,30 @@ export function ContributionLedgerTable({
         goal_id: goalList[0].goal_id,
         date: new Date(todayIsoDate()).toISOString(),
         amount: 0,
-        currency: 'USD',
+        // A contribution is always denominated in its own goal's currency
+        // (see `changeGoal`) — never a separately-chosen currency — so
+        // there's never a mismatch between "what this row says" and "what
+        // the goal it funds is tracked in".
+        currency: goalList[0].target_currency,
         note: '',
         source_posting_id: null,
         origin: 'manual',
         edited: false,
       },
     })
+  }
+
+  // Re-pointing a contribution at a different goal also re-denominates it
+  // into that goal's own currency, converting the stored amount so the
+  // real value moved is preserved — not just relabeling the same number
+  // into a different unit. This is the one place a contribution's
+  // currency ever changes, keeping "contribution.currency === its goal's
+  // target_currency" true at all times.
+  function changeGoal(contribution: GoalContribution, goalId: string) {
+    const nextGoal = goals[goalId]
+    if (!nextGoal) return
+    const amount = convertCurrency(contribution.amount, contribution.currency, nextGoal.target_currency, ratesToBase)
+    update(contribution.contribution_id, { goal_id: goalId, currency: nextGoal.target_currency, amount })
   }
 
   async function checkContribution(contribution: GoalContribution) {
@@ -200,7 +220,7 @@ export function ContributionLedgerTable({
                   <TableCell className="whitespace-nowrap">
                     <Select
                       value={contribution.goal_id}
-                      onValueChange={(value) => value && update(contribution.contribution_id, { goal_id: value })}
+                      onValueChange={(value) => value && changeGoal(contribution, value)}
                     >
                       <SelectTrigger size="sm" className="h-7 min-w-32 text-xs">
                         <SelectValue items={Object.fromEntries(goalList.map((g) => [g.goal_id, g.name]))} />
@@ -231,6 +251,7 @@ export function ContributionLedgerTable({
                         onChange={(event) => update(contribution.contribution_id, { amount: Number(event.target.value) })}
                         onBlur={() => checkContribution(contribution)}
                       />
+                      <span className="w-9 text-left text-xs text-muted-foreground">{contribution.currency}</span>
                     </div>
                   </TableCell>
                   <TableCell>

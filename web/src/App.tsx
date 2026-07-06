@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Route, Routes } from 'react-router-dom'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AccountingPage } from '@/pages/AccountingPage'
 import { BudgetPage } from '@/pages/BudgetPage'
+import { DashboardPage } from '@/pages/DashboardPage'
 import { GoalsPage } from '@/pages/GoalsPage'
 import { GuidePage } from '@/pages/GuidePage'
 import { ImportPage } from '@/pages/ImportPage'
@@ -22,7 +23,7 @@ export default function App() {
         <div className="flex h-screen bg-white">
           <Sidebar />
           <Routes>
-            <Route path="/" element={<Navigate to="/investments" replace />} />
+            <Route path="/" element={<DashboardPage />} />
             <Route path="/investments" element={<InvestmentsPage />} />
             <Route path="/net-worth" element={<NetWorthPage />} />
             <Route path="/accounting" element={<AccountingPage />} />

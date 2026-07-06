@@ -86,10 +86,14 @@ export function GoalsOverviewCharts({
           {barData.length === 0 ? (
             <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">No goals yet</div>
           ) : (
-            <ResponsiveContainer width="100%" height={Math.max(120, barData.length * 56)}>
-              <BarChart data={barData} layout="vertical" margin={{ left: 24 }}>
+            // Matches the pie chart's own fixed height so the two cards in
+            // this grid row read as the same size instead of this one
+            // looking short and off-center — only grows past that once
+            // there are enough goals to actually need the extra room.
+            <ResponsiveContainer width="100%" height={Math.max(260, barData.length * 56)}>
+              <BarChart data={barData} layout="vertical" margin={{ left: 24, right: 16, top: 4, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" tickFormatter={(value: number) => formatCurrency(value, displayCurrency)} />
+                <XAxis type="number" domain={[0, 'auto']} tickFormatter={(value: number) => formatCurrency(value, displayCurrency)} />
                 <YAxis type="category" dataKey="name" width={100} />
                 <Tooltip
                   formatter={(value, name) => [formatCurrency(Number(value), displayCurrency), name === 'balance' ? 'Balance' : 'Target']}
@@ -99,7 +103,7 @@ export function GoalsOverviewCharts({
                     <Cell key={row.name} fill={row.color} />
                   ))}
                 </Bar>
-                <Bar dataKey="target" fill="#e2e8f0" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="target" fill="#93c5fd" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
