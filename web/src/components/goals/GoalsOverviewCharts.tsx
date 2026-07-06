@@ -2,7 +2,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer,
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { PieChartLegend } from '@/components/shared/PieChartLegend'
 import { formatCurrency } from '@/lib/format'
-import type { Goal } from '@/types/accounting'
+import type { CurrencyCode, Goal } from '@/types/accounting'
 
 const UNALLOCATED_COLOR = '#94a3b8'
 
@@ -16,12 +16,14 @@ export function GoalsOverviewCharts({
   unallocated,
   targets,
   mode,
+  displayCurrency,
 }: {
   goals: Goal[]
   balances: Record<string, number>
   unallocated: number
   targets: Record<string, number>
   mode: 'all_time' | 'per_month'
+  displayCurrency: CurrencyCode
 }) {
   const pieSlices = [
     ...goals
@@ -59,13 +61,13 @@ export function GoalsOverviewCharts({
                   </Pie>
                   <Tooltip
                     formatter={(value, name) => [
-                      `${formatCurrency(Number(value), 'USD')} (${((Number(value) / total) * 100).toFixed(1)}%)`,
+                      `${formatCurrency(Number(value), displayCurrency)} (${((Number(value) / total) * 100).toFixed(1)}%)`,
                       name,
                     ]}
                   />
                 </PieChart>
               </ResponsiveContainer>
-              <PieChartLegend total={total} slices={pieSlices} displayCurrency="USD" />
+              <PieChartLegend total={total} slices={pieSlices} displayCurrency={displayCurrency} />
             </div>
           )}
         </CardContent>
@@ -87,9 +89,11 @@ export function GoalsOverviewCharts({
             <ResponsiveContainer width="100%" height={Math.max(120, barData.length * 56)}>
               <BarChart data={barData} layout="vertical" margin={{ left: 24 }}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" tickFormatter={(value: number) => formatCurrency(value, 'USD')} />
+                <XAxis type="number" tickFormatter={(value: number) => formatCurrency(value, displayCurrency)} />
                 <YAxis type="category" dataKey="name" width={100} />
-                <Tooltip formatter={(value, name) => [formatCurrency(Number(value), 'USD'), name === 'balance' ? 'Balance' : 'Target']} />
+                <Tooltip
+                  formatter={(value, name) => [formatCurrency(Number(value), displayCurrency), name === 'balance' ? 'Balance' : 'Target']}
+                />
                 <Bar dataKey="balance" radius={[0, 4, 4, 0]}>
                   {barData.map((row) => (
                     <Cell key={row.name} fill={row.color} />

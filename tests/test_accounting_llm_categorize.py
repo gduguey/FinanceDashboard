@@ -9,8 +9,20 @@ GROCERIES = Category(
     parent_category_id="expense:food",
     color="#abc",
 )
+FOOD_OTHER = Category(
+    category_id="expense:food:other",
+    name="Other",
+    classification="expense",
+    parent_category_id="expense:food",
+    color="#abc",
+)
 SALARY = Category(category_id="income:salary", name="Salary", classification="income", color="#def")
-CATEGORIES = {FOOD.category_id: FOOD, GROCERIES.category_id: GROCERIES, SALARY.category_id: SALARY}
+CATEGORIES = {
+    FOOD.category_id: FOOD,
+    GROCERIES.category_id: GROCERIES,
+    FOOD_OTHER.category_id: FOOD_OTHER,
+    SALARY.category_id: SALARY,
+}
 
 
 def test_build_prompt_includes_the_target_description_and_taxonomy() -> None:
@@ -40,7 +52,7 @@ def test_parse_and_validate_suggestion_strips_markdown_code_fences() -> None:
     response = '```json\n{"category_id": "expense:food", "subcategory_id": null}\n```'
     category_id, subcategory_id = parse_and_validate_suggestion(response, CATEGORIES, "expense")
     assert category_id == "expense:food"
-    assert subcategory_id is None
+    assert subcategory_id == "expense:food:other"
 
 
 def test_parse_and_validate_suggestion_rejects_unparseable_text() -> None:
@@ -68,5 +80,33 @@ def test_parse_and_validate_suggestion_drops_a_subcategory_that_belongs_to_a_dif
     categories = {**CATEGORIES, other_parent.category_id: other_parent}
     response = f'{{"category_id": "expense:food", "subcategory_id": "{other_parent.category_id}"}}'
     category_id, subcategory_id = parse_and_validate_suggestion(response, categories, "expense")
+    assert category_id == "expense:food"
+    # Dropped for belonging to the wrong parent, but "expense:food" still has
+    # subcategories of its own, so it falls back to its "Other" catch-all
+    # rather than leaving the posting without a subcategory at all.
+    assert subcategory_id == "expense:food:other"
+
+
+def test_parse_and_validate_suggestion_defaults_to_other_when_llm_omits_a_subcategory() -> None:
+    response = '{"category_id": "expense:food", "subcategory_id": null}'
+    category_id, subcategory_id = parse_and_validate_suggestion(response, CATEGORIES, "expense")
+    assert category_id == "expense:food"
+    assert subcategory_id == "expense:food:other"
+
+
+def test_parse_and_validate_suggestion_leaves_subcategory_none_when_category_has_no_subcategories() -> None:
+    response = '{"category_id": "income:salary", "subcategory_id": null}'
+    category_id, subcategory_id = parse_and_validate_suggestion(response, CATEGORIES, "income")
+    assert category_id == "income:salary"
+    assert subcategory_id is None
+
+
+def test_parse_and_validate_suggestion_leaves_subcategory_none_when_other_catch_all_is_missing() -> None:
+    # Defensive case: in production `store.normalize_categories` guarantees
+    # an "Other" catch-all whenever a category has any real subcategory,
+    # but this shouldn't ever raise if that invariant were somehow violated.
+    categories_without_other = {FOOD.category_id: FOOD, GROCERIES.category_id: GROCERIES, SALARY.category_id: SALARY}
+    response = '{"category_id": "expense:food", "subcategory_id": null}'
+    category_id, subcategory_id = parse_and_validate_suggestion(response, categories_without_other, "expense")
     assert category_id == "expense:food"
     assert subcategory_id is None

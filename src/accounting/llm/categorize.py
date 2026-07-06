@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from accounting.store import OTHER_SUBCATEGORY_SUFFIX
+
 if TYPE_CHECKING:
     from accounting.models import Category, CategoryClassification
 
@@ -119,5 +121,20 @@ def parse_and_validate_suggestion(
     subcategory = categories.get(subcategory_id) if isinstance(subcategory_id, str) else None
     if subcategory is not None and subcategory.parent_category_id != category.category_id:
         subcategory = None
+
+    if subcategory is None:
+        # The LLM either omitted a subcategory or named an invalid one. If
+        # this category has any subcategories at all, a posting under it
+        # is only "categorized" once one is picked (see
+        # `TransactionsTab.needsCategorizing` on the frontend) — so silently
+        # leaving `None` here would immediately re-flag a posting the
+        # suggestion just tried to resolve. Falling back to the category's
+        # own "Other" catch-all (guaranteed to exist whenever a real
+        # subcategory does, see `store.normalize_categories`) keeps the
+        # suggestion actually actionable.
+        other_id = f"{category.category_id}{OTHER_SUBCATEGORY_SUFFIX}"
+        has_subcategories = any(c.parent_category_id == category.category_id for c in categories.values())
+        if has_subcategories and other_id in categories:
+            subcategory = categories[other_id]
 
     return category.category_id, (subcategory.category_id if subcategory is not None else None)

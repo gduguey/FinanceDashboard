@@ -3,14 +3,17 @@ import pytest
 
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
-from accounting.importers.sofi.checking import standardize_sofi_checking
-from accounting.importers.sofi.csv_v2 import is_sofi_csv_v2, parse_account_name, standardize_sofi_csv_v2
-from accounting.importers.sofi.savings import standardize_sofi_savings
+from accounting.importers.sofi.csv import (
+    is_sofi_csv,
+    parse_account_name,
+    standardize_sofi_checking,
+    standardize_sofi_savings,
+)
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
-# A real "Emergency Fund" vault export, SoFi's newer CSV shape (also
-# covers checking/savings accounts — see `importers.sofi.csv_v2`).
-SOFI_VAULT_CSV_V2 = (
+# A real "Emergency Fund" vault export, SoFi's newer, wider CSV shape (also
+# covers checking/savings accounts — see `importers.sofi.csv`).
+SOFI_VAULT_CSV = (
     "Authorized Date,Posted Date,Status,Account Name,Description,Primary Category,Detailed Category,Amount\n"
     "2026-06-30,2026-06-30,Posted,Emergency Fund ***3680,Interest,Income,Interest,77.97\n"
     "2026-04-03,2026-04-03,Posted,Emergency Fund ***3680,Transfer From Savings,Transfers,Savings transfers,10000.00\n"
@@ -94,9 +97,9 @@ def test_standardize_sofi_savings_leaves_vault_transfers_as_generic_placeholders
     assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID, UNCATEGORIZED_EXPENSE_ACCOUNT_ID}
 
 
-def test_is_sofi_csv_v2_recognizes_the_header() -> None:
-    assert is_sofi_csv_v2(SOFI_VAULT_CSV_V2)
-    assert not is_sofi_csv_v2(SOFI_SAVINGS_CSV)
+def test_is_sofi_csv_recognizes_the_header() -> None:
+    assert is_sofi_csv(SOFI_VAULT_CSV)
+    assert not is_sofi_csv(SOFI_SAVINGS_CSV)
 
 
 def test_parse_account_name_recognizes_a_vault() -> None:
@@ -116,22 +119,22 @@ def test_parse_account_name_returns_none_without_trailing_digits() -> None:
     assert parse_account_name("Some free text") is None
 
 
-def test_standardize_sofi_csv_v2_tags_interest_rows_with_the_interest_earned_category() -> None:
-    result = standardize_sofi_csv_v2(SOFI_VAULT_CSV_V2, "sofi:savings:3680:vault:emergency-fund")
+def test_standardize_sofi_wide_csv_tags_interest_rows_with_the_interest_earned_category() -> None:
+    result = standardize_sofi_savings(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
     interest_leg = result.filter(pl.col("description") == "Interest").row(0, named=True)
     assert interest_leg["category_id"] == "income:interest-earned"
     assert interest_leg["amount"] == pytest.approx(77.97)
 
 
-def test_standardize_sofi_csv_v2_points_a_savings_transfer_straight_at_the_parent_account() -> None:
-    result = standardize_sofi_csv_v2(SOFI_VAULT_CSV_V2, "sofi:savings:3680:vault:emergency-fund")
+def test_standardize_sofi_wide_csv_points_a_savings_transfer_straight_at_the_parent_account() -> None:
+    result = standardize_sofi_savings(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
     counterparties = set(result["account_id"].unique().to_list()) - {"sofi:savings:3680:vault:emergency-fund"}
     assert "sofi:savings:3680" in counterparties
     transfer_leg = result.filter(pl.col("account_id") == "sofi:savings:3680").row(0, named=True)
     assert transfer_leg["amount"] == pytest.approx(-10000.0)
 
 
-def test_standardize_sofi_csv_v2_used_via_the_checking_and_savings_dispatchers() -> None:
-    via_savings = standardize_sofi_savings(SOFI_VAULT_CSV_V2, "sofi:savings:3680:vault:emergency-fund")
-    via_checking = standardize_sofi_checking(SOFI_VAULT_CSV_V2, "sofi:savings:3680:vault:emergency-fund")
+def test_standardize_sofi_wide_csv_used_via_the_checking_and_savings_dispatchers() -> None:
+    via_savings = standardize_sofi_savings(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
+    via_checking = standardize_sofi_checking(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
     assert len(via_savings) == len(via_checking) == 4

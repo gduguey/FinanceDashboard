@@ -1,13 +1,24 @@
 """Map a SoFi monthly statement PDF onto canonical postings and accounts.
 
-SoFi Vaults have no CSV export of their own — the only place their
-interest and transfers ever show up is the monthly statement PDF, which
-also covers the linked checking and savings accounts in one file. This
-module is the one place that PDF's specific vocabulary (its `TYPE` column
-values, its "To/From <Name> Vault" and "To/From Checking - 1234" transfer
-phrasing, its per-account APY block) is read; everything past
-`standardize_sofi_statement_pdf` sees the same `Posting`/`Account` shapes
-every other importer produces.
+Retired for new imports: SoFi's wider CSV shape (`importers.sofi.csv`) now
+covers checking, savings, and vaults alike, so there's no upload path left
+that calls `standardize_sofi_statement_pdf` for a *new* statement. It's
+kept here, still called, for one reason only — `importers.ingest.
+rebuild_from_raw_statements` still re-derives every already-archived PDF
+on a rebuild, so postings (and their categorization) from statements
+imported before this retirement aren't silently dropped. Nothing should
+add a new caller of this function; if SoFi ever changes its CSV export
+again in a way that drops vault coverage, revive the PDF importer here
+rather than inventing a second one.
+
+SoFi Vaults have no CSV export of their own — historically, the only
+place their interest and transfers ever showed up was the monthly
+statement PDF, which also covers the linked checking and savings accounts
+in one file. This module is the one place that PDF's specific vocabulary
+(its `TYPE` column values, its "To/From <Name> Vault" and "To/From
+Checking - 1234" transfer phrasing, its per-account APY block) is read;
+everything past `standardize_sofi_statement_pdf` sees the same `Posting`/
+`Account` shapes every other importer produces.
 
 The statement double-books every internal transfer: a vault's own section
 shows "Deposit From savings balance" mirroring the savings account's

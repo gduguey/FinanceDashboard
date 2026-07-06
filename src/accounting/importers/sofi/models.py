@@ -2,11 +2,12 @@
 
 Two distinct shapes exist: `SofiRow` (`Date, Description, Type, Amount,
 Current balance, Status`) is the older checking/savings export;
-`SofiCsvV2Row` (`Authorized Date, Posted Date, Status, Account Name,
+`SofiCsvRow` (`Authorized Date, Posted Date, Status, Account Name,
 Description, Primary Category, Detailed Category, Amount`) is the newer
 one, which also covers vaults — something the old format has no export
 for at all (SoFi only ever offered vault history via the monthly
-statement PDF, see `importers.sofi.statement_pdf`).
+statement PDF, see `importers.sofi.statement_pdf` — retired for new
+imports, see that module's own docstring).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ class SofiRow(BaseModel):
     status: str = Field(alias="Status", default="")
 
 
-class SofiCsvV2Row(BaseModel):
+class SofiCsvRow(BaseModel):
     """One row of a SoFi checking, savings, or vault export, in the newer CSV shape.
 
     `account_name` is the one field that identifies which account this

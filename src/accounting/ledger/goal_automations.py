@@ -11,10 +11,60 @@ a split for the caller to apply.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from accounting.models import RecurringAddition, WithdrawalPriorityEntry
+
+_FREQUENCY_STEP_DAYS = {"daily": 1, "weekly": 7, "biweekly": 14}
+_MAX_DAY_OF_MONTH = 28
+
+
+def _monthly_occurrence_on_or_before(start_date: date, as_of: date) -> date | None:
+    day = min(start_date.day, _MAX_DAY_OF_MONTH)
+    year, month = as_of.year, as_of.month
+    if as_of.day < day:
+        month -= 1
+        if month == 0:
+            month, year = 12, year - 1
+    candidate = date(year, month, day)
+    return None if candidate < start_date else candidate
+
+
+def next_recurring_occurrence(addition: RecurringAddition, as_of: date) -> date | None:
+    """Return the most recent scheduled occurrence of `addition` on or before `as_of`, if any.
+
+    `frequency="daily"`/`"weekly"`/`"biweekly"` step forward from
+    `start_date` in fixed-size increments — the occurrence is whichever
+    step lands on or immediately before `as_of`. `frequency="monthly"`
+    instead reuses `start_date`'s own day of month (capped at 28, so
+    every month actually has that day), landing on the most recent month
+    whose day has already arrived.
+
+    Parameters
+    ----------
+    addition
+        The recurring addition, whose `start_date`/`frequency`/`end_date` define the schedule.
+    as_of
+        The date to compute the most recent due occurrence relative to.
+
+    Returns
+    -------
+    datetime.date or None
+        `None` if `as_of` is before `start_date`, or before the first
+        occurrence would land within `start_date`'s own month (for
+        `frequency="monthly"`) — otherwise the occurrence date, clamped to
+        `end_date` if `as_of` is past it.
+    """
+    effective_as_of = min(as_of, addition.end_date) if addition.end_date is not None else as_of
+    if effective_as_of < addition.start_date:
+        return None
+    if addition.frequency == "monthly":
+        return _monthly_occurrence_on_or_before(addition.start_date, effective_as_of)
+    step = _FREQUENCY_STEP_DAYS[addition.frequency]
+    elapsed_periods = (effective_as_of - addition.start_date).days // step
+    return addition.start_date + timedelta(days=elapsed_periods * step)
 
 
 def run_recurring_additions(additions: list[RecurringAddition], unallocated: float) -> list[tuple[str, float]]:

@@ -3,8 +3,8 @@
 Every known export shape is structurally distinct (see `ACCOUNTING_PLAN.md`
 Part 5, Phase 1), so a header match alone identifies the bank and account
 kind for most formats; the account number then comes from the filename,
-which every one of those exports embeds somewhere. SoFi's newer CSV shape
-(`importers.sofi.csv_v2`) is the one exception — it names its account in
+which every one of those exports embeds somewhere. SoFi's newer, wider CSV
+shape (`importers.sofi.csv`) is the one exception — it names its account in
 the `Account Name` *column*, not the filename, so detecting it needs a
 peek at the first data row too. A guess is only ever a starting point for
 the Import page's dropdowns — never final, always overridable.
@@ -16,8 +16,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from accounting.importers.sofi.csv_v2 import HEADER as _SOFI_CSV_V2_HEADER
-from accounting.importers.sofi.csv_v2 import parse_account_name
+from accounting.importers.sofi.csv import HEADER as _SOFI_CSV_HEADER
+from accounting.importers.sofi.csv import parse_account_name
 from accounting.store import slugify
 
 if TYPE_CHECKING:
@@ -84,8 +84,8 @@ def _detect_sofi(header_tuple: tuple[str, ...], filename: str) -> DetectedAccoun
     return DetectedAccount("SoFi", kind, f"sofi:{kind}:{last4}", f"SoFi {kind.title()} (...{last4})")
 
 
-def _detect_sofi_csv_v2(header_tuple: tuple[str, ...], first_data_row: dict[str, str] | None) -> DetectedAccount | None:
-    if header_tuple != _SOFI_CSV_V2_HEADER or first_data_row is None:
+def _detect_sofi_csv(header_tuple: tuple[str, ...], first_data_row: dict[str, str] | None) -> DetectedAccount | None:
+    if header_tuple != _SOFI_CSV_HEADER or first_data_row is None:
         return None
     account_name = first_data_row.get("Account Name", "")
     parsed = parse_account_name(account_name)
@@ -124,5 +124,5 @@ def detect_bank_account(
     return (
         _detect_chase(header_tuple, filename)
         or _detect_sofi(header_tuple, filename)
-        or _detect_sofi_csv_v2(header_tuple, first_data_row)
+        or _detect_sofi_csv(header_tuple, first_data_row)
     )

@@ -66,9 +66,13 @@ export function AccountForm({
   const [nameEdited, setNameEdited] = useState(false)
   const { data: currencies } = useCurrencies()
   const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
+  // Scoped to the institution currently chosen in the form — a vault's
+  // parent is always an account at the same bank, so an account from a
+  // different institution is never a valid pick here.
+  const institutionParentOptions = parentAccountOptions.filter((account) => account.institution === value.institution)
   const parentAccountItems = {
     [NO_PARENT]: 'None',
-    ...Object.fromEntries(parentAccountOptions.map((account) => [account.account_id, account.name])),
+    ...Object.fromEntries(institutionParentOptions.map((account) => [account.account_id, account.name])),
   }
 
   // Institution/kind/last-4-digits fully determine the account id and (until
@@ -80,7 +84,11 @@ export function AccountForm({
     const next = { ...value, ...patch }
     const accountId = deriveAccountId(next.institution, next.kind, next.last4)
     const name = nameEdited ? value.name : deriveName(next.institution, next.kind, next.last4)
-    onChange({ ...next, accountId, name })
+    // A previously chosen parent belongs to the old institution's account
+    // list — carrying it over silently once the institution changes would
+    // point a vault at a parent from the wrong bank.
+    const parentAccountId = patch.institution !== undefined ? null : next.parentAccountId
+    onChange({ ...next, accountId, name, parentAccountId })
   }
 
   return (
@@ -140,17 +148,18 @@ export function AccountForm({
       </label>
       {value.kind === 'vault' && showOpeningBalance && (
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Parent account
+          Parent account (optional)
           <Select
             value={value.parentAccountId ?? NO_PARENT}
             onValueChange={(next) => onChange({ ...value, parentAccountId: next === NO_PARENT ? null : next })}
+            disabled={institutionParentOptions.length === 0}
           >
             <SelectTrigger size="sm" className="w-44">
               <SelectValue items={parentAccountItems} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={NO_PARENT}>None</SelectItem>
-              {parentAccountOptions.map((account) => (
+              {institutionParentOptions.map((account) => (
                 <SelectItem key={account.account_id} value={account.account_id}>
                   {account.name}
                 </SelectItem>

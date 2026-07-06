@@ -1,16 +1,22 @@
 import { useMemo, useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { formatCurrency } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useSetGoalContributions } from '@/hooks/useAccountingData'
+import { useSetGoalContributions, useSimulateContribution } from '@/hooks/useAccountingData'
 import type { Goal, GoalContribution } from '@/types/accounting'
 
 const ALL = '__all__'
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
 
 // Reuses the Transactions table's own patterns (per-column is/is-not
 // filters, click-to-sort headers) — not virtualized, unlike Transactions,
@@ -25,11 +31,17 @@ export function ContributionLedgerTable({
   goals: Record<string, Goal>
 }) {
   const setContributions = useSetGoalContributions()
+  const simulate = useSimulateContribution()
   const [goalFilter, setGoalFilter] = useState(ALL)
   const [originFilter, setOriginFilter] = useState(ALL)
   const [goalExclude, setGoalExclude] = useState(false)
   const [originExclude, setOriginExclude] = useState(false)
+  // Keyed by contribution_id — populated on blur of that row's date/amount
+  // cell, the same "check before it's too late" behavior the retired
+  // "Add a contribution" form used to give on its own submit-time check.
+  const [warnings, setWarnings] = useState<Record<string, string>>({})
 
+  const goalList = Object.values(goals).sort((a, b) => a.name.localeCompare(b.name))
   const rows = Object.values(contributions)
   const filtered = useMemo(
     () =>
@@ -53,6 +65,47 @@ export function ContributionLedgerTable({
   function remove(contributionId: string) {
     const { [contributionId]: _removed, ...rest } = contributions
     setContributions.mutate(rest)
+    setWarnings(({ [contributionId]: _removedWarning, ...restWarnings }) => restWarnings)
+  }
+
+  function addRow() {
+    if (goalList.length === 0) return
+    const contributionId = `manual:${Date.now()}`
+    setContributions.mutate({
+      ...contributions,
+      [contributionId]: {
+        contribution_id: contributionId,
+        goal_id: goalList[0].goal_id,
+        date: new Date(todayIsoDate()).toISOString(),
+        amount: 0,
+        currency: 'USD',
+        note: '',
+        source_posting_id: null,
+        origin: 'manual',
+        edited: false,
+      },
+    })
+  }
+
+  async function checkContribution(contribution: GoalContribution) {
+    const result = await simulate.mutateAsync({
+      goalId: contribution.goal_id,
+      date: contribution.date.slice(0, 10),
+      amount: contribution.amount,
+    })
+    let message: string | null = null
+    if (result.exceeds_unallocated) {
+      message = `Exceeds unallocated as of ${contribution.date.slice(0, 10)} (${formatCurrency(result.unallocated_as_of_date, 'USD')} available)`
+    } else if (result.would_go_negative) {
+      message = `Next recurring-addition run is projected to leave unallocated at ${formatCurrency(result.projected_next_run_unallocated, 'USD')}`
+    }
+    setWarnings((prev) => {
+      if (message === null) {
+        const { [contribution.contribution_id]: _removed, ...rest } = prev
+        return rest
+      }
+      return { ...prev, [contribution.contribution_id]: message }
+    })
   }
 
   const goalItems = { [ALL]: 'All goals', ...Object.fromEntries(Object.values(goals).map((g) => [g.goal_id, g.name])) }
@@ -61,7 +114,12 @@ export function ContributionLedgerTable({
   return (
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-        <CardTitle>Contribution ledger</CardTitle>
+        <div className="flex items-center gap-2">
+          <CardTitle>Contribution ledger</CardTitle>
+          <Button variant="ghost" size="icon" onClick={addRow} disabled={goalList.length === 0} title="Add a contribution">
+            <Plus className="size-4" />
+          </Button>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1">
             <Select value={goalFilter} onValueChange={(value) => value && setGoalFilter(value)}>
@@ -136,16 +194,44 @@ export function ContributionLedgerTable({
                       className="h-7 w-32 text-xs"
                       value={contribution.date.slice(0, 10)}
                       onChange={(event) => update(contribution.contribution_id, { date: new Date(event.target.value).toISOString() })}
+                      onBlur={() => checkContribution(contribution)}
                     />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">{goals[contribution.goal_id]?.name ?? contribution.goal_id}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    <Select
+                      value={contribution.goal_id}
+                      onValueChange={(value) => value && update(contribution.contribution_id, { goal_id: value })}
+                    >
+                      <SelectTrigger size="sm" className="h-7 min-w-32 text-xs">
+                        <SelectValue items={Object.fromEntries(goalList.map((g) => [g.goal_id, g.name]))} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {goalList.map((goal) => (
+                          <SelectItem key={goal.goal_id} value={goal.goal_id}>
+                            {goal.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    <Input
-                      type="number"
-                      className="h-7 w-24 text-right text-xs"
-                      value={contribution.amount}
-                      onChange={(event) => update(contribution.contribution_id, { amount: Number(event.target.value) })}
-                    />
+                    <div className="flex items-center justify-end gap-1">
+                      {warnings[contribution.contribution_id] && (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <AlertTriangle className="size-3.5 text-amber-500" />
+                          </TooltipTrigger>
+                          <TooltipContent>{warnings[contribution.contribution_id]}</TooltipContent>
+                        </Tooltip>
+                      )}
+                      <Input
+                        type="number"
+                        className="h-7 w-24 text-right text-xs"
+                        value={contribution.amount}
+                        onChange={(event) => update(contribution.contribution_id, { amount: Number(event.target.value) })}
+                        onBlur={() => checkContribution(contribution)}
+                      />
+                    </div>
                   </TableCell>
                   <TableCell>
                     <Input

@@ -37,7 +37,7 @@ def test_detects_sofi_savings_from_its_header_and_filename() -> None:
     assert result.account_id == "sofi:savings:3680"
 
 
-_SOFI_CSV_V2_HEADER = [
+_SOFI_CSV_HEADER = [
     "Authorized Date",
     "Posted Date",
     "Status",
@@ -49,9 +49,9 @@ _SOFI_CSV_V2_HEADER = [
 ]
 
 
-def test_detects_a_sofi_csv_v2_vault_from_its_first_data_row() -> None:
+def test_detects_a_sofi_csv_vault_from_its_first_data_row() -> None:
     result = detect_bank_account(
-        _SOFI_CSV_V2_HEADER, "Emergency Fund_2026-07-05.csv", {"Account Name": "Emergency Fund ***3680"}
+        _SOFI_CSV_HEADER, "Emergency Fund_2026-07-05.csv", {"Account Name": "Emergency Fund ***3680"}
     )
     assert result is not None
     assert result.institution == "SoFi"
@@ -61,16 +61,16 @@ def test_detects_a_sofi_csv_v2_vault_from_its_first_data_row() -> None:
     assert result.account_name == "Emergency Fund Vault"
 
 
-def test_detects_a_sofi_csv_v2_savings_account_from_its_first_data_row() -> None:
-    result = detect_bank_account(_SOFI_CSV_V2_HEADER, "export.csv", {"Account Name": "SoFi HYSA ***3680"})
+def test_detects_a_sofi_csv_savings_account_from_its_first_data_row() -> None:
+    result = detect_bank_account(_SOFI_CSV_HEADER, "export.csv", {"Account Name": "SoFi HYSA ***3680"})
     assert result is not None
     assert result.account_kind == "savings"
     assert result.account_id == "sofi:savings:3680"
     assert result.parent_account_id is None
 
 
-def test_sofi_csv_v2_without_a_first_data_row_returns_none() -> None:
-    assert detect_bank_account(_SOFI_CSV_V2_HEADER, "export.csv") is None
+def test_sofi_csv_without_a_first_data_row_returns_none() -> None:
+    assert detect_bank_account(_SOFI_CSV_HEADER, "export.csv") is None
 
 
 def test_unrecognized_header_returns_none() -> None:

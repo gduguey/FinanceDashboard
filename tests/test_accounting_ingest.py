@@ -5,12 +5,11 @@ from accounting.importers import ingest as ingest_module
 from accounting.importers.ingest import (
     UnsupportedImportError,
     ingest_csv,
-    ingest_sofi_statement_pdf,
     load_ledger,
     rebuild_from_raw_statements,
 )
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
-from accounting.store import load_store, save_store
+from accounting.store import load_store
 
 CHASE_CHECKING_CSV = (
     "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
@@ -122,50 +121,26 @@ def _patch_sofi_statement_pdf(monkeypatch) -> None:
     )
 
 
-def test_ingest_sofi_statement_pdf_archives_the_raw_pdf_verbatim(tmp_path, monkeypatch) -> None:
-    _patch_sofi_statement_pdf(monkeypatch)
-    config = _config(tmp_path)
-    ingest_sofi_statement_pdf(b"%PDF-fake", config)
+def _archive_sofi_statement_pdf(config: AccountingConfig, pdf_bytes: bytes) -> None:
+    """Write a raw PDF straight into the archive, bypassing the (now-retired) upload endpoint.
 
-    archived = list(config.raw_statement_dir.glob("SoFi/statement_pdf/*.pdf"))
-    assert len(archived) == 1
-    assert archived[0].read_bytes() == b"%PDF-fake"
-
-
-def test_ingest_sofi_statement_pdf_registers_every_account_it_describes(tmp_path, monkeypatch) -> None:
-    _patch_sofi_statement_pdf(monkeypatch)
-    config = _config(tmp_path)
-    result = ingest_sofi_statement_pdf(b"%PDF-fake", config)
-
-    assert set(result.account_ids) == {
-        "sofi:checking:9169",
-        "sofi:savings:3680",
-        "sofi:savings:3680:vault:emergency-fund",
-    }
-    store = load_store(config)
-    assert store.accounts["sofi:savings:3680"].meta["apy_pct"] == "4.02"
-
-
-def test_ingest_sofi_statement_pdf_refreshes_apy_without_touching_a_renamed_account(tmp_path, monkeypatch) -> None:
-    _patch_sofi_statement_pdf(monkeypatch)
-    config = _config(tmp_path)
-    ingest_sofi_statement_pdf(b"%PDF-fake", config)
-
-    store = load_store(config)
-    renamed = store.accounts["sofi:savings:3680"].model_copy(update={"name": "My Savings"})
-    save_store(store.model_copy(update={"accounts": {**store.accounts, "sofi:savings:3680": renamed}}), config)
-
-    ingest_sofi_statement_pdf(b"%PDF-fake", config)
-    refreshed = load_store(config).accounts["sofi:savings:3680"]
-    assert refreshed.name == "My Savings"
-    assert refreshed.meta["apy_pct"] == "4.02"
+    Mirrors what `ingest_sofi_statement_pdf` used to do before new PDF
+    imports were retired — `rebuild_from_raw_statements` still needs to
+    find something under `SoFi/statement_pdf/*.pdf` to re-derive.
+    """
+    directory = config.raw_statement_dir / "SoFi" / "statement_pdf"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "statement.pdf").write_bytes(pdf_bytes)
 
 
 def test_rebuild_from_raw_statements_replays_archived_sofi_pdfs(tmp_path, monkeypatch) -> None:
     _patch_sofi_statement_pdf(monkeypatch)
     config = _config(tmp_path)
-    ingest_sofi_statement_pdf(b"%PDF-fake", config)
+    _archive_sofi_statement_pdf(config, b"%PDF-fake")
 
     rebuilt = rebuild_from_raw_statements(config)
     assert set(rebuilt["account_id"].unique().to_list()) >= {"sofi:checking:9169", "sofi:savings:3680"}
     assert "sofi:savings:3680:vault:emergency-fund" in load_store(config).accounts
+
+    store = load_store(config)
+    assert store.accounts["sofi:savings:3680"].meta["apy_pct"] == "4.02"

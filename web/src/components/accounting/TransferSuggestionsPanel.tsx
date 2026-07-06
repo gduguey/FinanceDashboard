@@ -6,21 +6,22 @@ import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
-import { useSetRules, useTransferSuggestions } from '@/hooks/useAccountingData'
+import { useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
-import type { Account, Rule, TransferSuggestion } from '@/types/accounting'
+import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
 
 function suggestionKey(suggestion: TransferSuggestion): string {
   return `${suggestion.posting_id}-${suggestion.other_posting_id}`
 }
 
-// One suggestion resolves into TWO independent one-directional rule
-// drafts — a transfer is really two separate transactions (each imported
-// against its own placeholder counterparty), so fully resolving it means
-// writing one rule per side: "on account A, if description contains X,
-// repoint to B" and the mirror for B. A user might only want one
-// direction (or neither), so both are offered, each with its own Add button.
-function suggestedRuleDrafts(suggestion: TransferSuggestion): Rule[] {
+// One suggestion resolves into TWO independent one-directional transfer
+// rule drafts — a transfer is really two separate transactions (each
+// imported against its own placeholder counterparty), so fully resolving
+// it means writing one rule per side: "on account A, if description
+// contains X, repoint to B" and the mirror for B. Adding only one leaves
+// the other transaction exactly as it was, so both are always added
+// together as one action.
+function suggestedRuleDrafts(suggestion: TransferSuggestion): TransferRule[] {
   return [
     {
       rule_id: `transfer:${suggestion.posting_id}`,
@@ -49,51 +50,121 @@ function accountName(accounts: Record<string, Account>, accountId: string | null
   return (accountId && accounts[accountId]?.name) || accountId || '—'
 }
 
-function SuggestedRuleCard({
+function DraftRuleCard({
   draft,
   accounts,
   alreadyAdded,
-  onAdd,
+  onChange,
 }: {
-  draft: Rule
+  draft: TransferRule
   accounts: Record<string, Account>
   alreadyAdded: boolean
-  onAdd: (rule: Rule) => void
+  onChange: (draft: TransferRule) => void
 }) {
-  const [rule, setRule] = useState(draft)
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-xs text-muted-foreground">
-        On <span className="font-medium text-foreground">{accountName(accounts, rule.account_id)}</span>, if description contains…
+        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id)}</span>, if description contains…
       </p>
       <Input
-        value={rule.description_contains}
+        value={draft.description_contains}
         disabled={alreadyAdded}
-        onChange={(event) => setRule((prev) => ({ ...prev, description_contains: event.target.value }))}
+        onChange={(event) => onChange({ ...draft, description_contains: event.target.value })}
       />
-      <p className="text-xs text-muted-foreground">…repoint it to {accountName(accounts, rule.counterparty_account_id)}.</p>
-      <Button size="sm" disabled={alreadyAdded} onClick={() => onAdd(rule)}>
-        {alreadyAdded ? 'Rule added' : 'Add rule'}
+      <p className="text-xs text-muted-foreground">…repoint it to {accountName(accounts, draft.counterparty_account_id)}.</p>
+      {alreadyAdded && <p className="text-xs text-emerald-600">Already added</p>}
+    </div>
+  )
+}
+
+// The two proposed transfer rules for one suggestion, added together as a
+// single action — see `suggestedRuleDrafts`'s own comment for why adding
+// only one would leave the other transaction unresolved.
+function SuggestedRulePair({
+  suggestion,
+  accounts,
+  existingRules,
+  onAdd,
+}: {
+  suggestion: TransferSuggestion
+  accounts: Record<string, Account>
+  existingRules: TransferRule[]
+  onAdd: (rules: TransferRule[]) => void
+}) {
+  const [drafts, setDrafts] = useState(() => suggestedRuleDrafts(suggestion))
+  const existingRuleIds = new Set(existingRules.map((rule) => rule.rule_id))
+  const alreadyAdded = drafts.map((draft) => existingRuleIds.has(draft.rule_id))
+  const allAdded = alreadyAdded.every(Boolean)
+
+  function updateDraft(index: number, next: TransferRule) {
+    setDrafts((prev) => prev.map((draft, draftIndex) => (draftIndex === index ? next : draft)))
+  }
+
+  function handleAddBoth() {
+    const toAdd = drafts.filter((_, index) => !alreadyAdded[index])
+    onAdd(toAdd)
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Both rules below are needed to fully resolve this transfer — each one only fixes the transaction on its own
+        account; the other side stays exactly as it is until its own rule is added too.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {drafts.map((draft, index) => (
+          <DraftRuleCard
+            key={draft.rule_id}
+            draft={draft}
+            accounts={accounts}
+            alreadyAdded={alreadyAdded[index]}
+            onChange={(next) => updateDraft(index, next)}
+          />
+        ))}
+      </div>
+      <Button size="sm" disabled={allAdded} onClick={handleAddBoth}>
+        {allAdded ? 'Both rules added' : 'Add both rules'}
       </Button>
     </div>
   )
 }
 
-// Suggests — never applies — likely internal transfers no `Rule` has
-// caught yet: two postings, on two real accounts, still pointing at a
+// Suggests — never applies — likely internal transfers no transfer rule
+// has caught yet: two postings, on two real accounts, still pointing at a
 // placeholder counterparty, whose amounts are equal and opposite within
-// `windowDays` of each other. Clicking a row shows both sides plus a
-// proposed rule for each direction, editable before adding.
-export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record<string, Account>; rules: Rule[] }) {
+// `windowDays` of each other. Clicking a row shows both sides plus both
+// proposed rules, editable before adding.
+export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record<string, Account>; rules: TransferRule[] }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.transfer-suggestions.window-days', 3)
+  const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
   const { data } = useTransferSuggestions(windowDays)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
-  const setRules = useSetRules()
+  const setRules = useSetTransferRules()
   const { sorted, sort, toggleSort } = useSortableRows(data ?? [], 'posted_at')
-  const existingRuleIds = new Set(rules.map((rule) => rule.rule_id))
 
-  function addRule(rule: Rule) {
-    setRules.mutate([...rules, rule])
+  // Kept as free-text while typing (rather than coercing on every
+  // keystroke) so backspacing to clear the field and type a new number
+  // doesn't get immediately snapped back to a minimum value, which would
+  // otherwise make every second keystroke land on the tail of the old
+  // number instead of a blank field.
+  function handleWindowDaysChange(value: string) {
+    setWindowDaysDraft(value)
+    const parsed = Number.parseInt(value, 10)
+    if (value !== '' && Number.isFinite(parsed) && parsed >= 1) {
+      setWindowDays(parsed)
+    }
+  }
+
+  function handleWindowDaysBlur() {
+    const parsed = Number.parseInt(windowDaysDraft, 10)
+    if (windowDaysDraft === '' || !Number.isFinite(parsed) || parsed < 1) {
+      setWindowDaysDraft(String(windowDays))
+    }
+  }
+
+  function addRules(newRules: TransferRule[]) {
+    if (newRules.length === 0) return
+    setRules.mutate([...rules, ...newRules])
   }
 
   if (!data) return null
@@ -108,8 +179,9 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
             type="number"
             min={1}
             className="w-16"
-            value={windowDays}
-            onChange={(event) => setWindowDays(Math.max(1, Number(event.target.value) || 1))}
+            value={windowDaysDraft}
+            onChange={(event) => handleWindowDaysChange(event.target.value)}
+            onBlur={handleWindowDaysBlur}
           />
           days
         </label>
@@ -181,16 +253,8 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                                 </p>
                               </div>
                             </div>
-                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                              {suggestedRuleDrafts(suggestion).map((draft) => (
-                                <SuggestedRuleCard
-                                  key={draft.rule_id}
-                                  draft={draft}
-                                  accounts={accounts}
-                                  alreadyAdded={existingRuleIds.has(draft.rule_id)}
-                                  onAdd={addRule}
-                                />
-                              ))}
+                            <div className="mt-3">
+                              <SuggestedRulePair suggestion={suggestion} accounts={accounts} existingRules={rules} onAdd={addRules} />
                             </div>
                           </TableCell>
                         </TableRow>
@@ -201,7 +265,7 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
               </TableBody>
             </Table>
             <p className="mt-2 text-xs text-muted-foreground">
-              Click a row to see both sides and propose a rule for either direction — each pair looks like one
+              Click a row to see both sides and add both rules needed to resolve it — each pair looks like one
               transfer a rule hasn't resolved yet.
             </p>
           </>

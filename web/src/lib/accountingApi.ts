@@ -31,11 +31,10 @@ import type {
   PostingSplitLeg,
   ProjectionPoint,
   RecurringAddition,
-  Rule,
   SimulatorScenario,
-  SofiStatementImportResult,
   SpendCurvePoint,
   Tag,
+  TransferRule,
   TransferSuggestion,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
@@ -93,7 +92,8 @@ export const accountingApi = {
   putCategories: (categories: Record<string, Category>) =>
     request<Record<string, Category>>('/api/accounting/categories', jsonInit('PUT', categories)),
   putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
-  putRules: (rules: Rule[]) => request<Rule[]>('/api/accounting/rules', jsonInit('PUT', rules)),
+  putTransferRules: (rules: TransferRule[]) =>
+    request<TransferRule[]>('/api/accounting/transfer-rules', jsonInit('PUT', rules)),
   putOtherAssets: (otherAssets: OtherAsset[]) =>
     request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
   postAccount: (account: Account) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
@@ -128,14 +128,6 @@ export const accountingApi = {
     if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
   },
-  importSofiStatementPdf: (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    return request<SofiStatementImportResult>('/api/accounting/import/sofi-statement-pdf', {
-      method: 'POST',
-      body: formData,
-    })
-  },
   importPaystub: (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
@@ -163,6 +155,11 @@ export const accountingApi = {
     request<{ category_id: string | null; subcategory_id: string | null; applied: boolean }>(
       `/api/accounting/postings/${encodeURIComponent(postingId)}/pattern-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
       { method: 'POST' },
+    ),
+  patternSuggestCategoryBulk: (postingIds: string[]) =>
+    request<{ applied: number }>(
+      '/api/accounting/postings/pattern-suggest-category/bulk',
+      jsonInit('POST', { posting_ids: postingIds }),
     ),
   validatePending: (postingIds: string[]) =>
     request<{ accepted: number; reverted: number }>(
@@ -233,7 +230,8 @@ export const accountingApi = {
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
-  goalsSummary: (asOf?: string) => request<GoalsSummary>(`/api/accounting/goals/summary${queryString({ as_of: asOf })}`),
+  goalsSummary: (asOf?: string, displayCurrency?: string) =>
+    request<GoalsSummary>(`/api/accounting/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   runRecurringAdditions: (asOf?: string) =>
     request<GoalContribution[]>(`/api/accounting/goals/run-recurring-additions${queryString({ as_of: asOf })}`, {
       method: 'POST',

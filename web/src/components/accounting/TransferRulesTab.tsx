@@ -15,14 +15,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useSetRules } from '@/hooks/useAccountingData'
-import type { Account, Rule } from '@/types/accounting'
+import { useSetTransferRules } from '@/hooks/useAccountingData'
+import type { Account, TransferRule } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see
 // `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
-// aren't things a rule ever repoints a posting *to* — a rule's whole job is
-// to repoint a posting away from one of these, so they're excluded from the
-// counterparty picker.
+// aren't things a transfer rule ever repoints a posting *to* — a rule's
+// whole job is to repoint a posting away from one of these, so they're
+// excluded from the counterparty picker.
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 const NO_COUNTERPARTY = '__none__'
 
@@ -68,23 +68,23 @@ function CounterpartySelect({
   )
 }
 
-function RuleEditDialog({
+function TransferRuleEditDialog({
   rule,
   accounts,
   onClose,
   onSave,
 }: {
-  rule: Rule
+  rule: TransferRule
   accounts: Account[]
   onClose: () => void
-  onSave: (rule: Rule) => void
+  onSave: (rule: TransferRule) => void
 }) {
   const [draft, setDraft] = useState(rule)
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Edit rule</DialogTitle>
+          <DialogTitle>Edit transfer rule</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -137,21 +137,21 @@ function RuleEditDialog({
   )
 }
 
-export function RulesTab({ rules, accounts }: { rules: Rule[]; accounts: Record<string, Account> }) {
-  const setRules = useSetRules()
-  const [editing, setEditing] = useState<Rule | null>(null)
+export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; accounts: Record<string, Account> }) {
+  const setRules = useSetTransferRules()
+  const [editing, setEditing] = useState<TransferRule | null>(null)
   const [draft, setDraft] = useState<{ descriptionContains: string; counterpartyAccountId: string | null }>({
     descriptionContains: '',
     counterpartyAccountId: null,
   })
   const { sorted, sort, toggleSort } = useSortableRows(rules, 'priority')
   const options = counterpartyOptions(accounts)
-  const counterpartyName = (rule: Rule) =>
+  const counterpartyName = (rule: TransferRule) =>
     (rule.counterparty_account_id && accounts[rule.counterparty_account_id]?.name) || '—'
 
   function addRule() {
     if (!draft.descriptionContains || !draft.counterpartyAccountId) return
-    const rule: Rule = {
+    const rule: TransferRule = {
       rule_id: `manual:${Date.now()}`,
       description_contains: draft.descriptionContains,
       account_id: null,
@@ -169,14 +169,14 @@ export function RulesTab({ rules, accounts }: { rules: Rule[]; accounts: Record<
     setRules.mutate(rules.filter((rule) => rule.rule_id !== ruleId))
   }
 
-  function saveRule(updated: Rule) {
+  function saveRule(updated: TransferRule) {
     setRules.mutate(rules.map((rule) => (rule.rule_id === updated.rule_id ? updated : rule)))
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Rules</CardTitle>
+        <CardTitle>Transfer rules</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <Table>
@@ -235,12 +235,12 @@ export function RulesTab({ rules, accounts }: { rules: Rule[]; accounts: Record<
             />
           </label>
           <Button size="sm" onClick={addRule}>
-            Add rule
+            Add transfer rule
           </Button>
         </div>
       </CardContent>
       {editing && (
-        <RuleEditDialog rule={editing} accounts={options} onClose={() => setEditing(null)} onSave={saveRule} />
+        <TransferRuleEditDialog rule={editing} accounts={options} onClose={() => setEditing(null)} onSave={saveRule} />
       )}
     </Card>
   )

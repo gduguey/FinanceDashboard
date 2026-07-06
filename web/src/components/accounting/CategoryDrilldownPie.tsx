@@ -9,6 +9,7 @@ import { ResponsiveContainer } from 'recharts'
 import { PieChartLegend } from '@/components/shared/PieChartLegend'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import {
   UNCATEGORIZED_EXPENSE_CATEGORY_ID,
@@ -130,42 +131,6 @@ function buildRings(rows: CategoryTotalRow[], scope: Scope): { level: string; sl
 
 const INNER_START = 40
 const OUTER_END = 150
-
-const VIRTUAL_ACCOUNT_KINDS = new Set(['income_source', 'expense_payee'])
-
-// Mirrors the backend's own `_real_income_expense_legs` test (see
-// `dashboard.income_statement`): a posting only ever represents real
-// income or a real expense — as opposed to an internal transfer between
-// two accounts you hold — when it's not itself on a virtual placeholder
-// account AND its transaction's sibling leg is. The pie's own totals
-// already apply this server-side; this table is built from raw postings
-// client-side, so without repeating the same test here it would also show
-// a transaction's placeholder counterparty leg, and any transaction a
-// `Rule` has already repointed to a real counterparty (a resolved
-// transfer, no longer real income/expense at all).
-//
-// Built from `allPostings` (every posting, unscoped) rather than the
-// already period/account/tag-filtered rows passed in for display — an
-// account filter in particular can drop one leg of a pair from the scoped
-// set, which would otherwise make its sibling look virtual/non-virtual
-// incorrectly.
-function realIncomeExpensePostingIds(allPostings: Posting[], accounts: Record<string, Account>): Set<string> {
-  const virtualAccountIds = new Set(
-    Object.values(accounts).filter((account) => VIRTUAL_ACCOUNT_KINDS.has(account.kind)).map((account) => account.account_id),
-  )
-  const transactionHasVirtualLeg = new Map<string, boolean>()
-  for (const posting of allPostings) {
-    const isVirtual = virtualAccountIds.has(posting.account_id)
-    if (isVirtual) transactionHasVirtualLeg.set(posting.transaction_id, true)
-  }
-  const ids = new Set<string>()
-  for (const posting of allPostings) {
-    if (virtualAccountIds.has(posting.account_id)) continue
-    if (!transactionHasVirtualLeg.get(posting.transaction_id)) continue
-    ids.add(posting.posting_id)
-  }
-  return ids
-}
 
 function SubcategoryTable({
   selection,
