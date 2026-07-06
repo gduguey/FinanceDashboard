@@ -427,6 +427,173 @@ def test_ai_suggest_category_404s_for_an_unknown_posting(client, monkeypatch) ->
     assert response.status_code == 404
 
 
+def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] == "income:salary"
+    assert updated_payroll["pending_source"] == "ai"
+    assert updated_payroll["pending_selected"] is True
+
+
+def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+
+    response = client.post("/api/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]})
+    assert response.status_code == 200
+    assert response.json() == {"accepted": 1, "reverted": 0}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] == "income:salary"
+    assert updated_payroll["pending_source"] is None
+
+
+def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    assert payroll["category_id"] is None
+
+    fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+    client.put(f"/api/accounting/postings/{payroll['posting_id']}/override", json={"pending_selected": False})
+
+    response = client.post("/api/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]})
+    assert response.status_code == 200
+    assert response.json() == {"accepted": 0, "reverted": 1}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] is None
+    assert updated_payroll["pending_source"] is None
+
+
+def test_validate_pending_ignores_postings_outside_the_given_list(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+
+    response = client.post("/api/accounting/postings/validate-pending", json={"posting_ids": ["some-other-posting"]})
+    assert response.json() == {"accepted": 0, "reverted": 0}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["pending_source"] == "ai"
+
+
+def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    client.put(
+        "/api/accounting/category-patterns",
+        json={"p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"}},
+    )
+
+    response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/pattern-suggest-category")
+    assert response.status_code == 200
+    assert response.json() == {"category_id": "income:salary", "subcategory_id": None, "applied": True}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] == "income:salary"
+    assert updated_payroll["pending_source"] == "pattern"
+
+
+def test_pattern_suggest_category_returns_unapplied_when_nothing_matches(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+
+    response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/pattern-suggest-category")
+    assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
+
+
+def test_put_category_patterns_persists_and_is_returned_by_store(client) -> None:
+    response = client.put(
+        "/api/accounting/category-patterns",
+        json={"p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"}},
+    )
+    assert response.status_code == 200
+
+    store = client.get("/api/accounting/store").json()
+    assert store["category_patterns"]["p1"]["category_id"] == "income:salary"
+
+
 def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
     class _NoCredentials:
         gemini_api_key = None
@@ -565,6 +732,84 @@ def test_transfer_suggestions_finds_the_chase_card_payoff(client) -> None:
         "chase:checking:9579",
         "chase:credit_card:1234",
     }
+    assert suggestions[0]["description"]
+    assert suggestions[0]["other_description"]
+
+
+def test_transfer_suggestions_respects_a_wider_window_days(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    credit_card_csv = (
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+        "06/24/2026,06/24/2026,Something else entirely,Other,Sale,70.00,\n"
+    )
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase1234.csv", credit_card_csv, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "credit_card",
+            "account_id": "chase:credit_card:1234",
+            "account_name": "Chase Credit Card (...1234)",
+        },
+    )
+    # The two postings are 5 days apart (06/24 vs 06/29) — outside the
+    # default 3-day window, but within a wider one.
+    assert client.get("/api/accounting/transfer-suggestions").json() == []
+    wider = client.get("/api/accounting/transfer-suggestions", params={"window_days": 7}).json()
+    assert len(wider) == 1
+
+
+def test_postings_report_which_rule_resolved_them(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    assert payroll["resolved_by_rule_id"] is None
+
+    client.put(
+        "/api/accounting/rules",
+        json=[
+            {
+                "rule_id": "payroll-rule",
+                "description_contains": "PAYROLL",
+                "counterparty_account_id": "employer:eqore",
+                "category_id": "income:salary",
+                "priority": 0,
+            }
+        ],
+    )
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "employer:eqore",
+            "name": "EQORE",
+            "kind": "income_source",
+            "institution": "internal",
+            "currency": "USD",
+        },
+    )
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    assert updated_payroll["resolved_by_rule_id"] == "payroll-rule"
+    assert updated_payroll["category_id"] == "income:salary"
 
 
 def test_put_categories_replaces_the_whole_tree(client) -> None:

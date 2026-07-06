@@ -92,6 +92,52 @@ export interface BudgetComparisonRow {
   currency: CurrencyCode
 }
 
+export interface Goal {
+  goal_id: string
+  name: string
+  target_amount: number
+  target_currency: CurrencyCode
+  target_date: string
+  color: string
+  created_at: string
+}
+
+export type GoalContributionOrigin = 'manual' | 'automation'
+
+export interface GoalContribution {
+  contribution_id: string
+  goal_id: string
+  date: string
+  amount: number
+  currency: CurrencyCode
+  note: string
+  source_posting_id: string | null
+  origin: GoalContributionOrigin
+  edited: boolean
+}
+
+export type RecurringAdditionMode = 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+
+export interface RecurringAddition {
+  addition_id: string
+  goal_id: string
+  schedule_day_of_month: number
+  mode: RecurringAdditionMode
+  value: number
+  currency: CurrencyCode
+  priority: number
+}
+
+export interface WithdrawalPriorityEntry {
+  goal_id: string
+  priority: number
+}
+
+export interface GoalsSummary {
+  balances: Record<string, number>
+  unallocated: number
+}
+
 export type CompoundingFrequency = 'annually' | 'monthly' | 'daily'
 
 export interface SimulatorScenario {
@@ -122,6 +168,8 @@ export interface InterestAccountRow {
   benchmark_apy_pct: number | null
 }
 
+export type PendingSuggestionSource = 'ai' | 'pattern'
+
 export interface Posting {
   posting_id: string
   transaction_id: string
@@ -135,6 +183,17 @@ export interface Posting {
   tag_ids: string[]
   description: string
   meta: Record<string, string>
+  pending_source: PendingSuggestionSource | null
+  pending_selected: boolean
+  resolved_by_rule_id: string | null
+}
+
+export interface CategoryPattern {
+  pattern_id: string
+  description_contains: string
+  category_id: string
+  subcategory_id: string | null
+  priority: number
 }
 
 export interface ManualOverride {
@@ -142,6 +201,7 @@ export interface ManualOverride {
   category_id?: string | null
   subcategory_id?: string | null
   tag_ids?: string[] | null
+  pending_selected?: boolean
 }
 
 export interface EarningsDeposit {
@@ -204,11 +264,16 @@ export interface AccountingStore {
   categories: Record<string, Category>
   tags: Record<string, Tag>
   rules: Rule[]
+  category_patterns: Record<string, CategoryPattern>
   other_assets: OtherAsset[]
   opening_balances: Record<string, OpeningBalance>
   budgets: Budget[]
   general_budgets: Record<string, GeneralBudget>
   simulator_scenarios: SimulatorScenario[]
+  goals: Record<string, Goal>
+  goal_contributions: Record<string, GoalContribution>
+  recurring_additions: RecurringAddition[]
+  withdrawal_priorities: WithdrawalPriorityEntry[]
 }
 
 export interface ExchangeRateSyncResult {
@@ -287,9 +352,11 @@ export interface TransferSuggestion {
   account_id: string
   posting_id: string
   posted_at: string
+  description: string
   other_account_id: string
   other_posted_at: string
   other_posting_id: string
+  other_description: string
   amount: number
 }
 

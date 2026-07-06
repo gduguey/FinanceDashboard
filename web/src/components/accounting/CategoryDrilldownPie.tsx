@@ -13,6 +13,7 @@ import { useSortableRows } from '@/hooks/useSortableRows'
 import {
   UNCATEGORIZED_EXPENSE_CATEGORY_ID,
   UNCATEGORIZED_INCOME_CATEGORY_ID,
+  type Account,
   type CategoryClassification,
   type CategoryTotalRow,
   type CurrencyCode,
@@ -130,18 +131,60 @@ function buildRings(rows: CategoryTotalRow[], scope: Scope): { level: string; sl
 const INNER_START = 40
 const OUTER_END = 150
 
+const VIRTUAL_ACCOUNT_KINDS = new Set(['income_source', 'expense_payee'])
+
+// Mirrors the backend's own `_real_income_expense_legs` test (see
+// `dashboard.income_statement`): a posting only ever represents real
+// income or a real expense — as opposed to an internal transfer between
+// two accounts you hold — when it's not itself on a virtual placeholder
+// account AND its transaction's sibling leg is. The pie's own totals
+// already apply this server-side; this table is built from raw postings
+// client-side, so without repeating the same test here it would also show
+// a transaction's placeholder counterparty leg, and any transaction a
+// `Rule` has already repointed to a real counterparty (a resolved
+// transfer, no longer real income/expense at all).
+//
+// Built from `allPostings` (every posting, unscoped) rather than the
+// already period/account/tag-filtered rows passed in for display — an
+// account filter in particular can drop one leg of a pair from the scoped
+// set, which would otherwise make its sibling look virtual/non-virtual
+// incorrectly.
+function realIncomeExpensePostingIds(allPostings: Posting[], accounts: Record<string, Account>): Set<string> {
+  const virtualAccountIds = new Set(
+    Object.values(accounts).filter((account) => VIRTUAL_ACCOUNT_KINDS.has(account.kind)).map((account) => account.account_id),
+  )
+  const transactionHasVirtualLeg = new Map<string, boolean>()
+  for (const posting of allPostings) {
+    const isVirtual = virtualAccountIds.has(posting.account_id)
+    if (isVirtual) transactionHasVirtualLeg.set(posting.transaction_id, true)
+  }
+  const ids = new Set<string>()
+  for (const posting of allPostings) {
+    if (virtualAccountIds.has(posting.account_id)) continue
+    if (!transactionHasVirtualLeg.get(posting.transaction_id)) continue
+    ids.add(posting.posting_id)
+  }
+  return ids
+}
+
 function SubcategoryTable({
   selection,
   postings,
+  allPostings,
+  accounts,
   displayCurrency,
 }: {
   selection: SelectedSubcategory
   postings: Posting[]
+  allPostings: Posting[]
+  accounts: Record<string, Account>
   displayCurrency: CurrencyCode
 }) {
   const isUncategorized =
     selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID || selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
+  const realIds = realIncomeExpensePostingIds(allPostings, accounts)
   const rows = postings.filter((posting) => {
+    if (!realIds.has(posting.posting_id)) return false
     const signMatches = selection.classification === 'income' ? posting.amount >= 0 : posting.amount < 0
     if (!signMatches) return false
     if (isUncategorized) return posting.category_id === null
@@ -162,6 +205,9 @@ function SubcategoryTable({
               <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
                 Date
               </SortableTableHead>
+              <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
+                Account
+              </SortableTableHead>
               <SortableTableHead active={sort.key === 'description'} desc={sort.desc} onClick={() => toggleSort('description')}>
                 Description
               </SortableTableHead>
@@ -177,6 +223,7 @@ function SubcategoryTable({
             {sorted.map((posting) => (
               <TableRow key={posting.posting_id}>
                 <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
+                <TableCell className="whitespace-nowrap text-muted-foreground">{accounts[posting.account_id]?.name ?? posting.account_id}</TableCell>
                 <TableCell className="max-w-xs truncate">{posting.description}</TableCell>
                 <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, posting.currency)}</TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">
@@ -194,11 +241,15 @@ function SubcategoryTable({
 export function CategoryDrilldownPie({
   categoryTotals,
   postings,
+  allPostings,
+  accounts,
   isLoading,
   displayCurrency,
 }: {
   categoryTotals: CategoryTotalRow[]
   postings: Posting[]
+  allPostings: Posting[]
+  accounts: Record<string, Account>
   isLoading: boolean
   displayCurrency: CurrencyCode
 }) {
@@ -273,7 +324,13 @@ export function CategoryDrilldownPie({
             <p className="text-sm font-medium">
               {selected.categoryName} → {selected.subcategoryName}
             </p>
-            <SubcategoryTable selection={selected} postings={postings} displayCurrency={displayCurrency} />
+            <SubcategoryTable
+              selection={selected}
+              postings={postings}
+              allPostings={allPostings}
+              accounts={accounts}
+              displayCurrency={displayCurrency}
+            />
           </div>
         ) : !grandTotal ? (
           <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">No transactions in this period</div>

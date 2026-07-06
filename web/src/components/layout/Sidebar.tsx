@@ -1,4 +1,4 @@
-import { Calculator, FlaskConical, LineChart, Scale, Upload, Wallet } from 'lucide-react'
+import { Calculator, FlaskConical, LineChart, Scale, Target, Upload, Wallet } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { label: 'Investments', icon: LineChart, path: '/investments' },
   { label: 'Net Worth', icon: Scale, path: '/net-worth' },
   { label: 'Budget', icon: Wallet, path: '/budget' },
+  { label: 'Goals', icon: Target, path: '/goals' },
   { label: 'Simulator', icon: FlaskConical, path: '/simulator' },
 ]
 

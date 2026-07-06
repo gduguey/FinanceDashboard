@@ -20,9 +20,11 @@ _CANDIDATE_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     "account_id": pl.Utf8,
     "posting_id": pl.Utf8,
     "posted_at": pl.Datetime("us"),
+    "description": pl.Utf8,
     "other_account_id": pl.Utf8,
     "other_posting_id": pl.Utf8,
     "other_posted_at": pl.Datetime("us"),
+    "other_description": pl.Utf8,
     "amount": pl.Float64,
 }
 
@@ -40,9 +42,12 @@ def find_unmatched_transfer_candidates(postings: pl.DataFrame, window_days: int 
     Returns
     -------
     polars.DataFrame
-        Columns `account_id`, `posting_id`, `posted_at`, `other_account_id`,
-        `other_posting_id`, `other_posted_at`, `amount` — one row per
-        candidate pair, `amount` signed from `account_id`'s side.
+        Columns `account_id`, `posting_id`, `posted_at`, `description`,
+        `other_account_id`, `other_posting_id`, `other_posted_at`,
+        `other_description`, `amount` — one row per candidate pair,
+        `amount` signed from `account_id`'s side. The two description
+        columns are for the caller to propose a `Rule` from (see
+        `api.get_transfer_suggestions`), never read by the matching itself.
     """
     unresolved_transaction_ids = (
         postings.filter(pl.col("account_id").is_in(_PLACEHOLDER_ACCOUNT_IDS))["transaction_id"].unique().to_list()
@@ -50,7 +55,7 @@ def find_unmatched_transfer_candidates(postings: pl.DataFrame, window_days: int 
     candidates = postings.filter(
         pl.col("transaction_id").is_in(unresolved_transaction_ids)
         & ~pl.col("account_id").is_in(_PLACEHOLDER_ACCOUNT_IDS)
-    ).select("posting_id", "transaction_id", "account_id", "posted_at", "amount")
+    ).select("posting_id", "transaction_id", "account_id", "posted_at", "description", "amount")
     if candidates.is_empty():
         return pl.DataFrame(schema=_CANDIDATE_SCHEMA)
 
@@ -65,8 +70,10 @@ def find_unmatched_transfer_candidates(postings: pl.DataFrame, window_days: int 
         "account_id",
         "posting_id",
         "posted_at",
+        "description",
         other_account_id="account_id_other",
         other_posting_id="posting_id_other",
         other_posted_at="posted_at_other",
+        other_description="description_other",
         amount="amount",
     ).sort("posted_at")

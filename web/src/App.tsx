@@ -4,6 +4,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AccountingPage } from '@/pages/AccountingPage'
 import { BudgetPage } from '@/pages/BudgetPage'
+import { GoalsPage } from '@/pages/GoalsPage'
 import { ImportPage } from '@/pages/ImportPage'
 import { InvestmentsPage } from '@/pages/InvestmentsPage'
 import { NetWorthPage } from '@/pages/NetWorthPage'
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/net-worth" element={<NetWorthPage />} />
             <Route path="/accounting" element={<AccountingPage />} />
             <Route path="/budget" element={<BudgetPage />} />
+            <Route path="/goals" element={<GoalsPage />} />
             <Route path="/import" element={<ImportPage />} />
             <Route path="/simulator" element={<SimulatorPage />} />
           </Routes>

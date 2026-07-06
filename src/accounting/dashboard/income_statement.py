@@ -239,6 +239,41 @@ def monthly_income_expense(
     )
 
 
+def net_income_expense_total(
+    postings: pl.DataFrame,
+    accounts: dict[str, Account],
+    as_of: date,
+    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
+) -> float:
+    """Net real income minus real expense, cumulative through `as_of` — never bucketed by month.
+
+    The building block `dashboard.goals.unallocated_balance` uses: money
+    that's neither gone toward a real expense nor been earmarked into a
+    goal yet. Excludes transfers between two real accounts the same way
+    every other function here does (see module docstring).
+
+    Parameters
+    ----------
+    postings
+        The full, resolved posting ledger.
+    accounts
+        Every known account, keyed by `account_id`.
+    as_of
+        Last day to include, inclusive.
+    display
+        The currency (and rate) every posting's amount is converted into before summing.
+
+    Returns
+    -------
+    float
+        Positive if cumulative income exceeds cumulative expense.
+    """
+    legs = _real_income_expense_legs(postings, accounts, display).filter(pl.col("posted_at").dt.date() <= as_of)
+    if legs.is_empty():
+        return 0.0
+    return float(legs["amount"].sum())
+
+
 def spend_curve_vs_average(
     postings: pl.DataFrame,
     accounts: dict[str, Account],

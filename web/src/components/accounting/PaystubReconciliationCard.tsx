@@ -5,9 +5,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
+import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
 import { useAccountingStore, useImportPaystub, useSetPostingOverride, useSetPostingSplit } from '@/hooks/useAccountingData'
-import type { ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
+import type { PaystubReconciliationResult, ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
 
@@ -141,20 +142,93 @@ function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
   )
 }
 
+interface UploadEntry {
+  id: string
+  fileName: string
+  status: 'pending' | 'done' | 'error'
+  result: PaystubReconciliationResult | null
+  error: string | null
+}
+
+function ReconciliationResultView({ result }: { result: PaystubReconciliationResult }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        Gross {formatCurrency(result.statement.gross_pay, 'USD')} · Taxes {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net{' '}
+        {formatCurrency(result.statement.net_pay, 'USD')}
+      </p>
+      <ul className="space-y-1 text-sm">
+        {result.matches.map((match, index) => (
+          <li key={index} className="flex items-center gap-2">
+            {match.posting_id ? (
+              <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
+            ) : (
+              <XCircle className="size-3.5 shrink-0 text-destructive" />
+            )}
+            <span>
+              {match.label} — {formatCurrency(match.amount, 'USD')}
+            </span>
+            <span className="text-muted-foreground">{match.posting_id ? 'matched to a bank posting' : 'no matching bank posting found'}</span>
+          </li>
+        ))}
+      </ul>
+
+      {result.proposed_splits.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Proposed categorization</p>
+          {result.proposed_splits.map((proposal) => (
+            <ProposedSplitEditor key={proposal.posting_id} proposal={proposal} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Read-only parse + reconciliation, but `proposed_splits` lets the user
 // review, edit, and apply a categorization for each matched deposit right
 // here — applying calls the same split/override endpoints Transactions
 // uses, so nothing about a posting changes until the user clicks Apply.
+//
+// Accepts several PDFs at once (drag-and-drop, or multi-select from the
+// file picker) since one paystub is often accompanied by others from past
+// months — each is parsed and reconciled independently, so one bad/unknown
+// layout in the batch doesn't block the rest.
 export function PaystubReconciliationCard() {
   const importPaystub = useImportPaystub()
-  const [result, setResult] = useState<Awaited<ReturnType<typeof importPaystub.mutateAsync>> | null>(null)
+  const [uploads, setUploads] = useState<UploadEntry[]>([])
+  const [isDragging, setIsDragging] = useState(false)
 
-  async function handleFile(file: File) {
-    setResult(null)
-    try {
-      setResult(await importPaystub.mutateAsync(file))
-    } catch {
-      // surfaced below via importPaystub.error
+  async function handleFiles(files: File[]) {
+    const pdfFiles = files.filter((file) => file.name.toLowerCase().endsWith('.pdf'))
+    if (pdfFiles.length === 0) return
+
+    const entries: UploadEntry[] = pdfFiles.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      fileName: file.name,
+      status: 'pending',
+      result: null,
+      error: null,
+    }))
+    setUploads((prev) => [...entries, ...prev])
+
+    // Sequential, not parallel — each call hits the same PDF-text-extraction
+    // + ledger-matching path, and keeping it one-at-a-time makes per-file
+    // progress easy to show without juggling concurrent request state.
+    for (const [index, file] of pdfFiles.entries()) {
+      const entryId = entries[index].id
+      try {
+        const result = await importPaystub.mutateAsync(file)
+        setUploads((prev) => prev.map((entry) => (entry.id === entryId ? { ...entry, status: 'done', result } : entry)))
+      } catch (error) {
+        setUploads((prev) =>
+          prev.map((entry) =>
+            entry.id === entryId
+              ? { ...entry, status: 'error', error: error instanceof Error ? error.message : 'Could not parse this paystub' }
+              : entry,
+          ),
+        )
+      }
     }
   }
 
@@ -163,71 +237,58 @@ export function PaystubReconciliationCard() {
       <CardHeader>
         <CardTitle>Reconcile a paystub</CardTitle>
         <CardDescription>
-          Upload a paystub PDF to check its deposits against real bank postings near pay day, and review a proposed
-          salary/reimbursement split for each matched deposit before applying it. Paystub layouts vary a lot by
+          Upload one or more paystub PDFs to check their deposits against real bank postings near pay day, and review a
+          proposed salary/reimbursement split for each matched deposit before applying it. Paystub layouts vary a lot by
           payroll provider, so this may need its parsing patterns adjusted for yours (see{' '}
           <code>accounting/importers/paystub.py</code>).
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-primary underline-offset-4 hover:underline">
-          <Upload className="size-4" />
-          Choose a paystub PDF
-          <input
-            type="file"
-            accept=".pdf,.PDF"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (file) void handleFile(file)
-              event.target.value = ''
-            }}
-          />
-        </label>
+        <div
+          className={cn(
+            'flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-6 text-center transition-colors',
+            isDragging ? 'border-primary bg-primary/5' : 'border-muted-foreground/25',
+          )}
+          onDragOver={(event) => {
+            event.preventDefault()
+            setIsDragging(true)
+          }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault()
+            setIsDragging(false)
+            void handleFiles(Array.from(event.dataTransfer.files))
+          }}
+        >
+          <Upload className="size-5 text-muted-foreground" />
+          <p className="text-sm text-muted-foreground">Drag and drop paystub PDFs here, or</p>
+          <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-primary underline-offset-4 hover:underline">
+            choose files
+            <input
+              type="file"
+              accept=".pdf,.PDF"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                void handleFiles(Array.from(event.target.files ?? []))
+                event.target.value = ''
+              }}
+            />
+          </label>
+        </div>
 
-        {importPaystub.isPending && <LoadingProgressBar step="Extracting the paystub's text and matching it against the ledger…" />}
-
-        {importPaystub.isError && (
-          <p className="text-sm text-destructive">
-            {importPaystub.error instanceof Error ? importPaystub.error.message : 'Could not parse this paystub'}
-          </p>
-        )}
-
-        {result && (
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              Gross {formatCurrency(result.statement.gross_pay, 'USD')} · Taxes{' '}
-              {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net{' '}
-              {formatCurrency(result.statement.net_pay, 'USD')}
-            </p>
-            <ul className="space-y-1 text-sm">
-              {result.matches.map((match, index) => (
-                <li key={index} className="flex items-center gap-2">
-                  {match.posting_id ? (
-                    <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
-                  ) : (
-                    <XCircle className="size-3.5 shrink-0 text-destructive" />
-                  )}
-                  <span>
-                    {match.label} — {formatCurrency(match.amount, 'USD')}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {match.posting_id ? 'matched to a bank posting' : 'no matching bank posting found'}
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            {result.proposed_splits.length > 0 && (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Proposed categorization</p>
-                {result.proposed_splits.map((proposal) => (
-                  <ProposedSplitEditor key={proposal.posting_id} proposal={proposal} />
-                ))}
-              </div>
-            )}
+        {uploads.map((entry) => (
+          <div key={entry.id} className="space-y-2 rounded-md border p-3">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              {entry.status === 'done' && <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />}
+              {entry.status === 'error' && <XCircle className="size-3.5 shrink-0 text-destructive" />}
+              <span className="truncate">{entry.fileName}</span>
+            </div>
+            {entry.status === 'pending' && <LoadingProgressBar step="Extracting the paystub's text and matching it against the ledger…" />}
+            {entry.status === 'error' && <p className="text-sm text-destructive">{entry.error}</p>}
+            {entry.status === 'done' && entry.result && <ReconciliationResultView result={entry.result} />}
           </div>
-        )}
+        ))}
       </CardContent>
     </Card>
   )

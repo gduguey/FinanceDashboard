@@ -22,14 +22,19 @@ from accounting.models import (
     Budget,
     Category,
     CategoryClassification,
+    CategoryPattern,
     GeneralBudget,
+    Goal,
+    GoalContribution,
     ManualOverride,
     OpeningBalance,
     OtherAsset,
     PostingSplit,
+    RecurringAddition,
     Rule,
     SimulatorScenario,
     Tag,
+    WithdrawalPriorityEntry,
 )
 from trades.utils.io_utils import write_json_atomic
 
@@ -217,12 +222,17 @@ class AccountingStore(BaseModel):
     categories: dict[str, Category] = Field(default_factory=dict)
     tags: dict[str, Tag] = Field(default_factory=dict)
     rules: list[Rule] = Field(default_factory=list)
+    category_patterns: dict[str, CategoryPattern] = Field(default_factory=dict)
     other_assets: list[OtherAsset] = Field(default_factory=list)
     opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)
     budgets: list[Budget] = Field(default_factory=list)
     general_budgets: dict[str, GeneralBudget] = Field(default_factory=dict)
     simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
     posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
+    goals: dict[str, Goal] = Field(default_factory=dict)
+    goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
+    recurring_additions: list[RecurringAddition] = Field(default_factory=list)
+    withdrawal_priorities: list[WithdrawalPriorityEntry] = Field(default_factory=list)
 
 
 def load_store(config: AccountingConfig) -> AccountingStore:

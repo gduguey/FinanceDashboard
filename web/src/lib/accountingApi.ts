@@ -6,12 +6,16 @@ import type {
   GeneralBudget,
   BudgetComparisonRow,
   Category,
+  CategoryPattern,
   CategoryTotalRow,
   CurrentExchangeRate,
   Currency,
   DetectedAccount,
   ExchangeRateHistoryPoint,
   ExchangeRateSyncResult,
+  Goal,
+  GoalContribution,
+  GoalsSummary,
   ImportResult,
   InterestAccountRow,
   LlmUsage,
@@ -26,12 +30,14 @@ import type {
   Posting,
   PostingSplitLeg,
   ProjectionPoint,
+  RecurringAddition,
   Rule,
   SimulatorScenario,
   SofiStatementImportResult,
   SpendCurvePoint,
   Tag,
   TransferSuggestion,
+  WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -153,7 +159,20 @@ export const accountingApi = {
       `/api/accounting/postings/${encodeURIComponent(postingId)}/ai-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
       { method: 'POST' },
     ),
-  transferSuggestions: () => request<TransferSuggestion[]>('/api/accounting/transfer-suggestions'),
+  patternSuggestCategory: (postingId: string, lockCategoryId?: string | null) =>
+    request<{ category_id: string | null; subcategory_id: string | null; applied: boolean }>(
+      `/api/accounting/postings/${encodeURIComponent(postingId)}/pattern-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
+      { method: 'POST' },
+    ),
+  validatePending: (postingIds: string[]) =>
+    request<{ accepted: number; reverted: number }>(
+      '/api/accounting/postings/validate-pending',
+      jsonInit('POST', { posting_ids: postingIds }),
+    ),
+  putCategoryPatterns: (patterns: Record<string, CategoryPattern>) =>
+    request<Record<string, CategoryPattern>>('/api/accounting/category-patterns', jsonInit('PUT', patterns)),
+  transferSuggestions: (windowDays?: number) =>
+    request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
   netWorth: (asOf?: string, displayCurrency?: string) =>
     request<NetWorthSummary>(`/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
@@ -207,4 +226,28 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
+  putGoals: (goals: Record<string, Goal>) => request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
+  putGoalContributions: (contributions: Record<string, GoalContribution>) =>
+    request<Record<string, GoalContribution>>('/api/accounting/goal-contributions', jsonInit('PUT', contributions)),
+  putRecurringAdditions: (additions: RecurringAddition[]) =>
+    request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
+  putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
+    request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
+  goalsSummary: (asOf?: string) => request<GoalsSummary>(`/api/accounting/goals/summary${queryString({ as_of: asOf })}`),
+  runRecurringAdditions: (asOf?: string) =>
+    request<GoalContribution[]>(`/api/accounting/goals/run-recurring-additions${queryString({ as_of: asOf })}`, {
+      method: 'POST',
+    }),
+  runWithdrawalAutomation: (asOf?: string) =>
+    request<{ withdrawals: GoalContribution[]; remaining_shortfall: number }>(
+      `/api/accounting/goals/run-withdrawal-automation${queryString({ as_of: asOf })}`,
+      { method: 'POST' },
+    ),
+  simulateContribution: (goalId: string, date: string, amount: number) =>
+    request<{
+      unallocated_as_of_date: number
+      exceeds_unallocated: boolean
+      projected_next_run_unallocated: number
+      would_go_negative: boolean
+    }>('/api/accounting/goals/simulate-contribution', jsonInit('POST', { goal_id: goalId, date, amount })),
 }

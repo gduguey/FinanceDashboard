@@ -3,19 +3,23 @@ import { PeriodFilterBar, usePeriodFilter } from '@/components/accounting/Period
 import { CategoryDrilldownPie } from '@/components/accounting/CategoryDrilldownPie'
 import { IncomeExpenseChart } from '@/components/accounting/IncomeExpenseChart'
 import { SpendCurveChart } from '@/components/accounting/SpendCurveChart'
-import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
+import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
-import type { Account, CurrencyCode, Posting, Tag } from '@/types/accounting'
+import type { Account, CurrencyCode, Goal, GoalContribution, Posting, Tag } from '@/types/accounting'
 
 export function DashboardTab({
   postings,
   accounts,
   tags,
+  goals,
+  goalContributions,
   displayCurrency,
 }: {
   postings: Posting[]
   accounts: Record<string, Account>
   tags: Record<string, Tag>
+  goals: Record<string, Goal>
+  goalContributions: Record<string, GoalContribution>
   displayCurrency: CurrencyCode
 }) {
   const filter = usePeriodFilter('accounting.dashboard-period-filter')
@@ -27,6 +31,21 @@ export function DashboardTab({
     filter.tagId ?? undefined,
     displayCurrency,
   )
+
+  // Same figures `GoalsOverviewCharts` shows as a pie for a given period —
+  // recomputed here from the raw contribution rows (already local, no
+  // extra request) rather than calling the goals-summary endpoint twice.
+  const goalFlows: GoalFlow[] = useMemo(() => {
+    const totals = new Map<string, number>()
+    for (const contribution of Object.values(goalContributions)) {
+      const day = contribution.date.slice(0, 10)
+      if (day < filter.period.start || day > filter.period.end || contribution.amount <= 0) continue
+      totals.set(contribution.goal_id, (totals.get(contribution.goal_id) ?? 0) + contribution.amount)
+    }
+    return [...totals.entries()]
+      .map(([goalId, value]) => ({ name: goals[goalId]?.name ?? goalId, value, color: goals[goalId]?.color ?? '#059669' }))
+      .filter((flow) => flow.value > 0)
+  }, [goalContributions, goals, filter.period])
 
   const scopedPostings = useMemo(
     () =>
@@ -46,6 +65,8 @@ export function DashboardTab({
       <CategoryDrilldownPie
         categoryTotals={categoryTotals ?? []}
         postings={scopedPostings}
+        allPostings={postings}
+        accounts={accounts}
         isLoading={isLoading}
         displayCurrency={displayCurrency}
       />
@@ -53,7 +74,7 @@ export function DashboardTab({
         <IncomeExpenseChart displayCurrency={displayCurrency} />
         <SpendCurveChart displayCurrency={displayCurrency} postings={postings} />
       </div>
-      <CashflowSankeyChart categoryTotals={categoryTotals ?? []} displayCurrency={displayCurrency} />
+      <CashflowSankeyChart categoryTotals={categoryTotals ?? []} goalFlows={goalFlows} displayCurrency={displayCurrency} />
     </div>
   )
 }

@@ -54,7 +54,13 @@ function groupByCategory(rows: CategoryTotalRow[]) {
 // clearly). Expense's classification carries no color of its own; each
 // expense *category* has its own real color, and subcategories are shades
 // of that — the same convention `CategoryDrilldownPie` uses.
-function buildSankeyData(rows: CategoryTotalRow[]) {
+export interface GoalFlow {
+  name: string
+  value: number
+  color: string
+}
+
+function buildSankeyData(rows: CategoryTotalRow[], goalFlows: GoalFlow[]) {
   const { categories: incomeCategories, subcategoryTotals: incomeSubcategoryTotals } = groupByCategory(
     rows.filter((row) => row.classification === 'income'),
   )
@@ -104,6 +110,28 @@ function buildSankeyData(rows: CategoryTotalRow[]) {
   if (spentIndex >= 0) links.push({ source: incomeIndex, target: spentIndex, value: totalExpense })
   if (savedIndex >= 0) links.push({ source: incomeIndex, target: savedIndex, value: saved })
 
+  // "Saved" splits further into each goal's contributions this period,
+  // plus whatever's left unallocated — the same data `GoalsOverviewCharts`
+  // shows as a pie for this period, just wired into the Sankey's
+  // right-hand side instead. Only shown when goal contributions this
+  // period don't exceed what was saved this period (the common case) —
+  // if more went into goals than was saved (drawing on an earlier
+  // period's leftover), the split can't be drawn as a clean subset of
+  // this one link without a second synthetic inflow, so it's skipped
+  // rather than drawn misleadingly.
+  const totalGoalFlow = goalFlows.reduce((sum, flow) => sum + flow.value, 0)
+  if (savedIndex >= 0 && totalGoalFlow > 0 && totalGoalFlow <= saved) {
+    for (const flow of goalFlows) {
+      const goalIndex = addNode(flow.name, flow.color)
+      links.push({ source: savedIndex, target: goalIndex, value: flow.value })
+    }
+    const unallocated = saved - totalGoalFlow
+    if (unallocated > 0) {
+      const unallocatedIndex = addNode('Unallocated', '#a7f3d0')
+      links.push({ source: savedIndex, target: unallocatedIndex, value: unallocated })
+    }
+  }
+
   for (const [categoryName, categoryValue] of expenseCategories) {
     const baseColor = expenseCategoryColor.get(categoryName) ?? '#64748b'
     const categoryIndex = addNode(categoryName, baseColor)
@@ -123,14 +151,16 @@ function buildSankeyData(rows: CategoryTotalRow[]) {
 
 export function CashflowSankeyChart({
   categoryTotals,
+  goalFlows = [],
   displayCurrency,
   title = 'Cash flow',
 }: {
   categoryTotals: CategoryTotalRow[]
+  goalFlows?: GoalFlow[]
   displayCurrency: CurrencyCode
   title?: string
 }) {
-  const { nodes, links, isBuffered } = buildSankeyData(categoryTotals)
+  const { nodes, links, isBuffered } = buildSankeyData(categoryTotals, goalFlows)
 
   return (
     <ChartCard
