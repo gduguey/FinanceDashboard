@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
 import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
 import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
@@ -19,11 +21,13 @@ import { usePersistedState } from '@/hooks/usePersistedState'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
+  useCurrencies,
   useGoalsSummary,
   useRunRecurringAdditions,
   useRunWithdrawalAutomation,
   useSetGoals,
 } from '@/hooks/useAccountingData'
+import type { CurrencyCode } from '@/types/accounting'
 
 type ViewMode = 'all_time' | 'per_month'
 
@@ -39,8 +43,16 @@ function monthBounds(month: string): { start: string; end: string; dayBeforeStar
   return { start, end, dayBeforeStart }
 }
 
-function GoalListSection({ goals }: { goals: Record<string, import('@/types/accounting').Goal> }) {
+function GoalListSection({
+  goals,
+  defaultCurrency,
+}: {
+  goals: Record<string, import('@/types/accounting').Goal>
+  defaultCurrency: CurrencyCode
+}) {
   const setGoals = useSetGoals()
+  const { data: currencies } = useCurrencies()
+  const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
   const [expandedGoalId, setExpandedGoalId] = useState<string | null>(null)
   const goalList = Object.values(goals).sort((a, b) => a.created_at.localeCompare(b.created_at))
 
@@ -62,7 +74,7 @@ function GoalListSection({ goals }: { goals: Record<string, import('@/types/acco
         goal_id: goalId,
         name: 'New goal',
         target_amount: 1000,
-        target_currency: 'USD',
+        target_currency: defaultCurrency,
         target_date: targetDate.toISOString(),
         color: colorForIndex(goalList.length),
         created_at: new Date().toISOString(),
@@ -154,6 +166,24 @@ function GoalListSection({ goals }: { goals: Record<string, import('@/types/acco
                                 defaultValue={goal.target_amount}
                                 onBlur={(event) => update(goal.goal_id, { target_amount: Number(event.target.value) })}
                               />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              Currency
+                              <Select
+                                value={goal.target_currency}
+                                onValueChange={(value) => value && update(goal.goal_id, { target_currency: value as CurrencyCode })}
+                              >
+                                <SelectTrigger size="sm" className="h-7 w-20 text-xs">
+                                  <SelectValue items={currencyItems} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {(currencies ?? []).map((currency) => (
+                                    <SelectItem key={currency.code} value={currency.code}>
+                                      {currency.code}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                               Target date
@@ -257,20 +287,23 @@ export function GoalsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-white/95 px-8 py-5 backdrop-blur-sm">
-        <h1 className="text-lg font-semibold tracking-tight text-foreground">Goals</h1>
-        <div className="flex items-center gap-3">
-          {unallocatedNow < 0 && (
-            <span className="rounded-md bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive">
-              Unallocated is negative ({formatCurrency(unallocatedNow, displayCurrency)}) — goals couldn't fully cover a shortfall
+      <PageHeader
+        title="Goals"
+        actions={
+          <>
+            {unallocatedNow < 0 && (
+              <span className="rounded-md bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive">
+                Unallocated is negative ({formatCurrency(unallocatedNow, displayCurrency)}) — goals couldn't fully cover a shortfall
+              </span>
+            )}
+            <span className="text-sm text-muted-foreground">
+              Unallocated: <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
             </span>
-          )}
-          <span className="text-sm text-muted-foreground">
-            Unallocated: <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
-          </span>
-          <DisplayCurrencyToggle />
-        </div>
-      </div>
+            <DisplayCurrencyToggle />
+            <ExchangeRateSyncButton />
+          </>
+        }
+      />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
         <Tabs value={pageTab} onValueChange={setPageTab}>
@@ -279,7 +312,7 @@ export function GoalsPage() {
             <TabsTrigger value="automations">Automations</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="space-y-6">
-            <GoalListSection goals={store.goals} />
+            <GoalListSection goals={store.goals} defaultCurrency={displayCurrency} />
 
             <div className="flex items-center gap-3">
               <Select value={mode} onValueChange={(value) => value && setMode(value as ViewMode)}>

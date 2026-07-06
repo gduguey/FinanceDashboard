@@ -107,7 +107,7 @@ function SuggestedRulePair({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">
+      <p className="text-xs break-words text-muted-foreground">
         Both rules below are needed to fully resolve this transfer — each one only fixes the transaction on its own
         account; the other side stays exactly as it is until its own rule is added too.
       </p>
@@ -238,16 +238,16 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                         <TableRow>
                           <TableCell colSpan={5} className="bg-muted/30">
                             <div className="grid gap-4 py-2 sm:grid-cols-2">
-                              <div className="space-y-1 text-sm">
+                              <div className="min-w-0 space-y-1 text-sm">
                                 <p className="font-medium">{accountName(accounts, suggestion.account_id)}</p>
                                 <p className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</p>
-                                <p>{suggestion.description}</p>
+                                <p className="break-words">{suggestion.description}</p>
                                 <p className={`tabular-nums ${signColor(suggestion.amount)}`}>{formatCurrency(suggestion.amount, 'USD')}</p>
                               </div>
-                              <div className="space-y-1 text-sm">
+                              <div className="min-w-0 space-y-1 text-sm">
                                 <p className="font-medium">{accountName(accounts, suggestion.other_account_id)}</p>
                                 <p className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</p>
-                                <p>{suggestion.other_description}</p>
+                                <p className="break-words">{suggestion.other_description}</p>
                                 <p className={`tabular-nums ${signColor(-suggestion.amount)}`}>
                                   {formatCurrency(-suggestion.amount, 'USD')}
                                 </p>

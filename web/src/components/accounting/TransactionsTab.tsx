@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
@@ -486,6 +487,7 @@ function TransactionsTable({
   const pendingInView = useMemo(() => sorted.filter((posting) => posting.pending_source !== null), [sorted])
   const allPendingSelected = pendingInView.length > 0 && pendingInView.every((posting) => posting.pending_selected)
   const somePendingSelected = pendingInView.some((posting) => posting.pending_selected)
+  const checkedPendingCount = useMemo(() => pendingInView.filter((posting) => posting.pending_selected).length, [pendingInView])
 
   function handleValidateSelection() {
     validatePending.mutate(pendingInView.map((posting) => posting.posting_id))
@@ -536,7 +538,7 @@ function TransactionsTable({
           )}
           {pendingInView.length > 0 && (
             <Button variant="outline" size="sm" disabled={validatePending.isPending} onClick={handleValidateSelection}>
-              Validate selection ({pendingInView.length})
+              Validate selection ({checkedPendingCount} checked / {pendingInView.length} marked)
             </Button>
           )}
         </div>
@@ -587,17 +589,15 @@ function TransactionsTable({
             onValueChange={(value) => setFilters({ ...filters, pendingFilter: value })}
             onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
           />
-          <Input
-            type="date"
-            className="w-36"
+          <OptionalDateInput
             value={filters.startDate}
-            onChange={(event) => setFilters({ ...filters, startDate: event.target.value })}
+            onChange={(startDate) => setFilters({ ...filters, startDate })}
+            placeholder="Any start date"
           />
-          <Input
-            type="date"
-            className="w-36"
+          <OptionalDateInput
             value={filters.endDate}
-            onChange={(event) => setFilters({ ...filters, endDate: event.target.value })}
+            onChange={(endDate) => setFilters({ ...filters, endDate })}
+            placeholder="Any end date"
           />
           <Button variant="ghost" size="sm" onClick={() => setFilters(defaultFilterState())}>
             <RotateCcw className="size-3.5" />

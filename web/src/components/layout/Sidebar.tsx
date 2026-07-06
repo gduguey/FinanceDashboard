@@ -1,8 +1,9 @@
-import { BookOpen, Calculator, FlaskConical, LineChart, Scale, Target, Upload, Wallet } from 'lucide-react'
+import { BookOpen, Calculator, FlaskConical, LayoutDashboard, LineChart, Scale, Target, Upload, Wallet } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
+  { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
   { label: 'Accounting', icon: Calculator, path: '/accounting' },
   { label: 'Investments', icon: LineChart, path: '/investments' },
   { label: 'Net Worth', icon: Scale, path: '/net-worth' },
@@ -27,6 +28,7 @@ function NavLinks({ items }: { items: typeof NAV_ITEMS }) {
         <NavLink
           key={label}
           to={path}
+          end={path === '/'}
           className={({ isActive }) =>
             cn(
               'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm',

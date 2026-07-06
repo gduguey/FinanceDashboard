@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
 import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { accountingApi } from '@/lib/accountingApi'
 import { useAccountingStore, useImportCsv, usePostings, useRebuildLedger } from '@/hooks/useAccountingData'
 import type { Account, CurrencyCode } from '@/types/accounting'
@@ -129,9 +130,7 @@ export function ImportPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 border-b border-border bg-white/95 px-8 py-5 backdrop-blur-sm">
-        <h1 className="text-lg font-semibold tracking-tight text-foreground">Import</h1>
-      </div>
+      <PageHeader title="Import" />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
         <div

@@ -5,6 +5,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
 import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
 import { formatCurrency } from '@/lib/format'
@@ -213,10 +215,15 @@ export function BudgetPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-white/95 px-8 py-5 backdrop-blur-sm">
-        <h1 className="text-lg font-semibold tracking-tight text-foreground">Budget</h1>
-        <DisplayCurrencyToggle />
-      </div>
+      <PageHeader
+        title="Budget"
+        actions={
+          <>
+            <DisplayCurrencyToggle />
+            <ExchangeRateSyncButton />
+          </>
+        }
+      />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
         <Card>
