@@ -4,11 +4,11 @@ import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
+import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
@@ -31,7 +31,6 @@ import type { Account, Category, ManualOverride, Posting, Tag, TransferRule } fr
 const ESTIMATED_ROW_HEIGHT = 45
 const TABLE_COLUMN_COUNT = 9
 
-const ALL = '__all__'
 const UNCATEGORIZED = '__uncategorized__'
 const NO_SUBCATEGORY = '__no_subcategory__'
 const CONFIRMED = '__confirmed__'
@@ -104,60 +103,6 @@ function defaultFilterState(): FilterState {
     pendingFilter: ALL,
     pendingExclude: false,
   }
-}
-
-// A filter value paired with an "Is"/"Not" toggle — the "show everything
-// but this one" mode the equality filters below share. `undefined`/unset
-// values from a filter state persisted before this field existed are
-// treated as "no filter", never as "matches nothing".
-function matchesFilter(actual: boolean, filterValue: string | undefined, exclude: boolean | undefined): boolean {
-  if (!filterValue || filterValue === ALL) return true
-  return exclude ? !actual : actual
-}
-
-function FilterSelect({
-  value,
-  exclude,
-  items,
-  width,
-  onValueChange,
-  onExcludeChange,
-}: {
-  value: string
-  exclude: boolean
-  items: Record<string, string>
-  width: string
-  onValueChange: (value: string) => void
-  onExcludeChange: (exclude: boolean) => void
-}) {
-  return (
-    <div className="flex items-center gap-1">
-      <Select value={value} onValueChange={(next) => next && onValueChange(next)}>
-        <SelectTrigger size="sm" className={width}>
-          <SelectValue items={items} />
-        </SelectTrigger>
-        <SelectContent>
-          {Object.entries(items).map(([id, name]) => (
-            <SelectItem key={id} value={id}>
-              {name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {value !== ALL && (
-        <Button
-          type="button"
-          variant={exclude ? 'default' : 'outline'}
-          size="sm"
-          className="h-8 px-2 text-xs"
-          onClick={() => onExcludeChange(!exclude)}
-          title={exclude ? 'Excluding this — click to include instead' : 'Including this — click to exclude instead'}
-        >
-          {exclude ? 'Not' : 'Is'}
-        </Button>
-      )}
-    </div>
-  )
 }
 
 // Row background for a not-yet-confirmed suggestion — green for an AI
@@ -538,7 +483,7 @@ function TransactionsTable({
           )}
           {pendingInView.length > 0 && (
             <Button variant="outline" size="sm" disabled={validatePending.isPending} onClick={handleValidateSelection}>
-              Validate selection ({checkedPendingCount} checked / {pendingInView.length} marked)
+              Validate selection ({checkedPendingCount}/{pendingInView.length})
             </Button>
           )}
         </div>

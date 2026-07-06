@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, Pencil, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Lock, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -7,15 +7,20 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
+import { CloseAccountDialog } from '@/components/accounting/CloseAccountDialog'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import {
+  useCloseAccount,
   useCreateAccount,
   useDeleteAccount,
+  useNetWorth,
+  useReopenAccount,
   useSetOpeningBalance,
   useSupportedImportKinds,
   useUpdateAccount,
 } from '@/hooks/useAccountingData'
-import type { Account } from '@/types/accounting'
+import type { Account, ManualTransfer } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see
 // `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
@@ -104,9 +109,13 @@ export function AccountsManagementTable({
   const updateAccount = useUpdateAccount()
   const deleteAccount = useDeleteAccount()
   const setOpeningBalance = useSetOpeningBalance()
+  const closeAccount = useCloseAccount()
+  const reopenAccount = useReopenAccount()
+  const { data: netWorth } = useNetWorth()
   const { data: supportedImportKinds } = useSupportedImportKinds()
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
+  const [closing, setClosing] = useState<Account | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const rows = Object.values(accounts).filter((account) => !SYSTEM_ACCOUNT_IDS.has(account.account_id))
@@ -132,6 +141,7 @@ export function AccountsManagementTable({
         parent_account_id: value.parentAccountId,
         external_ref: null,
         meta: {},
+        closed: false,
       })
       const amount = Number.parseFloat(value.openingBalance)
       if (value.openingBalance.trim() && !Number.isNaN(amount)) {
@@ -167,6 +177,26 @@ export function AccountsManagementTable({
       await deleteAccount.mutateAsync(accountId)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not delete account')
+    }
+  }
+
+  async function handleConfirmClose(transfers: ManualTransfer[]) {
+    if (!closing) return
+    setError(null)
+    try {
+      await closeAccount.mutateAsync({ accountId: closing.account_id, transfers })
+      setClosing(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not close account')
+    }
+  }
+
+  async function handleReopen(accountId: string) {
+    setError(null)
+    try {
+      await reopenAccount.mutateAsync(accountId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reopen account')
     }
   }
 
@@ -209,33 +239,55 @@ export function AccountsManagementTable({
             <TableBody>
               {sorted.map((account) => {
                 const locked = accountIdsWithPostings.has(account.account_id)
+                const closeable = !isCounterpartyKind(account.kind) && account.kind !== 'external_investment'
                 return (
-                  <TableRow key={account.account_id}>
+                  <TableRow key={account.account_id} className={account.closed ? 'opacity-50' : ''}>
                     <TableCell className="text-muted-foreground">{account.institution}</TableCell>
                     <TableCell className="font-medium">
                       <span className="flex items-center gap-1.5">
                         {account.name}
+                        {account.closed && (
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            Closed
+                          </span>
+                        )}
                         {hasNoImporter(account) && (
                           <Tooltip>
                             <TooltipTrigger>
                               <AlertTriangle className="size-3.5 text-amber-500" />
                             </TooltipTrigger>
                             <TooltipContent>
-                              No CSV parsing rule registered for {account.institution} {account.kind} — imports for
-                              this account must be added to the codebase first.
+                              No CSV parsing rule registered for {account.institution} {ACCOUNT_KIND_LABELS[account.kind]} — imports
+                              for this account must be added to the codebase first.
                             </TooltipContent>
                           </Tooltip>
                         )}
                       </span>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{account.kind}</TableCell>
+                    <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[account.kind]}</TableCell>
                     <TableCell className="text-muted-foreground">{account.currency}</TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{account.account_id}</TableCell>
                     <TableCell className="flex gap-1">
                       <Button variant="ghost" size="icon" onClick={() => setEditing(account)}>
                         <Pencil className="size-3.5 text-muted-foreground" />
                       </Button>
-                      {!locked && (
+                      {closeable &&
+                        (account.closed ? (
+                          <Button variant="ghost" size="icon" title="Reopen" onClick={() => handleReopen(account.account_id)}>
+                            <Unlock className="size-3.5 text-muted-foreground" />
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title={netWorth ? 'Close' : 'Loading balances…'}
+                            disabled={!netWorth}
+                            onClick={() => setClosing(account)}
+                          >
+                            <Lock className="size-3.5 text-muted-foreground" />
+                          </Button>
+                        ))}
+                      {!locked && !account.closed && (
                         <Button variant="ghost" size="icon" onClick={() => handleDelete(account.account_id)}>
                           <Trash2 className="size-3.5 text-muted-foreground" />
                         </Button>
@@ -280,6 +332,18 @@ export function AccountsManagementTable({
           showOpeningBalance={false}
           onClose={() => setEditing(null)}
           onSave={(value) => handleUpdate(editing.account_id, value)}
+        />
+      )}
+      {closing && (
+        <CloseAccountDialog
+          account={closing}
+          balance={netWorth?.accounts.find((row) => row.account_id === closing.account_id)?.balance ?? 0}
+          otherAccounts={rows.filter(
+            (account) => account.account_id !== closing.account_id && !account.closed && !isCounterpartyKind(account.kind),
+          )}
+          onClose={() => setClosing(null)}
+          onConfirm={handleConfirmClose}
+          isSubmitting={closeAccount.isPending}
         />
       )}
     </Card>

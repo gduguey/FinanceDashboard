@@ -1,7 +1,7 @@
 import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { PieChartLegend } from '@/components/shared/PieChartLegend'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
 import type { CurrencyCode, Goal } from '@/types/accounting'
 
 const UNALLOCATED_COLOR = '#94a3b8'
@@ -93,7 +93,7 @@ export function GoalsOverviewCharts({
             <ResponsiveContainer width="100%" height={Math.max(260, barData.length * 56)}>
               <BarChart data={barData} layout="vertical" margin={{ left: 24, right: 16, top: 4, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" domain={[0, 'auto']} tickFormatter={(value: number) => formatCurrency(value, displayCurrency)} />
+                <XAxis type="number" domain={[0, 'auto']} tickFormatter={(value: number) => formatCurrencyCompact(value, displayCurrency)} />
                 <YAxis type="category" dataKey="name" width={100} />
                 <Tooltip
                   formatter={(value, name) => [formatCurrency(Number(value), displayCurrency), name === 'balance' ? 'Balance' : 'Target']}

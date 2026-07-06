@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { Trash2, TrendingDown, TrendingUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -10,17 +10,29 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { AccountCompositionBar } from '@/components/accounting/AccountCompositionBar'
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
 import { InterestTrackingPanel } from '@/components/accounting/InterestTrackingPanel'
 import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { formatCurrency, signColor } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useCurrencies, useNetWorth, useRatesToBase, useSetOtherAssets } from '@/hooks/useAccountingData'
-import type { CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
+import type { AccountKind, CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
 
-function StatCard({ label, value, colorClass }: { label: string; value: string; colorClass?: string }) {
+function StatCard({
+  label,
+  value,
+  colorClass,
+  subline,
+}: {
+  label: string
+  value: string
+  colorClass?: string
+  subline?: ReactNode
+}) {
   return (
     <Card>
       <CardHeader>
@@ -30,15 +42,41 @@ function StatCard({ label, value, colorClass }: { label: string; value: string; 
         <div className={`text-2xl font-semibold tracking-tight tabular-nums ${colorClass ?? 'text-foreground'}`}>
           {value}
         </div>
+        {subline}
       </CardContent>
     </Card>
+  )
+}
+
+// The past 30 days' move — up or down, in both the display currency and
+// as a percent of what net worth was 30 days ago — so the headline figure
+// always comes with "...and here's where that's trending" right below it.
+function NetWorthChangeSubline({
+  current,
+  past,
+  displayCurrency,
+}: {
+  current: number
+  past: number
+  displayCurrency: CurrencyCode
+}) {
+  const delta = current - past
+  const pct = past !== 0 ? (delta / Math.abs(past)) * 100 : 0
+  const isUp = delta >= 0
+  const Icon = isUp ? TrendingUp : TrendingDown
+  return (
+    <div className={`mt-1 flex items-center gap-1 text-xs ${isUp ? 'text-emerald-600' : 'text-destructive'}`}>
+      <Icon className="size-3.5" />
+      {formatCurrency(Math.abs(delta), displayCurrency)} ({isUp ? '+' : '-'}
+      {Math.abs(pct).toFixed(1)}%) past 30 days
+    </div>
   )
 }
 
 interface DisplayRow {
   key: string
   name: string
-  kind: string
+  kind: AccountKind
   currency: CurrencyCode
   balance: number
   parentAccountId: string | null
@@ -89,7 +127,7 @@ function AccountsTable({
     ...otherAssets.map((asset) => ({
       key: `other-asset:${asset.asset_id}`,
       name: asset.name,
-      kind: 'other_asset',
+      kind: 'other_asset' as const,
       currency: asset.currency,
       balance: asset.value,
       parentAccountId: null,
@@ -127,7 +165,7 @@ function AccountsTable({
             <TableCell style={{ paddingLeft: `${depth * 20 + 16}px` }} className="font-medium">
               {row.name}
             </TableCell>
-            <TableCell className="text-muted-foreground">{row.kind === 'other_asset' ? 'other asset' : row.kind}</TableCell>
+            <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[row.kind]}</TableCell>
             <TableCell className="text-muted-foreground">{row.currency}</TableCell>
             <TableCell className={`text-right tabular-nums ${signColor(row.balance)}`}>
               {formatCurrency(row.balance, row.currency)}
@@ -222,9 +260,16 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
   )
 }
 
+function daysAgoIsoDate(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString().slice(0, 10)
+}
+
 export function NetWorthPage() {
   const { displayCurrency } = useDisplayCurrency()
   const { data, isLoading } = useNetWorth(undefined, displayCurrency)
+  const { data: past } = useNetWorth(daysAgoIsoDate(30), displayCurrency)
   const { data: currencies } = useCurrencies()
   const nonBaseCurrencies = (currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD')
   const ratesToBase = useRatesToBase(nonBaseCurrencies)
@@ -257,6 +302,11 @@ export function NetWorthPage() {
                 label="Net worth"
                 value={formatCurrency(data.net_worth, displayCurrency)}
                 colorClass={signColor(data.net_worth)}
+                subline={
+                  past && (
+                    <NetWorthChangeSubline current={data.net_worth} past={past.net_worth} displayCurrency={displayCurrency} />
+                  )
+                }
               />
               <StatCard label="Assets" value={formatCurrency(data.assets, displayCurrency)} />
               <StatCard
@@ -280,6 +330,12 @@ export function NetWorthPage() {
                 <CardTitle>Accounts</CardTitle>
               </CardHeader>
               <CardContent>
+                <AccountCompositionBar
+                  accounts={data.accounts}
+                  otherAssets={data.other_assets}
+                  displayCurrency={displayCurrency}
+                  ratesToBase={ratesToBase}
+                />
                 <AccountsTable accounts={data.accounts} otherAssets={data.other_assets} onRemoveOtherAsset={removeOtherAsset} />
               </CardContent>
             </Card>

@@ -5,12 +5,14 @@ import type {
   Budget,
   GeneralBudget,
   BudgetComparisonRow,
+  CanonicalImportResult,
   Category,
   CategoryPattern,
   CategoryTotalRow,
   CurrentExchangeRate,
   Currency,
   DetectedAccount,
+  DuplicateGroup,
   ExchangeRateHistoryPoint,
   ExchangeRateSyncResult,
   Goal,
@@ -20,6 +22,7 @@ import type {
   InterestAccountRow,
   LlmUsage,
   ManualOverride,
+  ManualTransfer,
   MonthlyIncomeExpenseRow,
   NetWorthHistoryByAccountPoint,
   NetWorthHistoryPoint,
@@ -28,6 +31,7 @@ import type {
   OtherAsset,
   PaystubReconciliationResult,
   Posting,
+  PostingMerge,
   PostingSplitLeg,
   ProjectionPoint,
   RecurringAddition,
@@ -110,6 +114,13 @@ export const accountingApi = {
     request<{ account_id: string }>(`/api/accounting/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
       method: 'DELETE',
     }),
+  closeAccount: (accountId: string, transfers: ManualTransfer[]) =>
+    request<{ account: Account; manual_transfers: ManualTransfer[] }>(
+      `/api/accounting/accounts/${encodeURIComponent(accountId)}/close`,
+      jsonInit('POST', { transfers }),
+    ),
+  reopenAccount: (accountId: string) =>
+    request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}/reopen`, { method: 'POST' }),
   detect: (header: string[], filename: string, firstDataRow?: Record<string, string>) =>
     request<DetectedAccount | null>(
       '/api/accounting/detect',
@@ -127,6 +138,18 @@ export const accountingApi = {
     if (info.currency) formData.append('currency', info.currency)
     if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
+  },
+  importCanonicalCsv: (file: File, info: ImportAccountInfo, separator?: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('institution', info.institution)
+    formData.append('account_kind', info.account_kind)
+    formData.append('account_id', info.account_id)
+    formData.append('account_name', info.account_name)
+    if (info.currency) formData.append('currency', info.currency)
+    if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
+    if (separator) formData.append('separator', separator)
+    return request<CanonicalImportResult>('/api/accounting/import/canonical', { method: 'POST', body: formData })
   },
   importPaystub: (file: File) => {
     const formData = new FormData()
@@ -170,6 +193,10 @@ export const accountingApi = {
     request<Record<string, CategoryPattern>>('/api/accounting/category-patterns', jsonInit('PUT', patterns)),
   transferSuggestions: (windowDays?: number) =>
     request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
+  duplicateSuggestions: (windowDays?: number) =>
+    request<DuplicateGroup[]>(`/api/accounting/duplicate-suggestions${queryString({ window_days: windowDays })}`),
+  putPostingMerges: (merges: Record<string, PostingMerge>) =>
+    request<Record<string, PostingMerge>>('/api/accounting/posting-merges', jsonInit('PUT', merges)),
   netWorth: (asOf?: string, displayCurrency?: string) =>
     request<NetWorthSummary>(`/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
@@ -199,9 +226,15 @@ export const accountingApi = {
     request<BudgetComparisonRow[]>(
       `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,
     ),
-  suggestedBudgetAmount: (categoryId: string, month: string, lookbackMonths?: number, displayCurrency?: string) =>
+  suggestedBudgetAmount: (
+    categoryId: string,
+    month: string,
+    lookbackMonths?: number,
+    subcategoryId?: string,
+    displayCurrency?: string,
+  ) =>
     request<{ suggested_amount: number }>(
-      `/api/accounting/budgets/suggested-amount${queryString({ category_id: categoryId, month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
+      `/api/accounting/budgets/suggested-amount${queryString({ category_id: categoryId, month, lookback_months: lookbackMonths, subcategory_id: subcategoryId, display_currency: displayCurrency })}`,
     ),
   interestSummary: (asOf?: string) =>
     request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),

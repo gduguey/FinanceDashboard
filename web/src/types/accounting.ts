@@ -29,6 +29,7 @@ export interface Account {
   parent_account_id: string | null
   external_ref: string | null
   meta: Record<string, string>
+  closed: boolean
 }
 
 export interface Category {
@@ -53,6 +54,7 @@ export interface TransferRule {
   counterparty_account_id: string | null
   priority: number
   description: string
+  active: boolean
 }
 
 export interface OtherAsset {
@@ -69,16 +71,28 @@ export interface OpeningBalance {
   as_of_date: string
 }
 
+export interface ManualTransfer {
+  transfer_id: string
+  date: string
+  from_account_id: string
+  to_account_id: string
+  from_amount: number
+  to_amount: number
+  description: string
+}
+
 export interface Budget {
   budget_id: string
   month: string
   category_id: string
+  subcategory_id: string | null
   amount: number
   currency: CurrencyCode
 }
 
 export interface GeneralBudget {
   category_id: string
+  subcategory_id: string | null
   amount: number
   currency: CurrencyCode
 }
@@ -86,6 +100,8 @@ export interface GeneralBudget {
 export interface BudgetComparisonRow {
   category_id: string
   category_name: string
+  subcategory_id: string | null
+  subcategory_name: string | null
   color: string
   budgeted: number
   actual: number
@@ -197,6 +213,7 @@ export interface CategoryPattern {
   category_id: string
   subcategory_id: string | null
   priority: number
+  active: boolean
 }
 
 export interface ManualOverride {
@@ -270,6 +287,8 @@ export interface AccountingStore {
   category_patterns: Record<string, CategoryPattern>
   other_assets: OtherAsset[]
   opening_balances: Record<string, OpeningBalance>
+  manual_transfers: ManualTransfer[]
+  posting_merges: Record<string, PostingMerge>
   budgets: Budget[]
   general_budgets: Record<string, GeneralBudget>
   simulator_scenarios: SimulatorScenario[]
@@ -311,6 +330,10 @@ export interface ImportResult {
   account_id: string
   new_posting_count: number
   total_posting_count: number
+}
+
+export interface CanonicalImportResult extends ImportResult {
+  new_categories: Category[]
 }
 
 export interface NetWorthAccountRow {
@@ -355,6 +378,28 @@ export interface TransferSuggestion {
   other_posting_id: string
   other_description: string
   amount: number
+}
+
+export interface DuplicatePosting {
+  posting_id: string
+  transaction_id: string
+  posted_at: string
+  description: string
+  amount: number
+}
+
+export interface DuplicateGroup {
+  group_key: string
+  account_id: string
+  certainty: number
+  postings: DuplicatePosting[]
+}
+
+export interface PostingMerge {
+  merge_id: string
+  kept_transaction_id: string
+  duplicate_transaction_ids: string[]
+  description: string | null
 }
 
 export interface LlmProviderUsage {

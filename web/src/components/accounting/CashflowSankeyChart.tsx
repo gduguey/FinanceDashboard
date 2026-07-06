@@ -180,30 +180,34 @@ function buildSankeyData(rows: CategoryTotalRow[], goalFlows: GoalFlow[]) {
 // — this mirrors that same curve geometry, but reads `color`/`dashed` back
 // off `payload` (the link object `buildSankeyData` produced) so each flow
 // carries the color decided for it above instead of one uniform stroke.
+// A "dashed" flow (just the income buffer, so far) stays a single uniform
+// band of color — cutting gaps directly into the band itself made it read
+// as broken/interrupted — with a second, thin black dashed line drawn on
+// top of it as the only thing that actually dashes, marking it as the
+// odd one out without breaking up the flow's own continuity.
 function SankeyLinkPath(props: LinkProps) {
   const { sourceX, sourceY, sourceControlX, targetX, targetY, targetControlX, linkWidth, payload } = props
   const linkPayload = payload as unknown as SankeyLink
+  const d = `M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`
   return (
-    <path
-      className="recharts-sankey-link"
-      d={`M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`}
-      fill="none"
-      stroke={linkPayload.color}
-      strokeWidth={linkWidth}
-      strokeOpacity={linkPayload.dashed ? 0.55 : 0.35}
-      strokeDasharray={linkPayload.dashed ? '6 4' : undefined}
-    />
+    <g>
+      <path className="recharts-sankey-link" d={d} fill="none" stroke={linkPayload.color} strokeWidth={linkWidth} strokeOpacity={0.35} />
+      {linkPayload.dashed && (
+        <path d={d} fill="none" stroke="#000000" strokeWidth={2} strokeOpacity={0.45} strokeDasharray="5 5" />
+      )}
+    </g>
   )
 }
 
 // Recharts computes `value`/`sourceLinks`/`targetLinks` onto each node
 // during layout but only types the pre-layout shape publicly — this is
 // the subset this file actually reads off the computed `payload`. Despite
-// the name, `targetLinks` is the *outgoing* set (every link whose own
-// `source` is this node) — see the library's own `searchTargetsAndSources`.
+// the names, `sourceLinks` is the *incoming* set and `targetLinks` the
+// *outgoing* one (every link whose own `source` is this node) — see the
+// library's own `searchTargetsAndSources`.
 interface ComputedSankeyNode extends SankeyNode {
   value: number
-  targetLinks: unknown[]
+  sourceLinks: unknown[]
 }
 
 const MIN_LABEL_HEIGHT = 13
@@ -240,11 +244,11 @@ function truncateLabel(text: string): string {
 }
 
 // A node's name + amount, always visible (not just on hover), placed
-// outside the node — to its right by default, or to its left for a
-// terminal (rightmost, no further outgoing flow) node, so its label never
-// runs past the chart's own right edge. `leftLabels`/`rightLabels` collect
-// this render pass's already-placed boxes, so a later node on the same
-// side is pushed down instead of overlapping an earlier one.
+// outside the node — to its left by default, or to its right for an
+// initial (leftmost, nothing flows into it) node, so its label never runs
+// past the chart's own left edge. `leftLabels`/`rightLabels` collect this
+// render pass's already-placed boxes, so a later node on the same side is
+// pushed down instead of overlapping an earlier one.
 function makeSankeyNodeLabel(displayCurrency: CurrencyCode, leftLabels: LabelBox[], rightLabels: LabelBox[]) {
   return function SankeyNodeLabel(props: NodeProps) {
     const { x, y, width, height, payload } = props
@@ -252,15 +256,15 @@ function makeSankeyNodeLabel(displayCurrency: CurrencyCode, leftLabels: LabelBox
     const rect = <rect x={x} y={y} width={width} height={height} fill={node.fill} />
     if (height < MIN_LABEL_HEIGHT) return rect
 
-    const isTerminal = node.targetLinks.length === 0
+    const isInitial = node.sourceLinks.length === 0
     const text = truncateLabel(`${node.name} · ${formatCurrency(node.value, displayCurrency)}`)
     const textWidth = text.length * CHAR_WIDTH_ESTIMATE
     const boxWidth = textWidth + LABEL_BOX_PADDING_X * 2
     const centerY = y + height / 2
-    const placed = isTerminal ? leftLabels : rightLabels
+    const placed = isInitial ? rightLabels : leftLabels
     const shift = placeWithoutOverlap(placed, centerY - LABEL_BOX_HEIGHT / 2, centerY + LABEL_BOX_HEIGHT / 2)
     const boxCenterY = centerY + shift
-    const boxX = isTerminal ? x - LABEL_GAP_PX - boxWidth : x + width + LABEL_GAP_PX
+    const boxX = isInitial ? x + width + LABEL_GAP_PX : x - LABEL_GAP_PX - boxWidth
 
     return (
       <g>

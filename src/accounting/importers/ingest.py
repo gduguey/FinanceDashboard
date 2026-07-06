@@ -15,12 +15,13 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from accounting.importers.canonical.csv import standardize_canonical_csv
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_pdf
 from accounting.models import Posting
-from accounting.store import load_store, save_store
+from accounting.store import load_store, normalize_categories, save_store
 from trades.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from accounting.config import AccountingConfig
-    from accounting.models import Account
+    from accounting.models import Account, Category
 
 _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
@@ -210,6 +211,66 @@ def ingest_csv(
 
     return IngestResult(
         account_id=account_id, new_posting_count=len(merged) - len(existing), total_posting_count=len(merged)
+    )
+
+
+@dataclass(frozen=True)
+class CanonicalIngestResult:
+    """What happened when one CSV was ingested through the canonical fallback importer."""
+
+    account_id: str
+    new_posting_count: int
+    total_posting_count: int
+    new_categories: dict[str, Category]
+
+
+def ingest_canonical_csv(
+    csv_text: str, account_id: str, config: AccountingConfig, separator: str | None = None
+) -> CanonicalIngestResult:
+    """Archive one uploaded CSV verbatim, standardize it with the canonical fallback parser, and merge the result.
+
+    Unlike `ingest_csv`, this doesn't need a registered institution/account-
+    kind standardizer — see `importers.canonical.csv.standardize_canonical_csv`
+    for how it guesses column names and formats instead. Any category or
+    subcategory named in the file that doesn't already exist is created and
+    persisted here, the same way a rule creates a new counterparty account
+    the first time it matches.
+
+    Parameters
+    ----------
+    csv_text
+        The raw CSV file contents, exactly as uploaded.
+    account_id
+        The account these rows belong to — must already be registered.
+    config
+        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
+    separator
+        The column separator to use, overriding auto-detection.
+
+    Returns
+    -------
+    CanonicalIngestResult
+        How many postings were newly added, and any categories created.
+    """
+    store = load_store(config)
+    account = store.accounts[account_id]
+
+    _raw_statement_path(account.institution, account_id, config).write_text(csv_text, encoding="utf-8")
+    outcome = standardize_canonical_csv(csv_text, account_id, account.currency, store.categories, separator)
+
+    if outcome.new_categories:
+        merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
+        save_store(store.model_copy(update={"categories": merged_categories}), config)
+
+    existing = load_ledger(config)
+    merged = _merge_ledger(existing, outcome.postings)
+    _write_ledger(merged, config)
+
+    return CanonicalIngestResult(
+        account_id=account_id,
+        new_posting_count=len(merged) - len(existing),
+        total_posting_count=len(merged),
+        new_categories=outcome.new_categories,
     )
 
 

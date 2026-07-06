@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.models import Account, ManualOverride, Posting, PostingSplit
+from accounting.models import Account, ManualOverride, Posting, PostingMerge, PostingSplit
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
@@ -32,6 +32,8 @@ _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per tra
 def _matching_rule(rules: list[TransferRule], description: str, account_id: str) -> TransferRule | None:
     lowered = description.lower()
     for rule in sorted(rules, key=lambda r: r.priority):
+        if not rule.active:
+            continue
         if rule.description_contains.lower() not in lowered:
             continue
         if rule.account_id is not None and rule.account_id != account_id:
@@ -222,4 +224,45 @@ def apply_manual_overrides(postings: pl.DataFrame, overrides: dict[str, ManualOv
             value = getattr(override, field)
             if value is not None:
                 row[field] = value
+    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+
+
+def apply_posting_merges(postings: pl.DataFrame, merges: dict[str, PostingMerge]) -> pl.DataFrame:
+    """Drop every duplicate transaction a merge decision resolved, keeping only the one the user chose.
+
+    A duplicate transaction's both legs (the real account's own posting and
+    its counterparty) are dropped entirely — unlike `apply_posting_splits`,
+    which grows one posting into several, this shrinks two or more
+    transactions down to the single one that's kept.
+
+    Parameters
+    ----------
+    postings
+        The posting ledger, already passed through `apply_rules`/`apply_posting_splits`.
+    merges
+        Every persisted merge decision, keyed by `merge_id`.
+
+    Returns
+    -------
+    polars.DataFrame
+        The same postings, minus every dropped duplicate transaction, with
+        the kept transaction's description overridden where one was given.
+    """
+    if not merges:
+        return postings
+    dropped_transaction_ids: set[str] = set()
+    description_by_kept_transaction: dict[str, str] = {}
+    for merge in merges.values():
+        dropped_transaction_ids.update(merge.duplicate_transaction_ids)
+        if merge.description is not None:
+            description_by_kept_transaction[merge.kept_transaction_id] = merge.description
+
+    result = postings.filter(~pl.col("transaction_id").is_in(list(dropped_transaction_ids)))
+    if not description_by_kept_transaction:
+        return result
+    rows = result.to_dicts()
+    for row in rows:
+        description = description_by_kept_transaction.get(row["transaction_id"])
+        if description is not None:
+            row["description"] = description
     return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")

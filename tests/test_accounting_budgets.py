@@ -16,6 +16,7 @@ def _posting(
     amount: float,
     posted_at: str,
     category_id: str | None = None,
+    subcategory_id: str | None = None,
 ) -> dict:
     return {
         "posting_id": posting_id,
@@ -25,7 +26,7 @@ def _posting(
         "amount": amount,
         "currency": "USD",
         "category_id": category_id,
-        "subcategory_id": None,
+        "subcategory_id": subcategory_id,
         "budget_id": None,
         "tag_ids": [],
         "description": "",
@@ -95,3 +96,34 @@ def test_budget_comparison_defaults_actual_to_zero_when_nothing_spent() -> None:
     budgets = [Budget(budget_id="b1", month="2026-06", category_id="expense:food", amount=200.0)]
     rows = budget_comparison(_postings(), ACCOUNTS, CATEGORIES, budgets, "2026-06")
     assert rows[0].actual == pytest.approx(0.0)
+
+
+def test_budget_comparison_scopes_a_subcategory_budget_to_that_subcategorys_actual() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -100.0, "2026-06-10", "expense:food", "expense:food:groceries"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, "2026-06-10"),
+        _posting("p3", "t2", "chase:checking:9579", -40.0, "2026-06-12", "expense:food", "expense:food:dining-out"),
+        _posting("p4", "t2", "uncategorized:expense", 40.0, "2026-06-12"),
+    )
+    groceries = Category(
+        category_id="expense:food:groceries",
+        name="Groceries",
+        classification="expense",
+        color="#abc",
+        parent_category_id="expense:food",
+    )
+    categories = {**CATEGORIES, groceries.category_id: groceries}
+    budgets = [
+        Budget(
+            budget_id="b1",
+            month="2026-06",
+            category_id="expense:food",
+            subcategory_id="expense:food:groceries",
+            amount=120.0,
+        ),
+    ]
+    rows = budget_comparison(postings, ACCOUNTS, categories, budgets, "2026-06")
+    assert len(rows) == 1
+    assert rows[0].subcategory_id == "expense:food:groceries"
+    assert rows[0].subcategory_name == "Groceries"
+    assert rows[0].actual == pytest.approx(100.0)

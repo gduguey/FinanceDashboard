@@ -24,10 +24,12 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class BudgetComparisonRow:
-    """One budgeted category's target next to what was actually spent that month."""
+    """One budgeted category's (or subcategory's) target next to what was actually spent that month."""
 
     category_id: str
     category_name: str
+    subcategory_id: str | None
+    subcategory_name: str | None
     color: str
     budgeted: float
     actual: float
@@ -65,9 +67,10 @@ def suggested_budget_amount(
     category_id: str,
     month: str,
     lookback_months: int = 3,
+    subcategory_id: str | None = None,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
 ) -> float:
-    """Median actual spend in a category over the months just before `month`, as a starting suggestion.
+    """Median actual spend in a category (or one subcategory of it) over the months just before `month`.
 
     Median rather than mean (porting Maybe's `median_monthly_expense`) — a
     single unusually large month (a one-off purchase) shouldn't drag the
@@ -85,6 +88,9 @@ def suggested_budget_amount(
         The month (`"YYYY-MM"`) being budgeted; only months before it are averaged.
     lookback_months
         How many preceding calendar months to look at.
+    subcategory_id
+        When set, scopes the suggestion to this one subcategory's actual
+        spend rather than the whole category's.
     display
         The currency (and rate) every posting's amount is converted into before summing.
 
@@ -100,6 +106,8 @@ def suggested_budget_amount(
         start, end = month_bounds(cursor)
         rows = category_totals(postings, accounts, {}, start, end, display=display)
         matching = rows.filter(pl.col("category_id") == category_id)
+        if subcategory_id is not None:
+            matching = matching.filter(pl.col("subcategory_id") == subcategory_id)
         totals.append(float(matching["amount"].sum()) if not matching.is_empty() else 0.0)
     if not totals:
         return 0.0
@@ -147,24 +155,34 @@ def budget_comparison(
     """
     start, end = month_bounds(month)
     actual = category_totals(postings, accounts, categories, start, end, display=display)
-    actual_by_category = (
-        dict(zip(actual["category_id"].to_list(), actual["amount"].to_list(), strict=True))
-        if not actual.is_empty()
-        else {}
-    )
+    actual_by_subcategory: dict[tuple[str, str | None], float] = {}
+    actual_by_category: dict[str, float] = {}
+    for row in actual.iter_rows(named=True):
+        key = (row["category_id"], row["subcategory_id"])
+        actual_by_subcategory[key] = actual_by_subcategory.get(key, 0.0) + row["amount"]
+        actual_by_category[row["category_id"]] = actual_by_category.get(row["category_id"], 0.0) + row["amount"]
+
     rows = []
     for budget in budgets:
         if budget.month != month:
             continue
         category = categories.get(budget.category_id)
+        subcategory = categories.get(budget.subcategory_id) if budget.subcategory_id else None
+        actual_amount = (
+            actual_by_subcategory.get((budget.category_id, budget.subcategory_id), 0.0)
+            if budget.subcategory_id
+            else actual_by_category.get(budget.category_id, 0.0)
+        )
         rows.append(
             BudgetComparisonRow(
                 category_id=budget.category_id,
                 category_name=category.name if category else budget.category_id,
+                subcategory_id=budget.subcategory_id,
+                subcategory_name=subcategory.name if subcategory else None,
                 color=category.color if category else "#9ca3af",
                 budgeted=budget.amount,
-                actual=actual_by_category.get(budget.category_id, 0.0),
+                actual=actual_amount,
                 currency=display.code,
             )
         )
-    return sorted(rows, key=lambda row: row.category_name)
+    return sorted(rows, key=lambda row: (row.category_name, row.subcategory_name or ""))

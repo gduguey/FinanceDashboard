@@ -100,7 +100,10 @@ class Account(BaseModel):
     `meta` holds facts about the account itself rather than any one
     posting — currently just `apy_pct`, the interest rate last seen on a
     statement, carried here because it describes the account's terms, not
-    a single transaction.
+    a single transaction. `closed` marks a real-world account that no
+    longer exists at its institution — its transaction history stays
+    exactly as imported (never deleted), it just stops being offered as a
+    destination for new imports or transfers.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -113,6 +116,7 @@ class Account(BaseModel):
     parent_account_id: str | None = None
     external_ref: str | None = None
     meta: dict[str, str] = Field(default_factory=dict)
+    closed: bool = False
 
 
 class Category(BaseModel):
@@ -169,7 +173,9 @@ class TransferRule(BaseModel):
     vault name. `priority` breaks ties when more than one rule matches;
     the lowest number wins. `description` is a free-text note on what the
     rule is actually for — purely for a human re-reading the rule list
-    later, never read by the matching logic.
+    later, never read by the matching logic. `active` lets a rule be
+    switched off without deleting it — an inactive rule is skipped by
+    matching entirely, as if it weren't in the list at all.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -182,6 +188,7 @@ class TransferRule(BaseModel):
     counterparty_account_id: str | None = None
     priority: int = 0
     description: str = ""
+    active: bool = True
 
 
 class CategoryPattern(BaseModel):
@@ -195,7 +202,8 @@ class CategoryPattern(BaseModel):
     the same confirm-before-it-sticks flow an AI suggestion goes through,
     just keyed off an explicit substring match instead of an LLM call.
     `priority` breaks ties the same way `TransferRule.priority` does: the lowest
-    number wins.
+    number wins. `active` lets a pattern be switched off without deleting
+    it — an inactive pattern is skipped by matching entirely.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -205,6 +213,7 @@ class CategoryPattern(BaseModel):
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
     priority: int = 0
+    active: bool = True
 
 
 class OtherAsset(BaseModel):
@@ -245,13 +254,45 @@ class OpeningBalance(BaseModel):
     as_of_date: datetime
 
 
+class ManualTransfer(BaseModel):
+    """A user-recorded transfer between two of their own accounts, never derived from an import.
+
+    Every other posting in this ledger traces back to a real bank
+    statement row (see `store`'s module docstring) — this is the one
+    deliberate exception, for the one case no statement can ever cover:
+    moving out whatever's left in an account right before closing it (see
+    `api.close_account`). `from_amount`/`to_amount` are each in that side's
+    own account's currency and entered independently rather than via a
+    stored exchange rate, so a transfer between two different currencies
+    is exactly what the user says left one side and arrived on the other,
+    not a computed conversion.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    transfer_id: str = Field(min_length=1)
+    date: datetime
+    from_account_id: str = Field(min_length=1)
+    to_account_id: str = Field(min_length=1)
+    from_amount: float = Field(gt=0)
+    to_amount: float = Field(gt=0)
+    description: str = ""
+
+
 class Budget(BaseModel):
-    """One month's spending target for one top-level expense category.
+    """One month's spending target for one top-level expense category, or one of its subcategories.
+
+    `category_id` is always the top-level category, matching
+    `Posting.category_id`. `subcategory_id`, when set, scopes the target to
+    that one subcategory's actual spend alone rather than the whole
+    category's — matching `Posting.subcategory_id` — so a category and one
+    of its subcategories can each carry their own independent target for
+    the same month.
 
     Actual spend against a budget is never stored here or on the postings
-    it covers — a posting's own `category_id` already determines which
-    budget it counts against for whichever month it landed in, so
-    "actual" is always computed fresh from
+    it covers — a posting's own `category_id`/`subcategory_id` already
+    determines which budget it counts against for whichever month it
+    landed in, so "actual" is always computed fresh from
     `dashboard.income_statement.category_totals`, the same on-demand way
     an account's balance comes from summing its postings rather than a
     cached figure that could drift out of sync.
@@ -262,14 +303,16 @@ class Budget(BaseModel):
     budget_id: str = Field(min_length=1)
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
     category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
     amount: float
     currency: CurrencyCode = "USD"
 
 
 class GeneralBudget(BaseModel):
-    """A category's spending target applied to every month alike, independent of any per-month `Budget` rows.
+    """A category's (or subcategory's) spending target applied to every month alike.
 
-    The Budget page's "General" mode edits these; its "Per month" mode
+    Independent of any per-month `Budget` rows — the Budget page's
+    "General" mode edits these; its "Per month" mode
     edits `Budget` instead — the two are stored completely separately (see
     `store.AccountingStore`), never merged or falling back to one
     another, so switching modes never silently overwrites the other.
@@ -278,6 +321,7 @@ class GeneralBudget(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
     amount: float
     currency: CurrencyCode = "USD"
 
@@ -563,6 +607,26 @@ class PostingSplit(BaseModel):
 
     posting_id: str = Field(min_length=1)
     legs: list[PostingSplitLeg] = Field(min_length=2)
+
+
+class PostingMerge(BaseModel):
+    """A user's decision that two or more imported transactions are the same real-world event, recorded twice.
+
+    Every transaction in `duplicate_transaction_ids` is dropped entirely
+    (both its legs) from the resolved ledger; `kept_transaction_id`'s own
+    transaction is the one that survives, its description overridden by
+    `description` when given. Never baked into the ledger cache itself,
+    for the same reason `PostingSplit`/`ManualOverride` aren't —
+    re-importing a statement or rebuilding from raw archives can never
+    silently resurrect a duplicate a user already resolved.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    merge_id: str = Field(min_length=1)
+    kept_transaction_id: str = Field(min_length=1)
+    duplicate_transaction_ids: list[str] = Field(min_length=1)
+    description: str | None = None
 
 
 class Posting(BaseModel):

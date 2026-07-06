@@ -32,6 +32,7 @@ function suggestedRuleDrafts(suggestion: TransferSuggestion): TransferRule[] {
       counterparty_account_id: suggestion.other_account_id,
       priority: 100,
       description: '',
+      active: true,
     },
     {
       rule_id: `transfer:${suggestion.other_posting_id}`,
@@ -42,6 +43,7 @@ function suggestedRuleDrafts(suggestion: TransferSuggestion): TransferRule[] {
       counterparty_account_id: suggestion.account_id,
       priority: 100,
       description: '',
+      active: true,
     },
   ]
 }
@@ -107,7 +109,7 @@ function SuggestedRulePair({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs break-words text-muted-foreground">
+      <p className="max-w-xl text-xs break-words text-muted-foreground">
         Both rules below are needed to fully resolve this transfer — each one only fixes the transaction on its own
         account; the other side stays exactly as it is until its own rule is added too.
       </p>
@@ -236,7 +238,7 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                       </TableRow>
                       {isExpanded && (
                         <TableRow>
-                          <TableCell colSpan={5} className="bg-muted/30">
+                          <TableCell colSpan={5} className="whitespace-normal bg-muted/30">
                             <div className="grid gap-4 py-2 sm:grid-cols-2">
                               <div className="min-w-0 space-y-1 text-sm">
                                 <p className="font-medium">{accountName(accounts, suggestion.account_id)}</p>

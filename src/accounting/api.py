@@ -12,6 +12,7 @@ API layer too.
 from __future__ import annotations
 
 import re
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, cast
 
@@ -24,9 +25,11 @@ from accounting.dashboard import budgets, income_statement, interest, simulator
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
+from accounting.importers.canonical.csv import CanonicalCsvError
 from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
     UnsupportedImportError,
+    ingest_canonical_csv,
     ingest_csv,
     load_ledger,
     rebuild_from_raw_statements,
@@ -35,16 +38,19 @@ from accounting.importers.ingest import (
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
 from accounting.ledger.categorization import (
     apply_manual_overrides,
+    apply_posting_merges,
     apply_posting_splits,
     apply_rules,
     resolved_transfer_rule_ids_by_transaction,
 )
 from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
     run_recurring_additions,
     run_withdrawal_automation,
 )
+from accounting.ledger.manual_transfers import postings_for_manual_transfers
 from accounting.ledger.patterns import match_patterns_bulk, matching_pattern
 from accounting.ledger.pending import resolve_pending_suggestion, stage_pending_suggestion
 from accounting.ledger.replay import account_balances_over_time
@@ -70,9 +76,11 @@ from accounting.models import (
     Goal,
     GoalContribution,
     ManualOverride,
+    ManualTransfer,
     OpeningBalance,
     OtherAsset,
     PendingSuggestionSource,
+    PostingMerge,
     PostingSplit,
     PostingSplitLeg,
     RecurringAddition,
@@ -123,6 +131,10 @@ def _resolved_postings_and_store(config: AccountingConfig) -> tuple[Any, Any]:
     resolved = apply_posting_splits(resolved, store.posting_splits)
     overrides = load_overrides(config)
     resolved = apply_manual_overrides(resolved, overrides)
+    resolved = apply_posting_merges(resolved, store.posting_merges)
+    if store.manual_transfers:
+        manual = postings_for_manual_transfers(store.manual_transfers, store.accounts)
+        resolved = pl.concat([resolved, manual], how="vertical")
     return resolved, store
 
 
@@ -192,9 +204,11 @@ def get_store() -> dict[str, Any]:
         "opening_balances": {
             account_id: balance.model_dump(mode="json") for account_id, balance in store.opening_balances.items()
         },
+        "manual_transfers": [transfer.model_dump(mode="json") for transfer in store.manual_transfers],
         "budgets": [budget.model_dump(mode="json") for budget in store.budgets],
         "simulator_scenarios": [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios],
         "posting_splits": {pid: split.model_dump(mode="json") for pid, split in store.posting_splits.items()},
+        "posting_merges": {mid: merge.model_dump(mode="json") for mid, merge in store.posting_merges.items()},
         "general_budgets": {cat_id: budget.model_dump(mode="json") for cat_id, budget in store.general_budgets.items()},
         "category_patterns": {
             pattern_id: pattern.model_dump(mode="json") for pattern_id, pattern in store.category_patterns.items()
@@ -505,7 +519,9 @@ class AccountUpdate(BaseModel):
 
     `institution`, `kind`, and `currency` may only differ from the
     account's current values while it has no postings yet — enforced in
-    `put_account`, not here, since that check needs the ledger.
+    `put_account`, not here, since that check needs the ledger. `closed`
+    isn't edited here — see `close_account`/`reopen_account`, which pair it
+    with recording where a closed account's remaining balance went.
     """
 
     name: str
@@ -583,6 +599,82 @@ def delete_account(account_id: str) -> dict[str, str]:
     store = store.model_copy(update={"accounts": remaining})
     save_store(store, state.config)
     return {"account_id": account_id}
+
+
+class AccountCloseRequest(BaseModel):
+    """Request body for `POST /api/accounting/accounts/{account_id}/close`."""
+
+    transfers: list[ManualTransfer] = Field(default_factory=list)
+
+
+@router.post("/accounts/{account_id}/close")
+def close_account(account_id: str, request: AccountCloseRequest) -> dict[str, Any]:
+    """Mark an account closed, recording any transfers that moved its remaining balance out first.
+
+    An account no longer open at its institution still keeps its full
+    transaction history (see `models.Account.closed`) — closing never
+    deletes anything. `request.transfers` (each a `models.ManualTransfer`)
+    become real postings on both the closed account and wherever its
+    balance went, the one case in this ledger where a posting doesn't
+    trace back to an imported statement.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"account": ..., "manual_transfers": [...]}` after the update.
+
+    Raises
+    ------
+    HTTPException
+        404 if the account doesn't exist; 400 if a transfer doesn't move
+        money out of `account_id`, or names an unknown `to_account_id`.
+    """
+    store = load_store(state.config)
+    account = store.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
+    for transfer in request.transfers:
+        if transfer.from_account_id != account_id:
+            raise HTTPException(status_code=400, detail="Each transfer must move money out of the account being closed")
+        if transfer.to_account_id not in store.accounts:
+            raise HTTPException(status_code=400, detail=f"Account {transfer.to_account_id!r} not found")
+
+    updated_account = account.model_copy(update={"closed": True})
+    store = store.model_copy(
+        update={
+            "accounts": {**store.accounts, account_id: updated_account},
+            "manual_transfers": [*store.manual_transfers, *request.transfers],
+        }
+    )
+    save_store(store, state.config)
+    return {
+        "account": updated_account.model_dump(mode="json"),
+        "manual_transfers": [transfer.model_dump(mode="json") for transfer in store.manual_transfers],
+    }
+
+
+@router.post("/accounts/{account_id}/reopen")
+def reopen_account(account_id: str) -> dict[str, Any]:
+    """Clear an account's `closed` flag, without touching any transfers recorded when it was closed.
+
+    Returns
+    -------
+    dict[str, Any]
+        The account after the update.
+
+    Raises
+    ------
+    HTTPException
+        404 if the account doesn't exist.
+    """
+    store = load_store(state.config)
+    account = store.accounts.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
+    updated_account = account.model_copy(update={"closed": False})
+    store = store.model_copy(update={"accounts": {**store.accounts, account_id: updated_account}})
+    save_store(store, state.config)
+    return updated_account.model_dump(mode="json")
 
 
 @router.put("/accounts/{account_id}/opening-balance")
@@ -707,6 +799,66 @@ async def post_import(
         "account_id": result.account_id,
         "new_posting_count": result.new_posting_count,
         "total_posting_count": result.total_posting_count,
+    }
+
+
+@router.post("/import/canonical")
+async def post_canonical_import(  # noqa: PLR0913, PLR0917
+    file: UploadFile,
+    institution: Annotated[str, Form()],
+    account_kind: Annotated[str, Form()],
+    account_id: Annotated[str, Form()],
+    account_name: Annotated[str, Form()],
+    currency: Annotated[str, Form()] = "USD",
+    parent_account_id: Annotated[str | None, Form()] = None,
+    separator: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    """Register the account if it's new, then import the CSV through the canonical fallback parser.
+
+    Used when no dedicated standardizer exists for `institution`/`account_kind`
+    (see `supported_import_kinds`) — the canonical parser guesses column
+    names and date/amount formats instead of expecting an exact shape (see
+    `importers.canonical.csv`). Any category or subcategory named in a
+    `Category`/`Subcategory` column is created automatically.
+
+    Returns
+    -------
+    dict[str, Any]
+        `account_id`, `new_posting_count`, `total_posting_count`, and
+        `new_categories` (each a full category, for a summary table).
+
+    Raises
+    ------
+    HTTPException
+        422 if the file couldn't be parsed — the message explains what
+        columns/formats are supported, and (when the column separator
+        couldn't be guessed) asks the user to pick one and retry with
+        `separator` set.
+    """
+    store = load_store(state.config)
+    if account_id not in store.accounts:
+        account_kind_literal: Any = account_kind
+        new_account = Account(
+            account_id=account_id,
+            name=account_name,
+            kind=account_kind_literal,
+            institution=institution,
+            currency=currency,  # type: ignore[arg-type]
+            parent_account_id=parent_account_id,
+        )
+        store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
+        save_store(store, state.config)
+
+    csv_text = (await file.read()).decode("utf-8")
+    try:
+        result = ingest_canonical_csv(csv_text, account_id, state.config, separator)
+    except CanonicalCsvError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        "account_id": result.account_id,
+        "new_posting_count": result.new_posting_count,
+        "total_posting_count": result.total_posting_count,
+        "new_categories": [category.model_dump(mode="json") for category in result.new_categories.values()],
     }
 
 
@@ -921,6 +1073,21 @@ def delete_posting_split(posting_id: str) -> dict[str, str]:
     store = store.model_copy(update={"posting_splits": remaining})
     save_store(store, state.config)
     return {"posting_id": posting_id}
+
+
+@router.put("/posting-merges")
+def put_posting_merges(merges: dict[str, PostingMerge]) -> dict[str, Any]:
+    """Replace the whole posting-merge map, keyed by `merge_id`.
+
+    Returns
+    -------
+    dict[str, Any]
+        The merges just persisted.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"posting_merges": merges})
+    save_store(store, state.config)
+    return {merge_id: merge.model_dump(mode="json") for merge_id, merge in store.posting_merges.items()}
 
 
 _MAX_FEW_SHOT_EXAMPLES = 20
@@ -1274,6 +1441,26 @@ def get_transfer_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
     return find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
 
 
+@router.get("/duplicate-suggestions")
+def get_duplicate_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
+    """Suggest likely duplicate transactions no merge decision has already resolved.
+
+    Parameters
+    ----------
+    window_days
+        How many days apart two transactions can be and still count as one duplicate.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One dict per candidate group — see `ledger.duplicates.find_duplicate_candidates`.
+        Sorted least-certain first, since those need the closest review.
+    """
+    postings, _store = _resolved_postings_and_store(state.config)
+    groups = find_duplicate_candidates(postings, window_days=window_days)
+    return [asdict(group) for group in groups]
+
+
 def _external_investment_values_usd(dates: list[date]) -> dict[date, float] | None:
     """Look up the tracked investment portfolio's value as of each requested date, from the live `trades` server.
 
@@ -1566,9 +1753,13 @@ def get_budget_comparison(month: str, display_currency: CurrencyCode = "USD") ->
 
 @router.get("/budgets/suggested-amount")
 def get_suggested_budget_amount(
-    category_id: str, month: str, lookback_months: int = 3, display_currency: CurrencyCode = "USD"
+    category_id: str,
+    month: str,
+    lookback_months: int = 3,
+    subcategory_id: str | None = None,
+    display_currency: CurrencyCode = "USD",
 ) -> dict[str, float]:
-    """Suggest a budget for a category from its trailing months' actual spend.
+    """Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
 
     Returns
     -------
@@ -1584,7 +1775,13 @@ def get_suggested_budget_amount(
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     postings, store = _resolved_postings_for_aggregation(state.config)
     amount = budgets.suggested_budget_amount(
-        postings, store.accounts, category_id, month, lookback_months, _display_currency(display_currency, store)
+        postings,
+        store.accounts,
+        category_id,
+        month,
+        lookback_months,
+        subcategory_id,
+        _display_currency(display_currency, store),
     )
     return {"suggested_amount": amount}
 

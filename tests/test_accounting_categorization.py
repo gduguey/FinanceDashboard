@@ -6,11 +6,12 @@ import pytest
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame
 from accounting.ledger.categorization import (
     apply_manual_overrides,
+    apply_posting_merges,
     apply_posting_splits,
     apply_rules,
     resolved_transfer_rule_ids_by_transaction,
 )
-from accounting.models import Account, ManualOverride, PostingSplit, PostingSplitLeg, TransferRule
+from accounting.models import Account, ManualOverride, PostingMerge, PostingSplit, PostingSplitLeg, TransferRule
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 
@@ -53,6 +54,18 @@ def test_apply_rules_matches_a_rule_and_sets_category() -> None:
     assert real_leg["category_id"] == "income:salary"
     counterparty_leg = resolved.filter(pl.col("account_id") == "employer:eqore").row(0, named=True)
     assert counterparty_leg["amount"] == pytest.approx(-2000.0)
+
+
+def test_apply_rules_skips_an_inactive_rule() -> None:
+    inactive_rule = EQORE_RULE.model_copy(update={"active": False})
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    resolved = apply_rules(
+        postings, [inactive_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+    counterparties = set(resolved["account_id"].unique().to_list()) - {"sofi:savings:3680"}
+    assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
 
 
 def test_apply_rules_does_not_match_when_the_counterparty_account_does_not_exist() -> None:
@@ -192,6 +205,62 @@ def test_apply_posting_splits_legs_are_independently_overridable() -> None:
     result = apply_manual_overrides(split_postings, {first_leg_id: ManualOverride(category_id="income:bonus")})
     row = result.filter(pl.col("posting_id") == first_leg_id).row(0, named=True)
     assert row["category_id"] == "income:bonus"
+
+
+def test_apply_posting_merges_with_no_merges_returns_the_same_data() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(-42.50, "WHOLE FOODS #123"))
+    )
+    result = apply_posting_merges(postings, {})
+    assert result["amount"].to_list() == postings["amount"].to_list()
+
+
+def test_apply_posting_merges_drops_the_duplicate_transactions_own_two_legs() -> None:
+    postings = postings_to_frame([
+        *_placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(-42.50, "WHOLE FOODS #123")),
+        *_placeholder_pair("chase-pdf", "1", "chase:checking:9579", _leg(-42.50, "Whole Foods Market")),
+    ])
+    kept_transaction_id = (
+        postings
+        .filter(pl.col("account_id") == "chase:checking:9579")
+        .sort("posting_id")
+        .row(0, named=True)["transaction_id"]
+    )
+    duplicate_transaction_id = next(
+        tid for tid in postings["transaction_id"].unique().to_list() if tid != kept_transaction_id
+    )
+    merge = PostingMerge(
+        merge_id="m1", kept_transaction_id=kept_transaction_id, duplicate_transaction_ids=[duplicate_transaction_id]
+    )
+    result = apply_posting_merges(postings, {"m1": merge})
+
+    assert result["transaction_id"].n_unique() == 1
+    assert result["transaction_id"].to_list()[0] == kept_transaction_id
+    assert result.height == 2
+
+
+def test_apply_posting_merges_overrides_the_kept_transactions_description() -> None:
+    postings = postings_to_frame([
+        *_placeholder_pair("chase-checking", "1", "chase:checking:9579", _leg(-42.50, "WHOLE FOODS #123")),
+        *_placeholder_pair("chase-pdf", "1", "chase:checking:9579", _leg(-42.50, "Whole Foods Market")),
+    ])
+    kept_transaction_id = (
+        postings
+        .filter(pl.col("account_id") == "chase:checking:9579")
+        .sort("posting_id")
+        .row(0, named=True)["transaction_id"]
+    )
+    duplicate_transaction_id = next(
+        tid for tid in postings["transaction_id"].unique().to_list() if tid != kept_transaction_id
+    )
+    merge = PostingMerge(
+        merge_id="m1",
+        kept_transaction_id=kept_transaction_id,
+        duplicate_transaction_ids=[duplicate_transaction_id],
+        description="Whole Foods Market",
+    )
+    result = apply_posting_merges(postings, {"m1": merge})
+    assert set(result["description"].to_list()) == {"Whole Foods Market"}
 
 
 def test_resolved_transfer_rule_ids_by_transaction_names_the_rule_that_resolved_a_transaction() -> None:

@@ -1,7 +1,7 @@
 [project]
 name = "personalfinances"
 version = "0.1.0"
-description = "Personal Finance Dashboard: Investments, Accounting, Budget, Net Worth "
+description = "Personal finance dashboard: replays an append-only ledger into IBKR portfolio performance, net worth, budgets, and goals."
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [
@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=1.26",
     "defusedxml>=0.7",
     "pdfplumber>=0.11",
+    "python-dateutil>=2.9",
 ]
 
 [project.optional-dependencies]
@@ -64,7 +65,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["plotly.*", "defusedxml.*", "pdfplumber.*"]
+module = ["plotly.*", "defusedxml.*", "pdfplumber.*", "dateutil.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

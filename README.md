@@ -19,10 +19,11 @@ Both read the same on-disk cache under `data/` and call the same
 
 Alongside it, the `accounting` package tracks day-to-day cash accounts —
 checking, savings, credit cards — imported from bank exports and statement
-PDFs, categorized, and rolled up into net worth and an income statement
-(see [docs/accounting/architecture.md](docs/accounting/architecture.md)).
-It shares the same web dashboard and API process as `trades` but is
-otherwise independent.
+PDFs, categorized, and rolled up into net worth, an income statement,
+budgets, and goals (see
+[docs/accounting/architecture.md](docs/accounting/architecture.md)). It
+shares the same web dashboard and API process as `trades` but is otherwise
+independent.
 
 ## Prerequisites
 
@@ -144,10 +145,10 @@ src/trades/
   visualization.py    Plotly charts for the notebook
 src/accounting/
   config.py           accounting-specific tunables (store/ledger/overrides paths)
-  models.py           pydantic schemas — Account, Posting, Category, Rule, …
+  models.py           pydantic schemas — Account, Posting, Category, TransferRule, …
   dashboard/          net worth and income-statement aggregation
   ledger/             replay, categorization, currency conversion, transfers
-  importers/          bank CSV/PDF → canonical postings (Chase, SoFi)
+  importers/          bank CSV/PDF → canonical postings (Chase, SoFi, canonical/ fallback)
   api.py              JSON endpoints, mounted onto the same FastAPI app as trades
 notebooks/
   trades/
@@ -172,7 +173,12 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | [trades/market_data.md](docs/trades/market_data.md) | Yahoo prices, FRED CPI, HYSA rates |
 | [trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) | Syncing from Interactive Brokers |
 | [trades/glossary.md](docs/trades/glossary.md) | Plain-language definitions of dashboard terms |
-| [accounting/architecture.md](docs/accounting/architecture.md) | Module map, canonical ledger, importers, categorization |
+| [accounting/architecture.md](docs/accounting/architecture.md) | Module map, canonical ledger schema, core conventions |
+| [accounting/categorization.md](docs/accounting/categorization.md) | Categories, tags, rules vs. category patterns vs. AI suggestions, splitting, transfer/duplicate detection |
+| [accounting/planning.md](docs/accounting/planning.md) | Budgets and goals, including recurring/withdrawal automations |
+| [accounting/currency-handling.md](docs/accounting/currency-handling.md) | Multi-currency conversion, adding a new supported currency |
+| [accounting/adding-accounts.md](docs/accounting/adding-accounts.md) | Teaching the app a new bank's export format |
+| [accounting/canonical-csv-import.md](docs/accounting/canonical-csv-import.md) | The no-code fallback CSV importer for a bank with no dedicated standardizer |
 
 Start with [trades/architecture.md](docs/trades/architecture.md) or
 [accounting/architecture.md](docs/accounting/architecture.md) if you're
@@ -181,8 +187,10 @@ adding a new data source or broker.
 ## Dev
 
 ```bash
-uv run pytest         # requires the `api` extra installed (see Setup) for tests/test_api.py
+uv run pytest              # requires the `api` extra installed (see Setup) for tests/test_api.py
 uv run ruff check .
+uv run --with mypy mypy src/accounting   # accounting is fully typed and mypy-clean
 
-cd web && npm run build   # typechecks + production-builds the frontend
+cd web && npm run build    # typechecks + production-builds the frontend
+cd web && npm run lint
 ```

@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -46,24 +48,35 @@ function monthBounds(month: string): { start: string; end: string } {
 // `usePersistedState`-style invalidation).
 function BudgetRow({
   category,
+  topCategoryId,
+  subcategoryId,
   month,
   initialAmount,
   actual,
   displayCurrency,
+  expandable,
   onCommit,
 }: {
   category: Category
+  // The top-level category this row's suggestion/actual is scoped
+  // under — same as `category.category_id` for a top-level row itself,
+  // or the parent's id when `category` is one of its subcategories.
+  topCategoryId: string
+  subcategoryId: string | null
   month: string
   initialAmount: string
   actual: number
   displayCurrency: CurrencyCode
+  // Present only for a top-level row that has subcategories — renders
+  // the expand/collapse chevron in place of the subcategory rows' indent.
+  expandable?: { expanded: boolean; onToggle: () => void }
   onCommit: (value: string) => void
 }) {
   const [amount, setAmount] = useState(initialAmount)
   const dirtyRef = useRef(false)
   const onCommitRef = useRef(onCommit)
   onCommitRef.current = onCommit
-  const { data: suggestion } = useSuggestedBudgetAmount(category.category_id, month)
+  const { data: suggestion } = useSuggestedBudgetAmount(topCategoryId, month, undefined, subcategoryId ?? undefined)
 
   useEffect(() => {
     setAmount(initialAmount)
@@ -89,8 +102,13 @@ function BudgetRow({
 
   return (
     <TableRow>
-      <TableCell className="flex items-center gap-1.5 font-medium">
-        <span className="inline-block size-2 rounded-full" style={{ background: category.color }} />
+      <TableCell className={`flex items-center gap-1.5 ${subcategoryId ? 'pl-9 font-normal text-muted-foreground' : 'font-medium'}`}>
+        {expandable && (
+          <button type="button" onClick={expandable.onToggle} className="text-muted-foreground hover:text-foreground">
+            <ChevronRight className={`size-3.5 transition-transform ${expandable.expanded ? 'rotate-90' : ''}`} />
+          </button>
+        )}
+        <span className="inline-block size-2 shrink-0 rounded-full" style={{ background: category.color }} />
         {category.name}
       </TableCell>
       <TableCell className="text-right">
@@ -129,6 +147,7 @@ export function BudgetPage() {
   const { displayCurrency } = useDisplayCurrency()
   const [mode, setMode] = usePersistedState<BudgetMode>('accounting.budget-mode', 'per_month')
   const [month, setMonth] = usePersistedState('accounting.budget-month', currentMonth())
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
 
   const { data: store, isLoading: storeLoading } = useAccountingStore()
   const { data: postings } = usePostings()
@@ -142,39 +161,75 @@ export function BudgetPage() {
     .filter((category) => category.classification === 'expense' && category.parent_category_id === null)
     .sort((a, b) => a.name.localeCompare(b.name))
 
-  const actualByCategory = new Map((actualCategoryTotals ?? []).map((row) => [row.category_id, row.amount]))
+  const subcategoriesByParent = new Map<string, Category[]>()
+  for (const category of Object.values(store?.categories ?? {})) {
+    if (category.classification !== 'expense' || !category.parent_category_id) continue
+    const siblings = subcategoriesByParent.get(category.parent_category_id) ?? []
+    siblings.push(category)
+    subcategoriesByParent.set(category.parent_category_id, siblings)
+  }
+  for (const siblings of subcategoriesByParent.values()) siblings.sort((a, b) => a.name.localeCompare(b.name))
+  const expandableCategoryIds = expenseCategories
+    .filter((category) => (subcategoriesByParent.get(category.category_id)?.length ?? 0) > 0)
+    .map((category) => category.category_id)
 
-  function budgetedAmountFor(categoryId: string): string {
+  function toggleExpanded(categoryId: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(categoryId)) next.delete(categoryId)
+      else next.add(categoryId)
+      return next
+    })
+  }
+
+  // Sums every actual row (one per category/subcategory pair) both by its
+  // top-level category and, when it has one, its subcategory — a category
+  // row's actual must include every subcategory's spend, not just the last
+  // row a naive single-key map would have kept.
+  const actualByCategory = new Map<string, number>()
+  const actualBySubcategory = new Map<string, number>()
+  for (const row of actualCategoryTotals ?? []) {
+    actualByCategory.set(row.category_id, (actualByCategory.get(row.category_id) ?? 0) + row.amount)
+    if (row.subcategory_id) {
+      actualBySubcategory.set(row.subcategory_id, (actualBySubcategory.get(row.subcategory_id) ?? 0) + row.amount)
+    }
+  }
+
+  function budgetedAmountFor(categoryId: string, subcategoryId: string | null): string {
     if (mode === 'general') {
-      const general = store?.general_budgets[categoryId]
+      const general = store?.general_budgets[subcategoryId ?? categoryId]
       return general ? String(general.amount) : ''
     }
-    const perMonth = (store?.budgets ?? []).find((budget) => budget.month === month && budget.category_id === categoryId)
+    const perMonth = (store?.budgets ?? []).find(
+      (budget) => budget.month === month && budget.category_id === categoryId && (budget.subcategory_id ?? null) === subcategoryId,
+    )
     return perMonth ? String(perMonth.amount) : ''
   }
 
-  function commitAmount(categoryId: string, rawValue: string) {
+  function commitAmount(categoryId: string, subcategoryId: string | null, rawValue: string) {
     const amount = Number.parseFloat(rawValue)
     const isValid = rawValue.trim() !== '' && !Number.isNaN(amount)
     if (mode === 'general') {
+      const key = subcategoryId ?? categoryId
       const next = { ...(store?.general_budgets ?? {}) }
-      if (isValid) next[categoryId] = { category_id: categoryId, amount, currency: displayCurrency }
-      else delete next[categoryId]
+      if (isValid) next[key] = { category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }
+      else delete next[key]
       setGeneralBudgets.mutate(next)
       return
     }
     const otherEntries = (store?.budgets ?? []).filter(
-      (budget) => !(budget.month === month && budget.category_id === categoryId),
+      (budget) => !(budget.month === month && budget.category_id === categoryId && (budget.subcategory_id ?? null) === subcategoryId),
     )
+    const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
     const thisEntry = isValid
-      ? [{ budget_id: `${month}:${categoryId}`, month, category_id: categoryId, amount, currency: displayCurrency }]
+      ? [{ budget_id: budgetId, month, category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }]
       : []
     setBudgets.mutate([...otherEntries, ...thisEntry])
   }
 
   const comparison = expenseCategories
     .map((category) => {
-      const budgetedText = budgetedAmountFor(category.category_id)
+      const budgetedText = budgetedAmountFor(category.category_id, null)
       const budgeted = Number.parseFloat(budgetedText)
       if (budgetedText.trim() === '' || Number.isNaN(budgeted)) return null
       return {
@@ -230,6 +285,22 @@ export function BudgetPage() {
           <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle>Budgets</CardTitle>
             <div className="flex items-center gap-2">
+              {expandableCategoryIds.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setExpandedIds(expandedIds.size < expandableCategoryIds.length ? new Set(expandableCategoryIds) : new Set())
+                  }
+                  title={expandedIds.size < expandableCategoryIds.length ? 'Expand all' : 'Collapse all'}
+                >
+                  {expandedIds.size < expandableCategoryIds.length ? (
+                    <ChevronsUpDown className="size-3.5" />
+                  ) : (
+                    <ChevronsDownUp className="size-3.5" />
+                  )}
+                </Button>
+              )}
               <Select value={mode} onValueChange={(value) => value && setMode(value as BudgetMode)}>
                 <SelectTrigger size="sm" className="w-32">
                   <SelectValue items={MODE_ITEMS} />
@@ -267,17 +338,39 @@ export function BudgetPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {expenseCategories.map((category) => (
-                    <BudgetRow
-                      key={`${mode}:${category.category_id}`}
-                      category={category}
-                      month={month}
-                      initialAmount={budgetedAmountFor(category.category_id)}
-                      actual={actualByCategory.get(category.category_id) ?? 0}
-                      displayCurrency={displayCurrency}
-                      onCommit={(value) => commitAmount(category.category_id, value)}
-                    />
-                  ))}
+                  {expenseCategories.map((category) => {
+                    const subcategories = subcategoriesByParent.get(category.category_id) ?? []
+                    const expanded = expandedIds.has(category.category_id)
+                    return (
+                      <Fragment key={`${mode}:${category.category_id}`}>
+                        <BudgetRow
+                          category={category}
+                          topCategoryId={category.category_id}
+                          subcategoryId={null}
+                          month={month}
+                          initialAmount={budgetedAmountFor(category.category_id, null)}
+                          actual={actualByCategory.get(category.category_id) ?? 0}
+                          displayCurrency={displayCurrency}
+                          expandable={subcategories.length > 0 ? { expanded, onToggle: () => toggleExpanded(category.category_id) } : undefined}
+                          onCommit={(value) => commitAmount(category.category_id, null, value)}
+                        />
+                        {expanded &&
+                          subcategories.map((subcategory) => (
+                            <BudgetRow
+                              key={`${mode}:${subcategory.category_id}`}
+                              category={subcategory}
+                              topCategoryId={category.category_id}
+                              subcategoryId={subcategory.category_id}
+                              month={month}
+                              initialAmount={budgetedAmountFor(category.category_id, subcategory.category_id)}
+                              actual={actualBySubcategory.get(subcategory.category_id) ?? 0}
+                              displayCurrency={displayCurrency}
+                              onCommit={(value) => commitAmount(category.category_id, subcategory.category_id, value)}
+                            />
+                          ))}
+                      </Fragment>
+                    )
+                  })}
                 </TableBody>
               </Table>
             )}
@@ -285,7 +378,10 @@ export function BudgetPage() {
         </Card>
 
         {comparison.length > 0 && (
-          <div className="grid gap-4 lg:grid-cols-2">
+          // Stacked rather than side by side — a Sankey needs real
+          // horizontal room for its flows to stay readable, which a
+          // half-width grid column doesn't leave it.
+          <div className="space-y-4">
             <CashflowSankeyChart categoryTotals={actualCategoryTotals ?? []} displayCurrency={displayCurrency} title="Actual cash flow" />
             <CashflowSankeyChart categoryTotals={budgetedSankeyRows} displayCurrency={displayCurrency} title="Budgeted cash flow" />
           </div>

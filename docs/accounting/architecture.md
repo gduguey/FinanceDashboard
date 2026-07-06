@@ -62,12 +62,13 @@ file that uses them.
   an LLM — is confined to `importers/`, `market_data/`, `llm/`, and the
   handful of `load_*`/`save_*` functions in `store.py`, which pure logic
   never calls directly (it's handed already-loaded data instead).
-- **Rule** vs. **category pattern** — two different, easily-confused
-  mechanisms, covered in full in `categorization.md`. In short: a `Rule`
-  resolves a posting's *counterparty account* (and optionally its
-  category) automatically, with no confirmation step, every time the
-  ledger is read. A category pattern only ever *suggests* a category —
-  nothing changes until a human applies and validates the suggestion.
+- **TransferRule** vs. **category pattern** — two different,
+  easily-confused mechanisms, covered in full in `categorization.md`. In
+  short: a `TransferRule` resolves a posting's *counterparty account* (and
+  optionally its category) automatically, with no confirmation step, every
+  time the ledger is read. A category pattern only ever *suggests* a
+  category — nothing changes until a human applies and validates the
+  suggestion. Either can be switched off without deleting it (`active`).
 
 ## The canonical schema
 
@@ -88,7 +89,7 @@ virtual placeholder accounts:
 | `uncategorized:income` | `income_source` | Uncategorized Income |
 
 `ledger.categorization.apply_rules` repoints that placeholder at the real
-counterparty — a named vault, a `Rule` match, a detected internal transfer
+counterparty — a named vault, a `TransferRule` match, a detected internal transfer
 — every time postings are read, never baked into the ledger cache. A
 manual correction (`ManualOverride`) is layered on top of that, also
 applied fresh on every read, so it can never be silently clobbered by
@@ -113,14 +114,29 @@ balanced pairs via `importers.common.posting_pair`, and every split
 original posting's amount before being written — never checked after the
 fact as a data-quality pass.
 
+### The one deliberate exception: manual transfers
+
+Every posting above traces back to a real row in an imported statement —
+with one exception. Closing an account (`Account.closed`) whose balance
+isn't zero needs somewhere to record where that remaining money went, and
+no future bank statement will ever describe that movement, since the
+account is closed. A `ManualTransfer` (`accounting.models`) is a
+user-entered transfer between two of their own accounts;
+`ledger.manual_transfers.postings_for_manual_transfers` turns each one into
+its two postings — one leaving the closed account, one arriving at
+wherever the user says it went — folded into the resolved ledger the same
+way rules and overrides are, never baked into the ledger cache. Closing
+and (optionally) recording where the balance went happen atomically via
+`POST /accounts/{id}/close`.
+
 ## Module map
 
 ```
 src/accounting/
   config.py             AccountingConfig — every on-disk path, derived from one data_dir
-  models.py             pydantic schemas — Account, Posting, Category, Tag, Rule,
+  models.py             pydantic schemas — Account, Posting, Category, Tag, TransferRule,
                          CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
-                         Currency — canonical, declared once
+                         ManualTransfer, PostingMerge, Currency — canonical, declared once
   store.py              persisted accounts/categories/tags/rules/goals/budgets/etc.
                          (store.json) — seeded defaults, not fetched data
 
@@ -133,6 +149,8 @@ src/accounting/
                             AI/pattern category suggestion
     currency.py             convert() between any two supported currencies
     transfers.py            unmatched-internal-transfer suggestions
+    duplicates.py           likely-duplicate-transaction suggestions + certainty scoring
+    manual_transfers.py     turns a ManualTransfer into its two postings (see below)
     goal_automations.py     recurring-addition and withdrawal-automation math —
                             decides amounts only, never writes anything itself
 
@@ -157,6 +175,10 @@ src/accounting/
                             statement_pdf.py (monthly PDF — checking + savings +
                             every Vault in one file, the only source for Vault
                             transactions and interest)
+    canonical/              no-code fallback importer for any bank with no
+                            dedicated standardizer — fuzzy column/date/amount
+                            parsing, auto-creates categories (see
+                            canonical-csv-import.md)
 
   market_data/
     exchange_rates.py      fetches + caches daily FX history, computes a
@@ -190,14 +212,17 @@ since each is a substantial topic on its own:
 
 - **`categorization.md`** — categories, tags, rules vs. category patterns
   vs. AI suggestions, the accept/reject ("pending") lifecycle those two
-  suggestion sources share, auto-detected transfer suggestions, and
-  transaction splitting.
-- **`planning.md`** — budgets and goals: how each is laid over the same
-  categorized postings without maintaining any separate copy of them.
+  suggestion sources share, auto-detected transfer suggestions,
+  duplicate-transaction detection and merging, and transaction splitting.
+- **`planning.md`** — budgets (including per-subcategory budgets) and
+  goals: how each is laid over the same categorized postings without
+  maintaining any separate copy of them.
 - **`currency-handling.md`** — how multi-currency conversion works, and
   exactly what's required to add a new supported currency.
 - **`adding-accounts.md`** — what's involved in teaching the app to read a
   new bank's export format.
+- **`canonical-csv-import.md`** — the no-code fallback importer for a bank
+  with no dedicated standardizer.
 
 ## The accounting/trades coupling
 
