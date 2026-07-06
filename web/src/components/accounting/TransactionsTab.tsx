@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState, type Ref } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -14,18 +14,26 @@ import { TagsCell } from '@/components/accounting/TagsCell'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
-import { useAiSuggestCategory, useDeletePostingSplit, useSetPostingOverride } from '@/hooks/useAccountingData'
-import type { Account, Category, ManualOverride, Posting, Tag } from '@/types/accounting'
+import {
+  useAiSuggestCategory,
+  useDeletePostingSplit,
+  usePatternSuggestCategory,
+  useSetPostingOverride,
+  useValidatePending,
+} from '@/hooks/useAccountingData'
+import type { Account, Category, ManualOverride, Posting, Rule, Tag } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
 // real one — a table row with `p-2 text-sm` cells lands around here.
 const ESTIMATED_ROW_HEIGHT = 45
-const TABLE_COLUMN_COUNT = 8
+const TABLE_COLUMN_COUNT = 9
 
 const ALL = '__all__'
 const UNCATEGORIZED = '__uncategorized__'
 const NO_SUBCATEGORY = '__no_subcategory__'
+const CONFIRMED = '__confirmed__'
 const SPLIT_LEG_PATTERN = /^(.+):split:\d+$/
+const PENDING_ITEMS: Record<string, string> = { [ALL]: 'All', ai: 'AI pending', pattern: 'Pattern pending', [CONFIRMED]: 'Confirmed' }
 
 // A split leg's own id encodes the original posting it came from — used to
 // offer "undo split" on a leg row instead of "split" (splitting a leg
@@ -64,6 +72,8 @@ interface FilterState {
   tagExclude: boolean
   startDate: string
   endDate: string
+  pendingFilter: string
+  pendingExclude: boolean
 }
 
 function defaultFilterState(): FilterState {
@@ -79,6 +89,8 @@ function defaultFilterState(): FilterState {
     tagExclude: false,
     startDate: '',
     endDate: '',
+    pendingFilter: ALL,
+    pendingExclude: false,
   }
 }
 
@@ -136,11 +148,21 @@ function FilterSelect({
   )
 }
 
+// Row background for a not-yet-confirmed suggestion — green for an AI
+// pick, blue for a category-pattern match, per the user's explicit request
+// that the two never share a color (they're also two distinct stored
+// `pending_source` values, never one shared flag).
+const PENDING_ROW_CLASS: Record<'ai' | 'pattern', string> = {
+  ai: 'bg-emerald-50 hover:bg-emerald-100/80 dark:bg-emerald-950/40 dark:hover:bg-emerald-950/60',
+  pattern: 'bg-blue-50 hover:bg-blue-100/80 dark:bg-blue-950/40 dark:hover:bg-blue-950/60',
+}
+
 interface TransactionRowProps {
   ref?: Ref<HTMLTableRowElement>
   'data-index': number
   posting: Posting
   accountName: string
+  resolvedByRuleLabel: string | null
   categories: Record<string, Category>
   tags: Record<string, Tag>
   withSubcategories: Set<string>
@@ -150,6 +172,7 @@ interface TransactionRowProps {
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
   onUndoSplit: (originalPostingId: string) => void
+  onToggleSelected: (postingId: string, selected: boolean) => void
 }
 
 // Extracted and memoized so that state changes scoped to one row (an AI
@@ -163,6 +186,7 @@ const TransactionRow = memo(function TransactionRow({
   'data-index': dataIndex,
   posting,
   accountName,
+  resolvedByRuleLabel,
   categories,
   tags,
   withSubcategories,
@@ -172,12 +196,35 @@ const TransactionRow = memo(function TransactionRow({
   onAiSuggest,
   onSplit,
   onUndoSplit,
+  onToggleSelected,
 }: TransactionRowProps) {
   const originalId = splitOriginalId(posting.posting_id)
+  const pendingClass = posting.pending_source ? PENDING_ROW_CLASS[posting.pending_source] : undefined
   return (
-    <TableRow ref={ref} data-index={dataIndex}>
+    <TableRow ref={ref} data-index={dataIndex} className={pendingClass}>
+      <TableCell>
+        {posting.pending_source && (
+          <input
+            type="checkbox"
+            className="size-3.5 accent-current"
+            checked={posting.pending_selected}
+            onChange={(event) => onToggleSelected(posting.posting_id, event.target.checked)}
+            aria-label="Keep this suggestion"
+          />
+        )}
+      </TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
-      <TableCell className="whitespace-nowrap text-muted-foreground">{accountName}</TableCell>
+      <TableCell className="whitespace-nowrap text-muted-foreground">
+        {accountName}
+        {resolvedByRuleLabel && (
+          <span
+            className="ml-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
+            title={`Resolved by rule: ${resolvedByRuleLabel} — deleting that rule reverts this posting`}
+          >
+            via rule
+          </span>
+        )}
+      </TableCell>
       <TableCell className="max-w-xs truncate">{posting.description}</TableCell>
       <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, posting.currency)}</TableCell>
       <TableCell>
@@ -241,6 +288,7 @@ function TransactionsTable({
   accounts,
   categories,
   tags,
+  rules,
   onlyUncategorized,
 }: {
   storageKey: string
@@ -248,30 +296,35 @@ function TransactionsTable({
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
+  rules: Rule[]
   onlyUncategorized: boolean
 }) {
   const [filters, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
   const [splitting, setSplitting] = useState<Posting | null>(null)
-  const [aiMessages, setAiMessages] = useState<Record<string, string>>({})
+  const [suggestMessages, setSuggestMessages] = useState<Record<string, string>>({})
   const [bulkSuggesting, setBulkSuggesting] = useState(false)
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
+  const [bulkPatternSuggesting, setBulkPatternSuggesting] = useState(false)
+  const [bulkPatternProgress, setBulkPatternProgress] = useState<{ done: number; total: number } | null>(null)
   const setOverride = useSetPostingOverride()
   const deleteSplit = useDeletePostingSplit()
   const aiSuggest = useAiSuggestCategory()
+  const patternSuggest = usePatternSuggestCategory()
+  const validatePending = useValidatePending()
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
       const postingId = posting.posting_id
-      setAiMessages((prev) => ({ ...prev, [postingId]: 'Asking the AI…' }))
+      setSuggestMessages((prev) => ({ ...prev, [postingId]: 'Asking the AI…' }))
       try {
         const result = await aiSuggest.mutateAsync({ postingId, lockCategoryId: posting.category_id })
-        setAiMessages((prev) => {
+        setSuggestMessages((prev) => {
           if (!result.applied) return { ...prev, [postingId]: 'No confident suggestion' }
           const { [postingId]: _removed, ...rest } = prev
           return rest
         })
       } catch (error) {
-        setAiMessages((prev) => ({
+        setSuggestMessages((prev) => ({
           ...prev,
           [postingId]: error instanceof Error ? error.message : 'AI suggestion failed',
         }))
@@ -293,11 +346,46 @@ function TransactionsTable({
     setBulkProgress(null)
   }
 
+  const runPatternSuggest = useCallback(
+    async (posting: Posting) => {
+      const postingId = posting.posting_id
+      try {
+        const result = await patternSuggest.mutateAsync({ postingId, lockCategoryId: posting.category_id })
+        setSuggestMessages((prev) => {
+          if (!result.applied) return { ...prev, [postingId]: 'No matching pattern' }
+          const { [postingId]: _removed, ...rest } = prev
+          return rest
+        })
+      } catch (error) {
+        setSuggestMessages((prev) => ({
+          ...prev,
+          [postingId]: error instanceof Error ? error.message : 'Pattern suggestion failed',
+        }))
+      }
+    },
+    [patternSuggest],
+  )
+
+  async function runBulkPatternSuggest(targets: Posting[]) {
+    setBulkPatternSuggesting(true)
+    setBulkPatternProgress({ done: 0, total: targets.length })
+    for (const [index, posting] of targets.entries()) {
+      await runPatternSuggest(posting)
+      setBulkPatternProgress({ done: index + 1, total: targets.length })
+    }
+    setBulkPatternSuggesting(false)
+    setBulkPatternProgress(null)
+  }
+
   const handleOverride = useCallback(
     (postingId: string, override: ManualOverride) => setOverride.mutate({ postingId, override }),
     [setOverride],
   )
   const handleUndoSplit = useCallback((originalPostingId: string) => deleteSplit.mutate(originalPostingId), [deleteSplit])
+  const handleToggleSelected = useCallback(
+    (postingId: string, selected: boolean) => setOverride.mutate({ postingId, override: { pending_selected: selected } }),
+    [setOverride],
+  )
 
   const realAccounts = useMemo(
     () =>
@@ -349,6 +437,10 @@ function TransactionsTable({
   )
 
   const withSubcategories = useMemo(() => categoriesWithSubcategories(categories), [categories])
+  const ruleLabelById = useMemo(
+    () => new Map(rules.map((rule) => [rule.rule_id, rule.description || rule.description_contains])),
+    [rules],
+  )
 
   const filtered = useMemo(() => {
     return postings
@@ -371,6 +463,11 @@ function TransactionsTable({
       .filter((posting) => matchesFilter(posting.tag_ids.includes(filters.tagFilter), filters.tagFilter, filters.tagExclude))
       .filter((posting) => !filters.startDate || posting.posted_at.slice(0, 10) >= filters.startDate)
       .filter((posting) => !filters.endDate || posting.posted_at.slice(0, 10) <= filters.endDate)
+      .filter((posting) => {
+        const actual =
+          filters.pendingFilter === CONFIRMED ? posting.pending_source === null : posting.pending_source === filters.pendingFilter
+        return matchesFilter(actual, filters.pendingFilter, filters.pendingExclude)
+      })
   }, [postings, filters, onlyUncategorized, withSubcategories])
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'posted_at')
@@ -378,6 +475,20 @@ function TransactionsTable({
     () => filtered.filter((posting) => needsCategorizing(posting, withSubcategories)),
     [filtered, withSubcategories],
   )
+  const pendingInView = useMemo(() => sorted.filter((posting) => posting.pending_source !== null), [sorted])
+  const allPendingSelected = pendingInView.length > 0 && pendingInView.every((posting) => posting.pending_selected)
+  const somePendingSelected = pendingInView.some((posting) => posting.pending_selected)
+
+  function handleValidateSelection() {
+    validatePending.mutate(pendingInView.map((posting) => posting.posting_id))
+  }
+
+  function handleToggleSelectAllPending() {
+    const nextSelected = !allPendingSelected
+    for (const posting of pendingInView) {
+      if (posting.pending_selected !== nextSelected) handleToggleSelected(posting.posting_id, nextSelected)
+    }
+  }
 
   // Only the rows actually scrolled into view get mounted — a table of
   // thousands of postings no longer means thousands of live category
@@ -393,20 +504,33 @@ function TransactionsTable({
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
   const paddingBottom = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
 
+  const selectAllRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (selectAllRef.current) selectAllRef.current.indeterminate = somePendingSelected && !allPendingSelected
+  }, [somePendingSelected, allPendingSelected])
+
   return (
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-end justify-between gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <CardTitle>{onlyUncategorized ? 'Needs categorizing' : 'All transactions'}</CardTitle>
           {bulkTargets.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={bulkSuggesting}
-              onClick={() => runBulkAiSuggest(bulkTargets)}
-            >
+            <Button variant="outline" size="sm" disabled={bulkSuggesting} onClick={() => runBulkAiSuggest(bulkTargets)}>
               <Sparkles className="size-3.5" />
               {bulkProgress ? `Suggesting ${bulkProgress.done}/${bulkProgress.total}…` : `AI suggest all (${bulkTargets.length})`}
+            </Button>
+          )}
+          {bulkTargets.length > 0 && (
+            <Button variant="outline" size="sm" disabled={bulkPatternSuggesting} onClick={() => runBulkPatternSuggest(bulkTargets)}>
+              <Sparkles className="size-3.5" />
+              {bulkPatternProgress
+                ? `Suggesting ${bulkPatternProgress.done}/${bulkPatternProgress.total}…`
+                : `Run pattern suggestions (${bulkTargets.length})`}
+            </Button>
+          )}
+          {pendingInView.length > 0 && (
+            <Button variant="outline" size="sm" disabled={validatePending.isPending} onClick={handleValidateSelection}>
+              Validate selection ({pendingInView.length})
             </Button>
           )}
         </div>
@@ -449,6 +573,14 @@ function TransactionsTable({
             onValueChange={(value) => setFilters({ ...filters, tagFilter: value })}
             onExcludeChange={(exclude) => setFilters({ ...filters, tagExclude: exclude })}
           />
+          <FilterSelect
+            value={filters.pendingFilter ?? ALL}
+            exclude={filters.pendingExclude ?? false}
+            items={PENDING_ITEMS}
+            width="min-w-32"
+            onValueChange={(value) => setFilters({ ...filters, pendingFilter: value })}
+            onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
+          />
           <Input
             type="date"
             className="w-36"
@@ -477,6 +609,18 @@ function TransactionsTable({
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8">
+                    {pendingInView.length > 0 && (
+                      <input
+                        ref={selectAllRef}
+                        type="checkbox"
+                        className="size-3.5 accent-current"
+                        checked={allPendingSelected}
+                        onChange={handleToggleSelectAllPending}
+                        aria-label="Select all pending suggestions in view"
+                      />
+                    )}
+                  </TableHead>
                   <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
                     Date
                   </SortableTableHead>
@@ -516,15 +660,19 @@ function TransactionsTable({
                       data-index={virtualRow.index}
                       posting={posting}
                       accountName={accounts[posting.account_id]?.name ?? posting.account_id}
+                      resolvedByRuleLabel={
+                        posting.resolved_by_rule_id ? (ruleLabelById.get(posting.resolved_by_rule_id) ?? posting.resolved_by_rule_id) : null
+                      }
                       categories={categories}
                       tags={tags}
                       withSubcategories={withSubcategories}
-                      aiMessage={aiMessages[posting.posting_id]}
-                      aiPending={aiSuggest.isPending || bulkSuggesting}
+                      aiMessage={suggestMessages[posting.posting_id]}
+                      aiPending={aiSuggest.isPending || bulkSuggesting || patternSuggest.isPending || bulkPatternSuggesting}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
                       onSplit={setSplitting}
                       onUndoSplit={handleUndoSplit}
+                      onToggleSelected={handleToggleSelected}
                     />
                   )
                 })}
@@ -548,11 +696,13 @@ export function TransactionsTab({
   accounts,
   categories,
   tags,
+  rules,
 }: {
   postings: Posting[]
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
+  rules: Rule[]
 }) {
   const withSubcategories = useMemo(() => categoriesWithSubcategories(categories), [categories])
   const needsCategorizingCount = postings.filter(
@@ -572,6 +722,7 @@ export function TransactionsTab({
           accounts={accounts}
           categories={categories}
           tags={tags}
+          rules={rules}
           onlyUncategorized={false}
         />
       </TabsContent>
@@ -582,6 +733,7 @@ export function TransactionsTab({
           accounts={accounts}
           categories={categories}
           tags={tags}
+          rules={rules}
           onlyUncategorized
         />
       </TabsContent>

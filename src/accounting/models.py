@@ -179,6 +179,29 @@ class Rule(BaseModel):
     description: str = ""
 
 
+class CategoryPattern(BaseModel):
+    """A user-maintained description-match pattern that *suggests* a category — never applies one silently.
+
+    Deliberately distinct from `Rule`: a `Rule` resolves a posting's
+    counterparty/category automatically as part of every ledger read, with
+    no confirmation step. A `CategoryPattern` only ever produces a
+    suggestion the user must explicitly accept or reject (see
+    `ledger.pending`, `pending_source="pattern"` on `ManualOverride`) —
+    the same confirm-before-it-sticks flow an AI suggestion goes through,
+    just keyed off an explicit substring match instead of an LLM call.
+    `priority` breaks ties the same way `Rule.priority` does: the lowest
+    number wins.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    pattern_id: str = Field(min_length=1)
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int = 0
+
+
 class OtherAsset(BaseModel):
     """A manually-entered net-worth line with no transaction history — property, a car, etc.
 
@@ -274,6 +297,103 @@ class SimulatorScenario(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+class Goal(BaseModel):
+    """A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
+
+    See `dashboard.goals.goal_balance`: the balance at any point in time
+    is always the running sum of contributions up to that date, computed
+    fresh, the same way an account's balance is never a cached figure
+    (see `Budget`'s own docstring for the same reasoning applied to
+    spending).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    goal_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    target_amount: float
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+    color: str = Field(min_length=1)
+    created_at: datetime
+
+
+GoalContributionOrigin = Literal["manual", "automation"]
+
+
+class GoalContribution(BaseModel):
+    """One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
+
+    `date` is the real day the allocation happened — never a month
+    bucket; "this month's contributions" is always a display-time filter
+    over these rows, never a separately-stored monthly figure (see
+    `dashboard.goals`). A positive `amount` is money going into the goal,
+    negative is a withdrawal (see `ledger.goal_automations` for the
+    withdrawal-automation trigger). `source_posting_id`, when set, links
+    to the real bank transfer this corresponds to, purely for
+    traceability — never read by any balance or unallocated computation,
+    per the user's own spec: "Never used in math." `origin` distinguishes
+    a manually-entered contribution from one an automation wrote; `edited`
+    flags an automation-written contribution the user has since hand-edited,
+    so the ledger table can show it's no longer purely automatic.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    contribution_id: str = Field(min_length=1)
+    goal_id: str = Field(min_length=1)
+    date: datetime
+    amount: float
+    currency: CurrencyCode = "USD"
+    note: str = ""
+    source_posting_id: str | None = None
+    origin: GoalContributionOrigin = "manual"
+    edited: bool = False
+
+
+RecurringAdditionMode = Literal["fixed_amount", "percent_of_unallocated", "remainder"]
+
+
+class RecurringAddition(BaseModel):
+    """One ordered rule for automatically allocating unallocated money into a goal on a monthly schedule.
+
+    `priority` is the manually-set execution order (lowest first) the
+    Goals page's drag-and-drop reorders — a `fixed_amount` row funded
+    first can leave less (or nothing) for a lower-priority one when
+    unallocated money runs out; see `ledger.goal_automations.run_recurring_additions`.
+    `mode="remainder"` ("whatever's left after all the others") is only
+    ever valid on the single lowest-priority row — enforced by the API
+    that persists this list, not by this model. `schedule_day_of_month`
+    is capped at 28 so every month actually has that day, rather than
+    silently skipping February on a day-30 schedule.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    addition_id: str = Field(min_length=1)
+    goal_id: str = Field(min_length=1)
+    schedule_day_of_month: int = Field(ge=1, le=28)
+    mode: RecurringAdditionMode
+    value: float = 0.0
+    currency: CurrencyCode = "USD"
+    priority: int = 0
+
+
+class WithdrawalPriorityEntry(BaseModel):
+    """One goal's place in the order goals are drawn down from when unallocated money goes negative.
+
+    Purely an ordering — the withdrawal automation itself
+    (`ledger.goal_automations.run_withdrawal_automation`) is event-driven
+    (triggered whenever unallocated dips below zero), not scheduled, so
+    there's no schedule field here the way `RecurringAddition` has one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    goal_id: str = Field(min_length=1)
+    priority: int = 0
+
+
 class EarningsDeposit(BaseModel):
     """One destination a paystub's pay actually lands in — a wage deposit, or a separate reimbursement.
 
@@ -327,6 +447,17 @@ class EarningsStatement(BaseModel):
     reimbursement_lines: list[EarningsLineItem] = Field(default_factory=list)
 
 
+PendingSuggestionSource = Literal["ai", "pattern"]
+"""Which automated categorizer produced a still-unconfirmed suggestion on a posting.
+
+`"ai"` is an LLM suggestion (see `api.post_ai_suggest_category`); `"pattern"`
+is a `CategoryPattern` match (see `api.post_pattern_suggest_category`). Kept
+as two distinct values (not one boolean) so the UI can render each in its
+own color and the "temporary" filter can distinguish them, per the user's
+explicit request that the two never share a visual or a stored flag.
+"""
+
+
 class ManualOverride(BaseModel):
     """A user's direct edit to one posting, always winning over whatever a rule would have produced.
 
@@ -336,6 +467,18 @@ class ManualOverride(BaseModel):
     after `ledger.categorization.apply_rules` every time postings are read,
     never baked into the ledger cache itself — so re-importing a statement
     or editing a rule can never silently erase a manual correction.
+
+    `pending_source`/`pending_selected`/`pending_previous_*` track a
+    suggestion an automated categorizer applied but the user hasn't
+    confirmed yet (see `ledger.pending.resolve_pending_postings`): the
+    category/subcategory fields are already updated optimistically, but
+    the posting still renders as "temporary" until the user either accepts
+    it (clearing the `pending_*` fields, keeping the new category) or
+    rejects it (restoring `pending_previous_category_id`/
+    `pending_previous_subcategory_id` and clearing `pending_*`). Snapshotting
+    the previous category/subcategory here, rather than trying to recompute
+    "what a rule would have produced," is what makes rejection exact even
+    when the previous value came from a rule rather than a prior override.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -344,6 +487,10 @@ class ManualOverride(BaseModel):
     category_id: str | None = None
     subcategory_id: str | None = None
     tag_ids: list[str] | None = None
+    pending_source: PendingSuggestionSource | None = None
+    pending_selected: bool = True
+    pending_previous_category_id: str | None = None
+    pending_previous_subcategory_id: str | None = None
 
 
 class PostingSplitLeg(BaseModel):

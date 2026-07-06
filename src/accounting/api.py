@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from accounting.config import AccountingConfig
 from accounting.dashboard import budgets, income_statement, interest, simulator
+from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.detect import detect_bank_account
@@ -33,8 +34,16 @@ from accounting.importers.ingest import (
     supported_import_kinds,
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
-from accounting.ledger.categorization import apply_manual_overrides, apply_posting_splits, apply_rules
+from accounting.ledger.categorization import (
+    apply_manual_overrides,
+    apply_posting_splits,
+    apply_rules,
+    resolved_rule_ids_by_transaction,
+)
 from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.ledger.goal_automations import run_recurring_additions, run_withdrawal_automation
+from accounting.ledger.patterns import matching_pattern
+from accounting.ledger.pending import resolve_pending_suggestion, stage_pending_suggestion
 from accounting.ledger.replay import account_balances_over_time
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
 from accounting.llm import categorize
@@ -52,16 +61,22 @@ from accounting.models import (
     Budget,
     Category,
     CategoryClassification,
+    CategoryPattern,
     CurrencyCode,
     GeneralBudget,
+    Goal,
+    GoalContribution,
     ManualOverride,
     OpeningBalance,
     OtherAsset,
+    PendingSuggestionSource,
     PostingSplit,
     PostingSplitLeg,
+    RecurringAddition,
     Rule,
     SimulatorScenario,
     Tag,
+    WithdrawalPriorityEntry,
 )
 from accounting.store import (
     AccountingStore,
@@ -151,6 +166,16 @@ def get_store() -> dict[str, Any]:
         "simulator_scenarios": [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios],
         "posting_splits": {pid: split.model_dump(mode="json") for pid, split in store.posting_splits.items()},
         "general_budgets": {cat_id: budget.model_dump(mode="json") for cat_id, budget in store.general_budgets.items()},
+        "category_patterns": {
+            pattern_id: pattern.model_dump(mode="json") for pattern_id, pattern in store.category_patterns.items()
+        },
+        "goals": {goal_id: goal.model_dump(mode="json") for goal_id, goal in store.goals.items()},
+        "goal_contributions": {
+            contribution_id: contribution.model_dump(mode="json")
+            for contribution_id, contribution in store.goal_contributions.items()
+        },
+        "recurring_additions": [addition.model_dump(mode="json") for addition in store.recurring_additions],
+        "withdrawal_priorities": [entry.model_dump(mode="json") for entry in store.withdrawal_priorities],
     }
 
 
@@ -319,6 +344,21 @@ def put_rules(rules: list[Rule]) -> list[dict[str, Any]]:
     store = store.model_copy(update={"rules": rules})
     save_store(store, state.config)
     return [rule.model_dump(mode="json") for rule in store.rules]
+
+
+@router.put("/category-patterns")
+def put_category_patterns(category_patterns: dict[str, CategoryPattern]) -> dict[str, Any]:
+    """Replace the whole category-pattern list — the description-match suggestion source, distinct from `Rule`.
+
+    Returns
+    -------
+    dict[str, Any]
+        The patterns just persisted, keyed by `pattern_id`.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"category_patterns": category_patterns})
+    save_store(store, state.config)
+    return {pattern_id: pattern.model_dump(mode="json") for pattern_id, pattern in store.category_patterns.items()}
 
 
 @router.put("/other-assets")
@@ -753,13 +793,34 @@ def post_rebuild() -> dict[str, Any]:
 def get_postings() -> list[dict[str, Any]]:
     """Return every posting, resolved against the current rules and manual overrides.
 
+    Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
+    `None`) and `pending_selected` — an automated categorizer's
+    not-yet-confirmed suggestion, and whether it's currently checked for
+    the next "validate selection" action (see `ledger.pending`) — and
+    `resolved_by_rule_id`, naming which `Rule` (if any) resolved this
+    posting's transaction, purely for display (see
+    `ledger.categorization.resolved_rule_ids_by_transaction`).
+
     Returns
     -------
     list[dict[str, Any]]
         One dict per posting.
     """
-    postings, _store = _resolved_postings_and_store(state.config)
-    return postings.to_dicts()
+    postings, store = _resolved_postings_and_store(state.config)
+    overrides = load_overrides(state.config)
+    # Recomputed from the raw ledger rather than threaded through
+    # `_resolved_postings_and_store`'s return value — that function's
+    # signature is shared by every other endpoint in this module, and this
+    # is purely a display concern only `get_postings` needs.
+    raw = load_ledger(state.config)
+    resolved_by_rule = resolved_rule_ids_by_transaction(raw, store.rules, store.accounts)
+    rows = postings.to_dicts()
+    for row in rows:
+        override = overrides.get(row["posting_id"])
+        row["pending_source"] = override.pending_source if override is not None else None
+        row["pending_selected"] = override.pending_selected if override is not None else True
+        row["resolved_by_rule_id"] = resolved_by_rule.get(row["transaction_id"])
+    return rows
 
 
 @router.put("/postings/{posting_id}/override")
@@ -948,6 +1009,38 @@ def _few_shot_examples(postings: pl.DataFrame, classification: CategoryClassific
     ][:_MAX_FEW_SHOT_EXAMPLES]
 
 
+def _stage_and_save_pending_suggestion(
+    posting_id: str,
+    target_row: dict[str, Any],
+    category_id: str,
+    subcategory_id: str | None,
+    source: PendingSuggestionSource,
+) -> dict[str, Any]:
+    """Stage a not-yet-confirmed suggestion as a pending override, snapshotting the posting's current category.
+
+    Shared by `post_ai_suggest_category` and `post_pattern_suggest_category`
+    — the only difference between the two is how `category_id`/
+    `subcategory_id` were arrived at.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"category_id", "subcategory_id", "applied": True}`.
+    """
+    overrides = load_overrides(state.config)
+    staged = stage_pending_suggestion(
+        existing=overrides.get(posting_id),
+        category_id=category_id,
+        subcategory_id=subcategory_id,
+        source=source,
+        previous_category_id=target_row["category_id"],
+        previous_subcategory_id=target_row["subcategory_id"],
+    )
+    overrides[posting_id] = staged
+    save_overrides(overrides, state.config)
+    return {"category_id": category_id, "subcategory_id": subcategory_id, "applied": True}
+
+
 @router.post("/postings/{posting_id}/ai-suggest-category")
 def post_ai_suggest_category(posting_id: str, lock_category_id: str | None = None) -> dict[str, Any]:
     """Ask an LLM to suggest a category for one posting, from already-categorized examples — never automatic.
@@ -1005,26 +1098,115 @@ def post_ai_suggest_category(posting_id: str, lock_category_id: str | None = Non
     if lock_category_id is not None and category_id != lock_category_id:
         return {"category_id": None, "subcategory_id": None, "applied": False}
 
+    return _stage_and_save_pending_suggestion(posting_id, target_row, category_id, subcategory_id, "ai")
+
+
+@router.post("/postings/{posting_id}/pattern-suggest-category")
+def post_pattern_suggest_category(posting_id: str, lock_category_id: str | None = None) -> dict[str, Any]:
+    """Suggest a category for one posting from a user-maintained `CategoryPattern` description match.
+
+    The description-match/suggest-don't-apply counterpart to
+    `post_ai_suggest_category` — same staged-pending flow (see
+    `ledger.pending`), same `lock_category_id` guarantee, just matched
+    against `store.category_patterns` instead of calling an LLM.
+
+    Parameters
+    ----------
+    posting_id
+        The posting to suggest a category for.
+    lock_category_id
+        If given, the posting already has this category and only its
+        subcategory is missing — a pattern match is discarded unless its
+        own `category_id` agrees, so this call can never change a
+        category the user (or an earlier rule) already assigned.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"category_id", "subcategory_id", "applied"}` — `applied` is `False` if no pattern matched.
+
+    Raises
+    ------
+    HTTPException
+        404 if the posting doesn't exist.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    target = postings.filter(pl.col("posting_id") == posting_id)
+    if target.is_empty():
+        raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
+    target_row = target.row(0, named=True)
+
+    pattern = matching_pattern(store.category_patterns, str(target_row["description"]))
+    if pattern is None:
+        return {"category_id": None, "subcategory_id": None, "applied": False}
+    if lock_category_id is not None and pattern.category_id != lock_category_id:
+        return {"category_id": None, "subcategory_id": None, "applied": False}
+
+    return _stage_and_save_pending_suggestion(
+        posting_id, target_row, pattern.category_id, pattern.subcategory_id, "pattern"
+    )
+
+
+class ValidatePendingRequest(BaseModel):
+    """Which postings' pending suggestions to resolve — always exactly the caller's current filtered view."""
+
+    posting_ids: list[str]
+
+
+@router.post("/postings/validate-pending")
+def post_validate_pending(payload: ValidatePendingRequest) -> dict[str, Any]:
+    """Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
+
+    Only ever touches postings named in `payload.posting_ids` — the
+    caller's current filtered view — so a pending suggestion sitting
+    outside that view is never affected by this call, per the "validate
+    selection" button's contract. A posting with no override, or one
+    whose override isn't pending, is silently skipped.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"accepted", "reverted"}` counts.
+    """
     overrides = load_overrides(state.config)
-    existing = overrides.get(posting_id)
-    suggested = {"category_id": category_id, "subcategory_id": subcategory_id}
-    merged = {**(existing.model_dump() if existing else {}), **suggested}
-    overrides[posting_id] = ManualOverride(**merged)
+    accepted = reverted = 0
+    for posting_id in payload.posting_ids:
+        existing = overrides.get(posting_id)
+        if existing is None or existing.pending_source is None:
+            continue
+        if existing.pending_selected:
+            accepted += 1
+        else:
+            reverted += 1
+        resolved = resolve_pending_suggestion(existing)
+        if resolved is None:
+            del overrides[posting_id]
+        else:
+            overrides[posting_id] = resolved
     save_overrides(overrides, state.config)
-    return {"category_id": category_id, "subcategory_id": subcategory_id, "applied": True}
+    return {"accepted": accepted, "reverted": reverted}
 
 
 @router.get("/transfer-suggestions")
-def get_transfer_suggestions() -> list[dict[str, Any]]:
+def get_transfer_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
     """Suggest likely internal transfers no rule has already resolved.
+
+    Parameters
+    ----------
+    window_days
+        How many days apart the two postings can be and still count as
+        one transfer — widen this if a transfer took longer than 3 days
+        to land on both sides (e.g. an ACH transfer over a weekend).
 
     Returns
     -------
     list[dict[str, Any]]
         One dict per candidate pair — see `ledger.transfers.find_unmatched_transfer_candidates`.
+        Each carries both sides' own `description`, for the caller to
+        propose a `Rule` from — never applied automatically.
     """
     postings, _store = _resolved_postings_and_store(state.config)
-    return find_unmatched_transfer_candidates(postings).to_dicts()
+    return find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
 
 
 def _external_investment_values_usd(dates: list[date]) -> dict[date, float] | None:
@@ -1340,3 +1522,266 @@ def get_suggested_budget_amount(
         postings, store.accounts, category_id, month, lookback_months, _display_currency(display_currency, store)
     )
     return {"suggested_amount": amount}
+
+
+# --- Goals -------------------------------------------------------------
+
+
+@router.put("/goals")
+def put_goals(goals: dict[str, Goal]) -> dict[str, Any]:
+    """Replace the whole goal list.
+
+    Returns
+    -------
+    dict[str, Any]
+        The goals just persisted, keyed by `goal_id`.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"goals": goals})
+    save_store(store, state.config)
+    return {goal_id: goal.model_dump(mode="json") for goal_id, goal in store.goals.items()}
+
+
+@router.put("/goal-contributions")
+def put_goal_contributions(contributions: dict[str, GoalContribution]) -> dict[str, Any]:
+    """Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
+
+    Returns
+    -------
+    dict[str, Any]
+        The contributions just persisted, keyed by `contribution_id`.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"goal_contributions": contributions})
+    save_store(store, state.config)
+    return {
+        contribution_id: contribution.model_dump(mode="json")
+        for contribution_id, contribution in store.goal_contributions.items()
+    }
+
+
+@router.put("/recurring-additions")
+def put_recurring_additions(additions: list[RecurringAddition]) -> list[dict[str, Any]]:
+    """Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The additions just persisted.
+
+    Raises
+    ------
+    HTTPException
+        400 if more than one addition uses `mode="remainder"`, or one does but isn't the lowest-priority row.
+    """
+    remainder_additions = [addition for addition in additions if addition.mode == "remainder"]
+    if len(remainder_additions) > 1:
+        raise HTTPException(status_code=400, detail="Only one recurring addition may use mode='remainder'")
+    if remainder_additions and remainder_additions[0].priority != max((a.priority for a in additions), default=0):
+        raise HTTPException(status_code=400, detail="A 'remainder' addition must be the lowest-priority row")
+    store = load_store(state.config)
+    store = store.model_copy(update={"recurring_additions": additions})
+    save_store(store, state.config)
+    return [addition.model_dump(mode="json") for addition in store.recurring_additions]
+
+
+@router.put("/withdrawal-priorities")
+def put_withdrawal_priorities(priorities: list[WithdrawalPriorityEntry]) -> list[dict[str, Any]]:
+    """Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The priorities just persisted.
+    """
+    store = load_store(state.config)
+    store = store.model_copy(update={"withdrawal_priorities": priorities})
+    save_store(store, state.config)
+    return [entry.model_dump(mode="json") for entry in store.withdrawal_priorities]
+
+
+@router.get("/goals/summary")
+def get_goals_summary(as_of: date | None = None) -> dict[str, Any]:
+    """Every goal's balance, plus unallocated money, as of `as_of` (today if omitted).
+
+    Both are always recomputed fresh from postings and contributions —
+    see `dashboard.goals` — never a stored figure.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"balances": {goal_id: float}, "unallocated": float}`.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    as_of_date = as_of or datetime.now(UTC).date()
+    contributions = contributions_to_frame(store.goal_contributions)
+    balances = all_goal_balances(contributions, list(store.goals.keys()), as_of_date)
+    unallocated = unallocated_balance(postings, store.accounts, contributions, as_of_date)
+    return {"balances": balances, "unallocated": unallocated}
+
+
+def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
+    """Build a contribution id that doesn't collide with anything already persisted.
+
+    Returns
+    -------
+    str
+    """
+    candidate = prefix
+    suffix = 2
+    while candidate in existing_ids:
+        candidate = f"{prefix}:{suffix}"
+        suffix += 1
+    return candidate
+
+
+@router.post("/goals/run-recurring-additions")
+def post_run_recurring_additions(as_of: date | None = None) -> list[dict[str, Any]]:
+    """Run every recurring addition whose scheduled day has passed this month and hasn't already run.
+
+    Idempotent by construction: each addition due this month writes a
+    contribution under a deterministic id
+    (`f"auto:{addition_id}:{year}-{month:02d}"`); calling this again the
+    same month is a no-op for any addition that id already exists for.
+    There is no background scheduler in this app — this is meant to be
+    called when the Goals page loads, which is the natural moment a user
+    would notice a change anyway.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        The new contributions just written (empty if nothing was due).
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    as_of_date = as_of or datetime.now(UTC).date()
+    existing_ids = set(store.goal_contributions.keys())
+
+    due = [
+        addition
+        for addition in store.recurring_additions
+        if as_of_date.day >= addition.schedule_day_of_month
+        and f"auto:{addition.addition_id}:{as_of_date.year}-{as_of_date.month:02d}" not in existing_ids
+    ]
+    if not due:
+        return []
+
+    contributions_frame = contributions_to_frame(store.goal_contributions)
+    unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
+    funded = run_recurring_additions(due, unallocated)
+
+    scheduled_dates = {addition.addition_id: addition.schedule_day_of_month for addition in due}
+    by_goal_addition = {addition.goal_id: addition for addition in due}
+    new_contributions: dict[str, GoalContribution] = {}
+    for goal_id, amount in funded:
+        addition = by_goal_addition[goal_id]
+        contribution_id = f"auto:{addition.addition_id}:{as_of_date.year}-{as_of_date.month:02d}"
+        scheduled_day = scheduled_dates[addition.addition_id]
+        new_contributions[contribution_id] = GoalContribution(
+            contribution_id=contribution_id,
+            goal_id=goal_id,
+            date=datetime(as_of_date.year, as_of_date.month, scheduled_day),  # noqa: DTZ001  (ledger dates are naive)
+            amount=amount,
+            currency=addition.currency,
+            note="Recurring addition",
+            origin="automation",
+        )
+
+    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
+    save_store(store, state.config)
+    return [contribution.model_dump(mode="json") for contribution in new_contributions.values()]
+
+
+@router.post("/goals/run-withdrawal-automation")
+def post_run_withdrawal_automation(as_of: date | None = None) -> dict[str, Any]:
+    """If unallocated money is negative as of today, draw down goals (by withdrawal priority) to cover it.
+
+    Idempotent in effect (not by a stored id, unlike the recurring-addition
+    case): a withdrawal always brings unallocated back to exactly zero or
+    exhausts every goal, so calling this again immediately afterward finds
+    nothing left to do — a *new* shortfall only ever appears from new
+    postings/contributions arriving, at which point running this again is
+    exactly what should happen.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"withdrawals": [...], "remaining_shortfall": float}` — the
+        contributions just written, and however much of the shortfall
+        (if any) no goal had enough left to cover.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    as_of_date = as_of or datetime.now(UTC).date()
+    contributions_frame = contributions_to_frame(store.goal_contributions)
+    unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
+    if unallocated >= 0:
+        return {"withdrawals": [], "remaining_shortfall": 0.0}
+
+    shortfall = -unallocated
+    balances = all_goal_balances(contributions_frame, list(store.goals.keys()), as_of_date)
+    drawn = run_withdrawal_automation(store.withdrawal_priorities, balances, shortfall)
+
+    existing_ids = set(store.goal_contributions.keys())
+    new_contributions: dict[str, GoalContribution] = {}
+    for goal_id, amount in drawn:
+        contribution_id = _next_contribution_id(existing_ids, f"auto-withdrawal:{goal_id}:{as_of_date.isoformat()}")
+        existing_ids.add(contribution_id)
+        new_contributions[contribution_id] = GoalContribution(
+            contribution_id=contribution_id,
+            goal_id=goal_id,
+            date=datetime(as_of_date.year, as_of_date.month, as_of_date.day),  # noqa: DTZ001  (ledger dates are naive)
+            amount=amount,
+            note="Withdrawal automation — unallocated went negative",
+            origin="automation",
+        )
+
+    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
+    save_store(store, state.config)
+    remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
+    return {
+        "withdrawals": [contribution.model_dump(mode="json") for contribution in new_contributions.values()],
+        "remaining_shortfall": remaining_shortfall,
+    }
+
+
+class SimulateContributionRequest(BaseModel):
+    """A proposed manual contribution, checked against unallocated money before the user commits to it."""
+
+    goal_id: str
+    date: date
+    amount: float
+
+
+@router.post("/goals/simulate-contribution")
+def post_simulate_contribution(payload: SimulateContributionRequest) -> dict[str, Any]:
+    """Check a proposed manual contribution against unallocated money, and project the next automation run.
+
+    Validates against the *running total as of `payload.date`* — since
+    contributions are dated, not bucketed by month, a contribution backdated
+    to a day with less unallocated money available than today can't be
+    slipped in just because today's balance would cover it.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"unallocated_as_of_date", "exceeds_unallocated", "projected_next_run_unallocated", "would_go_negative"}`
+        — the last two simulate every configured recurring addition running
+        once more, with this contribution already applied, so the user
+        can see if it sets up a shortfall soon after (non-blocking).
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    contributions_frame = contributions_to_frame(store.goal_contributions)
+    unallocated_as_of_date = unallocated_balance(postings, store.accounts, contributions_frame, payload.date)
+    exceeds_unallocated = payload.amount > unallocated_as_of_date
+
+    today = datetime.now(UTC).date()
+    unallocated_today = unallocated_balance(postings, store.accounts, contributions_frame, today)
+    projected_before_run = unallocated_today - payload.amount
+    funded_next_run = run_recurring_additions(store.recurring_additions, max(projected_before_run, 0.0))
+    projected_next_run_unallocated = projected_before_run - sum(amount for _, amount in funded_next_run)
+
+    return {
+        "unallocated_as_of_date": unallocated_as_of_date,
+        "exceeds_unallocated": exceeds_unallocated,
+        "projected_next_run_unallocated": projected_next_run_unallocated,
+        "would_go_negative": projected_next_run_unallocated < 0,
+    }

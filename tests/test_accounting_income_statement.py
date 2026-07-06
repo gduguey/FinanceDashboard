@@ -9,6 +9,7 @@ from accounting.dashboard.income_statement import (
     Scope,
     category_totals,
     monthly_income_expense,
+    net_income_expense_total,
     spend_curve_vs_average,
 )
 from accounting.ledger.currency import DisplayCurrency
@@ -191,3 +192,24 @@ def test_spend_curve_tracks_cumulative_spend_for_the_selected_month() -> None:
     assert by_day[1] == pytest.approx(10.0)
     assert by_day[2] == pytest.approx(10.0)
     assert by_day[3] == pytest.approx(15.0)
+
+
+def test_net_income_expense_total_nets_income_minus_expense_up_to_a_date() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", 1500.0, posted_at="2026-06-01"),
+        _posting("p2", "t1", "uncategorized:income", -1500.0, posted_at="2026-06-01"),
+        _posting("p3", "t2", "chase:checking:9579", -70.0, posted_at="2026-06-15"),
+        _posting("p4", "t2", "uncategorized:expense", 70.0, posted_at="2026-06-15"),
+        _posting("p5", "t3", "chase:checking:9579", -30.0, posted_at="2026-06-25"),
+        _posting("p6", "t3", "uncategorized:expense", 30.0, posted_at="2026-06-25"),
+    )
+    assert net_income_expense_total(postings, ACCOUNTS, date(2026, 6, 15)) == pytest.approx(1430.0)
+    assert net_income_expense_total(postings, ACCOUNTS, date(2026, 6, 30)) == pytest.approx(1400.0)
+
+
+def test_net_income_expense_total_excludes_transfers_between_two_real_accounts() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -200.0, posted_at="2026-06-01"),
+        _posting("p2", "t1", "sofi:savings:3680", 200.0, posted_at="2026-06-01"),
+    )
+    assert net_income_expense_total(postings, ACCOUNTS, date(2026, 6, 30)) == pytest.approx(0.0)

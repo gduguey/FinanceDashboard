@@ -99,6 +99,60 @@ def apply_rules(postings: pl.DataFrame, rules: list[Rule], accounts: dict[str, A
     )
 
 
+def resolved_rule_ids_by_transaction(
+    postings: pl.DataFrame, rules: list[Rule], accounts: dict[str, Account]
+) -> dict[str, str]:
+    """Report which rule (if any) would resolve each transaction's placeholder counterparty — for traceability only.
+
+    Mirrors `apply_rules`'s own matching exactly, without mutating
+    anything, so a posting can show *which* rule set its counterparty and
+    category (see `api.get_postings`'s `resolved_by_rule_id` field). A
+    rule is applied fresh from the raw ledger every time postings are
+    read (see this module's docstring) — so if that rule is later
+    deleted, the transaction reverts to its unresolved, placeholder-counterparty
+    state the very next time postings are read. There is nothing to undo
+    here; this function only exists to make that already-live resolution visible.
+
+    Parameters
+    ----------
+    postings
+        The full posting ledger, before `apply_rules` — a transaction
+        that's already resolved (no placeholder leg left) is skipped, the
+        same as `apply_rules` itself would skip it.
+    rules
+        User-maintained trigger/action rules.
+    accounts
+        Every known account, keyed by `account_id`.
+
+    Returns
+    -------
+    dict[str, str]
+        `transaction_id -> rule_id`, only for transactions a rule actually resolves.
+    """
+    rows = postings.to_dicts()
+    by_transaction: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        by_transaction.setdefault(row["transaction_id"], []).append(row)
+
+    resolved_by: dict[str, str] = {}
+    for transaction_id, legs in by_transaction.items():
+        if len(legs) != _TWO_LEG_TRANSACTION:
+            continue
+        placeholder_legs = [leg for leg in legs if leg["account_id"] in _PLACEHOLDER_ACCOUNT_IDS]
+        real_legs = [leg for leg in legs if leg["account_id"] not in _PLACEHOLDER_ACCOUNT_IDS]
+        if len(placeholder_legs) != 1 or len(real_legs) != 1:
+            continue
+        real_leg = real_legs[0]
+
+        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]))
+        if rule is None or rule.counterparty_account_id is None:
+            continue
+        if accounts.get(rule.counterparty_account_id) is None:
+            continue
+        resolved_by[transaction_id] = rule.rule_id
+    return resolved_by
+
+
 def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]) -> pl.DataFrame:
     """Replace each split posting with its legs — the one place a `Transaction` grows past two `Posting`s.
 

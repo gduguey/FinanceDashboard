@@ -4,15 +4,20 @@ import type {
   Account,
   Budget,
   Category,
+  CategoryPattern,
   CurrencyCode,
   GeneralBudget,
+  Goal,
+  GoalContribution,
   ManualOverride,
   OpeningBalance,
   OtherAsset,
   PostingSplitLeg,
+  RecurringAddition,
   Rule,
   SimulatorScenario,
   Tag,
+  WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
 const BASE_CURRENCY: CurrencyCode = 'USD'
@@ -149,8 +154,11 @@ export function useRatesToBase(nonBaseCurrencies: CurrencyCode[]) {
 
 export const usePostings = () => useQuery({ queryKey: keys.postings, queryFn: accountingApi.postings })
 
-export const useTransferSuggestions = () =>
-  useQuery({ queryKey: keys.transferSuggestions, queryFn: accountingApi.transferSuggestions })
+export const useTransferSuggestions = (windowDays?: number) =>
+  useQuery({
+    queryKey: [...keys.transferSuggestions, windowDays ?? {}],
+    queryFn: () => accountingApi.transferSuggestions(windowDays),
+  })
 
 export const useNetWorth = (asOf?: string, displayCurrency?: string) =>
   useQuery({ queryKey: keys.netWorth(asOf, displayCurrency), queryFn: () => accountingApi.netWorth(asOf, displayCurrency) })
@@ -387,5 +395,82 @@ export function useAiSuggestCategory() {
     mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
       accountingApi.aiSuggestCategory(postingId, lockCategoryId),
     onSuccess: invalidate,
+  })
+}
+
+export function usePatternSuggestCategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
+      accountingApi.patternSuggestCategory(postingId, lockCategoryId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useValidatePending() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (postingIds: string[]) => accountingApi.validatePending(postingIds),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetCategoryPatterns() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (patterns: Record<string, CategoryPattern>) => accountingApi.putCategoryPatterns(patterns),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetGoals() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (goals: Record<string, Goal>) => accountingApi.putGoals(goals),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetGoalContributions() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (contributions: Record<string, GoalContribution>) => accountingApi.putGoalContributions(contributions),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetRecurringAdditions() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (additions: RecurringAddition[]) => accountingApi.putRecurringAdditions(additions),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetWithdrawalPriorities() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (priorities: WithdrawalPriorityEntry[]) => accountingApi.putWithdrawalPriorities(priorities),
+    onSuccess: invalidate,
+  })
+}
+
+export const useGoalsSummary = (asOf?: string) =>
+  useQuery({ queryKey: ['accounting', 'goals-summary', asOf ?? {}], queryFn: () => accountingApi.goalsSummary(asOf) })
+
+export function useRunRecurringAdditions() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({ mutationFn: (asOf?: string) => accountingApi.runRecurringAdditions(asOf), onSuccess: invalidate })
+}
+
+export function useRunWithdrawalAutomation() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({ mutationFn: (asOf?: string) => accountingApi.runWithdrawalAutomation(asOf), onSuccess: invalidate })
+}
+
+export function useSimulateContribution() {
+  return useMutation({
+    mutationFn: ({ goalId, date, amount }: { goalId: string; date: string; amount: number }) =>
+      accountingApi.simulateContribution(goalId, date, amount),
   })
 }
