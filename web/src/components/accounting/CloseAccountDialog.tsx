@@ -46,6 +46,10 @@ export function CloseAccountDialog({
     hasBalance ? [{ key: 'row-0', otherAccountId: '', ownAmount: magnitude.toFixed(2), otherAmount: magnitude.toFixed(2) }] : [],
   )
   const [skipTransfer, setSkipTransfer] = useState(false)
+  // `Account` has no `closed_at` of its own (see `models.Account.closed`) —
+  // this only dates the balance-moving transfer(s) recorded below, the one
+  // artifact a close actually produces, defaulting to today.
+  const [closingDate, setClosingDate] = useState(() => new Date().toISOString().slice(0, 10))
 
   const accountItems = Object.fromEntries(otherAccounts.map((other) => [other.account_id, `${other.name} (${other.currency})`]))
 
@@ -91,13 +95,12 @@ export function CloseAccountDialog({
       onConfirm([])
       return
     }
-    const now = new Date().toISOString()
     const transfers: ManualTransfer[] = rows.map((row, index) => {
       const ownAmount = Number.parseFloat(row.ownAmount)
       const otherAmount = Number.parseFloat(row.otherAmount)
       return {
         transfer_id: `close:${account.account_id}:${index}:${row.key}`,
-        date: now,
+        date: closingDate,
         from_account_id: movingOut ? account.account_id : row.otherAccountId,
         to_account_id: movingOut ? row.otherAccountId : account.account_id,
         from_amount: movingOut ? ownAmount : otherAmount,
@@ -110,10 +113,15 @@ export function CloseAccountDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Close {account.name}</DialogTitle>
         </DialogHeader>
+
+        <label className="flex w-40 flex-col gap-1 text-xs text-muted-foreground">
+          Closing date
+          <Input type="date" value={closingDate} onChange={(event) => setClosingDate(event.target.value)} />
+        </label>
 
         {!hasBalance ? (
           <p className="text-sm text-muted-foreground">
@@ -133,8 +141,8 @@ export function CloseAccountDialog({
                 const other = otherAccounts.find((candidate) => candidate.account_id === row.otherAccountId)
                 const crossCurrency = other && other.currency !== account.currency
                 return (
-                  <div key={row.key} className="flex items-end gap-2">
-                    <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground">
+                  <div key={row.key} className="flex flex-wrap items-end gap-2">
+                    <label className="flex min-w-48 flex-1 flex-col gap-1 text-xs text-muted-foreground">
                       {movingOut ? 'To account' : 'From account'}
                       <Select
                         value={row.otherAccountId}

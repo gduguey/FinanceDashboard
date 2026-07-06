@@ -125,8 +125,9 @@ class Category(BaseModel):
     `parent_category_id` is `None` for a top-level category and points at
     one for a subcategory — never more than one level deep. A subcategory
     is expected (not enforced here) to share its parent's `classification`
-    and `color`, so a chart coloring by top-level category stays consistent
-    when a user drills into subcategories.
+    but have its own distinct `color`, never repeated by a sibling
+    subcategory or any other category — see `store.next_available_color`,
+    the single place a color is ever assigned.
     """
 
     model_config = ConfigDict(frozen=True)

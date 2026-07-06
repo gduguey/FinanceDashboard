@@ -42,24 +42,36 @@ function buildCurve(
     return { date: c.date.slice(0, 10), balance: running, benchmark: goal.target_amount * (elapsed / totalSpan) }
   })
 
-  const lastDate = sorted[sorted.length - 1].date.slice(0, 10)
+  // The x-axis is a category axis keyed on each point's own `date` string —
+  // a `ReferenceLine x={...}` only renders when that exact string is one of
+  // the axis's categories, so the target date needs its own point even when
+  // it falls between two contributions (a target date already passed, with
+  // contributions still landing after it) rather than only at the end.
   const targetDateStr = goal.target_date.slice(0, 10)
-  if (targetDateStr > lastDate) {
-    points.push({ date: targetDateStr, balance: null, benchmark: goal.target_amount })
+  const hasTargetPoint = points.some((point) => point.date === targetDateStr)
+  if (!hasTargetPoint) {
+    const insertIndex = points.findIndex((point) => point.date > targetDateStr)
+    if (insertIndex === -1) {
+      points.push({ date: targetDateStr, balance: null, benchmark: goal.target_amount })
+    } else {
+      // Carry forward the running balance as of just before the target date,
+      // matching the step-after line's own semantics, so inserting this
+      // point never opens a visual gap in the balance line.
+      const priorBalance = insertIndex > 0 ? points[insertIndex - 1].balance : null
+      points.splice(insertIndex, 0, { date: targetDateStr, balance: priorBalance, benchmark: goal.target_amount })
+    }
   }
   return points
 }
 
-// A tiny colored-swatch key for the two reference lines, standing in for
+// A tiny colored-swatch key for the reference lines, standing in for
 // on-chart labels — those used to sit right on top of their own dashed
-// line (illegible against it) and, for the target-date line especially,
-// ran past the plot area and got cropped at the chart's own edge.
+// line, illegible against it.
 function ChartLegend({ goal }: { goal: Goal }) {
   const entries = [
     { color: goal.color, dashed: false, label: 'Balance' },
     { color: goal.color, dashed: true, label: 'Target' },
     { color: '#94a3b8', dashed: false, label: 'Linear benchmark' },
-    { color: '#94a3b8', dashed: true, label: 'Target date' },
   ]
   return (
     <div className="flex w-32 shrink-0 flex-col gap-2 text-xs text-muted-foreground">
@@ -86,7 +98,7 @@ export function GoalDetailChart({ goal, contributions }: { goal: Goal; contribut
   // sits inside the plot rather than pinned to the very top edge — sized
   // off whichever is bigger, the target or a balance that's overshot it.
   const maxBalance = Math.max(0, ...points.map((point) => point.balance ?? 0), ...points.map((point) => point.benchmark))
-  const yMax = Math.max(goal.target_amount, maxBalance) * 1.1
+  const yMax = Math.max(goal.target_amount, maxBalance) * 1.15
 
   return (
     <Card className="gap-3">
@@ -122,10 +134,10 @@ export function GoalDetailChart({ goal, contributions }: { goal: Goal; contribut
                   ]}
                   labelFormatter={(label) => formatDate(String(label))}
                 />
-                <ReferenceLine y={goal.target_amount} stroke={goal.color} strokeDasharray="4 4" />
-                <ReferenceLine x={targetDateStr} stroke="#94a3b8" strokeDasharray="2 2" />
                 <Line type="monotone" dataKey="benchmark" stroke="#94a3b8" strokeDasharray="4 4" dot={false} strokeWidth={1.5} />
                 <Line type="stepAfter" dataKey="balance" stroke={goal.color} strokeWidth={2} dot={false} connectNulls={false} />
+                {/* Drawn after both `Line`s so it never occludes them, unlike before. */}
+                <ReferenceLine y={goal.target_amount} stroke={goal.color} strokeDasharray="4 4" strokeWidth={2} />
               </LineChart>
             </ResponsiveContainer>
             <ChartLegend goal={goal} />

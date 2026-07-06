@@ -2,26 +2,49 @@ import { useCallback, useState } from 'react'
 import { CheckCircle2, Upload, X, XCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
 import { TaxonomyTable } from '@/components/accounting/CategoriesTab'
 import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { accountingApi } from '@/lib/accountingApi'
+import { accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
 import {
   useAccountingStore,
+  useCanonicalImportPreview,
   useImportCanonicalCsv,
   useImportCsv,
   usePostings,
   useRebuildLedger,
   useSupportedImportKinds,
 } from '@/hooks/useAccountingData'
-import type { Account, Category, CurrencyCode } from '@/types/accounting'
+import type { Account, CanonicalCategoryOverrides, Category, CurrencyCode } from '@/types/accounting'
 
 const MAX_FILES_PER_DROP = 8
 
-const SEPARATOR_ITEMS: Record<string, string> = { ',': 'Comma', ';': 'Semicolon', '\t': 'Tab', '|': 'Pipe' }
+// Each label spells out the actual character, not just its name — "Comma"
+// alone doesn't tell you whether the file needs `,` or something else if
+// you're not sure what a "semicolon" looks like at a glance.
+const SEPARATOR_ITEMS: Record<string, string> = {
+  ',': 'Comma (,)',
+  ';': 'Semicolon (;)',
+  '\t': 'Tab',
+  '|': 'Pipe (|)',
+}
+// The long descriptive text belongs in the dropdown's own options list,
+// where the popup can wrap it — it doesn't fit in the closed trigger box,
+// which needs its own short label per value instead (see `SelectValue`'s
+// `items` prop, which only ever governs what shows once collapsed).
+const DATE_ORDER_ITEMS: Record<string, string> = {
+  MDY: 'Month/Day (US, e.g. 01/12 = Jan 12)',
+  DMY: 'Day/Month (e.g. 01/12 = 12 Jan)',
+}
+const DATE_ORDER_TRIGGER_LABELS: Record<string, string> = {
+  MDY: 'Month/Day (US)',
+  DMY: 'Day/Month',
+}
 
 interface PendingCsvImport {
   key: string
@@ -41,6 +64,13 @@ interface PendingCsvImport {
   // parser guesses the column separator, but a first guess can fail on an
   // unusual file, so a retry can pin one down explicitly.
   separator?: string
+  // Only ambiguous, all-numeric dates (01/12) are affected — an
+  // unambiguous format (2026-06-30, Jun 30 2026) parses the same
+  // regardless, so this is left unset by default rather than forcing a
+  // choice; pin it down only for a file known to export ambiguous
+  // day-first dates, since a wrong guess there doesn't fail to parse, it
+  // just silently reads the wrong date.
+  dateOrder?: 'MDY' | 'DMY'
   newCategories?: Category[]
 }
 
@@ -98,6 +128,125 @@ function NewCategoriesSummary({
   )
 }
 
+// Preview-only categories (never persisted yet) grouped the same way as
+// `groupNewCategories`, but keeping the `Category` objects themselves
+// (rather than just names) since each row needs its own editable name.
+function groupPreviewCategories(categories: Category[]): {
+  expense: { category: Category; children: Category[] }[]
+  income: { category: Category; children: Category[] }[]
+} {
+  const childrenByParentId = new Map<string, Category[]>()
+  for (const category of categories) {
+    if (!category.parent_category_id) continue
+    const siblings = childrenByParentId.get(category.parent_category_id) ?? []
+    siblings.push(category)
+    childrenByParentId.set(category.parent_category_id, siblings)
+  }
+  const topLevel = categories.filter((category) => !category.parent_category_id)
+  const expense = topLevel
+    .filter((category) => category.classification === 'expense')
+    .map((category) => ({ category, children: childrenByParentId.get(category.category_id) ?? [] }))
+  const income = topLevel
+    .filter((category) => category.classification === 'income')
+    .map((category) => ({ category, children: childrenByParentId.get(category.category_id) ?? [] }))
+  return { expense, income }
+}
+
+// Shown before a canonical import actually creates anything, so the user can
+// rename categories/subcategories freely first — renaming two entries to the
+// same name merges them (see `accounting.importers.canonical.csv.CategoryOverrides`).
+function ValidateCategoriesDialog({
+  categories,
+  isSubmitting,
+  onCancel,
+  onConfirm,
+}: {
+  categories: Category[]
+  isSubmitting: boolean
+  onCancel: () => void
+  onConfirm: (overrides: CanonicalCategoryOverrides) => void
+}) {
+  const [names, setNames] = useState<Record<string, string>>(() =>
+    Object.fromEntries(categories.map((category) => [category.category_id, category.name])),
+  )
+  const { expense, income } = groupPreviewCategories(categories)
+  const hasBlankName = categories.some((category) => !names[category.category_id]?.trim())
+
+  function handleConfirm() {
+    const overrides: CanonicalCategoryOverrides = { categories: {}, subcategories: {} }
+    for (const { category, children } of [...expense, ...income]) {
+      const finalName = names[category.category_id].trim()
+      if (finalName !== category.name) overrides.categories[category.name] = finalName
+      for (const child of children) {
+        const finalChildName = names[child.category_id].trim()
+        if (finalChildName !== child.name) {
+          overrides.subcategories[category.name] = {
+            ...overrides.subcategories[category.name],
+            [child.name]: finalChildName,
+          }
+        }
+      }
+    }
+    onConfirm(overrides)
+  }
+
+  function renderGroup(title: string, group: { category: Category; children: Category[] }[]) {
+    if (group.length === 0) return null
+    return (
+      <div className="space-y-3">
+        <p className="text-xs font-medium text-muted-foreground">{title}</p>
+        <div className="space-y-2">
+          {group.map(({ category, children }) => (
+            <div key={category.category_id} className="space-y-1.5">
+              <Input
+                value={names[category.category_id]}
+                onChange={(event) =>
+                  setNames((prev) => ({ ...prev, [category.category_id]: event.target.value }))
+                }
+                className="h-8 text-sm font-medium"
+              />
+              {children.map((child) => (
+                <Input
+                  key={child.category_id}
+                  value={names[child.category_id]}
+                  onChange={(event) => setNames((prev) => ({ ...prev, [child.category_id]: event.target.value }))}
+                  className="ml-5 h-7 w-[calc(100%-1.25rem)] text-xs"
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onCancel()}>
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Review new categories</DialogTitle>
+          <DialogDescription>
+            This file would create {categories.length} categor{categories.length === 1 ? 'y' : 'ies'}. Rename any of
+            them below before importing — renaming two entries to the same name merges them into one.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          {renderGroup('Expense', expense)}
+          {renderGroup('Income', income)}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel} disabled={isSubmitting}>
+            Cancel
+          </Button>
+          <Button onClick={handleConfirm} disabled={isSubmitting || hasBlankName}>
+            {isSubmitting ? 'Importing…' : 'Confirm and import'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 type PendingImport = PendingCsvImport
@@ -116,11 +265,15 @@ function readFirstLines(file: File, count: number): Promise<string[]> {
 // user confirms, so a bulk drop of several files stays instant.
 export function ImportPage() {
   const [pending, setPending] = useState<PendingImport[]>([])
+  const [categoryValidation, setCategoryValidation] = useState<{ entry: PendingCsvImport; categories: Category[] } | null>(
+    null,
+  )
   const { data: store } = useAccountingStore()
   const { data: postings } = usePostings()
   const { data: supportedImportKindsList } = useSupportedImportKinds()
   const importCsv = useImportCsv()
   const importCanonicalCsv = useImportCanonicalCsv()
+  const previewCanonicalImport = useCanonicalImportPreview()
   const rebuild = useRebuildLedger()
 
   const supportedKinds = new Set((supportedImportKindsList ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`))
@@ -131,12 +284,18 @@ export function ImportPage() {
       const entries = await Promise.all(
         accepted.map(async (file): Promise<PendingImport> => {
           const key = `${file.name}-${file.size}-${Math.random()}`
-          const [headerLine, firstDataLine] = await readFirstLines(file, 2)
+          // An Excel file's bytes aren't text — reading it as one to sniff a
+          // header would just produce garbage, and no institution's export
+          // is auto-detected in that format anyway, so detection is skipped
+          // entirely; the canonical fallback parser (which does understand
+          // `.xlsx`) still handles it once the user fills in the form by hand.
+          const isExcel = /\.xlsx?$/i.test(file.name)
+          const [headerLine, firstDataLine] = isExcel ? [] : await readFirstLines(file, 2)
           const header = (headerLine ?? '').split(',').map((column) => column.trim())
           const firstDataRow = firstDataLine
             ? Object.fromEntries(header.map((column, index) => [column, (firstDataLine.split(',')[index] ?? '').trim()]))
             : undefined
-          const detected = await accountingApi.detect(header, file.name, firstDataRow).catch(() => null)
+          const detected = isExcel ? null : await accountingApi.detect(header, file.name, firstDataRow).catch(() => null)
           // A detected account may or may not be registered yet — a
           // brand-new vault CSV, for instance, describes an account
           // nobody's created here before. Either way, the detected
@@ -171,9 +330,8 @@ export function ImportPage() {
     setPending((prev) => prev.filter((entry) => entry.key !== key))
   }
 
-  async function confirmCsvImport(entry: PendingCsvImport) {
-    updateEntry(entry.key, { status: 'importing' })
-    const info = {
+  function buildImportInfo(entry: PendingCsvImport): ImportAccountInfo {
+    return {
       institution: entry.institution,
       account_kind: entry.accountKind,
       account_id: entry.accountId,
@@ -181,21 +339,57 @@ export function ImportPage() {
       currency: entry.currency,
       parent_account_id: entry.parentAccountId,
     }
+  }
+
+  async function runCanonicalImport(entry: PendingCsvImport, overrides?: CanonicalCategoryOverrides) {
+    updateEntry(entry.key, { status: 'importing' })
     try {
-      if (supportedKinds.has(`${entry.institution}:${entry.accountKind}`)) {
-        const result = await importCsv.mutateAsync({ file: entry.file, info })
+      const result = await importCanonicalCsv.mutateAsync({
+        file: entry.file,
+        info: buildImportInfo(entry),
+        separator: entry.separator,
+        dateOrder: entry.dateOrder,
+        categoryOverrides: overrides,
+      })
+      updateEntry(entry.key, {
+        status: 'done',
+        message: `${result.new_posting_count} new postings`,
+        newCategories: result.new_categories,
+      })
+    } catch (error) {
+      updateEntry(entry.key, { status: 'error', message: error instanceof Error ? error.message : 'Import failed' })
+    }
+    setCategoryValidation(null)
+  }
+
+  async function confirmCsvImport(entry: PendingCsvImport) {
+    updateEntry(entry.key, { status: 'importing' })
+    if (supportedKinds.has(`${entry.institution}:${entry.accountKind}`)) {
+      try {
+        const result = await importCsv.mutateAsync({ file: entry.file, info: buildImportInfo(entry) })
         updateEntry(entry.key, { status: 'done', message: `${result.new_posting_count} new postings` })
-      } else {
-        // No dedicated standardizer for this institution/kind — fall back
-        // to the canonical parser, which guesses the file's column names
-        // and date/amount formats instead of expecting an exact shape.
-        const result = await importCanonicalCsv.mutateAsync({ file: entry.file, info, separator: entry.separator })
-        updateEntry(entry.key, {
-          status: 'done',
-          message: `${result.new_posting_count} new postings`,
-          newCategories: result.new_categories,
-        })
+      } catch (error) {
+        updateEntry(entry.key, { status: 'error', message: error instanceof Error ? error.message : 'Import failed' })
       }
+      return
+    }
+    // No dedicated standardizer for this institution/kind — fall back to the
+    // canonical parser. It's previewed first (never persists anything) so
+    // any newly-detected categories can be renamed/merged before creation.
+    try {
+      const preview = await previewCanonicalImport.mutateAsync({
+        file: entry.file,
+        accountId: entry.accountId,
+        currency: entry.currency,
+        separator: entry.separator,
+        dateOrder: entry.dateOrder,
+      })
+      if (preview.new_categories.length > 0) {
+        updateEntry(entry.key, { status: 'pending' })
+        setCategoryValidation({ entry, categories: preview.new_categories })
+        return
+      }
+      await runCanonicalImport(entry)
     } catch (error) {
       updateEntry(entry.key, { status: 'error', message: error instanceof Error ? error.message : 'Import failed' })
     }
@@ -227,12 +421,12 @@ export function ImportPage() {
           }}
         >
           <Upload className="size-6 text-muted-foreground/60" />
-          Drag and drop up to {MAX_FILES_PER_DROP} bank CSV exports here
+          Drag and drop up to {MAX_FILES_PER_DROP} bank CSV or Excel exports here
           <label className="cursor-pointer text-primary underline-offset-4 hover:underline">
             or browse
             <input
               type="file"
-              accept=".csv,.CSV"
+              accept=".csv,.CSV,.xlsx,.xls"
               multiple
               className="hidden"
               onChange={(event) => {
@@ -318,6 +512,29 @@ export function ImportPage() {
                 </SelectContent>
               </Select>
             </label>
+
+            {entry.institution &&
+              entry.accountKind &&
+              !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
+                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  Date order
+                  <Select
+                    value={entry.dateOrder ?? ''}
+                    onValueChange={(value) => updateEntry(entry.key, { dateOrder: (value || undefined) as 'MDY' | 'DMY' | undefined })}
+                  >
+                    <SelectTrigger size="sm" className="w-40">
+                      <SelectValue placeholder="Auto (unambiguous)" items={DATE_ORDER_TRIGGER_LABELS} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(DATE_ORDER_ITEMS).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              )}
 
             <Button
               size="sm"
@@ -416,6 +633,18 @@ export function ImportPage() {
           <AccountsManagementTable accounts={store.accounts} accountIdsWithPostings={accountIdsWithPostings} />
         )}
       </div>
+
+      {categoryValidation && (
+        <ValidateCategoriesDialog
+          categories={categoryValidation.categories}
+          isSubmitting={importCanonicalCsv.isPending}
+          onCancel={() => {
+            updateEntry(categoryValidation.entry.key, { status: 'pending' })
+            setCategoryValidation(null)
+          }}
+          onConfirm={(overrides) => void runCanonicalImport(categoryValidation.entry, overrides)}
+        />
+      )}
     </div>
   )
 }

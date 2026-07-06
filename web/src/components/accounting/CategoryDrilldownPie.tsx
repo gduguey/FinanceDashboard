@@ -69,7 +69,7 @@ function categoryRing(rows: CategoryTotalRow[]): RingSlice[] {
         key: row.category_id,
         name: row.category_name,
         value: row.amount,
-        color: row.color,
+        color: row.category_color,
         classification: row.classification,
         categoryId: row.category_id,
         categoryName: row.category_name,

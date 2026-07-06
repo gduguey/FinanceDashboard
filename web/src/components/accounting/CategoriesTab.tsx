@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -10,8 +10,52 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHeader, TableRow, TableHead } from '@/components/ui/table'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useSetCategories, useSetCategoryPatterns } from '@/hooks/useAccountingData'
+import { useRenameCategory, useSetCategories, useSetCategoryPatterns } from '@/hooks/useAccountingData'
+import { nextAvailableColor } from '@/lib/colors'
+import { cn } from '@/lib/utils'
 import type { Category, CategoryClassification, CategoryPattern } from '@/types/accounting'
+
+// An inline click-to-rename field — looks like plain text until focused, at
+// which point it grows to fit what's typed (`field-sizing-content`) rather
+// than reflowing the row around a fixed-width box. Commits on blur/Enter,
+// reverts on Escape or an empty result (a category always needs a name).
+function InlineNameInput({
+  value,
+  onCommit,
+  className,
+}: {
+  value: string
+  onCommit: (name: string) => void
+  className?: string
+}) {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => setDraft(value), [value])
+
+  function commit() {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== value) onCommit(trimmed)
+    else setDraft(value)
+  }
+
+  return (
+    <Input
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') event.currentTarget.blur()
+        if (event.key === 'Escape') {
+          setDraft(value)
+          event.currentTarget.blur()
+        }
+      }}
+      className={cn(
+        'h-auto w-auto field-sizing-content rounded border border-transparent bg-transparent px-1 py-0 hover:border-border focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring/50',
+        className,
+      )}
+    />
+  )
+}
 
 // The taxonomy every fresh install is seeded with (see
 // `accounting.store._EXPENSE_TAXONOMY`/`_INCOME_TAXONOMY`) — shown here
@@ -84,8 +128,6 @@ function TaxonomyIdeasSection() {
   )
 }
 
-const PALETTE = ['#e99537', '#4da568', '#6471eb', '#db5a54', '#df4e92', '#c44fe9', '#eb5429', '#61c9ea']
-
 function slugify(text: string): string {
   return text
     .toLowerCase()
@@ -102,6 +144,7 @@ function ClassificationSection({
   categories: Record<string, Category>
 }) {
   const setCategories = useSetCategories()
+  const renameCategoryMutation = useRenameCategory()
   const [newCategoryName, setNewCategoryName] = useState('')
   const [subcategoryDrafts, setSubcategoryDrafts] = useState<Record<string, string>>({})
 
@@ -112,7 +155,7 @@ function ClassificationSection({
   function addCategory() {
     if (!newCategoryName) return
     const id = `${classification}:${slugify(newCategoryName)}`
-    const color = PALETTE[topLevel.length % PALETTE.length]
+    const color = nextAvailableColor(Object.values(categories).map((category) => category.color))
     setCategories.mutate({
       ...categories,
       [id]: { category_id: id, name: newCategoryName, classification, parent_category_id: null, color },
@@ -129,13 +172,18 @@ function ClassificationSection({
     setCategories.mutate(next)
   }
 
+  function renameCategory(categoryId: string, name: string) {
+    renameCategoryMutation.mutate({ categoryId, name })
+  }
+
   function addSubcategory(parent: Category) {
     const name = subcategoryDrafts[parent.category_id]?.trim()
     if (!name) return
     const id = `${parent.category_id}:${slugify(name)}`
+    const color = nextAvailableColor(Object.values(categories).map((category) => category.color))
     setCategories.mutate({
       ...categories,
-      [id]: { category_id: id, name, classification, parent_category_id: parent.category_id, color: parent.color },
+      [id]: { category_id: id, name, classification, parent_category_id: parent.category_id, color },
     })
     setSubcategoryDrafts((prev) => ({ ...prev, [parent.category_id]: '' }))
   }
@@ -153,9 +201,13 @@ function ClassificationSection({
           return (
             <div key={category.category_id} className="rounded-lg border border-border p-3">
               <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-sm font-medium">
-                  <span className="inline-block size-2 rounded-full" style={{ background: category.color }} />
-                  {category.name}
+                <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+                  <span className="inline-block size-2 shrink-0 rounded-full" style={{ background: category.color }} />
+                  <InlineNameInput
+                    value={category.name}
+                    onCommit={(name) => renameCategory(category.category_id, name)}
+                    className="text-sm font-medium"
+                  />
                 </span>
                 <button
                   onClick={() => removeCategory(category.category_id)}
@@ -174,7 +226,15 @@ function ClassificationSection({
                   const isOther = child.category_id.endsWith(':other')
                   return (
                     <Badge key={child.category_id} variant="outline" className="gap-1">
-                      {child.name}
+                      {isOther ? (
+                        child.name
+                      ) : (
+                        <InlineNameInput
+                          value={child.name}
+                          onCommit={(name) => renameCategory(child.category_id, name)}
+                          className="h-4 text-xs"
+                        />
+                      )}
                       {!isOther && (
                         <button onClick={() => removeCategory(child.category_id)} className="text-muted-foreground/60 hover:text-destructive">
                           <Trash2 className="size-2.5" />

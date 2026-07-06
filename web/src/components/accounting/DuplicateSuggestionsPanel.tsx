@@ -1,6 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { RotateCcw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -53,7 +53,10 @@ function defaultFilterState(): FilterState {
 }
 
 function toRow(group: DuplicateGroup): DuplicateGroupRow {
-  const dates = group.postings.map((posting) => posting.posted_at)
+  // `posted_at` is a full ISO datetime, not a bare date — `formatDate`
+  // expects `YYYY-MM-DD` and silently produces "Invalid Date" if handed
+  // the time portion too, so it's stripped here before anything reads it.
+  const dates = group.postings.map((posting) => posting.posted_at.slice(0, 10))
   return {
     ...group,
     earliestDate: dates.reduce((min, date) => (date < min ? date : min), dates[0]),
@@ -64,29 +67,61 @@ function toRow(group: DuplicateGroup): DuplicateGroupRow {
   }
 }
 
+// The longest description usually carries the most detail (a bank's
+// terse recurring feed vs. a richer one-off memo for the same purchase),
+// so it's the sensible unattended default — used both to pre-select a
+// radio in the review dialog and to decide a bulk accept's kept leg.
+function pickDefaultKeptPosting(group: DuplicateGroupRow) {
+  const sortedPostings = [...group.postings].sort((a, b) => a.posted_at.localeCompare(b.posted_at))
+  return sortedPostings.reduce(
+    (longest, posting) => (posting.description.length > longest.description.length ? posting : longest),
+    sortedPostings[0],
+  )
+}
+
 function MergeReviewDialog({
   group,
   currency,
   accountName,
+  position,
+  hasPrevious,
+  hasNext,
   onClose,
   onConfirm,
+  onPrevious,
+  onNext,
   isSubmitting,
 }: {
   group: DuplicateGroupRow
   currency: string
   accountName: string
+  position: string
+  hasPrevious: boolean
+  hasNext: boolean
   onClose: () => void
   onConfirm: (merge: PostingMerge) => void
+  onPrevious: () => void
+  onNext: () => void
   isSubmitting: boolean
 }) {
   const sortedPostings = useMemo(() => [...group.postings].sort((a, b) => a.posted_at.localeCompare(b.posted_at)), [group.postings])
-  const defaultKept = useMemo(
-    () => sortedPostings.reduce((longest, posting) => (posting.description.length > longest.description.length ? posting : longest), sortedPostings[0]),
-    [sortedPostings],
-  )
+  const defaultKept = useMemo(() => pickDefaultKeptPosting(group), [group])
   const [keptTransactionId, setKeptTransactionId] = useState(defaultKept.transaction_id)
   const [description, setDescription] = useState(defaultKept.description)
   const keptPosting = group.postings.find((posting) => posting.transaction_id === keptTransactionId) ?? group.postings[0]
+
+  // Arrow keys step through suggestions without closing the dialog — held
+  // off the input though, so typing in the description field can't hijack
+  // the caret with a stray Left/Right.
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.target instanceof HTMLInputElement) return
+      if (event.key === 'ArrowLeft' && hasPrevious) onPrevious()
+      if (event.key === 'ArrowRight' && hasNext) onNext()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hasPrevious, hasNext, onPrevious, onNext])
 
   function selectKept(transactionId: string, fallbackDescription: string) {
     setKeptTransactionId(transactionId)
@@ -107,8 +142,31 @@ function MergeReviewDialog({
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-xl">
+        {hasPrevious && (
+          <button
+            type="button"
+            onClick={onPrevious}
+            title="Previous suggestion (←)"
+            className="absolute top-1/2 -left-12 hidden -translate-y-1/2 rounded-full border border-border bg-popover p-2 text-muted-foreground hover:text-foreground sm:flex"
+          >
+            <ChevronLeft className="size-4" />
+          </button>
+        )}
+        {hasNext && (
+          <button
+            type="button"
+            onClick={onNext}
+            title="Next suggestion (→)"
+            className="absolute top-1/2 -right-12 hidden -translate-y-1/2 rounded-full border border-border bg-popover p-2 text-muted-foreground hover:text-foreground sm:flex"
+          >
+            <ChevronRight className="size-4" />
+          </button>
+        )}
         <DialogHeader>
-          <DialogTitle>Merge duplicate transactions</DialogTitle>
+          <DialogTitle className="flex items-center justify-between gap-2 pr-6">
+            Merge duplicate transactions
+            <span className="text-xs font-normal text-muted-foreground">{position}</span>
+          </DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
@@ -136,7 +194,7 @@ function MergeReviewDialog({
                       className="size-3.5 accent-current"
                     />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at)}</TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
                   <TableCell className="text-muted-foreground">{posting.description}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, currency)}</TableCell>
                 </TableRow>
@@ -146,7 +204,7 @@ function MergeReviewDialog({
           <div className="space-y-2 rounded-md border border-border p-3">
             <p className="text-xs text-muted-foreground">Resulting transaction:</p>
             <div className="flex items-center gap-3 text-sm">
-              <span className="whitespace-nowrap text-muted-foreground">{formatDate(keptPosting.posted_at)}</span>
+              <span className="whitespace-nowrap text-muted-foreground">{formatDate(keptPosting.posted_at.slice(0, 10))}</span>
               <Input value={description} onChange={(event) => setDescription(event.target.value)} className="flex-1" />
               <span className="tabular-nums font-medium">{formatCurrency(keptPosting.amount, currency)}</span>
             </div>
@@ -182,7 +240,7 @@ export function DuplicateSuggestionsPanel({
   const { data } = useDuplicateSuggestions(windowDays)
   const [filters, setFilters] = useState<FilterState>(defaultFilterState())
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
-  const [reviewing, setReviewing] = useState<DuplicateGroupRow | null>(null)
+  const [reviewingIndex, setReviewingIndex] = useState<number | null>(null)
   const setMerges = useSetPostingMerges()
 
   function handleWindowDaysChange(value: string) {
@@ -229,6 +287,9 @@ export function DuplicateSuggestionsPanel({
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'urgency')
   const allChecked = sorted.length > 0 && sorted.every((row) => checkedKeys.has(row.group_key))
+  const reviewing = reviewingIndex !== null ? (sorted[reviewingIndex] ?? null) : null
+  const checkedRows = rows.filter((row) => checkedKeys.has(row.group_key))
+  const checkedPostingsCount = checkedRows.reduce((sum, row) => sum + row.postings.length, 0)
 
   function toggleSelectAll() {
     setCheckedKeys((prev) => {
@@ -256,7 +317,32 @@ export function DuplicateSuggestionsPanel({
   function handleConfirmMerge(merge: PostingMerge) {
     setMerges.mutate(
       { ...existingMerges, [merge.merge_id]: merge },
-      { onSuccess: () => setReviewing(null) },
+      { onSuccess: () => setReviewingIndex(null) },
+    )
+  }
+
+  // Skips the per-group review dialog entirely — each checked group is
+  // merged using the same "longest description wins" default the dialog
+  // itself pre-selects, so this is exactly what confirming every checked
+  // group one-by-one without changes would have produced.
+  function handleBulkAccept() {
+    const additions = Object.fromEntries(
+      checkedRows.map((row) => {
+        const kept = pickDefaultKeptPosting(row)
+        const merge: PostingMerge = {
+          merge_id: `merge:${row.group_key}`,
+          kept_transaction_id: kept.transaction_id,
+          duplicate_transaction_ids: row.postings
+            .filter((posting) => posting.transaction_id !== kept.transaction_id)
+            .map((posting) => posting.transaction_id),
+          description: null,
+        }
+        return [merge.merge_id, merge]
+      }),
+    )
+    setMerges.mutate(
+      { ...existingMerges, ...additions },
+      { onSuccess: () => setCheckedKeys(new Set()) },
     )
   }
 
@@ -318,6 +404,14 @@ export function DuplicateSuggestionsPanel({
         </div>
       </CardHeader>
       <CardContent>
+        {checkedRows.length > 0 && (
+          <div className="mb-3 flex justify-end">
+            <Button size="sm" onClick={handleBulkAccept} disabled={setMerges.isPending}>
+              Accept merging {checkedPostingsCount} transactions into {checkedRows.length} transactions (
+              {checkedRows.length}/{rows.length})
+            </Button>
+          </div>
+        )}
         {sorted.length === 0 ? (
           <p className="text-sm text-muted-foreground">No likely duplicates within {windowDays} days.</p>
         ) : (
@@ -352,21 +446,25 @@ export function DuplicateSuggestionsPanel({
                   <SortableTableHead align="right" active={sort.key === 'urgency'} desc={sort.desc} onClick={() => toggleSort('urgency')}>
                     Certainty
                   </SortableTableHead>
-                  <TableHead className="w-24" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {paddingTop > 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} style={{ height: paddingTop, padding: 0 }} />
+                    <TableCell colSpan={7} style={{ height: paddingTop, padding: 0 }} />
                   </TableRow>
                 )}
                 {virtualRows.map((virtualRow) => {
                   const row = sorted[virtualRow.index]
                   const currency = accounts[row.account_id]?.currency ?? 'USD'
                   return (
-                    <TableRow key={row.group_key} data-index={virtualRow.index}>
-                      <TableCell>
+                    <TableRow
+                      key={row.group_key}
+                      data-index={virtualRow.index}
+                      className="cursor-pointer hover:bg-muted/40"
+                      onClick={() => setReviewingIndex(virtualRow.index)}
+                    >
+                      <TableCell onClick={(event) => event.stopPropagation()}>
                         <input
                           type="checkbox"
                           className="size-3.5 accent-current"
@@ -382,17 +480,12 @@ export function DuplicateSuggestionsPanel({
                       <TableCell className="text-right tabular-nums">{formatCurrency(row.amount, currency)}</TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">{row.postings.length}</TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">{Math.round(row.certainty * 100)}%</TableCell>
-                      <TableCell>
-                        <Button variant="outline" size="sm" onClick={() => setReviewing(row)}>
-                          Review
-                        </Button>
-                      </TableCell>
                     </TableRow>
                   )
                 })}
                 {paddingBottom > 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} style={{ height: paddingBottom, padding: 0 }} />
+                    <TableCell colSpan={7} style={{ height: paddingBottom, padding: 0 }} />
                   </TableRow>
                 )}
               </TableBody>
@@ -401,13 +494,19 @@ export function DuplicateSuggestionsPanel({
         )}
       </CardContent>
 
-      {reviewing && (
+      {reviewing && reviewingIndex !== null && (
         <MergeReviewDialog
+          key={reviewing.group_key}
           group={reviewing}
           currency={accounts[reviewing.account_id]?.currency ?? 'USD'}
           accountName={accounts[reviewing.account_id]?.name ?? reviewing.account_id}
-          onClose={() => setReviewing(null)}
+          position={`${reviewingIndex + 1} / ${sorted.length}`}
+          hasPrevious={reviewingIndex > 0}
+          hasNext={reviewingIndex < sorted.length - 1}
+          onClose={() => setReviewingIndex(null)}
           onConfirm={handleConfirmMerge}
+          onPrevious={() => setReviewingIndex((index) => (index !== null ? Math.max(0, index - 1) : index))}
+          onNext={() => setReviewingIndex((index) => (index !== null ? Math.min(sorted.length - 1, index + 1) : index))}
           isSubmitting={setMerges.isPending}
         />
       )}

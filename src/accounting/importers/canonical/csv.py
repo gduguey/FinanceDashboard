@@ -1,13 +1,13 @@
-"""Canonical CSV: the fallback importer for any bank with no dedicated standardizer.
+"""Canonical CSV/Excel: the fallback importer for any bank with no dedicated standardizer.
 
 Unlike every other importer here (see `importers.chase`/`importers.sofi`),
 this one doesn't know its source's exact export shape ahead of time — it
 looks for a handful of expected concepts (date, description, an amount) by
-fuzzy column-name matching, parses whatever date/number format it finds
-(see `canonical.parsing`), and auto-creates any category/subcategory it's
-told about. When it can't make sense of a file, it raises a clear,
-user-facing error explaining exactly what columns and formats are
-supported, rather than guessing further.
+column-name matching (case- and whitespace-insensitive, but otherwise
+exact — see `canonical.parsing.find_column`), parses whatever date/number
+format it finds (see `canonical.parsing`), and auto-creates any
+category/subcategory it's told about. When it can't make sense of a file,
+it raises a clear, user-facing error, rather than guessing further.
 """
 
 from __future__ import annotations
@@ -15,21 +15,32 @@ from __future__ import annotations
 import csv as csv_module
 import io
 import operator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import polars as pl
 
 from accounting.importers.canonical.parsing import find_column, parse_amount_flexible, parse_date_flexible
 from accounting.importers.common import row_hash
 from accounting.models import Category, Posting
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID, slugify
+from accounting.store import (
+    UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
+    UNCATEGORIZED_INCOME_ACCOUNT_ID,
+    next_available_color,
+    slugify,
+)
 
 if TYPE_CHECKING:
     from datetime import date as date_type
 
     from accounting.models import CategoryClassification, CurrencyCode
+
+# "MDY" (month before day, e.g. US 01/12 = Jan 12) or "DMY" (day before
+# month, e.g. European 01/12 = 1 Dec) — only affects an all-numeric date
+# that's genuinely ambiguous (both parts could be a valid month); a named
+# month or a day > 12 is read the same either way.
+DateOrder = Literal["MDY", "DMY"]
 
 _DATE_ALIASES = {"date", "transaction date", "posting date", "posted date", "trans date"}
 _DESCRIPTION_ALIASES = {"description", "memo", "narrative", "payee", "details", "transaction description"}
@@ -39,13 +50,20 @@ _CREDIT_ALIASES = {"credit", "deposit", "money in", "credit amount"}
 _CATEGORY_ALIASES = {"category"}
 _SUBCATEGORY_ALIASES = {"subcategory", "sub category", "sub-category"}
 _CANDIDATE_SEPARATORS = [",", ";", "\t", "|"]
-_NEW_CATEGORY_COLOR = "#9ca3af"
 _MAX_UNPARSEABLE_ROW_FRACTION = 0.2
 
+# Deliberately says nothing about date/amount formats — this is shown when
+# the columns themselves can't be found at all, so the fix is a column
+# rename, never a value format; format guidance belongs in the row-parsing
+# failure message below instead, where it's actually the relevant fix.
 REQUIRED_COLUMNS_HELP = (
-    "Expected a Date column, a Description column, and either an Amount column "
-    "(negative for money out, positive for money in) or separate Debit and Credit columns. "
-    "An optional Category column and an optional Subcategory column are also read, if present. "
+    "Column names must match exactly. Expected a Date column, a Description column, and either "
+    "an Amount column (negative for money out, positive for money in) or separate Debit and "
+    "Credit columns. An optional Category column and an optional Subcategory column are also "
+    "read, if present."
+)
+
+DATE_AMOUNT_FORMAT_HELP = (
     "Dates can be written in almost any common format (e.g. 2026-06-30, 06/30/2026, Jun 30 2026). "
     "Amounts can include a currency symbol and either US (1,234.56) or European (1.234,56) "
     "thousands separators."
@@ -61,11 +79,38 @@ class CanonicalCsvSeparatorUnknownError(CanonicalCsvError):
 
 
 @dataclass(frozen=True)
+class SkippedRowsInfo:
+    """Information about rows that couldn't be parsed."""
+
+    total_rows: int
+    skipped_count: int
+    bad_dates: int  # Rows with unrecognized dates
+    bad_amounts: int  # Rows with unrecognized amounts
+    skipped_row_numbers: list[int]  # Which row numbers were skipped
+
+
+@dataclass(frozen=True)
 class CanonicalImportResult:
     """What one canonical CSV import produced."""
 
     postings: pl.DataFrame
     new_categories: dict[str, Category]
+    skipped_rows: SkippedRowsInfo | None = None  # None if all rows parsed successfully
+
+
+@dataclass(frozen=True)
+class CategoryOverrides:
+    """User-provided renames for the categories/subcategories a canonical import would otherwise auto-create.
+
+    Two raw category names renamed to the same final name merge into one
+    category; two raw subcategory names renamed to the same final name
+    merge only when they resolve under the same parent category (see
+    `_resolve_subcategories`) — the same subcategory name under two
+    different categories is never merged with itself.
+    """
+
+    categories: dict[str, str] = field(default_factory=dict)
+    subcategories: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -141,8 +186,11 @@ def _row_amount(row_cell: dict[str, str], columns: _Columns) -> float | None:
     return (credit or 0.0) - abs(debit or 0.0)
 
 
-def _parse_rows(data_rows: list[list[str]], header: list[str], columns: _Columns) -> list[_ParsedRow]:
+def _parse_rows(
+    data_rows: list[list[str]], header: list[str], columns: _Columns, date_order: DateOrder = "MDY"
+) -> tuple[list[_ParsedRow], SkippedRowsInfo | None]:
     index = {name: position for position, name in enumerate(header)}
+    dayfirst = date_order == "DMY"
 
     def cell(row: list[str], column: str) -> str:
         position = index[column]
@@ -152,20 +200,23 @@ def _parse_rows(data_rows: list[list[str]], header: list[str], columns: _Columns
     bad_dates = 0
     bad_amounts = 0
     total_rows = 0
+    skipped_row_numbers: list[int] = []
     for row_number, raw_row in enumerate(data_rows, start=2):
         if not raw_row or all(not value.strip() for value in raw_row):
             continue
         total_rows += 1
         row_cell = {name: cell(raw_row, name) for name in index}
 
-        parsed_date: date_type | None = parse_date_flexible(row_cell[columns.date])
+        parsed_date: date_type | None = parse_date_flexible(row_cell[columns.date], dayfirst=dayfirst)
         if parsed_date is None:
             bad_dates += 1
+            skipped_row_numbers.append(row_number)
             continue
 
         amount = _row_amount(row_cell, columns)
         if amount is None:
             bad_amounts += 1
+            skipped_row_numbers.append(row_number)
             continue
 
         raw_category = row_cell[columns.category].strip() if columns.category else ""
@@ -181,14 +232,25 @@ def _parse_rows(data_rows: list[list[str]], header: list[str], columns: _Columns
             )
         )
 
+    skipped_count = bad_dates + bad_amounts
+    skip_info: SkippedRowsInfo | None = None
+    if skipped_count > 0:
+        skip_info = SkippedRowsInfo(
+            total_rows=total_rows,
+            skipped_count=skipped_count,
+            bad_dates=bad_dates,
+            bad_amounts=bad_amounts,
+            skipped_row_numbers=skipped_row_numbers,
+        )
+
     if total_rows == 0 or len(parsed_rows) < total_rows * (1 - _MAX_UNPARSEABLE_ROW_FRACTION):
         message = (
             f"Couldn't parse most of this file's rows — {bad_dates} row(s) had an unrecognized date and "
             f"{bad_amounts} row(s) had an unrecognized amount, out of {total_rows} data row(s). "
-            f"{REQUIRED_COLUMNS_HELP}"
+            f"{DATE_AMOUNT_FORMAT_HELP}"
         )
         raise CanonicalCsvError(message)
-    return parsed_rows
+    return parsed_rows, skip_info
 
 
 def _match_existing_category(name: str, parent_id: str | None, categories: dict[str, Category]) -> Category | None:
@@ -214,30 +276,82 @@ def _classification_for(amounts: list[float]) -> CategoryClassification:
 
 
 def _resolve_top_categories(
-    parsed_rows: list[_ParsedRow], existing_categories: dict[str, Category], new_categories: dict[str, Category]
+    parsed_rows: list[_ParsedRow],
+    existing_categories: dict[str, Category],
+    new_categories: dict[str, Category],
+    category_overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    amounts_by_name: dict[str, list[float]] = {}
-    for row in parsed_rows:
-        if row.category_name:
-            amounts_by_name.setdefault(row.category_name.strip().lower(), []).append(row.amount)
+    """Assign every row's raw category name a category id, applying any user rename first.
 
-    category_ids: dict[str, str] = {}
-    for key, amounts in amounts_by_name.items():
-        existing = _match_existing_category(key, None, existing_categories)
-        if existing is not None:
-            category_ids[key] = existing.category_id
+    Returns
+    -------
+    dict[str, str]
+        Every *raw* (as the file spelled it) category name, lowered, mapped
+        to its resolved id — two raw names renamed to the same final name
+        share one id here, which is what makes that rename a merge.
+    """
+    overrides = category_overrides or {}
+    amounts_by_effective_key: dict[str, list[float]] = {}
+    display_name_by_effective_key: dict[str, str] = {}
+    raw_keys_by_effective_key: dict[str, set[str]] = {}
+    for row in parsed_rows:
+        if not row.category_name:
             continue
-        display_name = next(
-            row.category_name for row in parsed_rows if row.category_name and row.category_name.strip().lower() == key
-        )
-        classification = _classification_for(amounts)
-        base_id = f"{classification}:{slugify(display_name)}"
-        category_id = _unique_category_id(base_id, existing_categories, new_categories)
-        new_categories[category_id] = Category(
-            category_id=category_id, name=display_name, classification=classification, color=_NEW_CATEGORY_COLOR
-        )
-        category_ids[key] = category_id
-    return category_ids
+        raw_name = row.category_name.strip()
+        effective_name = overrides.get(raw_name, raw_name)
+        effective_key = effective_name.lower()
+        amounts_by_effective_key.setdefault(effective_key, []).append(row.amount)
+        display_name_by_effective_key[effective_key] = effective_name
+        raw_keys_by_effective_key.setdefault(effective_key, set()).add(raw_name.lower())
+
+    category_ids_by_raw_key: dict[str, str] = {}
+    for effective_key, amounts in amounts_by_effective_key.items():
+        existing = _match_existing_category(effective_key, None, existing_categories)
+        if existing is not None:
+            category_id = existing.category_id
+        else:
+            display_name = display_name_by_effective_key[effective_key]
+            classification = _classification_for(amounts)
+            base_id = f"{classification}:{slugify(display_name)}"
+            category_id = _unique_category_id(base_id, existing_categories, new_categories)
+            used_colors = [c.color for c in existing_categories.values()] + [c.color for c in new_categories.values()]
+            new_categories[category_id] = Category(
+                category_id=category_id,
+                name=display_name,
+                classification=classification,
+                color=next_available_color(used_colors),
+            )
+        for raw_key in raw_keys_by_effective_key[effective_key]:
+            category_ids_by_raw_key[raw_key] = category_id
+    return category_ids_by_raw_key
+
+
+@dataclass(frozen=True)
+class _SubcategoryGroups:
+    """One row per resolved `(parent_id, effective_subcategory_key)` group, ready to create or match."""
+
+    amounts_by_resolved_key: dict[tuple[str, str], list[float]]
+    display_name_by_resolved_key: dict[tuple[str, str], str]
+    raw_keys_by_resolved_key: dict[tuple[str, str], set[tuple[str, str]]]
+
+
+def _group_rows_by_resolved_subcategory(
+    parsed_rows: list[_ParsedRow], top_category_ids: dict[str, str], overrides: dict[str, dict[str, str]]
+) -> _SubcategoryGroups:
+    groups = _SubcategoryGroups({}, {}, {})
+    for row in parsed_rows:
+        if not (row.category_name and row.subcategory_name):
+            continue
+        raw_top_name = row.category_name.strip()
+        raw_sub_name = row.subcategory_name.strip()
+        parent_id = top_category_ids[raw_top_name.lower()]
+        effective_sub_name = overrides.get(raw_top_name, {}).get(raw_sub_name, raw_sub_name)
+        resolved_key = (parent_id, effective_sub_name.lower())
+        groups.amounts_by_resolved_key.setdefault(resolved_key, []).append(row.amount)
+        groups.display_name_by_resolved_key[resolved_key] = effective_sub_name
+        raw_key = (raw_top_name.lower(), raw_sub_name.lower())
+        groups.raw_keys_by_resolved_key.setdefault(resolved_key, set()).add(raw_key)
+    return groups
 
 
 def _resolve_subcategories(
@@ -245,39 +359,44 @@ def _resolve_subcategories(
     top_category_ids: dict[str, str],
     existing_categories: dict[str, Category],
     new_categories: dict[str, Category],
+    subcategory_overrides: dict[str, dict[str, str]] | None = None,
 ) -> dict[tuple[str, str], str]:
-    amounts_by_key: dict[tuple[str, str], list[float]] = {}
-    for row in parsed_rows:
-        if row.category_name and row.subcategory_name:
-            top_key = row.category_name.strip().lower()
-            sub_key = row.subcategory_name.strip().lower()
-            amounts_by_key.setdefault((top_key, sub_key), []).append(row.amount)
+    """Assign every row's raw (category, subcategory) name pair a subcategory id, applying any user rename first.
+
+    A rename is scoped to one *resolved* parent category (after any
+    category-level merge already folded several raw category names into
+    one) — renaming two subcategories to the same name only merges them
+    when they end up under the same parent; the same subcategory name
+    under two different categories is never merged.
+
+    Returns
+    -------
+    dict[tuple[str, str], str]
+        Every *raw* `(category name, subcategory name)` pair, both lowered,
+        mapped to its resolved subcategory id.
+    """
+    groups = _group_rows_by_resolved_subcategory(parsed_rows, top_category_ids, subcategory_overrides or {})
 
     subcategory_ids: dict[tuple[str, str], str] = {}
-    for top_key, sub_key in amounts_by_key.keys():  # noqa: SIM118
-        parent_id = top_category_ids[top_key]
-        existing = _match_existing_category(sub_key, parent_id, existing_categories)
+    for resolved_key in groups.amounts_by_resolved_key:
+        parent_id, effective_sub_key = resolved_key
+        existing = _match_existing_category(effective_sub_key, parent_id, existing_categories)
         if existing is not None:
-            subcategory_ids[top_key, sub_key] = existing.category_id
-            continue
-        display_name = next(
-            row.subcategory_name
-            for row in parsed_rows
-            if row.category_name
-            and row.subcategory_name
-            and row.category_name.strip().lower() == top_key
-            and row.subcategory_name.strip().lower() == sub_key
-        )
-        parent = existing_categories.get(parent_id) or new_categories[parent_id]
-        sub_id = _unique_category_id(f"{parent_id}:{slugify(display_name)}", existing_categories, new_categories)
-        new_categories[sub_id] = Category(
-            category_id=sub_id,
-            name=display_name,
-            classification=parent.classification,
-            parent_category_id=parent_id,
-            color=parent.color,
-        )
-        subcategory_ids[top_key, sub_key] = sub_id
+            sub_id = existing.category_id
+        else:
+            parent = existing_categories.get(parent_id) or new_categories[parent_id]
+            display_name = groups.display_name_by_resolved_key[resolved_key]
+            sub_id = _unique_category_id(f"{parent_id}:{slugify(display_name)}", existing_categories, new_categories)
+            used_colors = [c.color for c in existing_categories.values()] + [c.color for c in new_categories.values()]
+            new_categories[sub_id] = Category(
+                category_id=sub_id,
+                name=display_name,
+                classification=parent.classification,
+                parent_category_id=parent_id,
+                color=next_available_color(used_colors),
+            )
+        for raw_key in groups.raw_keys_by_resolved_key[resolved_key]:
+            subcategory_ids[raw_key] = sub_id
     return subcategory_ids
 
 
@@ -328,12 +447,40 @@ def _build_postings(
     return postings
 
 
+def _standardize_rows(
+    header: list[str],
+    data_rows: list[list[str]],
+    account_id: str,
+    account_currency: CurrencyCode,
+    existing_categories: dict[str, Category],
+    date_order: DateOrder,
+    category_overrides: CategoryOverrides | None = None,
+) -> CanonicalImportResult:
+    columns = _resolve_columns(header)
+    parsed_rows, skip_info = _parse_rows(data_rows, header, columns, date_order)
+    overrides = category_overrides or CategoryOverrides()
+
+    new_categories: dict[str, Category] = {}
+    top_category_ids = _resolve_top_categories(parsed_rows, existing_categories, new_categories, overrides.categories)
+    subcategory_ids = _resolve_subcategories(
+        parsed_rows, top_category_ids, existing_categories, new_categories, overrides.subcategories
+    )
+    postings = _build_postings(parsed_rows, account_id, account_currency, top_category_ids, subcategory_ids)
+
+    frame = pl.DataFrame([posting.model_dump() for posting in postings], schema=Posting.polars_schema)
+    return CanonicalImportResult(
+        postings=frame.sort("posted_at", "posting_id"), new_categories=new_categories, skipped_rows=skip_info
+    )
+
+
 def standardize_canonical_csv(
     csv_text: str,
     account_id: str,
     account_currency: CurrencyCode,
     existing_categories: dict[str, Category],
     separator: str | None = None,
+    date_order: DateOrder = "MDY",
+    category_overrides: CategoryOverrides | None = None,
 ) -> CanonicalImportResult:
     """Map an arbitrary bank's CSV export onto canonical postings, guessing its column names and formats.
 
@@ -354,6 +501,14 @@ def standardize_canonical_csv(
     separator
         The column separator to use, overriding auto-detection — set this
         after asking the user, once auto-detection has failed once.
+    date_order
+        Whether an ambiguous, all-numeric date reads month-first (`"MDY"`,
+        the default) or day-first (`"DMY"`) — see `parsing.parse_date_flexible`.
+    category_overrides
+        User-provided renames (and, implicitly, merges) for the categories
+        and subcategories this file would otherwise auto-create — see
+        `CategoryOverrides`. Typically collected via a preview/validate step
+        before the real import (see `api.post_canonical_import_preview`).
 
     Returns
     -------
@@ -372,14 +527,95 @@ def standardize_canonical_csv(
     if not rows:
         raise CanonicalCsvError("This file has no rows.")
     header, data_rows = rows[0], rows[1:]
+    return _standardize_rows(
+        header, data_rows, account_id, account_currency, existing_categories, date_order, category_overrides
+    )
 
-    columns = _resolve_columns(header)
-    parsed_rows = _parse_rows(data_rows, header, columns)
 
-    new_categories: dict[str, Category] = {}
-    top_category_ids = _resolve_top_categories(parsed_rows, existing_categories, new_categories)
-    subcategory_ids = _resolve_subcategories(parsed_rows, top_category_ids, existing_categories, new_categories)
-    postings = _build_postings(parsed_rows, account_id, account_currency, top_category_ids, subcategory_ids)
+def _read_excel_sheets(file_bytes: bytes) -> dict[str, tuple[list[str], list[list[str]]]]:
+    """Read every sheet of an Excel workbook into a plain header row + string data rows, like a parsed CSV.
 
-    frame = pl.DataFrame([posting.model_dump() for posting in postings], schema=Posting.polars_schema)
-    return CanonicalImportResult(postings=frame.sort("posted_at", "posting_id"), new_categories=new_categories)
+    `infer_schema_length=0` keeps every cell as text (no numeric/date
+    inference) — a date cell would otherwise arrive as a `datetime` and an
+    amount as a `float`, bypassing `parsing.parse_date_flexible`/
+    `parse_amount_flexible` entirely and losing the same forgiving parsing
+    a CSV import gets.
+
+    Parameters
+    ----------
+    file_bytes
+        The raw `.xlsx` file contents, exactly as uploaded.
+
+    Returns
+    -------
+    dict[str, tuple[list[str], list[list[str]]]]
+        Each sheet's own header row and data rows, keyed by sheet name.
+    """
+    sheets = pl.read_excel(io.BytesIO(file_bytes), sheet_id=0, infer_schema_length=0)
+
+    def rows_as_strings(frame: pl.DataFrame) -> list[list[str]]:
+        return [["" if value is None else str(value) for value in row] for row in frame.iter_rows()]
+
+    return {name: (list(frame.columns), rows_as_strings(frame)) for name, frame in sheets.items()}
+
+
+def standardize_canonical_excel(
+    file_bytes: bytes,
+    account_id: str,
+    account_currency: CurrencyCode,
+    existing_categories: dict[str, Category],
+    date_order: DateOrder = "MDY",
+    category_overrides: CategoryOverrides | None = None,
+) -> CanonicalImportResult:
+    """Map an arbitrary bank's Excel export onto canonical postings, checking every sheet for the expected columns.
+
+    A workbook often carries more than one sheet — the real transaction
+    data plus, say, a pivot-table summary — so every sheet is checked in
+    turn and the first whose header has the expected columns (see
+    `_resolve_columns`) is used; the rest are assumed to be something else
+    entirely and are silently skipped.
+
+    Parameters
+    ----------
+    file_bytes
+        The raw `.xlsx` file contents, exactly as uploaded.
+    account_id
+        The real account these rows belong to.
+    account_currency
+        The account's own currency — every posting is recorded in it.
+    existing_categories
+        Every category already in the store, keyed by `category_id`.
+    date_order
+        Whether an ambiguous, all-numeric date reads month-first or day-first.
+    category_overrides
+        User-provided renames (and, implicitly, merges) for the categories
+        and subcategories this file would otherwise auto-create.
+
+    Returns
+    -------
+    CanonicalImportResult
+        The postings, plus any newly-encountered categories/subcategories.
+
+    Raises
+    ------
+    CanonicalCsvError
+        If no sheet's header has the expected columns, or the matching
+        sheet's rows mostly fail to parse.
+    """
+    sheets = _read_excel_sheets(file_bytes)
+    if not sheets:
+        raise CanonicalCsvError("This workbook has no sheets.")
+    for header, data_rows in sheets.values():
+        try:
+            _resolve_columns(header)
+        except CanonicalCsvError:
+            continue
+        return _standardize_rows(
+            header, data_rows, account_id, account_currency, existing_categories, date_order, category_overrides
+        )
+
+    sheet_names = ", ".join(sheets)
+    message = (
+        f"Couldn't find the expected columns in any sheet of this workbook ({sheet_names}). {REQUIRED_COLUMNS_HELP}"
+    )
+    raise CanonicalCsvError(message)

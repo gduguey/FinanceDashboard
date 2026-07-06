@@ -5,12 +5,15 @@ import type {
   Budget,
   GeneralBudget,
   BudgetComparisonRow,
+  CanonicalCategoryOverrides,
+  CanonicalImportPreview,
   CanonicalImportResult,
   Category,
   CategoryPattern,
   CategoryTotalRow,
   CurrentExchangeRate,
   Currency,
+  CurrencyCode,
   DetectedAccount,
   DuplicateGroup,
   ExchangeRateHistoryPoint,
@@ -95,6 +98,11 @@ export const accountingApi = {
     request<ExchangeRateHistoryPoint[]>(`/api/accounting/exchange-rates/history${queryString({ currency })}`),
   putCategories: (categories: Record<string, Category>) =>
     request<Record<string, Category>>('/api/accounting/categories', jsonInit('PUT', categories)),
+  renameCategory: (categoryId: string, name: string) =>
+    request<{ categories: Record<string, Category>; merged: boolean }>(
+      `/api/accounting/categories/${encodeURIComponent(categoryId)}/rename`,
+      jsonInit('POST', { name }),
+    ),
   putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
   putTransferRules: (rules: TransferRule[]) =>
     request<TransferRule[]>('/api/accounting/transfer-rules', jsonInit('PUT', rules)),
@@ -139,7 +147,25 @@ export const accountingApi = {
     if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
   },
-  importCanonicalCsv: (file: File, info: ImportAccountInfo, separator?: string) => {
+  previewCanonicalImport: (file: File, accountId: string, currency: CurrencyCode, separator?: string, dateOrder?: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('account_id', accountId)
+    formData.append('currency', currency)
+    if (separator) formData.append('separator', separator)
+    if (dateOrder) formData.append('date_order', dateOrder)
+    return request<CanonicalImportPreview>('/api/accounting/import/canonical/preview', {
+      method: 'POST',
+      body: formData,
+    })
+  },
+  importCanonicalCsv: (
+    file: File,
+    info: ImportAccountInfo,
+    separator?: string,
+    dateOrder?: string,
+    categoryOverrides?: CanonicalCategoryOverrides,
+  ) => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('institution', info.institution)
@@ -149,6 +175,8 @@ export const accountingApi = {
     if (info.currency) formData.append('currency', info.currency)
     if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
     if (separator) formData.append('separator', separator)
+    if (dateOrder) formData.append('date_order', dateOrder)
+    if (categoryOverrides) formData.append('category_overrides', JSON.stringify(categoryOverrides))
     return request<CanonicalImportResult>('/api/accounting/import/canonical', { method: 'POST', body: formData })
   },
   importPaystub: (file: File) => {
