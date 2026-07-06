@@ -31,7 +31,9 @@ def matching_pattern(patterns: dict[str, CategoryPattern], description: str) -> 
     CategoryPattern or None
     """
     lowered = description.lower()
-    candidates = [pattern for pattern in patterns.values() if pattern.description_contains.lower() in lowered]
+    candidates = [
+        pattern for pattern in patterns.values() if pattern.active and pattern.description_contains.lower() in lowered
+    ]
     if not candidates:
         return None
     return min(candidates, key=lambda pattern: pattern.priority)
@@ -64,14 +66,15 @@ def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.D
         lowest-`priority` one, same tiebreak as `matching_pattern`).
         Postings with no match are simply absent.
     """
-    if not patterns or descriptions.is_empty():
+    active_patterns = [pattern for pattern in patterns.values() if pattern.active]
+    if not active_patterns or descriptions.is_empty():
         return pl.DataFrame(schema=_MATCH_SCHEMA)
 
     patterns_df = pl.DataFrame({
-        "pattern_description": [pattern.description_contains.lower() for pattern in patterns.values()],
-        "pattern_category_id": [pattern.category_id for pattern in patterns.values()],
-        "pattern_subcategory_id": [pattern.subcategory_id for pattern in patterns.values()],
-        "pattern_priority": [pattern.priority for pattern in patterns.values()],
+        "pattern_description": [pattern.description_contains.lower() for pattern in active_patterns],
+        "pattern_category_id": [pattern.category_id for pattern in active_patterns],
+        "pattern_subcategory_id": [pattern.subcategory_id for pattern in active_patterns],
+        "pattern_priority": [pattern.priority for pattern in active_patterns],
     })
     return (
         descriptions

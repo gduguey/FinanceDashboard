@@ -1,16 +1,27 @@
 import { useCallback, useState } from 'react'
 import { CheckCircle2, Upload, X, XCircle } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
+import { TaxonomyTable } from '@/components/accounting/CategoriesTab'
 import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { accountingApi } from '@/lib/accountingApi'
-import { useAccountingStore, useImportCsv, usePostings, useRebuildLedger } from '@/hooks/useAccountingData'
-import type { Account, CurrencyCode } from '@/types/accounting'
+import {
+  useAccountingStore,
+  useImportCanonicalCsv,
+  useImportCsv,
+  usePostings,
+  useRebuildLedger,
+  useSupportedImportKinds,
+} from '@/hooks/useAccountingData'
+import type { Account, Category, CurrencyCode } from '@/types/accounting'
 
 const MAX_FILES_PER_DROP = 8
+
+const SEPARATOR_ITEMS: Record<string, string> = { ',': 'Comma', ';': 'Semicolon', '\t': 'Tab', '|': 'Pipe' }
 
 interface PendingCsvImport {
   key: string
@@ -25,6 +36,66 @@ interface PendingCsvImport {
   isNewAccount: boolean
   status: 'pending' | 'importing' | 'done' | 'error'
   message?: string
+  // Only meaningful once `institution`/`accountKind` have no registered
+  // standardizer (see `useSupportedImportKinds`) — the canonical fallback
+  // parser guesses the column separator, but a first guess can fail on an
+  // unusual file, so a retry can pin one down explicitly.
+  separator?: string
+  newCategories?: Category[]
+}
+
+// Groups a canonical import's newly-created categories/subcategories into
+// the same `[name, subcategoryNames[]]` shape `CategoriesTab`'s taxonomy
+// reference table already renders — a subcategory whose parent category
+// already existed (so isn't itself in `newCategories`) still needs that
+// parent's name, hence the `allCategories` lookup.
+function groupNewCategories(
+  newCategories: Category[],
+  allCategories: Record<string, Category>,
+): { expense: [string, string[]][]; income: [string, string[]][] } {
+  const topLevelIds = new Set(newCategories.filter((category) => !category.parent_category_id).map((c) => c.category_id))
+  const subcategoryNamesByParentId = new Map<string, string[]>()
+  for (const category of newCategories) {
+    if (!category.parent_category_id) continue
+    const names = subcategoryNamesByParentId.get(category.parent_category_id) ?? []
+    names.push(category.name)
+    subcategoryNamesByParentId.set(category.parent_category_id, names)
+  }
+  const parentIds = new Set([...topLevelIds, ...subcategoryNamesByParentId.keys()])
+  const parents = [...parentIds].map((id) => allCategories[id]).filter((category): category is Category => Boolean(category))
+
+  const expense: [string, string[]][] = []
+  const income: [string, string[]][] = []
+  for (const category of parents) {
+    const row: [string, string[]] = [category.name, subcategoryNamesByParentId.get(category.category_id) ?? []]
+    ;(category.classification === 'expense' ? expense : income).push(row)
+  }
+  return { expense, income }
+}
+
+function NewCategoriesSummary({
+  newCategories,
+  allCategories,
+}: {
+  newCategories: Category[]
+  allCategories: Record<string, Category>
+}) {
+  const { expense, income } = groupNewCategories(newCategories, allCategories)
+  return (
+    <div className="space-y-3 rounded-md border border-border p-3">
+      <p className="text-xs text-muted-foreground">
+        Created {newCategories.length} categor{newCategories.length === 1 ? 'y' : 'ies'} from this file's
+        Category/Subcategory columns:
+      </p>
+      <div className="grid gap-4 md:grid-cols-2">
+        {expense.length > 0 && <TaxonomyTable title="Expense" taxonomy={expense} />}
+        {income.length > 0 && <TaxonomyTable title="Income" taxonomy={income} />}
+      </div>
+      <Link to="/accounting?tab=categories" className="inline-block text-xs text-primary underline-offset-4 hover:underline">
+        Review or edit these in Category taxonomy →
+      </Link>
+    </div>
+  )
 }
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
@@ -47,8 +118,12 @@ export function ImportPage() {
   const [pending, setPending] = useState<PendingImport[]>([])
   const { data: store } = useAccountingStore()
   const { data: postings } = usePostings()
+  const { data: supportedImportKindsList } = useSupportedImportKinds()
   const importCsv = useImportCsv()
+  const importCanonicalCsv = useImportCanonicalCsv()
   const rebuild = useRebuildLedger()
+
+  const supportedKinds = new Set((supportedImportKindsList ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`))
 
   const handleFiles = useCallback(
     async (files: FileList) => {
@@ -98,19 +173,29 @@ export function ImportPage() {
 
   async function confirmCsvImport(entry: PendingCsvImport) {
     updateEntry(entry.key, { status: 'importing' })
+    const info = {
+      institution: entry.institution,
+      account_kind: entry.accountKind,
+      account_id: entry.accountId,
+      account_name: entry.name,
+      currency: entry.currency,
+      parent_account_id: entry.parentAccountId,
+    }
     try {
-      const result = await importCsv.mutateAsync({
-        file: entry.file,
-        info: {
-          institution: entry.institution,
-          account_kind: entry.accountKind,
-          account_id: entry.accountId,
-          account_name: entry.name,
-          currency: entry.currency,
-          parent_account_id: entry.parentAccountId,
-        },
-      })
-      updateEntry(entry.key, { status: 'done', message: `${result.new_posting_count} new postings` })
+      if (supportedKinds.has(`${entry.institution}:${entry.accountKind}`)) {
+        const result = await importCsv.mutateAsync({ file: entry.file, info })
+        updateEntry(entry.key, { status: 'done', message: `${result.new_posting_count} new postings` })
+      } else {
+        // No dedicated standardizer for this institution/kind — fall back
+        // to the canonical parser, which guesses the file's column names
+        // and date/amount formats instead of expecting an exact shape.
+        const result = await importCanonicalCsv.mutateAsync({ file: entry.file, info, separator: entry.separator })
+        updateEntry(entry.key, {
+          status: 'done',
+          message: `${result.new_posting_count} new postings`,
+          newCategories: result.new_categories,
+        })
+      }
     } catch (error) {
       updateEntry(entry.key, { status: 'error', message: error instanceof Error ? error.message : 'Import failed' })
     }
@@ -259,16 +344,57 @@ export function ImportPage() {
                 No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
               </p>
             ) : null}
+            {entry.institution &&
+              entry.accountKind &&
+              !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) &&
+              entry.status === 'pending' && (
+                <p className="basis-full text-xs text-muted-foreground">
+                  No dedicated importer for {entry.institution} — this will go through the generic CSV parser, which
+                  looks for Date/Description/Amount (or Debit/Credit) columns and guesses the date and number format.
+                </p>
+              )}
 
             {entry.status === 'done' && (
-              <span className="flex items-center gap-1 text-xs text-emerald-600">
-                <CheckCircle2 className="size-3.5" /> {entry.message}
-              </span>
+              <div className="basis-full space-y-2">
+                <span className="flex items-center gap-1 text-xs text-emerald-600">
+                  <CheckCircle2 className="size-3.5" /> {entry.message}
+                </span>
+                {entry.newCategories && entry.newCategories.length > 0 && store && (
+                  <NewCategoriesSummary newCategories={entry.newCategories} allCategories={store.categories} />
+                )}
+              </div>
             )}
             {entry.status === 'error' && (
-              <span className="flex items-center gap-1 text-xs text-destructive">
-                <XCircle className="size-3.5" /> {entry.message}
-              </span>
+              <div className="basis-full space-y-2">
+                <span className="flex items-start gap-1 text-xs text-destructive">
+                  <XCircle className="mt-0.5 size-3.5 shrink-0" /> {entry.message}
+                </span>
+                {!supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
+                  <div className="flex items-end gap-2">
+                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                      Separator
+                      <Select
+                        value={entry.separator ?? ''}
+                        onValueChange={(value) => updateEntry(entry.key, { separator: value || undefined })}
+                      >
+                        <SelectTrigger size="sm" className="w-28">
+                          <SelectValue placeholder="Auto-detect" items={SEPARATOR_ITEMS} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.entries(SEPARATOR_ITEMS).map(([value, label]) => (
+                            <SelectItem key={value} value={value}>
+                              {label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <Button size="sm" variant="outline" onClick={() => confirmCsvImport(entry)}>
+                      Retry
+                    </Button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         ))}

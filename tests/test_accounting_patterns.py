@@ -39,6 +39,20 @@ def test_match_patterns_bulk_matches_every_posting_in_one_pass() -> None:
     assert by_posting["c"]["category_id"] == "expense:shopping"
 
 
+def test_matching_pattern_skips_an_inactive_pattern() -> None:
+    patterns = {**PATTERNS, "p2": PATTERNS["p2"].model_copy(update={"active": False})}
+    match = matching_pattern(patterns, "TRADER JOE'S #123")
+    assert match is not None
+    assert match.pattern_id == "p1"
+
+
+def test_match_patterns_bulk_skips_an_inactive_pattern() -> None:
+    patterns = {**PATTERNS, "p2": PATTERNS["p2"].model_copy(update={"active": False})}
+    descriptions = pl.DataFrame({"posting_id": ["a"], "description": ["TRADER JOE'S #123"]})
+    matches = match_patterns_bulk(patterns, descriptions)
+    assert matches.to_dicts()[0]["category_id"] == "expense:food-drink"
+
+
 def test_match_patterns_bulk_returns_empty_frame_when_no_patterns() -> None:
     descriptions = pl.DataFrame({"posting_id": ["a"], "description": ["anything"]})
     matches = match_patterns_bulk({}, descriptions)

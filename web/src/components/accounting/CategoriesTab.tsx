@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHeader, TableRow, TableHead } from '@/components/ui/table'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
@@ -39,7 +40,7 @@ const DEFAULT_INCOME_TAXONOMY: [string, string[]][] = [
   ['Other Income', []],
 ]
 
-function TaxonomyTable({ title, taxonomy }: { title: string; taxonomy: [string, string[]][] }) {
+export function TaxonomyTable({ title, taxonomy }: { title: string; taxonomy: [string, string[]][] }) {
   return (
     <div className="space-y-2">
       <p className="text-sm font-medium">{title}</p>
@@ -405,6 +406,7 @@ function CategoryPatternsSection({ patterns, categories }: { patterns: Record<st
       category_id: draft.categoryId,
       subcategory_id: draft.subcategoryId,
       priority: 100,
+      active: true,
     }
     setPatterns.mutate({ ...patterns, [patternId]: pattern })
     setDraft({ descriptionContains: '', categoryId: null, subcategoryId: null })
@@ -417,6 +419,12 @@ function CategoryPatternsSection({ patterns, categories }: { patterns: Record<st
 
   function savePattern(updated: CategoryPattern) {
     setPatterns.mutate({ ...patterns, [updated.pattern_id]: updated })
+  }
+
+  function togglePatternActive(patternId: string, active: boolean) {
+    const existing = patterns[patternId]
+    if (!existing) return
+    setPatterns.mutate({ ...patterns, [patternId]: { ...existing, active } })
   }
 
   return (
@@ -444,18 +452,26 @@ function CategoryPatternsSection({ patterns, categories }: { patterns: Record<st
               <SortableTableHead active={sort.key === 'priority'} desc={sort.desc} onClick={() => toggleSort('priority')}>
                 Priority
               </SortableTableHead>
+              <TableHead>Active</TableHead>
               <TableHead className="w-16" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {sorted.map((pattern) => (
-              <TableRow key={pattern.pattern_id}>
+              <TableRow key={pattern.pattern_id} className={pattern.active ? '' : 'opacity-50'}>
                 <TableCell className="font-medium">{pattern.description_contains}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {categoryName(categories, pattern.category_id)}
                   {pattern.subcategory_id ? ` › ${categoryName(categories, pattern.subcategory_id)}` : ''}
                 </TableCell>
                 <TableCell className="text-muted-foreground">{pattern.priority}</TableCell>
+                <TableCell>
+                  <Switch
+                    size="sm"
+                    checked={pattern.active}
+                    onCheckedChange={(checked) => togglePatternActive(pattern.pattern_id, checked)}
+                  />
+                </TableCell>
                 <TableCell className="flex gap-1">
                   <Button variant="ghost" size="icon" onClick={() => setEditing(pattern)}>
                     <Pencil className="size-3.5 text-muted-foreground" />

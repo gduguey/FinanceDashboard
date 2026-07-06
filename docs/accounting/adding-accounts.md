@@ -7,6 +7,15 @@ document describes exactly what to add, and where, when the Import page
 flags an account with "no CSV parsing rule registered for this institution
 and account kind."
 
+Writing one isn't the only option, though — the Import page can always
+fall back to the no-code **canonical CSV importer** (`importers/canonical/`,
+see `canonical-csv-import.md`) instead, which guesses column names and
+date/amount formats rather than requiring an exact, known shape. Reach for
+a dedicated standardizer below when you want a bank permanently
+auto-detected with no per-import guessing (and no risk of a format quirk
+tripping up the fuzzy parser); reach for the canonical importer when you
+just want a one-off or occasional bank's CSV in without writing any code.
+
 ## What already exists, and why the warning appears
 
 `accounting/importers/ingest.py` holds a single dispatch table,

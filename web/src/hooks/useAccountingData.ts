@@ -10,8 +10,10 @@ import type {
   Goal,
   GoalContribution,
   ManualOverride,
+  ManualTransfer,
   OpeningBalance,
   OtherAsset,
+  PostingMerge,
   PostingSplitLeg,
   RecurringAddition,
   SimulatorScenario,
@@ -31,6 +33,7 @@ const keys = {
   exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
   postings: ['accounting', 'postings'],
   transferSuggestions: ['accounting', 'transfer-suggestions'],
+  duplicateSuggestions: ['accounting', 'duplicate-suggestions'],
   netWorth: (asOf?: string, displayCurrency?: string) => ['accounting', 'net-worth', asOf ?? {}, displayCurrency ?? {}],
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) => [
     'accounting',
@@ -77,12 +80,19 @@ const keys = {
     month,
     displayCurrency ?? {},
   ],
-  suggestedBudgetAmount: (categoryId: string, month: string, lookbackMonths?: number, displayCurrency?: string) => [
+  suggestedBudgetAmount: (
+    categoryId: string,
+    month: string,
+    lookbackMonths?: number,
+    subcategoryId?: string,
+    displayCurrency?: string,
+  ) => [
     'accounting',
     'suggested-budget-amount',
     categoryId,
     month,
     lookbackMonths ?? {},
+    subcategoryId ?? {},
     displayCurrency ?? {},
   ],
   interestSummary: (asOf?: string) => ['accounting', 'interest-summary', asOf ?? {}],
@@ -160,6 +170,20 @@ export const useTransferSuggestions = (windowDays?: number) =>
     queryFn: () => accountingApi.transferSuggestions(windowDays),
   })
 
+export const useDuplicateSuggestions = (windowDays?: number) =>
+  useQuery({
+    queryKey: [...keys.duplicateSuggestions, windowDays ?? {}],
+    queryFn: () => accountingApi.duplicateSuggestions(windowDays),
+  })
+
+export function useSetPostingMerges() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (merges: Record<string, PostingMerge>) => accountingApi.putPostingMerges(merges),
+    onSuccess: invalidate,
+  })
+}
+
 export const useNetWorth = (asOf?: string, displayCurrency?: string) =>
   useQuery({ queryKey: keys.netWorth(asOf, displayCurrency), queryFn: () => accountingApi.netWorth(asOf, displayCurrency) })
 
@@ -212,10 +236,16 @@ export const useBudgetComparison = (month: string, displayCurrency?: string) =>
     queryFn: () => accountingApi.budgetComparison(month, displayCurrency),
   })
 
-export const useSuggestedBudgetAmount = (categoryId: string, month: string, lookbackMonths?: number, displayCurrency?: string) =>
+export const useSuggestedBudgetAmount = (
+  categoryId: string,
+  month: string,
+  lookbackMonths?: number,
+  subcategoryId?: string,
+  displayCurrency?: string,
+) =>
   useQuery({
-    queryKey: keys.suggestedBudgetAmount(categoryId, month, lookbackMonths, displayCurrency),
-    queryFn: () => accountingApi.suggestedBudgetAmount(categoryId, month, lookbackMonths, displayCurrency),
+    queryKey: keys.suggestedBudgetAmount(categoryId, month, lookbackMonths, subcategoryId, displayCurrency),
+    queryFn: () => accountingApi.suggestedBudgetAmount(categoryId, month, lookbackMonths, subcategoryId, displayCurrency),
   })
 
 export const useInterestSummary = (asOf?: string) =>
@@ -337,10 +367,36 @@ export function useDeleteOpeningBalance() {
   })
 }
 
+export function useCloseAccount() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ accountId, transfers }: { accountId: string; transfers: ManualTransfer[] }) =>
+      accountingApi.closeAccount(accountId, transfers),
+    onSuccess: invalidate,
+  })
+}
+
+export function useReopenAccount() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (accountId: string) => accountingApi.reopenAccount(accountId),
+    onSuccess: invalidate,
+  })
+}
+
 export function useImportCsv() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: ({ file, info }: { file: File; info: ImportAccountInfo }) => accountingApi.importCsv(file, info),
+    onSuccess: invalidate,
+  })
+}
+
+export function useImportCanonicalCsv() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ file, info, separator }: { file: File; info: ImportAccountInfo; separator?: string }) =>
+      accountingApi.importCanonicalCsv(file, info, separator),
     onSuccess: invalidate,
   })
 }

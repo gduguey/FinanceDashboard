@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
@@ -160,6 +161,7 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
       counterparty_account_id: draft.counterpartyAccountId,
       priority: 100,
       description: '',
+      active: true,
     }
     setRules.mutate([...rules, rule])
     setDraft({ descriptionContains: '', counterpartyAccountId: null })
@@ -171,6 +173,10 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
 
   function saveRule(updated: TransferRule) {
     setRules.mutate(rules.map((rule) => (rule.rule_id === updated.rule_id ? updated : rule)))
+  }
+
+  function toggleActive(ruleId: string, active: boolean) {
+    setRules.mutate(rules.map((rule) => (rule.rule_id === ruleId ? { ...rule, active } : rule)))
   }
 
   return (
@@ -194,16 +200,24 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
               <SortableTableHead active={sort.key === 'priority'} desc={sort.desc} onClick={() => toggleSort('priority')}>
                 Priority
               </SortableTableHead>
+              <TableHead>Active</TableHead>
               <TableHead className="w-16" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {sorted.map((rule) => (
-              <TableRow key={rule.rule_id}>
+              <TableRow key={rule.rule_id} className={rule.active ? '' : 'opacity-50'}>
                 <TableCell className="font-medium">{rule.description_contains}</TableCell>
                 <TableCell className="text-muted-foreground">{counterpartyName(rule)}</TableCell>
                 <TableCell className="max-w-xs truncate text-muted-foreground">{rule.description || '—'}</TableCell>
                 <TableCell className="text-muted-foreground">{rule.priority}</TableCell>
+                <TableCell>
+                  <Switch
+                    size="sm"
+                    checked={rule.active}
+                    onCheckedChange={(checked) => toggleActive(rule.rule_id, checked)}
+                  />
+                </TableCell>
                 <TableCell className="flex gap-1">
                   <Button variant="ghost" size="icon" onClick={() => setEditing(rule)}>
                     <Pencil className="size-3.5 text-muted-foreground" />

@@ -8,19 +8,26 @@ which charts it appears in.
 ## Budgets
 
 A `Budget` (`accounting.models.Budget`) assigns a target amount to one
-top-level expense category for one calendar month. A `GeneralBudget`
-assigns a target amount to a category that applies to every month alike,
-stored completely separately from per-month budgets — switching between
-"general" and "per-month" mode in the UI never merges or silently
-overwrites the other; each is its own independent set of numbers.
+expense category for one calendar month — `category_id` is always the
+top-level category; an optional `subcategory_id` scopes the target to just
+that one subcategory's own actual spend instead of the whole category's,
+so a category and one of its subcategories can each carry their own
+independent target for the same month. A `GeneralBudget` mirrors this same
+`category_id`/`subcategory_id` shape but assigns a target that applies to
+every month alike, stored completely separately from per-month budgets —
+switching between "general" and "per-month" mode in the UI never merges or
+silently overwrites the other; each is its own independent set of numbers.
 
 A budget's *actual* spend is never stored anywhere — `dashboard.budgets`
 computes it fresh from `dashboard.income_statement.category_totals` for
 whichever month is being viewed, the same replay-not-cache principle as
-everything else in this module.
-`dashboard.budgets.suggested_budget_amount` offers a starting number pulled
-from trailing months' actual average spend in that category, purely as a
-suggestion the user can accept or overwrite.
+everything else in this module. A top-level budget's actual spend sums
+every posting in that category regardless of subcategory; a
+subcategory-scoped budget's actual is just that one subcategory's own
+postings. `dashboard.budgets.suggested_budget_amount` offers a starting
+number pulled from trailing months' actual average spend in that category
+(or subcategory, when one is given), purely as a suggestion the user can
+accept or overwrite.
 
 ## Goals
 

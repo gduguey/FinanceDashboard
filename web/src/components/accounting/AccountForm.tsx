@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { InstitutionCombobox } from '@/components/accounting/InstitutionCombobox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { useCurrencies } from '@/hooks/useAccountingData'
 import type { Account, AccountKind, CurrencyCode } from '@/types/accounting'
 
@@ -10,19 +11,9 @@ import type { Account, AccountKind, CurrencyCode } from '@/types/accounting'
 // (owned by `trades`, never created here) and `other_asset` (that's a
 // manually-entered net-worth line, not an importable account).
 const ACCOUNT_KINDS: AccountKind[] = ['checking', 'savings', 'credit_card', 'vault', 'cash', 'loan']
-const ACCOUNT_KIND_ITEMS: Record<string, string> = Object.fromEntries(ACCOUNT_KINDS.map((kind) => [kind, kind]))
-const KIND_LABELS: Record<AccountKind, string> = {
-  checking: 'Checking',
-  savings: 'Savings',
-  credit_card: 'Credit Card',
-  vault: 'Vault',
-  cash: 'Cash',
-  loan: 'Loan',
-  income_source: 'Income Source',
-  expense_payee: 'Expense Payee',
-  external_investment: 'External Investment',
-  other_asset: 'Other Asset',
-}
+const ACCOUNT_KIND_ITEMS: Record<string, string> = Object.fromEntries(
+  ACCOUNT_KINDS.map((kind) => [kind, ACCOUNT_KIND_LABELS[kind]]),
+)
 const NO_PARENT = '__none__'
 
 function deriveAccountId(institution: string, kind: AccountKind, last4: string): string {
@@ -30,7 +21,8 @@ function deriveAccountId(institution: string, kind: AccountKind, last4: string):
 }
 
 function deriveName(institution: string, kind: AccountKind, last4: string): string {
-  return last4 ? `${institution} ${KIND_LABELS[kind]} (...${last4})` : `${institution} ${KIND_LABELS[kind]}`
+  const label = ACCOUNT_KIND_LABELS[kind]
+  return last4 ? `${institution} ${label} (...${last4})` : `${institution} ${label}`
 }
 
 export interface AccountFormValue {
@@ -114,7 +106,7 @@ export function AccountForm({
           <SelectContent>
             {ACCOUNT_KINDS.map((kind) => (
               <SelectItem key={kind} value={kind}>
-                {kind}
+                {ACCOUNT_KIND_LABELS[kind]}
               </SelectItem>
             ))}
           </SelectContent>

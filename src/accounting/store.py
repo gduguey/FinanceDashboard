@@ -27,8 +27,10 @@ from accounting.models import (
     Goal,
     GoalContribution,
     ManualOverride,
+    ManualTransfer,
     OpeningBalance,
     OtherAsset,
+    PostingMerge,
     PostingSplit,
     RecurringAddition,
     SimulatorScenario,
@@ -225,10 +227,12 @@ class AccountingStore(BaseModel):
     category_patterns: dict[str, CategoryPattern] = Field(default_factory=dict)
     other_assets: list[OtherAsset] = Field(default_factory=list)
     opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)
+    manual_transfers: list[ManualTransfer] = Field(default_factory=list)
     budgets: list[Budget] = Field(default_factory=list)
     general_budgets: dict[str, GeneralBudget] = Field(default_factory=dict)
     simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
     posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
+    posting_merges: dict[str, PostingMerge] = Field(default_factory=dict)
     goals: dict[str, Goal] = Field(default_factory=dict)
     goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
     recurring_additions: list[RecurringAddition] = Field(default_factory=list)

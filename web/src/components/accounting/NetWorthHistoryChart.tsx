@@ -60,6 +60,7 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
   }
 
   const isEmpty = detailed ? !detailedData.length : !aggregate.data?.length
+  const chartData = detailed ? detailedData : (aggregate.data ?? [])
 
   return (
     <Card className="gap-3">
@@ -82,7 +83,7 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
         ) : (
           <div className="flex gap-4">
             <ResponsiveContainer width="100%" height={288} className="flex-1">
-              <LineChart data={detailed ? detailedData : aggregate.data} margin={{ left: 8, right: 8, top: 8 }}>
+              <LineChart data={chartData} margin={{ left: 8, right: 8, top: 8 }}>
                 <CartesianGrid vertical={false} stroke="var(--border)" />
                 <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
                 <YAxis
@@ -117,7 +118,23 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
                 ) : (
                   <Line type="monotone" dataKey="net_worth" name="Net worth" stroke="#0f172a" strokeWidth={2} dot={false} />
                 )}
-                <Brush dataKey="date" height={20} tickFormatter={formatDate} stroke="#94a3b8" travellerWidth={8} />
+                {/* Explicit start/end (rather than relying on Brush's own
+                    default) so the initial zoom always spans the entire
+                    fetched window — the last year, ending today — instead
+                    of whatever Brush would otherwise pick on its own; the
+                    `key` resets that selection when the underlying series
+                    actually changes (aggregate vs. detailed) rather than
+                    preserving a now-stale range. */}
+                <Brush
+                  key={chartData.length}
+                  dataKey="date"
+                  height={20}
+                  tickFormatter={formatDate}
+                  stroke="#94a3b8"
+                  travellerWidth={8}
+                  startIndex={0}
+                  endIndex={chartData.length - 1}
+                />
               </LineChart>
             </ResponsiveContainer>
             {detailed && (

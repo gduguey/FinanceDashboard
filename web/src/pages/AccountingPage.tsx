@@ -1,3 +1,4 @@
+import { useSearchParams } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
@@ -10,6 +11,7 @@ import { CategoriesTab } from '@/components/accounting/CategoriesTab'
 import { TagsTab } from '@/components/accounting/TagsTab'
 import { TransferRulesTab } from '@/components/accounting/TransferRulesTab'
 import { TransferSuggestionsPanel } from '@/components/accounting/TransferSuggestionsPanel'
+import { DuplicateSuggestionsPanel } from '@/components/accounting/DuplicateSuggestionsPanel'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
 
@@ -17,6 +19,8 @@ export function AccountingPage() {
   const { displayCurrency } = useDisplayCurrency()
   const { data: store, isLoading } = useAccountingStore()
   const { data: postings } = usePostings()
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') ?? 'dashboard'
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -34,13 +38,14 @@ export function AccountingPage() {
         {isLoading || !store ? (
           <Skeleton className="h-64 w-full" />
         ) : (
-          <Tabs defaultValue="dashboard">
+          <Tabs defaultValue={initialTab}>
             <TabsList>
               <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
               <TabsTrigger value="transactions">Transactions</TabsTrigger>
               <TabsTrigger value="categories">Categories</TabsTrigger>
               <TabsTrigger value="tags">Tags</TabsTrigger>
               <TabsTrigger value="transfer-rules">Transfer rules</TabsTrigger>
+              <TabsTrigger value="duplicates">Duplicates</TabsTrigger>
             </TabsList>
 
             <TabsContent value="dashboard">
@@ -76,6 +81,10 @@ export function AccountingPage() {
 
             <TabsContent value="transfer-rules">
               <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} />
+            </TabsContent>
+
+            <TabsContent value="duplicates">
+              <DuplicateSuggestionsPanel accounts={store.accounts} existingMerges={store.posting_merges} />
             </TabsContent>
           </Tabs>
         )}

@@ -87,6 +87,46 @@ def test_import_unsupported_institution_is_a_400(client) -> None:
     assert response.status_code == 400
 
 
+def test_canonical_import_registers_a_new_account_and_creates_a_category(client) -> None:
+    csv_text = (
+        "Date,Description,Amount,Category\n2026-06-30,Grocery Store,-42.50,Groceries\n2026-06-29,Paycheck,1500.00,\n"
+    )
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0001",
+            "account_name": "Generic Checking",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account_id"] == "generic-bank:checking:0001"
+    assert body["new_posting_count"] == 4
+    assert [category["name"] for category in body["new_categories"]] == ["Groceries"]
+
+    store = client.get("/api/accounting/store").json()
+    assert "generic-bank:checking:0001" in store["accounts"]
+    assert any(category["name"] == "Groceries" for category in store["categories"].values())
+
+
+def test_canonical_import_returns_a_422_for_an_unparseable_file(client) -> None:
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("bad.csv", "Foo,Bar\n1,2\n", "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0002",
+            "account_name": "Generic Checking",
+        },
+    )
+    assert response.status_code == 422
+    assert "Date" in response.json()["detail"]
+
+
 def test_postings_leaves_category_none_when_no_seed_rule_matches(client) -> None:
     client.post(
         "/api/accounting/import",
@@ -841,6 +881,78 @@ def test_transfer_suggestions_respects_a_wider_window_days(client) -> None:
     assert len(wider) == 1
 
 
+def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "generic:checking:0001",
+            "name": "Generic Checking",
+            "kind": "checking",
+            "institution": "Generic",
+            "currency": "USD",
+        },
+    )
+    client.post(
+        "/api/accounting/import/canonical",
+        files={
+            "file": (
+                "a.csv",
+                "Date,Description,Amount\n2026-06-30,WHOLE FOODS #123,-42.50\n",
+                "text/csv",
+            )
+        },
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": "generic:checking:0001",
+            "account_name": "Generic Checking",
+        },
+    )
+    client.post(
+        "/api/accounting/import/canonical",
+        files={
+            "file": (
+                "b.csv",
+                "Date,Description,Amount\n2026-06-30,Whole Foods Market,-42.50\n",
+                "text/csv",
+            )
+        },
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": "generic:checking:0001",
+            "account_name": "Generic Checking",
+            "separator": ",",
+        },
+    )
+    suggestions = client.get("/api/accounting/duplicate-suggestions").json()
+    assert len(suggestions) == 1
+    group = suggestions[0]
+    assert group["account_id"] == "generic:checking:0001"
+    assert len(group["postings"]) == 2
+
+    transaction_ids = [posting["transaction_id"] for posting in group["postings"]]
+    merge_response = client.put(
+        "/api/accounting/posting-merges",
+        json={
+            "m1": {
+                "merge_id": "m1",
+                "kept_transaction_id": transaction_ids[0],
+                "duplicate_transaction_ids": [transaction_ids[1]],
+                "description": "Whole Foods Market",
+            }
+        },
+    )
+    assert merge_response.status_code == 200
+    assert client.get("/api/accounting/duplicate-suggestions").json() == []
+
+    postings = client.get("/api/accounting/postings").json()
+    remaining_transaction_ids = {
+        posting["transaction_id"] for posting in postings if posting["account_id"] == "generic:checking:0001"
+    }
+    assert remaining_transaction_ids == {transaction_ids[0]}
+
+
 def test_postings_report_which_rule_resolved_them(client) -> None:
     client.post(
         "/api/accounting/import",
@@ -1289,6 +1401,155 @@ def test_delete_account_blocked_once_it_has_postings(client) -> None:
     response = client.delete("/api/accounting/accounts/chase:checking:9579")
     assert response.status_code == 400
     assert "chase:checking:9579" in client.get("/api/accounting/store").json()["accounts"]
+
+
+def test_close_account_marks_it_closed_with_no_transfers(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    response = client.post("/api/accounting/accounts/bnp:checking:0001/close", json={"transfers": []})
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["accounts"]["bnp:checking:0001"]["closed"] is True
+
+
+def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:savings:0002",
+            "name": "BNP Savings",
+            "kind": "savings",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    response = client.post(
+        "/api/accounting/accounts/bnp:checking:0001/close",
+        json={
+            "transfers": [
+                {
+                    "transfer_id": "close-bnp-checking-0001",
+                    "date": "2026-06-30T00:00:00",
+                    "from_account_id": "bnp:checking:0001",
+                    "to_account_id": "bnp:savings:0002",
+                    "from_amount": 100.0,
+                    "to_amount": 100.0,
+                    "description": "Closing out BNP checking",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+    store = client.get("/api/accounting/store").json()
+    assert store["accounts"]["bnp:checking:0001"]["closed"] is True
+    assert len(store["manual_transfers"]) == 1
+
+    net_worth = client.get("/api/accounting/net-worth", params={"as_of": "2026-07-01"}).json()
+    balances = {row["account_id"]: row["balance"] for row in net_worth["accounts"]}
+    assert balances["bnp:checking:0001"] == pytest.approx(-100.0)
+    assert balances["bnp:savings:0002"] == pytest.approx(100.0)
+
+
+def test_close_account_rejects_a_transfer_whose_from_account_doesnt_match(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:savings:0002",
+            "name": "BNP Savings",
+            "kind": "savings",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    response = client.post(
+        "/api/accounting/accounts/bnp:checking:0001/close",
+        json={
+            "transfers": [
+                {
+                    "transfer_id": "close-bnp-checking-0001",
+                    "date": "2026-06-30T00:00:00",
+                    "from_account_id": "bnp:savings:0002",
+                    "to_account_id": "bnp:checking:0001",
+                    "from_amount": 100.0,
+                    "to_amount": 100.0,
+                }
+            ]
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_close_account_rejects_a_transfer_to_an_unknown_account(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    response = client.post(
+        "/api/accounting/accounts/bnp:checking:0001/close",
+        json={
+            "transfers": [
+                {
+                    "transfer_id": "close-bnp-checking-0001",
+                    "date": "2026-06-30T00:00:00",
+                    "from_account_id": "bnp:checking:0001",
+                    "to_account_id": "does-not-exist",
+                    "from_amount": 100.0,
+                    "to_amount": 100.0,
+                }
+            ]
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_reopen_account_clears_the_closed_flag_but_keeps_recorded_transfers(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "bnp:checking:0001",
+            "name": "BNP Checking",
+            "kind": "checking",
+            "institution": "BNP",
+            "currency": "USD",
+        },
+    )
+    client.post("/api/accounting/accounts/bnp:checking:0001/close", json={"transfers": []})
+    response = client.post("/api/accounting/accounts/bnp:checking:0001/reopen")
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["accounts"]["bnp:checking:0001"]["closed"] is False
 
 
 def test_net_worth_history_returns_one_point_per_interval(client) -> None:

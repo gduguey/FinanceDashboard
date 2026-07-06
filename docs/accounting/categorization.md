@@ -26,19 +26,22 @@ event. A posting can carry any number of tags independent of its category.
 
 ### Rules — resolve a counterparty automatically, no confirmation step
 
-A `Rule` (`accounting.models.Rule`) is a trigger/action pair:
-`description_contains` (a case-insensitive substring match, optionally
-scoped to one `account_id`) triggers repointing a posting's placeholder
-counterparty to `counterparty_account_id`, and optionally setting a
-category. `ledger.categorization.apply_rules` evaluates every rule against
-every still-unresolved transaction each time the ledger is read — nothing
-is written back into the ledger cache; a deleted rule's effect disappears
-the very next time postings are read, with no separate "undo" step needed.
+A `TransferRule` (`accounting.models.TransferRule`) is a trigger/action
+pair: `description_contains` (a case-insensitive substring match,
+optionally scoped to one `account_id`) triggers repointing a posting's
+placeholder counterparty to `counterparty_account_id`, and optionally
+setting a category. `ledger.categorization.apply_rules` evaluates every
+*active* rule against every still-unresolved transaction each time the
+ledger is read — nothing is written back into the ledger cache; a deleted
+rule's effect disappears the very next time postings are read, with no
+separate "undo" step needed. `active: bool` (default `True`) lets a rule be
+switched off temporarily without deleting it — an inactive rule is skipped
+during matching entirely, as if it weren't in the list at all.
 
 The mechanic worth being explicit about: a transfer between two of your
 own accounts is imported as **two separate transactions**, one on each
 account's own statement — neither statement's import process knows the
-other transaction exists. A `Rule` only ever resolves the transaction whose
+other transaction exists. A `TransferRule` only ever resolves the transaction whose
 account and description it matches; it never automatically creates or
 triggers the mirror rule for the other side. Fully resolving a two-sided
 transfer into two real-to-real legs (and out of income/expense tracking)
@@ -55,6 +58,32 @@ read-only suggestion (with a proposed rule for both directions, editable
 before either is added) — never applied automatically, since the heuristic
 can be wrong (two unrelated transactions that happen to share an amount).
 
+### Duplicate detection and merging
+
+A transfer suggestion is two *different* transactions, one per account, that
+belong together. A duplicate is the opposite problem: the *same* real-world
+purchase imported twice into the *same* account, because it reached this
+ledger through two different sources (say, a CSV export and a statement PDF)
+that each gave it their own transaction id. `ledger.duplicates.find_duplicate_candidates`
+scans for groups of two or more transactions on one account with the same
+amount, within a configurable number of days of each other, whose
+descriptions are similar enough — `description_similarity` requires the
+shorter description's words to (near-)match words in the longer one *and*
+for those matched words to cover a large share of the longer description,
+so "JP Morgan Chase" only counts as similar to "JP Morgan Chase Transfer
+Out" because it captures both criteria, not just the first. Each group gets
+a `certainty` score (blending description similarity with how close the
+dates are) and groups are returned least-certain-first, since those need
+the closest human review.
+
+Nothing is merged automatically. Confirming a merge writes a
+`PostingMerge` (`accounting.models`) — which transaction to keep, which
+transaction(s) to drop, and an optional description override —
+`ledger.categorization.apply_posting_merges` then drops every dropped
+transaction's both legs from the resolved ledger and applies the
+description override to the kept one, fresh on every read, the same
+non-destructive way rules and overrides are applied.
+
 ### Category patterns and AI suggestions — propose a category, never apply it silently
 
 Two independent, optional tools each suggest a category for an
@@ -67,10 +96,12 @@ sticks lifecycle:
   subcategory guess.
 - **Category patterns** (`accounting.models.CategoryPattern`,
   `ledger.patterns.matching_pattern`) — the same kind of description
-  substring match a `Rule` uses, but authored by the user specifically to
-  *suggest* a category rather than resolve a counterparty. Deliberately a
-  separate model from `Rule`: a `Rule` acts with no confirmation step; a
-  category pattern never does.
+  substring match a `TransferRule` uses, but authored by the user
+  specifically to *suggest* a category rather than resolve a counterparty.
+  Deliberately a separate model from `TransferRule`: a `TransferRule` acts
+  with no confirmation step; a category pattern never does. Also carries
+  its own `active` flag, applied the same way — `ledger.patterns.matching_pattern`/
+  `match_patterns_bulk` both skip an inactive pattern entirely.
 
 Both write through the same staging mechanism
 (`ledger.pending.stage_pending_suggestion`): applying a suggestion sets the

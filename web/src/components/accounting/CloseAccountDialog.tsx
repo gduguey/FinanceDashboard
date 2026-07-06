@@ -1,0 +1,216 @@
+import { useState } from 'react'
+import { Plus, Trash2 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { useRatesToBase } from '@/hooks/useAccountingData'
+import { convertCurrency } from '@/lib/currency'
+import { formatCurrency } from '@/lib/format'
+import type { Account, ManualTransfer } from '@/types/accounting'
+
+const ZERO_TOLERANCE = 0.005
+
+interface SplitRow {
+  key: string
+  otherAccountId: string
+  ownAmount: string
+  otherAmount: string
+}
+
+// The remaining balance moves out of the closing account when it's
+// positive (money to relocate), or into it when it's negative (a debt
+// being paid off from elsewhere) — `ownAmount` on every row is always
+// denominated in the closing account's own currency either way.
+export function CloseAccountDialog({
+  account,
+  balance,
+  otherAccounts,
+  onClose,
+  onConfirm,
+  isSubmitting,
+}: {
+  account: Account
+  balance: number
+  otherAccounts: Account[]
+  onClose: () => void
+  onConfirm: (transfers: ManualTransfer[]) => void
+  isSubmitting: boolean
+}) {
+  const magnitude = Math.abs(balance)
+  const hasBalance = magnitude > ZERO_TOLERANCE
+  const movingOut = balance > 0
+  const ratesToBase = useRatesToBase([account.currency, ...otherAccounts.map((other) => other.currency)])
+  const [rows, setRows] = useState<SplitRow[]>(
+    hasBalance ? [{ key: 'row-0', otherAccountId: '', ownAmount: magnitude.toFixed(2), otherAmount: magnitude.toFixed(2) }] : [],
+  )
+  const [skipTransfer, setSkipTransfer] = useState(false)
+
+  const accountItems = Object.fromEntries(otherAccounts.map((other) => [other.account_id, `${other.name} (${other.currency})`]))
+
+  function otherAmountFor(otherAccountId: string, ownAmount: string): string {
+    const other = otherAccounts.find((candidate) => candidate.account_id === otherAccountId)
+    if (!other || other.currency === account.currency) return ownAmount
+    const parsed = Number.parseFloat(ownAmount)
+    if (Number.isNaN(parsed)) return ''
+    return convertCurrency(parsed, account.currency, other.currency, ratesToBase).toFixed(2)
+  }
+
+  function updateRow(key: string, patch: Partial<Pick<SplitRow, 'otherAccountId' | 'ownAmount'>>) {
+    setRows((prev) =>
+      prev.map((row) => {
+        if (row.key !== key) return row
+        const next = { ...row, ...patch }
+        if (patch.otherAccountId !== undefined || patch.ownAmount !== undefined) {
+          next.otherAmount = otherAmountFor(next.otherAccountId, next.ownAmount)
+        }
+        return next
+      }),
+    )
+  }
+
+  function addRow() {
+    setRows((prev) => [...prev, { key: `row-${prev.length}-${prev.length}x`, otherAccountId: '', ownAmount: '', otherAmount: '' }])
+  }
+
+  function removeRow(key: string) {
+    setRows((prev) => prev.filter((row) => row.key !== key))
+  }
+
+  const allocated = rows.reduce((sum, row) => sum + (Number.parseFloat(row.ownAmount) || 0), 0)
+  const remaining = magnitude - allocated
+  const isBalanced = Math.abs(remaining) < ZERO_TOLERANCE
+  const rowsValid = rows.every(
+    (row) => row.otherAccountId && Number.parseFloat(row.ownAmount) > 0 && Number.parseFloat(row.otherAmount) > 0,
+  )
+  const canConfirm = !hasBalance || skipTransfer || (rows.length > 0 && rowsValid && isBalanced)
+
+  function handleConfirm() {
+    if (!hasBalance || skipTransfer) {
+      onConfirm([])
+      return
+    }
+    const now = new Date().toISOString()
+    const transfers: ManualTransfer[] = rows.map((row, index) => {
+      const ownAmount = Number.parseFloat(row.ownAmount)
+      const otherAmount = Number.parseFloat(row.otherAmount)
+      return {
+        transfer_id: `close:${account.account_id}:${index}:${row.key}`,
+        date: now,
+        from_account_id: movingOut ? account.account_id : row.otherAccountId,
+        to_account_id: movingOut ? row.otherAccountId : account.account_id,
+        from_amount: movingOut ? ownAmount : otherAmount,
+        to_amount: movingOut ? otherAmount : ownAmount,
+        description: `Closing ${account.name}`,
+      }
+    })
+    onConfirm(transfers)
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Close {account.name}</DialogTitle>
+        </DialogHeader>
+
+        {!hasBalance ? (
+          <p className="text-sm text-muted-foreground">
+            This account has a {formatCurrency(0, account.currency)} balance — closing it keeps its full transaction
+            history, it just stops appearing as a destination for new imports or transfers.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              This account still has a balance of {formatCurrency(balance, account.currency)}.{' '}
+              {movingOut
+                ? "Record where it's moving to before closing:"
+                : "Record where the payoff is coming from before closing:"}
+            </p>
+            <div className="space-y-2">
+              {rows.map((row) => {
+                const other = otherAccounts.find((candidate) => candidate.account_id === row.otherAccountId)
+                const crossCurrency = other && other.currency !== account.currency
+                return (
+                  <div key={row.key} className="flex items-end gap-2">
+                    <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground">
+                      {movingOut ? 'To account' : 'From account'}
+                      <Select
+                        value={row.otherAccountId}
+                        onValueChange={(value) => value && updateRow(row.key, { otherAccountId: value })}
+                      >
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue placeholder="Choose an account…" items={accountItems} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {otherAccounts.map((candidate) => (
+                            <SelectItem key={candidate.account_id} value={candidate.account_id}>
+                              {candidate.name} ({candidate.currency})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <label className="flex w-32 flex-col gap-1 text-xs text-muted-foreground">
+                      Amount ({account.currency})
+                      <Input
+                        type="number"
+                        inputMode="decimal"
+                        className="text-right"
+                        value={row.ownAmount}
+                        onChange={(event) => updateRow(row.key, { ownAmount: event.target.value })}
+                      />
+                    </label>
+                    {crossCurrency && (
+                      <label className="flex w-32 flex-col gap-1 text-xs text-muted-foreground">
+                        Received ({other.currency})
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          className="text-right"
+                          value={row.otherAmount}
+                          onChange={(event) =>
+                            setRows((prev) =>
+                              prev.map((candidate) =>
+                                candidate.key === row.key ? { ...candidate, otherAmount: event.target.value } : candidate,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                    )}
+                    <Button variant="ghost" size="icon" onClick={() => removeRow(row.key)} title="Remove this split">
+                      <Trash2 className="size-3.5 text-muted-foreground" />
+                    </Button>
+                  </div>
+                )
+              })}
+            </div>
+            <Button variant="outline" size="sm" onClick={addRow}>
+              <Plus className="size-3.5" /> Add another account
+            </Button>
+            <p className={`text-xs ${isBalanced ? 'text-muted-foreground' : 'text-destructive'}`}>
+              {isBalanced
+                ? 'Fully allocated.'
+                : `Remaining to allocate: ${formatCurrency(remaining, account.currency)}`}
+            </p>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Switch size="sm" checked={skipTransfer} onCheckedChange={setSkipTransfer} />
+              Close without recording a transfer
+            </label>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
+            Cancel
+          </Button>
+          <Button disabled={!canConfirm || isSubmitting} onClick={handleConfirm}>
+            Close account
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
