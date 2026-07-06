@@ -1,7 +1,9 @@
+import io
 from datetime import date, timedelta
 
 import polars as pl
 import pytest
+import xlsxwriter
 from fastapi.testclient import TestClient
 
 from accounting import api as accounting_api
@@ -110,6 +112,115 @@ def test_canonical_import_registers_a_new_account_and_creates_a_category(client)
     store = client.get("/api/accounting/store").json()
     assert "generic-bank:checking:0001" in store["accounts"]
     assert any(category["name"] == "Groceries" for category in store["categories"].values())
+
+
+def test_canonical_import_handles_a_utf8_bom_prefixed_file(client) -> None:
+    csv_text = "﻿Date,Description,Amount\n2026-06-30,Grocery Store,-42.50\n"
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text.encode("utf-8"), "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0002",
+            "account_name": "Generic Checking",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["new_posting_count"] == 2
+
+
+def test_canonical_import_accepts_an_xlsx_file(client) -> None:
+    buffer = io.BytesIO()
+    workbook = xlsxwriter.Workbook(buffer, {"in_memory": True})
+    worksheet = workbook.add_worksheet("Transactions")
+    for row_index, row in enumerate([["Date", "Description", "Amount"], ["2026-06-30", "Grocery Store", "-42.50"]]):
+        for col_index, value in enumerate(row):
+            worksheet.write(row_index, col_index, value)
+    workbook.close()
+
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={
+            "file": (
+                "generic.xlsx",
+                buffer.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0003",
+            "account_name": "Generic Checking",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["new_posting_count"] == 2
+
+
+def test_canonical_import_date_order_dmy_reads_day_first(client) -> None:
+    csv_text = "Date,Description,Amount\n01/12/2026,Grocery Store,-42.50\n"
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0004",
+            "account_name": "Generic Checking",
+            "date_order": "DMY",
+        },
+    )
+    assert response.status_code == 200
+    postings = client.get("/api/accounting/postings").json()
+    real_leg = next(p for p in postings if p["account_id"] == "generic-bank:checking:0004")
+    assert real_leg["posted_at"].startswith("2026-12-01")
+
+
+def test_canonical_import_preview_does_not_persist_anything(client) -> None:
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Grocery Store,-42.50,Groceries\n"
+    response = client.post(
+        "/api/accounting/import/canonical/preview",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={"account_id": "generic-bank:checking:0005"},
+    )
+    assert response.status_code == 200
+    assert [category["name"] for category in response.json()["new_categories"]] == ["Groceries"]
+
+    store = client.get("/api/accounting/store").json()
+    assert "generic-bank:checking:0005" not in store["accounts"]
+    # A subcategory named "Groceries" is seeded by default on every fresh
+    # install (see `store._EXPENSE_TAXONOMY`) — what must NOT exist is a
+    # *top-level* one, which is what this preview would have created.
+    assert not any(
+        category["name"] == "Groceries" and category["parent_category_id"] is None
+        for category in store["categories"].values()
+    )
+
+
+def test_canonical_import_applies_category_overrides_to_merge_two_categories(client) -> None:
+    csv_text = (
+        "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Groceries\n2026-06-29,Restaurant,-20.00,Dining\n"
+    )
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0006",
+            "account_name": "Generic Checking",
+            "category_overrides": '{"categories": {"Groceries": "Food", "Dining": "Food"}}',
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert [category["name"] for category in body["new_categories"]] == ["Food"]
+
+    store = client.get("/api/accounting/store").json()
+    food_categories = [category for category in store["categories"].values() if category["name"] == "Food"]
+    assert len(food_categories) == 1
 
 
 def test_canonical_import_returns_a_422_for_an_unparseable_file(client) -> None:
@@ -1035,6 +1146,109 @@ def test_put_categories_auto_creates_other_for_a_categorys_first_subcategory(cli
     )
     assert response.status_code == 200
     assert "expense:custom:other" in response.json()
+
+
+def test_category_rename_without_a_collision_just_renames(client) -> None:
+    client.put(
+        "/api/accounting/categories",
+        json={
+            "expense:custom": {
+                "category_id": "expense:custom",
+                "name": "Custom",
+                "classification": "expense",
+                "color": "#000000",
+            }
+        },
+    )
+    response = client.post("/api/accounting/categories/expense:custom/rename", json={"name": "Renamed"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["merged"] is False
+    assert body["categories"]["expense:custom"]["name"] == "Renamed"
+
+
+def test_category_rename_404s_for_an_unknown_category(client) -> None:
+    response = client.post("/api/accounting/categories/expense:nope/rename", json={"name": "Anything"})
+    assert response.status_code == 404
+
+
+def test_category_rename_merges_into_an_existing_category_and_repoints_postings(client) -> None:
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0001",
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/accounting/store").json()
+    nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
+    client.put(
+        "/api/accounting/categories",
+        json={
+            **store["categories"],
+            "expense:food": {
+                "category_id": "expense:food",
+                "name": "Food",
+                "classification": "expense",
+                "color": "#111111",
+            },
+        },
+    )
+
+    response = client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["merged"] is True
+    assert nourriture["category_id"] not in body["categories"]
+    assert "expense:food" in body["categories"]
+
+    postings = client.get("/api/accounting/postings").json()
+    grocery_leg = next(p for p in postings if p["account_id"] == "generic-bank:checking:0001")
+    assert grocery_leg["category_id"] == "expense:food"
+
+
+def test_category_rename_merge_repoints_a_manual_override(client) -> None:
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "generic-bank:checking:0001",
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/accounting/store").json()
+    nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
+    postings = client.get("/api/accounting/postings").json()
+    other_posting = next(p for p in postings if p["account_id"] != "generic-bank:checking:0001")
+    client.put(
+        f"/api/accounting/postings/{other_posting['posting_id']}/override",
+        json={"category_id": nourriture["category_id"]},
+    )
+    client.put(
+        "/api/accounting/categories",
+        json={
+            **store["categories"],
+            "expense:food": {
+                "category_id": "expense:food",
+                "name": "Food",
+                "classification": "expense",
+                "color": "#111111",
+            },
+        },
+    )
+
+    client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
+
+    postings = client.get("/api/accounting/postings").json()
+    overridden = next(p for p in postings if p["posting_id"] == other_posting["posting_id"])
+    assert overridden["category_id"] == "expense:food"
 
 
 def test_put_categories_removes_other_once_it_is_left_alone(client) -> None:

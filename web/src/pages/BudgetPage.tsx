@@ -11,6 +11,7 @@ import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButt
 import { PageHeader } from '@/components/layout/PageHeader'
 import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
 import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
+import { withAlpha } from '@/lib/colors'
 import { formatCurrency } from '@/lib/format'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { usePersistedState } from '@/hooks/usePersistedState'
@@ -49,6 +50,7 @@ function monthBounds(month: string): { start: string; end: string } {
 function BudgetRow({
   category,
   topCategoryId,
+  topCategoryColor,
   subcategoryId,
   month,
   initialAmount,
@@ -62,6 +64,12 @@ function BudgetRow({
   // under — same as `category.category_id` for a top-level row itself,
   // or the parent's id when `category` is one of its subcategories.
   topCategoryId: string
+  // The top-level category's own color — same as `category.color` for a
+  // top-level row, but the *parent's* color (not this subcategory's own
+  // distinct one) for a subcategory row, since the row background is
+  // meant to read as "part of this category" at a glance, while the
+  // little dot still shows the subcategory's own color.
+  topCategoryColor: string
   subcategoryId: string | null
   month: string
   initialAmount: string
@@ -99,33 +107,60 @@ function BudgetRow({
 
   const budgeted = Number.parseFloat(amount)
   const delta = Number.isNaN(budgeted) ? null : budgeted - actual
+  const isSubcategory = subcategoryId !== null
+  // Subcategory numbers pick up their parent category's color at reduced
+  // opacity — a lighter shade of the same hue rather than an unrelated
+  // muted gray, so the family relationship reads at a glance down the column.
+  const numberStyle: React.CSSProperties = { color: category.color, opacity: isSubcategory ? 0.7 : 1 }
+  const overspent = delta !== null && delta < 0
+  const rowStyle: React.CSSProperties = { backgroundColor: withAlpha(topCategoryColor, 0.12) }
 
   return (
-    <TableRow>
-      <TableCell className={`flex items-center gap-1.5 ${subcategoryId ? 'pl-9 font-normal text-muted-foreground' : 'font-medium'}`}>
+    <TableRow
+      onClick={expandable ? expandable.onToggle : undefined}
+      className={expandable ? 'cursor-pointer hover:brightness-95' : undefined}
+      style={rowStyle}
+    >
+      <TableCell
+        className={`flex items-center gap-1.5 ${isSubcategory ? 'py-1.5 pr-6 pl-9 text-xs font-normal text-muted-foreground' : 'font-medium'}`}
+      >
         {expandable && (
-          <button type="button" onClick={expandable.onToggle} className="text-muted-foreground hover:text-foreground">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              expandable.onToggle()
+            }}
+            className="text-muted-foreground hover:text-foreground"
+          >
             <ChevronRight className={`size-3.5 transition-transform ${expandable.expanded ? 'rotate-90' : ''}`} />
           </button>
         )}
         <span className="inline-block size-2 shrink-0 rounded-full" style={{ background: category.color }} />
         {category.name}
       </TableCell>
-      <TableCell className="text-right">
+      <TableCell
+        className={`text-right ${isSubcategory ? 'py-1.5 pr-6' : ''}`}
+        onClick={(event) => event.stopPropagation()}
+      >
         <Input
           type="number"
           inputMode="decimal"
-          className="ml-auto w-28 text-right"
+          className={`ml-auto text-right ${isSubcategory ? 'h-7 w-24 text-xs' : 'w-28'}`}
           value={amount}
           placeholder="Not budgeted"
           onChange={(event) => change(event.target.value)}
         />
       </TableCell>
-      <TableCell className="text-right text-muted-foreground">
+      <TableCell
+        className={`text-right ${isSubcategory ? 'py-1.5 pr-6 text-xs' : ''}`}
+        style={numberStyle}
+        onClick={(event) => event.stopPropagation()}
+      >
         {suggestion ? (
           <button
             type="button"
-            className="hover:text-foreground hover:underline"
+            className="hover:underline"
             title="Median actual spend over the last 3 months — click to use"
             onClick={() => change(String(Math.round(suggestion.suggested_amount)))}
           >
@@ -135,8 +170,16 @@ function BudgetRow({
           '—'
         )}
       </TableCell>
-      <TableCell className="text-right tabular-nums">{formatCurrency(actual, displayCurrency)}</TableCell>
-      <TableCell className={`text-right tabular-nums ${delta !== null && delta < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
+      <TableCell
+        className={`text-right tabular-nums ${isSubcategory ? 'py-1.5 pr-6 text-xs' : ''}`}
+        style={numberStyle}
+      >
+        {formatCurrency(actual, displayCurrency)}
+      </TableCell>
+      <TableCell
+        className={`text-right tabular-nums ${isSubcategory ? 'py-1.5 pr-6 text-xs' : ''} ${overspent ? 'text-destructive' : ''}`}
+        style={overspent ? undefined : numberStyle}
+      >
         {delta === null ? '—' : formatCurrency(delta, displayCurrency)}
       </TableCell>
     </TableRow>
@@ -251,6 +294,7 @@ export function BudgetPage() {
     subcategory_id: null,
     subcategory_name: null,
     color: row.color,
+    category_color: row.color,
     amount: row.budgeted,
   }))
   const totalIncome = (actualCategoryTotals ?? [])
@@ -264,6 +308,7 @@ export function BudgetPage() {
       subcategory_id: null,
       subcategory_name: null,
       color: '#0f172a',
+      category_color: '#0f172a',
       amount: totalIncome,
     })
   }
@@ -346,6 +391,7 @@ export function BudgetPage() {
                         <BudgetRow
                           category={category}
                           topCategoryId={category.category_id}
+                          topCategoryColor={category.color}
                           subcategoryId={null}
                           month={month}
                           initialAmount={budgetedAmountFor(category.category_id, null)}
@@ -360,6 +406,7 @@ export function BudgetPage() {
                               key={`${mode}:${subcategory.category_id}`}
                               category={subcategory}
                               topCategoryId={category.category_id}
+                              topCategoryColor={category.color}
                               subcategoryId={subcategory.category_id}
                               month={month}
                               initialAmount={budgetedAmountFor(category.category_id, subcategory.category_id)}

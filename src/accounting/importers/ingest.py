@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.importers.canonical.csv import standardize_canonical_csv
+from accounting.importers.canonical.csv import standardize_canonical_csv, standardize_canonical_excel, SkippedRowsInfo
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
@@ -29,7 +29,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from accounting.config import AccountingConfig
+    from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
     from accounting.models import Account, Category
+    from accounting.store import AccountingStore
 
 _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
@@ -70,6 +72,7 @@ class IngestResult:
     account_id: str
     new_posting_count: int
     total_posting_count: int
+    skipped_rows: SkippedRowsInfo | None = None  # Rows that couldn't be parsed (bank-specific or canonical fallback)
 
 
 def load_ledger(config: AccountingConfig) -> pl.DataFrame:
@@ -114,6 +117,32 @@ def _write_ledger(ledger: pl.DataFrame, config: AccountingConfig) -> None:
         pl.col("meta").map_elements(json.dumps, return_dtype=pl.Utf8), tag_ids=pl.col("tag_ids").list.join("|")
     )
     write_csv_atomic(serialized, config.ledger_csv_path)
+
+
+def remap_ledger_category_ids(id_remap: dict[str, str], config: AccountingConfig) -> None:
+    """Repoint every posting's `category_id`/`subcategory_id` after a category merge, in place.
+
+    A canonical import can bake a category straight onto a posting at
+    import time (from that file's own Category/Subcategory columns) rather
+    than only through a rule or a manual override — so merging two
+    categories (see `store.plan_category_rename`) needs to fix the ledger
+    cache itself, not just the store's own rules/patterns/budgets (see
+    `store.remap_category_ids`). `.replace(...)` leaves any id not in
+    `id_remap` (including `null`) unchanged.
+
+    Parameters
+    ----------
+    id_remap
+        `old_id -> new_id`, as returned by `store.plan_category_rename` —
+        a no-op when empty.
+    config
+        Application configuration; `config.ledger_csv_path` is read and rewritten.
+    """
+    if not id_remap:
+        return
+    ledger = load_ledger(config)
+    ledger = ledger.with_columns(pl.col("category_id").replace(id_remap), pl.col("subcategory_id").replace(id_remap))
+    _write_ledger(ledger, config)
 
 
 def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
@@ -174,6 +203,11 @@ def ingest_csv(
     derive everything else" rule, applied here the same way it already is
     for IBKR statements.
 
+    If the bank-specific standardizer fails (validation error, parsing error),
+    automatically falls back to the canonical CSV importer, which is more
+    forgiving about column names and formats. This handles cases where the
+    user's file doesn't match the expected bank export format exactly.
+
     Parameters
     ----------
     csv_text
@@ -203,14 +237,41 @@ def ingest_csv(
         raise UnsupportedImportError(message)
 
     _raw_statement_path(institution, account_id, config).write_text(csv_text, encoding="utf-8")
-    new_postings = standardizer(csv_text, account_id)
+
+    skip_info: SkippedRowsInfo | None = None
+    # Try the bank-specific standardizer first; if it fails, fall back to canonical CSV
+    try:
+        new_postings = standardizer(csv_text, account_id)
+    except (ValueError, RuntimeError) as error:
+        # Bank-specific standardizer failed (likely validation, parsing, or format mismatch).
+        # Fall back to canonical CSV importer, which is more forgiving about column names/formats.
+        try:
+            store = load_store(config)
+            canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
+            new_postings = canonical_result.postings
+            skip_info = canonical_result.skipped_rows  # Capture skip info from fallback
+            # Merge any newly-created categories into the store
+            if canonical_result.new_categories:
+                store = store.model_copy(update={"categories": {**store.categories, **canonical_result.new_categories}})
+                save_store(store, config)
+        except Exception as canonical_error:
+            # Both standardizers failed; raise the original bank error with fallback note
+            message = (
+                f"Could not parse file with {institution} {account_kind} format: {error}\n\n"
+                f"Also tried canonical CSV importer but it failed: {canonical_error}\n\n"
+                f"Please check your file format and try again."
+            )
+            raise ValueError(message) from error
 
     existing = load_ledger(config)
     merged = _merge_ledger(existing, new_postings)
     _write_ledger(merged, config)
 
     return IngestResult(
-        account_id=account_id, new_posting_count=len(merged) - len(existing), total_posting_count=len(merged)
+        account_id=account_id,
+        new_posting_count=len(merged) - len(existing),
+        total_posting_count=len(merged),
+        skipped_rows=skip_info,
     )
 
 
@@ -222,10 +283,16 @@ class CanonicalIngestResult:
     new_posting_count: int
     total_posting_count: int
     new_categories: dict[str, Category]
+    skipped_rows: SkippedRowsInfo | None = None  # Rows that couldn't be parsed
 
 
 def ingest_canonical_csv(
-    csv_text: str, account_id: str, config: AccountingConfig, separator: str | None = None
+    csv_text: str,
+    account_id: str,
+    config: AccountingConfig,
+    separator: str | None = None,
+    date_order: DateOrder = "MDY",
+    category_overrides: CategoryOverrides | None = None,
 ) -> CanonicalIngestResult:
     """Archive one uploaded CSV verbatim, standardize it with the canonical fallback parser, and merge the result.
 
@@ -246,6 +313,11 @@ def ingest_canonical_csv(
         Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
     separator
         The column separator to use, overriding auto-detection.
+    date_order
+        Whether an ambiguous, all-numeric date reads month-first or day-first.
+    category_overrides
+        User-provided renames (and, implicitly, merges) for the categories
+        and subcategories this file would otherwise auto-create.
 
     Returns
     -------
@@ -256,8 +328,56 @@ def ingest_canonical_csv(
     account = store.accounts[account_id]
 
     _raw_statement_path(account.institution, account_id, config).write_text(csv_text, encoding="utf-8")
-    outcome = standardize_canonical_csv(csv_text, account_id, account.currency, store.categories, separator)
+    outcome = standardize_canonical_csv(
+        csv_text, account_id, account.currency, store.categories, separator, date_order, category_overrides
+    )
+    return _apply_canonical_outcome(outcome, account_id, store, config)
 
+
+def ingest_canonical_excel(
+    file_bytes: bytes,
+    account_id: str,
+    config: AccountingConfig,
+    date_order: DateOrder = "MDY",
+    category_overrides: CategoryOverrides | None = None,
+) -> CanonicalIngestResult:
+    """Archive one uploaded Excel workbook verbatim, standardize it, and merge the result.
+
+    Mirrors `ingest_canonical_csv` — see `importers.canonical.csv.standardize_canonical_excel`
+    for how it picks which sheet holds the transaction data.
+
+    Parameters
+    ----------
+    file_bytes
+        The raw `.xlsx` file contents, exactly as uploaded.
+    account_id
+        The account these rows belong to — must already be registered.
+    config
+        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
+    date_order
+        Whether an ambiguous, all-numeric date reads month-first or day-first.
+    category_overrides
+        User-provided renames (and, implicitly, merges) for the categories
+        and subcategories this file would otherwise auto-create.
+
+    Returns
+    -------
+    CanonicalIngestResult
+        How many postings were newly added, and any categories created.
+    """
+    store = load_store(config)
+    account = store.accounts[account_id]
+
+    _raw_statement_path(account.institution, account_id, config, suffix="xlsx").write_bytes(file_bytes)
+    outcome = standardize_canonical_excel(
+        file_bytes, account_id, account.currency, store.categories, date_order, category_overrides
+    )
+    return _apply_canonical_outcome(outcome, account_id, store, config)
+
+
+def _apply_canonical_outcome(
+    outcome: CanonicalImportResult, account_id: str, store: AccountingStore, config: AccountingConfig
+) -> CanonicalIngestResult:
     if outcome.new_categories:
         merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
         save_store(store.model_copy(update={"categories": merged_categories}), config)
@@ -271,6 +391,7 @@ def ingest_canonical_csv(
         new_posting_count=len(merged) - len(existing),
         total_posting_count=len(merged),
         new_categories=outcome.new_categories,
+        skipped_rows=outcome.skipped_rows,
     )
 
 

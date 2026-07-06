@@ -25,14 +25,22 @@ from accounting.dashboard import budgets, income_statement, interest, simulator
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
-from accounting.importers.canonical.csv import CanonicalCsvError
+from accounting.importers.canonical.csv import (
+    CanonicalCsvError,
+    CategoryOverrides,
+    DateOrder,
+    standardize_canonical_csv,
+    standardize_canonical_excel,
+)
 from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
     UnsupportedImportError,
     ingest_canonical_csv,
+    ingest_canonical_excel,
     ingest_csv,
     load_ledger,
     rebuild_from_raw_statements,
+    remap_ledger_category_ids,
     supported_import_kinds,
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
@@ -94,6 +102,8 @@ from accounting.store import (
     load_overrides,
     load_store,
     normalize_categories,
+    plan_category_rename,
+    remap_category_ids,
     save_overrides,
     save_store,
 )
@@ -360,6 +370,64 @@ def put_categories(categories: dict[str, Category]) -> dict[str, Any]:
     store = store.model_copy(update={"categories": normalize_categories(categories)})
     save_store(store, state.config)
     return {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()}
+
+
+class CategoryRenameRequest(BaseModel):
+    name: str
+
+
+@router.post("/categories/{category_id}/rename")
+def post_category_rename(category_id: str, request: CategoryRenameRequest) -> dict[str, Any]:
+    """Rename a category or subcategory, merging it into an existing same-named one if there is one.
+
+    A merge repoints every reference to the merged-away id — postings
+    already in the ledger cache, manual per-posting overrides, transfer
+    rules, category patterns, budgets, and posting splits — onto the
+    surviving id, then removes the merged-away category entirely. See
+    `store.plan_category_rename` for the exact matching rules: a top-level
+    category only merges into another top-level category of the same
+    classification; a subcategory only merges into a sibling under the
+    same parent.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"categories": {...}, "merged": bool}` — `categories` is the full
+        tree after the change; `merged` is true if this rename actually
+        folded into an existing category rather than just changing a name.
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    store = load_store(state.config)
+    if category_id not in store.categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    categories, id_remap = plan_category_rename(store.categories, category_id, request.name)
+    store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
+    save_store(store, state.config)
+
+    remap_ledger_category_ids(id_remap, state.config)
+    if id_remap:
+
+        def remap(category_id: str | None) -> str | None:
+            return id_remap.get(category_id, category_id) if category_id is not None else None
+
+        overrides = load_overrides(state.config)
+        overrides = {
+            posting_id: override.model_copy(
+                update={"category_id": remap(override.category_id), "subcategory_id": remap(override.subcategory_id)}
+            )
+            for posting_id, override in overrides.items()
+        }
+        save_overrides(overrides, state.config)
+
+    return {
+        "categories": {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()},
+        "merged": bool(id_remap),
+    }
 
 
 @router.put("/tags")
@@ -790,16 +858,111 @@ async def post_import(
         store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
         save_store(store, state.config)
 
-    csv_text = (await file.read()).decode("utf-8")
+    # Try multiple encodings to handle files from different sources
+    # (e.g., Excel exports on different systems use different encodings).
+    # "utf-8-sig" strips a leading byte-order mark when the file has one
+    # (common in CSVs exported by Excel).
+    file_bytes = await file.read()
+    csv_text: str | None = None
+
+    # Try encodings in order: most common first (Excel UTF-8-sig or UTF-8),
+    # then fallback to Windows/Mac formats (cp1252, iso-8859-1)
+    for encoding in ["utf-8-sig", "utf-8", "cp1252", "iso-8859-1"]:
+        try:
+            csv_text = file_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+
+    if csv_text is None:
+        message = (
+            f"Could not decode file '{file.filename}' with any supported encoding "
+            "(utf-8-sig, utf-8, cp1252, iso-8859-1). "
+            "Please ensure the file is a valid CSV or Excel export."
+        )
+        raise HTTPException(status_code=400, detail=message)
+
     try:
         result = ingest_csv(csv_text, institution, account_kind, account_id, state.config)
     except UnsupportedImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {
+
+    response_data: dict[str, Any] = {
         "account_id": result.account_id,
         "new_posting_count": result.new_posting_count,
         "total_posting_count": result.total_posting_count,
     }
+
+    # Include skip info if any rows were skipped
+    if result.skipped_rows:
+        response_data["skipped_rows"] = {
+            "total_rows": result.skipped_rows.total_rows,
+            "skipped_count": result.skipped_rows.skipped_count,
+            "bad_dates": result.skipped_rows.bad_dates,
+            "bad_amounts": result.skipped_rows.bad_amounts,
+            "skipped_row_numbers": result.skipped_rows.skipped_row_numbers,
+        }
+
+    return response_data
+
+
+class CanonicalCategoryOverridesRequest(BaseModel):
+    """The `category_overrides` form field's JSON shape — see `importers.canonical.csv.CategoryOverrides`."""
+
+    categories: dict[str, str] = Field(default_factory=dict)
+    subcategories: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+def _read_category_overrides(raw: str | None) -> CategoryOverrides | None:
+    if not raw:
+        return None
+    parsed = CanonicalCategoryOverridesRequest.model_validate_json(raw)
+    return CategoryOverrides(categories=parsed.categories, subcategories=parsed.subcategories)
+
+
+@router.post("/import/canonical/preview")
+async def post_canonical_import_preview(
+    file: UploadFile,
+    account_id: Annotated[str, Form()],
+    currency: Annotated[str, Form()] = "USD",
+    separator: Annotated[str | None, Form()] = None,
+    date_order: Annotated[str, Form()] = "MDY",
+) -> dict[str, Any]:
+    """Parse a canonical CSV/Excel file without persisting anything, to preview which categories it would create.
+
+    Meant to run before `post_canonical_import`: the caller shows the
+    returned categories/subcategories for the user to rename or merge, then
+    submits the real import with `category_overrides` built from whatever
+    they changed. Never touches the store or the ledger — every account
+    field except `account_id`/`currency` is irrelevant here.
+
+    Returns
+    -------
+    dict[str, Any]
+        `new_categories` — every category/subcategory this file would
+        create, for the caller to render as an editable list.
+
+    Raises
+    ------
+    HTTPException
+        422 if the file couldn't be parsed.
+    """
+    store = load_store(state.config)
+    date_order_literal = cast("DateOrder", date_order)
+    is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
+    try:
+        if is_excel:
+            outcome = standardize_canonical_excel(
+                await file.read(), account_id, cast("CurrencyCode", currency), store.categories, date_order_literal
+            )
+        else:
+            csv_text = (await file.read()).decode("utf-8-sig")
+            outcome = standardize_canonical_csv(
+                csv_text, account_id, cast("CurrencyCode", currency), store.categories, separator, date_order_literal
+            )
+    except CanonicalCsvError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"new_categories": [category.model_dump(mode="json") for category in outcome.new_categories.values()]}
 
 
 @router.post("/import/canonical")
@@ -812,14 +975,21 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     currency: Annotated[str, Form()] = "USD",
     parent_account_id: Annotated[str | None, Form()] = None,
     separator: Annotated[str | None, Form()] = None,
+    date_order: Annotated[str, Form()] = "MDY",
+    category_overrides: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
-    """Register the account if it's new, then import the CSV through the canonical fallback parser.
+    """Register the account if it's new, then import the file through the canonical fallback parser.
 
     Used when no dedicated standardizer exists for `institution`/`account_kind`
     (see `supported_import_kinds`) — the canonical parser guesses column
     names and date/amount formats instead of expecting an exact shape (see
-    `importers.canonical.csv`). Any category or subcategory named in a
-    `Category`/`Subcategory` column is created automatically.
+    `importers.canonical.csv`). Both `.csv` and `.xlsx` files are accepted
+    (dispatched on `file.filename`'s extension); an Excel workbook has every
+    sheet checked for the expected columns, not just the first. Any category
+    or subcategory named in a `Category`/`Subcategory` column is created
+    automatically, unless `category_overrides` (a JSON-encoded
+    `CanonicalCategoryOverridesRequest`) renames or merges it — typically
+    collected via `post_canonical_import_preview` first.
 
     Returns
     -------
@@ -831,9 +1001,8 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     ------
     HTTPException
         422 if the file couldn't be parsed — the message explains what
-        columns/formats are supported, and (when the column separator
-        couldn't be guessed) asks the user to pick one and retry with
-        `separator` set.
+        columns are supported, and (when the column separator couldn't be
+        guessed) asks the user to pick one and retry with `separator` set.
     """
     store = load_store(state.config)
     if account_id not in store.accounts:
@@ -849,17 +1018,41 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
         store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
         save_store(store, state.config)
 
-    csv_text = (await file.read()).decode("utf-8")
+    date_order_literal = cast("DateOrder", date_order)
+    overrides = _read_category_overrides(category_overrides)
+    is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     try:
-        result = ingest_canonical_csv(csv_text, account_id, state.config, separator)
+        if is_excel:
+            result = ingest_canonical_excel(await file.read(), account_id, state.config, date_order_literal, overrides)
+        else:
+            # "utf-8-sig" strips a leading byte-order mark when the file has
+            # one (common in CSVs exported by Excel) and is otherwise
+            # identical to plain "utf-8" — without this, a BOM'd file's own
+            # first header cell silently reads as "﻿Date" instead of
+            # "Date", which then never matches any known column alias.
+            csv_text = (await file.read()).decode("utf-8-sig")
+            result = ingest_canonical_csv(csv_text, account_id, state.config, separator, date_order_literal, overrides)
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {
+
+    response_data: dict[str, Any] = {
         "account_id": result.account_id,
         "new_posting_count": result.new_posting_count,
         "total_posting_count": result.total_posting_count,
         "new_categories": [category.model_dump(mode="json") for category in result.new_categories.values()],
     }
+
+    # Include skip info if any rows were skipped
+    if result.skipped_rows:
+        response_data["skipped_rows"] = {
+            "total_rows": result.skipped_rows.total_rows,
+            "skipped_count": result.skipped_rows.skipped_count,
+            "bad_dates": result.skipped_rows.bad_dates,
+            "bad_amounts": result.skipped_rows.bad_amounts,
+            "skipped_row_numbers": result.skipped_rows.skipped_row_numbers,
+        }
+
+    return response_data
 
 
 @router.post("/import/paystub")

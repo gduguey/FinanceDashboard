@@ -74,7 +74,7 @@ GROCERIES = Category(
     name="Groceries",
     classification="expense",
     parent_category_id="expense:food",
-    color="#000",
+    color="#abc",
 )
 SALARY = Category(category_id="income:salary", name="Salary", classification="income", color="#111")
 
@@ -110,6 +110,35 @@ def test_category_totals_sums_a_categorized_expense_leg() -> None:
     assert row["category_name"] == "Food & Drink"
     assert row["subcategory_name"] == "Groceries"
     assert row["amount"] == pytest.approx(50.0)
+
+
+def test_category_totals_color_is_the_subcategorys_own_when_one_is_set() -> None:
+    postings = _postings(
+        _posting(
+            "p1",
+            "t1",
+            "chase:checking:9579",
+            -50.0,
+            category_id="expense:food",
+            subcategory_id="expense:food:groceries",
+        ),
+        _posting("p2", "t1", "uncategorized:expense", 50.0),
+    )
+    totals = category_totals(postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30))
+    row = totals.row(0, named=True)
+    assert row["color"] == GROCERIES.color
+    assert row["category_color"] == FOOD.color
+
+
+def test_category_totals_color_falls_back_to_the_top_level_category_without_a_subcategory() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -50.0, category_id="expense:food"),
+        _posting("p2", "t1", "uncategorized:expense", 50.0),
+    )
+    totals = category_totals(postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30))
+    row = totals.row(0, named=True)
+    assert row["color"] == FOOD.color
+    assert row["category_color"] == FOOD.color
 
 
 def test_category_totals_scoped_to_a_tag_excludes_untagged_legs() -> None:

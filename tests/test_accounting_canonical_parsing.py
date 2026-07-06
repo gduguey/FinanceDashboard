@@ -27,6 +27,18 @@ def test_parse_date_flexible_returns_none_for_garbage() -> None:
     assert parse_date_flexible("not a date") is None
 
 
+def test_parse_date_flexible_defaults_to_month_first_for_an_ambiguous_date() -> None:
+    assert parse_date_flexible("01/12/2026") == date(2026, 1, 12)
+
+
+def test_parse_date_flexible_reads_day_first_when_asked() -> None:
+    assert parse_date_flexible("01/12/2026", dayfirst=True) == date(2026, 12, 1)
+
+
+def test_parse_date_flexible_day_first_does_not_affect_unambiguous_dates() -> None:
+    assert parse_date_flexible("2026-06-30", dayfirst=True) == date(2026, 6, 30)
+
+
 # --- Amounts ---------------------------------------------------------------
 
 

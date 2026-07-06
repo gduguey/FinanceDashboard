@@ -41,7 +41,7 @@ def find_column(header: Iterable[str], aliases: set[str]) -> str | None:
     return None
 
 
-def parse_date_flexible(text: str) -> date | None:
+def parse_date_flexible(text: str, *, dayfirst: bool = False) -> date | None:
     """Parse a date written in pretty much any common format.
 
     Delegates to `dateutil`'s general parser, which already covers ISO
@@ -53,6 +53,11 @@ def parse_date_flexible(text: str) -> date | None:
     ----------
     text
         A single date cell's text.
+    dayfirst
+        Whether an ambiguous, all-numeric date (`01/12/2026`) should read
+        day-before-month (European, 1 Dec) rather than the default
+        month-before-day (US, 12 Jan) — has no effect on a date that isn't
+        ambiguous in the first place (a named month, or day > 12).
 
     Returns
     -------
@@ -63,7 +68,7 @@ def parse_date_flexible(text: str) -> date | None:
     if not cleaned:
         return None
     try:
-        return dateutil_parser.parse(cleaned).date()
+        return dateutil_parser.parse(cleaned, dayfirst=dayfirst).date()
     except dateutil_parser.ParserError, ValueError, OverflowError, TypeError:
         return None
 

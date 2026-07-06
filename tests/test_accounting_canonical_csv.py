@@ -3,10 +3,11 @@ import pytest
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
     CanonicalCsvSeparatorUnknownError,
+    CategoryOverrides,
     standardize_canonical_csv,
 )
 from accounting.models import Category
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.store import CATEGORY_COLOR_PALETTE, UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 ACCOUNT_ID = "generic-bank:checking:0001"
 
@@ -61,6 +62,17 @@ def test_auto_creates_a_subcategory_under_its_category() -> None:
     child = next(c for c in result.new_categories.values() if c.parent_category_id is not None)
     assert child.parent_category_id == parent.category_id
     assert child.classification == parent.classification
+    assert child.color != parent.color
+
+
+def test_new_category_avoids_a_color_already_used_by_an_existing_category() -> None:
+    existing = Category(
+        category_id="expense:existing", name="Existing", classification="expense", color=CATEGORY_COLOR_PALETTE[0]
+    )
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Groceries\n"
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {existing.category_id: existing})
+    category = next(iter(result.new_categories.values()))
+    assert category.color != CATEGORY_COLOR_PALETTE[0]
 
 
 def test_reuses_an_existing_category_matched_case_insensitively() -> None:
@@ -88,3 +100,62 @@ def test_an_explicit_separator_overrides_auto_detection() -> None:
     csv_text = "Date~Description~Amount\n2026-06-30~Grocery Store~-42.50\n"
     result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {}, separator="~")
     assert result.postings.height == 2
+
+
+def test_date_order_dmy_reads_an_ambiguous_date_as_day_first() -> None:
+    csv_text = "Date,Description,Amount\n01/12/2026,Grocery Store,-42.50\n"
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {}, date_order="DMY")
+    posted_at = result.postings.row(0, named=True)["posted_at"]
+    assert (posted_at.month, posted_at.day) == (12, 1)
+
+
+def test_date_order_defaults_to_month_first() -> None:
+    csv_text = "Date,Description,Amount\n01/12/2026,Grocery Store,-42.50\n"
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {})
+    posted_at = result.postings.row(0, named=True)["posted_at"]
+    assert (posted_at.month, posted_at.day) == (1, 12)
+
+
+def test_category_override_renames_a_category() -> None:
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Groceries\n"
+    overrides = CategoryOverrides(categories={"Groceries": "Food"})
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {}, category_overrides=overrides)
+    assert len(result.new_categories) == 1
+    category = next(iter(result.new_categories.values()))
+    assert category.name == "Food"
+
+
+def test_category_override_merges_two_categories_renamed_to_the_same_name() -> None:
+    csv_text = (
+        "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Groceries\n2026-06-29,Restaurant,-20.00,Dining\n"
+    )
+    overrides = CategoryOverrides(categories={"Groceries": "Food", "Dining": "Food"})
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {}, category_overrides=overrides)
+    assert len(result.new_categories) == 1
+    category = next(iter(result.new_categories.values()))
+    assert category.name == "Food"
+    real_legs = result.postings.filter(result.postings["account_id"] == ACCOUNT_ID)
+    assert set(real_legs["category_id"].to_list()) == {category.category_id}
+
+
+def test_subcategory_override_renames_a_subcategory() -> None:
+    csv_text = "Date,Description,Amount,Category,Subcategory\n2026-06-30,Store,-42.50,Food,Groceries\n"
+    overrides = CategoryOverrides(subcategories={"Food": {"Groceries": "Supermarket"}})
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {}, category_overrides=overrides)
+    subcategory = next(c for c in result.new_categories.values() if c.parent_category_id is not None)
+    assert subcategory.name == "Supermarket"
+
+
+def test_subcategory_override_merges_two_subcategories_within_one_category() -> None:
+    csv_text = (
+        "Date,Description,Amount,Category,Subcategory\n"
+        "2026-06-30,Store,-42.50,Food,Groceries\n"
+        "2026-06-29,Market,-10.00,Food,Supermarket\n"
+    )
+    overrides = CategoryOverrides(
+        subcategories={"Food": {"Groceries": "Food Shopping", "Supermarket": "Food Shopping"}}
+    )
+    result = standardize_canonical_csv(csv_text, ACCOUNT_ID, "USD", {}, category_overrides=overrides)
+    subcategories = [c for c in result.new_categories.values() if c.parent_category_id is not None]
+    assert len(subcategories) == 1
+    assert subcategories[0].name == "Food Shopping"

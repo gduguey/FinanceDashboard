@@ -85,7 +85,7 @@ def save_usage(usage: dict[str, ProviderUsage], path: Path) -> None:
 
 
 def record_call(provider: str, path: Path, error: str | None) -> None:
-    """Record one attempted call to `provider`: bump its count, and note whether it was refused.
+    """Record one attempted call to `provider`: increment counter on success, freeze on failure.
 
     Parameters
     ----------
@@ -94,13 +94,27 @@ def record_call(provider: str, path: Path, error: str | None) -> None:
     path
         Where usage is persisted.
     error
-        The provider's own error text if the call failed, `None` if it succeeded — a success clears
-        any earlier `is_limited`/`last_error`, since a limit that no longer reproduces isn't still active.
+        The provider's own error text if the call failed, `None` if it succeeded.
+
+        Behavior:
+        - On success: counter increments, flag clears
+        - On failure: counter frozen, flag sets
+        - On success after failure: counter resets to 0, flag clears
     """
     usage = load_usage(path)
     current = usage[provider]
+
+    if error is None:
+        # Success
+        new_count = 0 if current.is_limited else current.used_count + 1
+        new_limited = False
+    else:
+        # Failure: freeze counter, set flag
+        new_count = current.used_count
+        new_limited = True
+
     usage[provider] = current.model_copy(
-        update={"used_count": current.used_count + 1, "is_limited": error is not None, "last_error": error}
+        update={"used_count": new_count, "is_limited": new_limited, "last_error": error}
     )
     save_usage(usage, path)
 

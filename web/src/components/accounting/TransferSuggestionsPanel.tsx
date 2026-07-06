@@ -1,4 +1,5 @@
-import { Fragment, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -13,6 +14,19 @@ import type { Account, TransferRule, TransferSuggestion } from '@/types/accounti
 function suggestionKey(suggestion: TransferSuggestion): string {
   return `${suggestion.posting_id}-${suggestion.other_posting_id}`
 }
+
+const ESTIMATED_ROW_HEIGHT = 44
+// The expanded detail block's real height varies a lot (description
+// lengths, whether both draft rules wrap to two lines) — this is just the
+// virtualizer's starting guess before `measureElement` corrects it against
+// the actual rendered element.
+const ESTIMATED_DETAIL_HEIGHT = 260
+
+// One entry per rendered `<tr>` — a suggestion contributes a "main" row
+// always, plus a "detail" row only while expanded — so the virtualizer
+// sees a flat list matching what's actually in the DOM instead of the
+// nested/Fragment shape the data comes in as.
+type VirtualEntry = { kind: 'main'; suggestion: TransferSuggestion } | { kind: 'detail'; suggestion: TransferSuggestion }
 
 // One suggestion resolves into TWO independent one-directional transfer
 // rule drafts — a transfer is really two separate transactions (each
@@ -169,6 +183,30 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
     setRules.mutate([...rules, ...newRules])
   }
 
+  const virtualEntries = useMemo(
+    () =>
+      sorted.flatMap((suggestion): VirtualEntry[] =>
+        expandedKey === suggestionKey(suggestion)
+          ? [
+              { kind: 'main', suggestion },
+              { kind: 'detail', suggestion },
+            ]
+          : [{ kind: 'main', suggestion }],
+      ),
+    [sorted, expandedKey],
+  )
+
+  const scrollParentRef = useRef<HTMLDivElement>(null)
+  const rowVirtualizer = useVirtualizer({
+    count: virtualEntries.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: (index) => (virtualEntries[index]?.kind === 'detail' ? ESTIMATED_DETAIL_HEIGHT : ESTIMATED_ROW_HEIGHT),
+    overscan: 12,
+  })
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
+  const paddingBottom = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
+
   if (!data) return null
 
   return (
@@ -193,79 +231,98 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
           <p className="text-sm text-muted-foreground">No unresolved transfer pairs within {windowDays} days.</p>
         ) : (
           <>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
-                    Account
-                  </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
-                    Date
-                  </SortableTableHead>
-                  <SortableTableHead
-                    active={sort.key === 'other_account_id'}
-                    desc={sort.desc}
-                    onClick={() => toggleSort('other_account_id')}
-                  >
-                    Other account
-                  </SortableTableHead>
-                  <SortableTableHead
-                    active={sort.key === 'other_posted_at'}
-                    desc={sort.desc}
-                    onClick={() => toggleSort('other_posted_at')}
-                  >
-                    Date
-                  </SortableTableHead>
-                  <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
-                    Amount
-                  </SortableTableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sorted.map((suggestion) => {
-                  const key = suggestionKey(suggestion)
-                  const isExpanded = expandedKey === key
-                  return (
-                    <Fragment key={key}>
-                      <TableRow className="cursor-pointer" onClick={() => setExpandedKey(isExpanded ? null : key)}>
-                        <TableCell>{accountName(accounts, suggestion.account_id)}</TableCell>
-                        <TableCell className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</TableCell>
-                        <TableCell>{accountName(accounts, suggestion.other_account_id)}</TableCell>
-                        <TableCell className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</TableCell>
-                        <TableCell className={`text-right tabular-nums ${signColor(suggestion.amount)}`}>
-                          {formatCurrency(suggestion.amount, 'USD')}
-                        </TableCell>
-                      </TableRow>
-                      {isExpanded && (
-                        <TableRow>
-                          <TableCell colSpan={5} className="whitespace-normal bg-muted/30">
-                            <div className="grid gap-4 py-2 sm:grid-cols-2">
-                              <div className="min-w-0 space-y-1 text-sm">
-                                <p className="font-medium">{accountName(accounts, suggestion.account_id)}</p>
-                                <p className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</p>
-                                <p className="break-words">{suggestion.description}</p>
-                                <p className={`tabular-nums ${signColor(suggestion.amount)}`}>{formatCurrency(suggestion.amount, 'USD')}</p>
-                              </div>
-                              <div className="min-w-0 space-y-1 text-sm">
-                                <p className="font-medium">{accountName(accounts, suggestion.other_account_id)}</p>
-                                <p className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</p>
-                                <p className="break-words">{suggestion.other_description}</p>
-                                <p className={`tabular-nums ${signColor(-suggestion.amount)}`}>
-                                  {formatCurrency(-suggestion.amount, 'USD')}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="mt-3">
-                              <SuggestedRulePair suggestion={suggestion} accounts={accounts} existingRules={rules} onAdd={addRules} />
-                            </div>
+            <div ref={scrollParentRef} className="max-h-[70vh] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
+                      Account
+                    </SortableTableHead>
+                    <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
+                      Date
+                    </SortableTableHead>
+                    <SortableTableHead
+                      active={sort.key === 'other_account_id'}
+                      desc={sort.desc}
+                      onClick={() => toggleSort('other_account_id')}
+                    >
+                      Other account
+                    </SortableTableHead>
+                    <SortableTableHead
+                      active={sort.key === 'other_posted_at'}
+                      desc={sort.desc}
+                      onClick={() => toggleSort('other_posted_at')}
+                    >
+                      Date
+                    </SortableTableHead>
+                    <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                      Amount
+                    </SortableTableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paddingTop > 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} style={{ height: paddingTop, padding: 0 }} />
+                    </TableRow>
+                  )}
+                  {virtualRows.map((virtualRow) => {
+                    const entry = virtualEntries[virtualRow.index]
+                    const { suggestion } = entry
+                    const key = suggestionKey(suggestion)
+                    if (entry.kind === 'main') {
+                      return (
+                        <TableRow
+                          key={`${key}-main`}
+                          data-index={virtualRow.index}
+                          ref={rowVirtualizer.measureElement}
+                          className="cursor-pointer"
+                          onClick={() => setExpandedKey(expandedKey === key ? null : key)}
+                        >
+                          <TableCell>{accountName(accounts, suggestion.account_id)}</TableCell>
+                          <TableCell className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</TableCell>
+                          <TableCell>{accountName(accounts, suggestion.other_account_id)}</TableCell>
+                          <TableCell className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</TableCell>
+                          <TableCell className={`text-right tabular-nums ${signColor(suggestion.amount)}`}>
+                            {formatCurrency(suggestion.amount, 'USD')}
                           </TableCell>
                         </TableRow>
-                      )}
-                    </Fragment>
-                  )
-                })}
-              </TableBody>
-            </Table>
+                      )
+                    }
+                    return (
+                      <TableRow key={`${key}-detail`} data-index={virtualRow.index} ref={rowVirtualizer.measureElement}>
+                        <TableCell colSpan={5} className="whitespace-normal bg-muted/30">
+                          <div className="grid gap-4 py-2 sm:grid-cols-2">
+                            <div className="min-w-0 space-y-1 text-sm">
+                              <p className="font-medium">{accountName(accounts, suggestion.account_id)}</p>
+                              <p className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</p>
+                              <p className="break-words">{suggestion.description}</p>
+                              <p className={`tabular-nums ${signColor(suggestion.amount)}`}>{formatCurrency(suggestion.amount, 'USD')}</p>
+                            </div>
+                            <div className="min-w-0 space-y-1 text-sm">
+                              <p className="font-medium">{accountName(accounts, suggestion.other_account_id)}</p>
+                              <p className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</p>
+                              <p className="break-words">{suggestion.other_description}</p>
+                              <p className={`tabular-nums ${signColor(-suggestion.amount)}`}>
+                                {formatCurrency(-suggestion.amount, 'USD')}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="mt-3">
+                            <SuggestedRulePair suggestion={suggestion} accounts={accounts} existingRules={rules} onAdd={addRules} />
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                  {paddingBottom > 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} style={{ height: paddingBottom, padding: 0 }} />
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
             <p className="mt-2 text-xs text-muted-foreground">
               Click a row to see both sides and add both rules needed to resolve it — each pair looks like one
               transfer a rule hasn't resolved yet.

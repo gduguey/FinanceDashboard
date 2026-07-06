@@ -336,6 +336,15 @@ export interface CanonicalImportResult extends ImportResult {
   new_categories: Category[]
 }
 
+export interface CanonicalImportPreview {
+  new_categories: Category[]
+}
+
+export interface CanonicalCategoryOverrides {
+  categories: Record<string, string>
+  subcategories: Record<string, Record<string, string>>
+}
+
 export interface NetWorthAccountRow {
   account_id: string
   name: string
@@ -418,7 +427,14 @@ export interface CategoryTotalRow {
   category_name: string
   subcategory_id: string | null
   subcategory_name: string | null
+  // The subcategory's own color when there is one, else the top-level
+  // category's — use this for anything scoped to one row.
   color: string
+  // Always the top-level category's own color, regardless of subcategory —
+  // use this when aggregating several subcategory rows back into one
+  // top-level slice, so it doesn't inherit whichever subcategory happened
+  // to be encountered first.
+  category_color: string
   amount: number
 }
 

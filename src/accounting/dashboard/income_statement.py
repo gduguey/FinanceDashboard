@@ -127,8 +127,10 @@ def category_totals(
     -------
     polars.DataFrame
         Columns `classification`, `category_id`, `category_name`,
-        `subcategory_id`, `subcategory_name`, `color`, `amount` (always
-        non-negative — `classification` says which side it's on).
+        `subcategory_id`, `subcategory_name`, `color` (the subcategory's own
+        color if there is one, else the top-level category's), `category_color`
+        (always the top-level category's own), `amount` (always non-negative —
+        `classification` says which side it's on).
     """
     legs = _real_income_expense_legs(postings, accounts, display).filter(
         (pl.col("posted_at").dt.date() >= start) & (pl.col("posted_at").dt.date() <= end)
@@ -146,6 +148,7 @@ def category_totals(
                 "subcategory_id": pl.Utf8,
                 "subcategory_name": pl.Utf8,
                 "color": pl.Utf8,
+                "category_color": pl.Utf8,
                 "amount": pl.Float64,
             }
         )
@@ -170,13 +173,22 @@ def category_totals(
         subcategory = categories.get(row["subcategory_id"]) if row["subcategory_id"] else None
         is_income_sentinel = top_category_id == UNCATEGORIZED_INCOME_ID
         classification = category.classification if category else ("income" if is_income_sentinel else "expense")
+        category_color = category.color if category else "#9ca3af"
         rows.append({
             "classification": classification,
             "category_id": top_category_id,
             "category_name": category.name if category else "Uncategorized",
             "subcategory_id": row["subcategory_id"],
             "subcategory_name": subcategory.name if subcategory else None,
-            "color": category.color if category else "#9ca3af",
+            # The subcategory's own color when there is one (each subcategory
+            # gets a color distinct from its parent and siblings — see
+            # `store.next_available_color`) — falls back to the top-level
+            # category's color for a row with no subcategory. `category_color`
+            # is always the top-level category's own, regardless, for a
+            # drilldown that aggregates several subcategories back into one
+            # top-level slice and needs one stable color for it.
+            "color": subcategory.color if subcategory else category_color,
+            "category_color": category_color,
             "amount": row["amount"],
         })
     return pl.DataFrame(
@@ -188,6 +200,7 @@ def category_totals(
             "subcategory_id": pl.Utf8,
             "subcategory_name": pl.Utf8,
             "color": pl.Utf8,
+            "category_color": pl.Utf8,
             "amount": pl.Float64,
         },
     )

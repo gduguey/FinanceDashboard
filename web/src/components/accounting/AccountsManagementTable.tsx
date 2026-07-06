@@ -230,9 +230,6 @@ export function AccountsManagementTable({
                 <SortableTableHead active={sort.key === 'currency'} desc={sort.desc} onClick={() => toggleSort('currency')}>
                   Currency
                 </SortableTableHead>
-                <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
-                  Account id
-                </SortableTableHead>
                 <TableHead className="w-16" />
               </TableRow>
             </TableHeader>
@@ -266,7 +263,6 @@ export function AccountsManagementTable({
                     </TableCell>
                     <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[account.kind]}</TableCell>
                     <TableCell className="text-muted-foreground">{account.currency}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">{account.account_id}</TableCell>
                     <TableCell className="flex gap-1">
                       <Button variant="ghost" size="icon" onClick={() => setEditing(account)}>
                         <Pencil className="size-3.5 text-muted-foreground" />

@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import { Sankey, Tooltip } from 'recharts'
 import type { LinkProps, NodeProps } from 'recharts/types/chart/Sankey'
 import { ChartCard } from '@/components/shared/ChartCard'
@@ -41,7 +42,7 @@ function groupByCategory(rows: CategoryTotalRow[]) {
   for (const row of rows) {
     if (!categoryTotal.has(row.category_name)) order.push(row.category_name)
     categoryTotal.set(row.category_name, (categoryTotal.get(row.category_name) ?? 0) + row.amount)
-    categoryColor.set(row.category_name, row.color)
+    categoryColor.set(row.category_name, row.category_color)
     const subLabel = row.subcategory_name ?? 'Uncategorized'
     const subTotals = subcategoryTotals.get(row.category_name) ?? new Map<string, number>()
     subTotals.set(subLabel, (subTotals.get(subLabel) ?? 0) + row.amount)
@@ -175,28 +176,42 @@ function buildSankeyData(rows: CategoryTotalRow[], goalFlows: GoalFlow[]) {
   return { nodes, links, isBuffered: buffer > 0 }
 }
 
+const HATCH_TILE_PX = 6
+
 // Recharts' own default link renderer ignores each link's own data and
 // paints every flow the same flat grey (see the library's `renderLinkItem`)
 // — this mirrors that same curve geometry, but reads `color`/`dashed` back
 // off `payload` (the link object `buildSankeyData` produced) so each flow
-// carries the color decided for it above instead of one uniform stroke.
-// A "dashed" flow (just the income buffer, so far) stays a single uniform
-// band of color — cutting gaps directly into the band itself made it read
-// as broken/interrupted — with a second, thin black dashed line drawn on
-// top of it as the only thing that actually dashes, marking it as the
-// odd one out without breaking up the flow's own continuity.
-function SankeyLinkPath(props: LinkProps) {
-  const { sourceX, sourceY, sourceControlX, targetX, targetY, targetControlX, linkWidth, payload } = props
-  const linkPayload = payload as unknown as SankeyLink
-  const d = `M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`
-  return (
-    <g>
-      <path className="recharts-sankey-link" d={d} fill="none" stroke={linkPayload.color} strokeWidth={linkWidth} strokeOpacity={0.35} />
-      {linkPayload.dashed && (
-        <path d={d} fill="none" stroke="#000000" strokeWidth={2} strokeOpacity={0.45} strokeDasharray="5 5" />
-      )}
-    </g>
-  )
+// carries the color decided for it above instead of one uniform stroke. A
+// "dashed" flow (just the income buffer, so far) is painted with a dense
+// 45°-diagonal hatch pattern over its own solid color — reading as a
+// "blocked"/"not usable" zone — instead of a plain flat band, so it's
+// unmistakably the odd one out. `patternId` is per-chart-instance (see
+// `useId` in `CashflowSankeyChart`), since two Sankeys on one page (Budget's
+// "Actual"/"Budgeted" pair) would otherwise both define an element with the
+// same id.
+function makeSankeyLinkPath(patternId: string) {
+  return function SankeyLinkPath(props: LinkProps) {
+    const { sourceX, sourceY, sourceControlX, targetX, targetY, targetControlX, linkWidth, payload } = props
+    const linkPayload = payload as unknown as SankeyLink
+    const d = `M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`
+    if (!linkPayload.dashed) {
+      return (
+        <path className="recharts-sankey-link" d={d} fill="none" stroke={linkPayload.color} strokeWidth={linkWidth} strokeOpacity={0.35} />
+      )
+    }
+    return (
+      <g>
+        <defs>
+          <pattern id={patternId} width={HATCH_TILE_PX} height={HATCH_TILE_PX} patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+            <rect width={HATCH_TILE_PX} height={HATCH_TILE_PX} fill={linkPayload.color} />
+            <line x1={0} y1={0} x2={0} y2={HATCH_TILE_PX} stroke="#000000" strokeOpacity={0.5} strokeWidth={2.5} />
+          </pattern>
+        </defs>
+        <path className="recharts-sankey-link" d={d} fill="none" stroke={`url(#${patternId})`} strokeWidth={linkWidth} strokeOpacity={0.9} />
+      </g>
+    )
+  }
 }
 
 // Recharts computes `value`/`sourceLinks`/`targetLinks` onto each node
@@ -219,23 +234,31 @@ const MAX_LABEL_CHARS = 28
 const LABEL_GAP_PX = 6
 
 interface LabelBox {
+  x0: number
+  x1: number
   y0: number
   y1: number
 }
 
-// Greedy same-side vertical collision avoidance: nudges a new label down
-// just far enough to clear every box already placed on its side this
-// render, so two labels stacked close together (e.g. two small nodes only
-// `nodePadding` apart) never overlap even though each is centered on its
-// own node independently of the others.
-function placeWithoutOverlap(placed: LabelBox[], y0: number, y1: number): number {
+// Greedy collision avoidance, checked in 2D rather than just vertically:
+// nudges a new label down just far enough to clear every already-placed box
+// whose *horizontal* span overlaps its own. Two labels stacked close
+// together on the same side (e.g. two small nodes only `nodePadding` apart)
+// share the same x-range and so still get pushed apart as before — but this
+// also catches the one cross-side case that vertical-only checking missed:
+// an initial (leftmost) node's label sits to its *right*, in the same gap
+// its very next column's node's label sits to *its* left, so the two can
+// land at a similar height and collide even though they belong to different
+// node columns and were never compared against each other.
+function placeWithoutOverlap(placed: LabelBox[], x0: number, x1: number, y0: number, y1: number): number {
   let shift = 0
   for (const box of placed) {
+    if (x0 >= box.x1 || x1 <= box.x0) continue
     if (y0 + shift < box.y1 + 1 && y1 + shift > box.y0 - 1) {
       shift = box.y1 - y0 + 1
     }
   }
-  placed.push({ y0: y0 + shift, y1: y1 + shift })
+  placed.push({ x0, x1, y0: y0 + shift, y1: y1 + shift })
   return shift
 }
 
@@ -246,10 +269,11 @@ function truncateLabel(text: string): string {
 // A node's name + amount, always visible (not just on hover), placed
 // outside the node — to its left by default, or to its right for an
 // initial (leftmost, nothing flows into it) node, so its label never runs
-// past the chart's own left edge. `leftLabels`/`rightLabels` collect this
-// render pass's already-placed boxes, so a later node on the same side is
-// pushed down instead of overlapping an earlier one.
-function makeSankeyNodeLabel(displayCurrency: CurrencyCode, leftLabels: LabelBox[], rightLabels: LabelBox[]) {
+// past the chart's own left edge. `placedLabels` collects this render
+// pass's already-placed boxes (both sides together — see
+// `placeWithoutOverlap`), so a later node's label is pushed down instead of
+// overlapping an earlier one, whichever side either is on.
+function makeSankeyNodeLabel(displayCurrency: CurrencyCode, placedLabels: LabelBox[]) {
   return function SankeyNodeLabel(props: NodeProps) {
     const { x, y, width, height, payload } = props
     const node = payload as unknown as ComputedSankeyNode
@@ -261,10 +285,9 @@ function makeSankeyNodeLabel(displayCurrency: CurrencyCode, leftLabels: LabelBox
     const textWidth = text.length * CHAR_WIDTH_ESTIMATE
     const boxWidth = textWidth + LABEL_BOX_PADDING_X * 2
     const centerY = y + height / 2
-    const placed = isInitial ? rightLabels : leftLabels
-    const shift = placeWithoutOverlap(placed, centerY - LABEL_BOX_HEIGHT / 2, centerY + LABEL_BOX_HEIGHT / 2)
-    const boxCenterY = centerY + shift
     const boxX = isInitial ? x + width + LABEL_GAP_PX : x - LABEL_GAP_PX - boxWidth
+    const shift = placeWithoutOverlap(placedLabels, boxX, boxX + boxWidth, centerY - LABEL_BOX_HEIGHT / 2, centerY + LABEL_BOX_HEIGHT / 2)
+    const boxCenterY = centerY + shift
 
     return (
       <g>
@@ -308,10 +331,12 @@ export function CashflowSankeyChart({
 }) {
   const { nodes, links, isBuffered } = buildSankeyData(categoryTotals, goalFlows)
   // Fresh each render (tied to this render's own `nodes`/`links`) — the
-  // node label renderer mutates these in node order as Recharts calls it,
-  // so a later label on the same side sees every earlier one already placed.
-  const leftLabels: LabelBox[] = []
-  const rightLabels: LabelBox[] = []
+  // node label renderer mutates this in node order as Recharts calls it, so
+  // a later label sees every earlier one already placed, on either side.
+  const placedLabels: LabelBox[] = []
+  // `useId()`'s colons aren't safe inside a CSS `url(#...)` reference
+  // unescaped, so they're stripped rather than used as-is.
+  const hatchPatternId = `income-buffer-hatch-${useId().replace(/:/g, '')}`
 
   return (
     <ChartCard
@@ -325,8 +350,8 @@ export function CashflowSankeyChart({
     >
       <Sankey
         data={{ nodes, links }}
-        link={SankeyLinkPath}
-        node={makeSankeyNodeLabel(displayCurrency, leftLabels, rightLabels)}
+        link={makeSankeyLinkPath(hatchPatternId)}
+        node={makeSankeyNodeLabel(displayCurrency, placedLabels)}
         nodePadding={20}
         margin={{ left: 12, right: 16, top: 8, bottom: 8 }}
       >

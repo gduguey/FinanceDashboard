@@ -3,6 +3,7 @@ import { accountingApi, type AccountUpdate, type ImportAccountInfo } from '@/lib
 import type {
   Account,
   Budget,
+  CanonicalCategoryOverrides,
   Category,
   CategoryPattern,
   CurrencyCode,
@@ -285,6 +286,19 @@ export function useSetCategories() {
   })
 }
 
+// Renaming to an existing category's (or, for a subcategory, an existing
+// sibling's) name merges into it — repointing postings, rules, budgets,
+// and manual overrides — so this invalidates everything, not just the
+// category tree, unlike a plain `useSetCategories` edit.
+export function useRenameCategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ categoryId, name }: { categoryId: string; name: string }) =>
+      accountingApi.renameCategory(categoryId, name),
+    onSuccess: invalidate,
+  })
+}
+
 export function useSetTags() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -395,9 +409,39 @@ export function useImportCsv() {
 export function useImportCanonicalCsv() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ file, info, separator }: { file: File; info: ImportAccountInfo; separator?: string }) =>
-      accountingApi.importCanonicalCsv(file, info, separator),
+    mutationFn: ({
+      file,
+      info,
+      separator,
+      dateOrder,
+      categoryOverrides,
+    }: {
+      file: File
+      info: ImportAccountInfo
+      separator?: string
+      dateOrder?: string
+      categoryOverrides?: CanonicalCategoryOverrides
+    }) => accountingApi.importCanonicalCsv(file, info, separator, dateOrder, categoryOverrides),
     onSuccess: invalidate,
+  })
+}
+
+// Read-only — never touches the store or ledger, so no cache invalidation.
+export function useCanonicalImportPreview() {
+  return useMutation({
+    mutationFn: ({
+      file,
+      accountId,
+      currency,
+      separator,
+      dateOrder,
+    }: {
+      file: File
+      accountId: string
+      currency: CurrencyCode
+      separator?: string
+      dateOrder?: string
+    }) => accountingApi.previewCanonicalImport(file, accountId, currency, separator, dateOrder),
   })
 }
 
