@@ -12,13 +12,18 @@ RUN npm run build
 FROM python:3.14-slim AS python-builder
 WORKDIR /app
 
-# Copy all source files for the build
-COPY . .
+# Grab the uv binary straight from its official image — no pip/curl install needed
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install from pyproject.toml - includes api extras (FastAPI, uvicorn) and llm extras
-RUN python -m venv /opt/venv && \
-    /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/venv/bin/pip install --no-cache-dir -e '.[api,llm]'
+# Only what dependency resolution + the package build need
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ src/
+
+# --locked fails the build if uv.lock is out of sync with pyproject.toml,
+# instead of silently re-resolving — same exact versions as local `uv sync`.
+# --no-dev skips pytest/ruff/jupyter/etc; --extra pulls in the api+llm groups.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+RUN uv sync --locked --no-dev --extra api --extra llm
 
 # Stage 3: Runtime image
 FROM python:3.14-slim
