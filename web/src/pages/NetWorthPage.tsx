@@ -262,9 +262,9 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
   )
 }
 
-// Same anchor-nav pattern as Investments' own Dashboard tab — one long
-// scroll broken into thematic, deep-linkable sections rather than tabs,
-// since every block here is part of the same "net worth as of now" view.
+// The Guide's own anchor-nav pattern — one long scroll broken into
+// thematic, deep-linkable sections rather than tabs, since every block
+// here is part of the same "net worth as of now" view.
 const SECTIONS: PageHeaderSection[] = [
   { id: 'summary', label: 'Summary' },
   { id: 'history', label: 'History' },

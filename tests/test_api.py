@@ -122,6 +122,20 @@ def test_growth_of_100_chart_returns_one_entry_per_day(client) -> None:
     assert body[0]["portfolio_index"] == pytest.approx(100.0)
 
 
+def test_cash_history_returns_one_entry_per_day(client) -> None:
+    body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert [row["cash"] for row in body] == pytest.approx([2000.0, 1000.0, 1550.0])
+
+
+def test_cash_sitting_reports_current_balance_and_when_it_last_dropped(client) -> None:
+    body = client.get("/api/cash-sitting").json()
+    assert body["cash_usd"] == pytest.approx(1550.0)
+    # The $1000 BUY on Jan 2 is the last drop >=20% of the previous day's
+    # balance; the Jan 3 SELL is an increase, so it doesn't reset the clock.
+    assert body["sitting_since"] == "2026-01-02"
+    assert body["warning_level"] == "heavy"
+
+
 def test_monthly_pnl_returns_one_entry_for_january(client) -> None:
     body = client.get("/api/chart/monthly-pnl", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert len(body) == 1

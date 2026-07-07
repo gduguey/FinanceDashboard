@@ -630,6 +630,27 @@ class PostingMerge(BaseModel):
     description: str | None = None
 
 
+class DismissedSuggestion(BaseModel):
+    """A user's decision that an auto-detected suggestion isn't relevant, archived rather than discarded.
+
+    `suggestion_id` is a stable key derived from the suggestion's own
+    content (see `api._transfer_suggestion_id`/`_duplicate_suggestion_id`),
+    not a random ID — the same real-world pair or group always dismisses
+    and restores under the same key, regardless of how many times the
+    detector recomputes it. Dismissing never edits a transfer rule, a
+    posting, or a merge; it only removes one entry from the list of things
+    still being proposed, so restoring it (deleting this record) is always
+    lossless.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    suggestion_id: str = Field(min_length=1)
+    kind: Literal["transfer", "duplicate"]
+    description: str
+    dismissed_at: datetime
+
+
 class Posting(BaseModel):
     """One leg of one economic event — one row, like `trades.models.LedgerEvent`.
 

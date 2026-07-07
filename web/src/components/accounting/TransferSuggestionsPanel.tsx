@@ -1,18 +1,20 @@
 import { useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Archive } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
-import { useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
+import { useDismissSuggestion, useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
 import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
 
 function suggestionKey(suggestion: TransferSuggestion): string {
-  return `${suggestion.posting_id}-${suggestion.other_posting_id}`
+  return suggestion.suggestion_id
 }
 
 const ESTIMATED_ROW_HEIGHT = 44
@@ -156,7 +158,17 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
   const { data } = useTransferSuggestions(windowDays)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const setRules = useSetTransferRules()
+  const dismissSuggestion = useDismissSuggestion()
   const { sorted, sort, toggleSort } = useSortableRows(data ?? [], 'posted_at')
+
+  function dismiss(suggestion: TransferSuggestion) {
+    dismissSuggestion.mutate({
+      suggestion_id: suggestion.suggestion_id,
+      kind: 'transfer',
+      description: `${suggestion.description} <-> ${suggestion.other_description}`,
+    })
+    if (expandedKey === suggestion.suggestion_id) setExpandedKey(null)
+  }
 
   // Kept as free-text while typing (rather than coercing on every
   // keystroke) so backspacing to clear the field and type a new number
@@ -308,8 +320,12 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                               </p>
                             </div>
                           </div>
-                          <div className="mt-3">
+                          <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
                             <SuggestedRulePair suggestion={suggestion} accounts={accounts} existingRules={rules} onAdd={addRules} />
+                            <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => dismiss(suggestion)}>
+                              <Archive className="size-3.5" />
+                              Not relevant
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -329,6 +345,9 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
             </p>
           </>
         )}
+        <div className="mt-4">
+          <SuggestionArchive kind="transfer" />
+        </div>
       </CardContent>
     </Card>
   )

@@ -52,6 +52,24 @@ export interface GrowthOf100Point {
   hysa_rate_pct: number | null
 }
 
+export interface CashHistoryPoint {
+  date: string
+  cash: number
+}
+
+export type CashSittingWarningLevel = 'none' | 'light' | 'heavy'
+
+export interface CashSitting {
+  cash_usd: number
+  sitting_since: string
+  days_sitting: number
+  warning_level: CashSittingWarningLevel
+  hypothetical_value_portfolio_usd: number
+  missed_earnings_portfolio_usd: number
+  hypothetical_value_benchmark_usd: number
+  missed_earnings_benchmark_usd: number
+}
+
 export interface MonthlyPnl {
   month: string
   contributions_usd: number

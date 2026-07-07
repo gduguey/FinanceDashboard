@@ -1090,6 +1090,134 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
     assert remaining_transaction_ids == {transaction_ids[0]}
 
 
+def _seed_chase_transfer_suggestion(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    credit_card_csv = (
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+        "06/29/2026,06/29/2026,Something else entirely,Other,Sale,70.00,\n"
+    )
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase1234.csv", credit_card_csv, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "credit_card",
+            "account_id": "chase:credit_card:1234",
+            "account_name": "Chase Credit Card (...1234)",
+        },
+    )
+
+
+def test_transfer_suggestions_include_a_stable_suggestion_id(client) -> None:
+    _seed_chase_transfer_suggestion(client)
+    suggestions = client.get("/api/accounting/transfer-suggestions").json()
+    assert len(suggestions) == 1
+    assert suggestions[0]["suggestion_id"]
+    # Recomputing (no state changed) yields the exact same id.
+    again = client.get("/api/accounting/transfer-suggestions").json()
+    assert again[0]["suggestion_id"] == suggestions[0]["suggestion_id"]
+
+
+def test_dismissing_a_transfer_suggestion_removes_it_from_the_proposed_list(client) -> None:
+    _seed_chase_transfer_suggestion(client)
+    suggestion_id = client.get("/api/accounting/transfer-suggestions").json()[0]["suggestion_id"]
+
+    response = client.post(
+        "/api/accounting/dismissed-suggestions",
+        json={"suggestion_id": suggestion_id, "kind": "transfer", "description": "Chase checking <-> credit card"},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/accounting/transfer-suggestions").json() == []
+
+
+def test_dismissed_suggestion_shows_up_in_the_archive(client) -> None:
+    _seed_chase_transfer_suggestion(client)
+    suggestion_id = client.get("/api/accounting/transfer-suggestions").json()[0]["suggestion_id"]
+    client.post(
+        "/api/accounting/dismissed-suggestions",
+        json={"suggestion_id": suggestion_id, "kind": "transfer", "description": "Chase checking <-> credit card"},
+    )
+
+    archive = client.get("/api/accounting/dismissed-suggestions").json()
+    assert len(archive) == 1
+    assert archive[0]["suggestion_id"] == suggestion_id
+    assert archive[0]["kind"] == "transfer"
+    assert archive[0]["description"] == "Chase checking <-> credit card"
+
+
+def test_restoring_a_dismissed_suggestion_brings_it_back(client) -> None:
+    _seed_chase_transfer_suggestion(client)
+    suggestion_id = client.get("/api/accounting/transfer-suggestions").json()[0]["suggestion_id"]
+    client.post(
+        "/api/accounting/dismissed-suggestions",
+        json={"suggestion_id": suggestion_id, "kind": "transfer", "description": "desc"},
+    )
+    assert client.get("/api/accounting/transfer-suggestions").json() == []
+
+    restore_response = client.delete(f"/api/accounting/dismissed-suggestions/{suggestion_id}")
+    assert restore_response.status_code == 200
+    assert len(client.get("/api/accounting/transfer-suggestions").json()) == 1
+    assert client.get("/api/accounting/dismissed-suggestions").json() == []
+
+
+def test_restoring_an_unknown_suggestion_is_a_404(client) -> None:
+    response = client.delete("/api/accounting/dismissed-suggestions/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "generic:checking:0001",
+            "name": "Generic Checking",
+            "kind": "checking",
+            "institution": "Generic",
+            "currency": "USD",
+        },
+    )
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("a.csv", "Date,Description,Amount\n2026-06-30,WHOLE FOODS #123,-42.50\n", "text/csv")},
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": "generic:checking:0001",
+            "account_name": "Generic Checking",
+        },
+    )
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("b.csv", "Date,Description,Amount\n2026-06-30,Whole Foods Market,-42.50\n", "text/csv")},
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": "generic:checking:0001",
+            "account_name": "Generic Checking",
+            "separator": ",",
+        },
+    )
+    suggestions = client.get("/api/accounting/duplicate-suggestions").json()
+    assert len(suggestions) == 1
+    suggestion_id = suggestions[0]["suggestion_id"]
+
+    response = client.post(
+        "/api/accounting/dismissed-suggestions",
+        json={"suggestion_id": suggestion_id, "kind": "duplicate", "description": "Whole Foods x2"},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/accounting/duplicate-suggestions").json() == []
+
+
 def test_postings_report_which_rule_resolved_them(client) -> None:
     client.post(
         "/api/accounting/import",

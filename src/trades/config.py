@@ -277,6 +277,28 @@ class DashboardConfig(BaseModel):
     settings_path: Path = _REPO_ROOT / "data" / "trades" / "dashboard_settings.json"
 
 
+class CashSittingConfig(BaseModel):
+    """Tunables for detecting uninvested cash that's been sitting idle.
+
+    See `dashboard.cash_sitting.sitting_since_date` — a day only resets the
+    "sitting since" clock when cash drops by at least this fraction
+    relative to the previous day's balance; a deposit (or a decrease
+    smaller than this) never resets it, since idle cash doesn't become
+    fresher just because more cash arrived.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    decrease_threshold_pct: float = Field(
+        default=0.20,
+        gt=0,
+        le=1,
+        description="Minimum fractional drop from the previous day's cash balance that counts as a real deployment.",
+    )
+    light_warning_days: int = Field(default=7, gt=0, description="Days sitting before the light warning shows.")
+    heavy_warning_days: int = Field(default=14, gt=0, description="Days sitting before the heavy warning shows.")
+
+
 class CredentialOverridesConfig(BaseModel):
     """Where credentials entered via the Settings page are persisted, instead of `.env`.
 
@@ -306,3 +328,4 @@ class AppConfig(BaseModel):
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     credentials: CredentialOverridesConfig = Field(default_factory=CredentialOverridesConfig)
+    cash_sitting: CashSittingConfig = Field(default_factory=CashSittingConfig)
