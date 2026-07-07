@@ -22,7 +22,7 @@ from accounting.importers.sofi.csv import standardize_sofi_checking, standardize
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_pdf
 from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
-from trades.utils.io_utils import write_csv_atomic
+from accounting.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -1,9 +1,9 @@
-import { BookOpen, Calculator, FlaskConical, LayoutDashboard, LineChart, Scale, Target, Upload, Wallet } from 'lucide-react'
+import { BookOpen, Calculator, FlaskConical, Home, LineChart, Scale, Settings, Target, Upload, Wallet } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
+  { label: 'Overview', icon: Home, path: '/' },
   { label: 'Accounting', icon: Calculator, path: '/accounting' },
   { label: 'Investments', icon: LineChart, path: '/investments' },
   { label: 'Net Worth', icon: Scale, path: '/net-worth' },
@@ -12,12 +12,12 @@ const NAV_ITEMS = [
   { label: 'Simulator', icon: FlaskConical, path: '/simulator' },
 ]
 
-// Secondary, utility-style actions — data entry and documentation rather
-// than a page of its own data — pinned to the very bottom of the sidebar
-// the way an app typically anchors "Account"/"Settings" there, separate
-// from the primary section list above.
+// Secondary, utility-style actions — data entry, documentation, and
+// connection setup rather than a page of its own data — pinned to the
+// very bottom of the sidebar, separate from the primary section list above.
 const SECONDARY_NAV_ITEMS = [
   { label: 'Import', icon: Upload, path: '/import' },
+  { label: 'Settings', icon: Settings, path: '/settings' },
   { label: 'Guide', icon: BookOpen, path: '/guide' },
 ]
 

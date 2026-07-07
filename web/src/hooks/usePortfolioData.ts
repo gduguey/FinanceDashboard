@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type DateRange } from '@/lib/api'
-import type { BenchmarkSettingUpdate, HysaSettings, TargetAllocation, TaxSettingsUpdate } from '@/types/portfolio'
+import type {
+  BenchmarkSettingUpdate,
+  HysaSettings,
+  IbkrSettingsUpdate,
+  TargetAllocation,
+  TaxSettingsUpdate,
+} from '@/types/portfolio'
 
 // One query key per endpoint, grouped under a shared "portfolio" root so a
 // single invalidate (see useSync below) refreshes every panel at once.
@@ -20,6 +26,7 @@ const keys = {
   benchmarkSetting: ['portfolio', 'settings', 'benchmark'],
   taxSettings: ['portfolio', 'settings', 'tax'],
   taxReport: ['portfolio', 'tax-report'],
+  ibkrSettings: ['portfolio', 'settings', 'ibkr'],
 } as const
 
 export const useOverview = () => useQuery({ queryKey: keys.overview, queryFn: () => api.overview() })
@@ -91,6 +98,24 @@ export function useEnsureSymbolPriced() {
   return useMutation({
     mutationFn: (symbol: string) => api.ensureSymbolPriced(symbol),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+  })
+}
+
+export const useIbkrSettings = () => useQuery({ queryKey: keys.ibkrSettings, queryFn: api.ibkrSettings })
+
+export function useSetIbkrSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (update: IbkrSettingsUpdate) => api.setIbkrSettings(update),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.ibkrSettings }),
+  })
+}
+
+export function useClearIbkrSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.clearIbkrSettings(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.ibkrSettings }),
   })
 }
 

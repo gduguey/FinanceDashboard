@@ -70,6 +70,14 @@ EXTERNAL_INVESTMENT = Account(
     kind="external_investment",
     institution="external",
     currency="USD",
+    external_ref="trades",
+)
+MANUAL_EXTERNAL_INVESTMENT = Account(
+    account_id="external:friends-fund",
+    name="Friend's Fund",
+    kind="external_investment",
+    institution="external",
+    currency="USD",
 )
 
 
@@ -147,6 +155,34 @@ def test_net_worth_defaults_a_missing_external_investment_value_to_zero() -> Non
     accounts = {EXTERNAL_INVESTMENT.account_id: EXTERNAL_INVESTMENT}
     summary = net_worth_summary(_postings(), accounts, [], date(2026, 6, 30))
     assert summary.assets == pytest.approx(0.0)
+
+
+def test_net_worth_ignores_the_trades_value_for_a_manual_external_investment_account() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "external:friends-fund", 5000.0),
+        _posting("p2", "t1", "uncategorized:expense", -5000.0),
+    )
+    accounts = {MANUAL_EXTERNAL_INVESTMENT.account_id: MANUAL_EXTERNAL_INVESTMENT}
+    summary = net_worth_summary(postings, accounts, [], date(2026, 6, 30), external_investment_value_usd=42000.0)
+    assert summary.assets == pytest.approx(5000.0)
+
+
+def test_net_worth_adds_an_opening_balance_for_a_manual_external_investment_account() -> None:
+    accounts = {MANUAL_EXTERNAL_INVESTMENT.account_id: MANUAL_EXTERNAL_INVESTMENT}
+    opening_balances = {
+        MANUAL_EXTERNAL_INVESTMENT.account_id: OpeningBalance(
+            account_id=MANUAL_EXTERNAL_INVESTMENT.account_id, amount=12000.0, as_of_date=datetime(2026, 1, 1)
+        )
+    }
+    summary = net_worth_summary(
+        _postings(),
+        accounts,
+        [],
+        date(2026, 6, 30),
+        external_investment_value_usd=42000.0,
+        opening_balances=opening_balances,
+    )
+    assert summary.assets == pytest.approx(12000.0)
 
 
 def test_net_worth_adds_manually_entered_other_assets() -> None:

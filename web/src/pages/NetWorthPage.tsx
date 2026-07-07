@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { AccountCompositionBar } from '@/components/accounting/AccountCompositionBar'
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
@@ -17,6 +18,7 @@ import { InterestTrackingPanel } from '@/components/accounting/InterestTrackingP
 import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { formatCurrency, signColor } from '@/lib/format'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useCurrencies, useNetWorth, useRatesToBase, useSetOtherAssets } from '@/hooks/useAccountingData'
@@ -297,6 +299,7 @@ export function NetWorthPage() {
           <Skeleton className="h-32 w-full" />
         ) : (
           <>
+            {!hasAnyRealAccount(data.accounts) && <NoAccountsYetBanner />}
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <StatCard
                 label="Net worth"

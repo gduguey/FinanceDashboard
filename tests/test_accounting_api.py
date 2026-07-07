@@ -823,7 +823,7 @@ def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
         gemini_api_key = None
         mistral_api_key = None
 
-    monkeypatch.setattr(accounting_api, "LLMCredentials", _NoCredentials)
+    monkeypatch.setattr(accounting_api, "resolve_llm_credentials", lambda config: _NoCredentials())
 
     body = client.get("/api/accounting/llm-usage").json()
     assert body["gemini"] == {
@@ -841,7 +841,7 @@ def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monke
         gemini_api_key = object()
         mistral_api_key = None
 
-    monkeypatch.setattr(accounting_api, "LLMCredentials", _FakeCredentials)
+    monkeypatch.setattr(accounting_api, "resolve_llm_credentials", lambda config: _FakeCredentials())
 
     from accounting.llm.usage import record_call  # noqa: PLC0415
 
@@ -855,6 +855,32 @@ def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monke
         "is_limited": True,
         "last_error": "429 RESOURCE_EXHAUSTED",
     }
+
+
+def test_llm_settings_default_to_no_override(client) -> None:
+    body = client.get("/api/accounting/settings/llm").json()
+    assert body == {"gemini_key_set": False, "mistral_key_set": False}
+
+
+def test_llm_settings_put_then_get_round_trips(client) -> None:
+    put_response = client.put("/api/accounting/settings/llm", json={"gemini_api_key": "gem-key"})
+    assert put_response.status_code == 200
+    assert put_response.json() == {"gemini_key_set": True, "mistral_key_set": False}
+    assert client.get("/api/accounting/settings/llm").json() == {"gemini_key_set": True, "mistral_key_set": False}
+
+
+def test_llm_settings_put_merges_a_partial_update(client) -> None:
+    client.put("/api/accounting/settings/llm", json={"gemini_api_key": "gem-key"})
+    client.put("/api/accounting/settings/llm", json={"mistral_api_key": "mis-key"})
+    body = client.get("/api/accounting/settings/llm").json()
+    assert body == {"gemini_key_set": True, "mistral_key_set": True}
+
+
+def test_llm_settings_delete_clears_the_override(client) -> None:
+    client.put("/api/accounting/settings/llm", json={"gemini_api_key": "gem-key"})
+    delete_response = client.delete("/api/accounting/settings/llm")
+    assert delete_response.status_code == 200
+    assert client.get("/api/accounting/settings/llm").json() == {"gemini_key_set": False, "mistral_key_set": False}
 
 
 def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
@@ -885,7 +911,7 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
             "institution": "external",
             "currency": "USD",
             "parent_account_id": None,
-            "external_ref": None,
+            "external_ref": "trades",
             "meta": {},
         },
     )
@@ -1527,6 +1553,71 @@ def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) ->
     )
     assert renamed.status_code == 200
     assert renamed.json()["name"] == "Renamed"
+
+
+def test_post_account_accepts_an_external_investment_pulling_from_trades(client) -> None:
+    response = client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "external:interactive-brokers",
+            "name": "Interactive Brokers",
+            "kind": "external_investment",
+            "institution": "external",
+            "currency": "USD",
+            "external_ref": "trades",
+        },
+    )
+    assert response.status_code == 200
+    created = client.get("/api/accounting/store").json()["accounts"]["external:interactive-brokers"]
+    assert created["external_ref"] == "trades"
+
+
+def test_post_account_accepts_a_manually_tracked_external_investment(client) -> None:
+    response = client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "external:friends-fund",
+            "name": "Friend's Fund",
+            "kind": "external_investment",
+            "institution": "external",
+            "currency": "USD",
+        },
+    )
+    assert response.status_code == 200
+    created = client.get("/api/accounting/store").json()["accounts"]["external:friends-fund"]
+    assert created["external_ref"] is None
+
+
+def test_put_account_can_switch_an_external_investment_between_trades_and_manual(client) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "external:friends-fund",
+            "name": "Friend's Fund",
+            "kind": "external_investment",
+            "institution": "external",
+            "currency": "USD",
+        },
+    )
+    response = client.put(
+        "/api/accounting/accounts/external:friends-fund",
+        json={
+            "name": "Friend's Fund",
+            "institution": "external",
+            "kind": "external_investment",
+            "currency": "USD",
+            "external_ref": "trades",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["external_ref"] == "trades"
+
+    back_to_manual = client.put(
+        "/api/accounting/accounts/external:friends-fund",
+        json={"name": "Friend's Fund", "institution": "external", "kind": "external_investment", "currency": "USD"},
+    )
+    assert back_to_manual.status_code == 200
+    assert back_to_manual.json()["external_ref"] is None
 
 
 def test_get_supported_import_kinds_lists_registered_standardizers(client) -> None:

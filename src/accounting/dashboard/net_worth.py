@@ -77,12 +77,15 @@ def net_worth_summary(
     Virtual counterparty accounts (`income_source`/`expense_payee`,
     including the two uncategorized placeholders) are excluded entirely —
     their "balance" is just how much has passed through categorization,
-    never money that is anywhere. `external_investment` accounts never get
-    their balance from `postings` at all; it comes from
-    `external_investment_value_usd`, sourced by the caller from
-    `trades.dashboard.overview_cards` (see `api.py`) since this module has
-    no way to compute it and no business trying to — always treated as
-    USD, since `trades` has no multi-currency concept of its own.
+    never money that is anywhere. An `external_investment` account whose
+    `external_ref` is `"trades"` never gets its balance from `postings` at
+    all; it comes from `external_investment_value_usd`, sourced by the
+    caller from `trades.dashboard.overview_cards` (see `api.py`) since this
+    module has no way to compute it and no business trying to — always
+    treated as USD, since `trades` has no multi-currency concept of its
+    own. An `external_investment` account with no `external_ref` is a
+    manually-tracked one instead, and is valued the same way as any other
+    account — from its postings plus its opening balance.
 
     Parameters
     ----------
@@ -117,7 +120,7 @@ def net_worth_summary(
     opening_balances = opening_balances or {}
 
     def base_balance(account: Account) -> float:
-        if account.kind == "external_investment":
+        if account.kind == "external_investment" and account.external_ref == "trades":
             return external_investment_value_usd or 0.0
         balance = balance_by_account.get(account.account_id, 0.0)
         opening = opening_balances.get(account.account_id)

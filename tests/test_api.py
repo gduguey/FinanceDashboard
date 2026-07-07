@@ -59,6 +59,7 @@ def isolated_config(tmp_path, monkeypatch):
         cpi={"cache_dir": tmp_path / "cpi"},
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
         dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
+        credentials={"ibkr_credentials_path": tmp_path / "credentials.json"},
     )
     monkeypatch.setattr(trades_api.app.state, "config", config)
     monkeypatch.setattr(
@@ -243,6 +244,36 @@ def test_tax_settings_put_preserves_target_allocation(client) -> None:
         },
     )
     assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+
+
+def test_ibkr_settings_default_to_no_override(client) -> None:
+    body = client.get("/api/settings/ibkr").json()
+    assert body["token_set"] is False
+    assert body["query_id_set"] is False
+
+
+def test_ibkr_settings_put_then_get_round_trips(client) -> None:
+    put_response = client.put("/api/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
+    assert put_response.status_code == 200
+    assert put_response.json() == {"configured": True, "token_set": True, "query_id_set": True}
+    assert client.get("/api/settings/ibkr").json() == {"configured": True, "token_set": True, "query_id_set": True}
+
+
+def test_ibkr_settings_put_merges_a_partial_update(client) -> None:
+    client.put("/api/settings/ibkr", json={"token": "my-token"})
+    client.put("/api/settings/ibkr", json={"query_id": "99999"})
+    body = client.get("/api/settings/ibkr").json()
+    assert body["token_set"] is True
+    assert body["query_id_set"] is True
+
+
+def test_ibkr_settings_delete_clears_the_override(client) -> None:
+    client.put("/api/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
+    delete_response = client.delete("/api/settings/ibkr")
+    assert delete_response.status_code == 200
+    body = client.get("/api/settings/ibkr").json()
+    assert body["token_set"] is False
+    assert body["query_id_set"] is False
 
 
 def test_tax_report_returns_the_realized_gain_and_an_open_lot_preview(client) -> None:

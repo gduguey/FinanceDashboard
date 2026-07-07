@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { AllocationView } from '@/components/investments/AllocationView'
 import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
 import { DataQualityPanel } from '@/components/investments/DataQualityPanel'
@@ -18,19 +19,24 @@ function SectionTitle({ children }: { children: string }) {
   return <h2 className="text-sm font-medium text-muted-foreground">{children}</h2>
 }
 
+// Tagged `tab: 'dashboard'` — these anchors only exist while the Dashboard
+// tab is mounted, so `PageHeader` hides them the moment Reference is
+// active instead of leaving dead links in the header (see `PageHeader`'s
+// own module doc for why this is tagged rather than left implicit).
 const DASHBOARD_SECTIONS: PageHeaderSection[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'performance', label: 'Performance' },
-  { id: 'allocation', label: 'Allocation' },
-  { id: 'lots', label: 'Lots' },
+  { id: 'overview', label: 'Overview', tab: 'dashboard' },
+  { id: 'performance', label: 'Performance', tab: 'dashboard' },
+  { id: 'allocation', label: 'Allocation', tab: 'dashboard' },
+  { id: 'lots', label: 'Lots', tab: 'dashboard' },
 ]
-const TAXES_SECTION: PageHeaderSection = { id: 'taxes', label: 'Taxes' }
+const TAXES_SECTION: PageHeaderSection = { id: 'taxes', label: 'Taxes', tab: 'dashboard' }
 
 export function InvestmentsPage() {
   const { data: overview } = useOverview()
   const { data: taxSettings } = useTaxSettings()
   const taxEnabled = taxSettings?.tax_enabled ?? false
   const sections = taxEnabled ? [...DASHBOARD_SECTIONS, TAXES_SECTION] : DASHBOARD_SECTIONS
+  const [tab, setTab] = useState('dashboard')
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -39,10 +45,11 @@ export function InvestmentsPage() {
         actions={<SyncButton lastSyncedAt={overview?.last_synced_at ?? null} />}
         controls={<TaxSettingsControls />}
         sections={sections}
+        activeTab={tab}
       />
 
       <div className="mx-auto max-w-6xl space-y-6 px-8 py-8">
-        <Tabs defaultValue="dashboard">
+        <Tabs value={tab} onValueChange={setTab}>
           <TabsList>
             <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
             <TabsTrigger value="reference">Reference</TabsTrigger>

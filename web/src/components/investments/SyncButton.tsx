@@ -15,10 +15,11 @@ export function SyncButton({ lastSyncedAt }: { lastSyncedAt: string | null }) {
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-3">
-        <span className="text-xs text-muted-foreground">
-          {sync.isError
-            ? 'Sync failed'
-            : `Last synced ${formatRelativeTime(sync.data?.synced_at ?? lastSyncedAt)}`}
+        <span className={`text-xs ${sync.isError || progress.data?.error ? 'text-destructive' : 'text-muted-foreground'}`}>
+          {progress.data?.error ||
+            (sync.isError
+              ? 'Sync failed'
+              : `Last synced ${formatRelativeTime(sync.data?.synced_at ?? lastSyncedAt)}`)}
         </span>
         <Button variant="outline" size="sm" disabled={sync.isPending} onClick={() => sync.mutate()}>
           <RefreshCw className={sync.isPending ? 'animate-spin' : ''} />

@@ -7,6 +7,8 @@ import type {
   GrowthOf100Point,
   HysaRates,
   HysaSettings,
+  IbkrSettings,
+  IbkrSettingsUpdate,
   LedgerEvent,
   LotsTable,
   MonthlyPnl,
@@ -101,4 +103,12 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   taxReport: (asOf?: string) => request<TaxReport>(asOf ? `/api/tax/report?as_of=${asOf}` : '/api/tax/report'),
+  ibkrSettings: () => request<IbkrSettings>('/api/settings/ibkr'),
+  setIbkrSettings: (update: IbkrSettingsUpdate) =>
+    request<IbkrSettings>('/api/settings/ibkr', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    }),
+  clearIbkrSettings: () => request<IbkrSettings>('/api/settings/ibkr', { method: 'DELETE' }),
 }

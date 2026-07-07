@@ -4,6 +4,8 @@ import { CategoryDrilldownPie } from '@/components/accounting/CategoryDrilldownP
 import { IncomeExpenseChart } from '@/components/accounting/IncomeExpenseChart'
 import { SpendCurveChart } from '@/components/accounting/SpendCurveChart'
 import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
 import type { Account, CurrencyCode, Goal, GoalContribution, Posting, Tag } from '@/types/accounting'
 
@@ -61,6 +63,7 @@ export function DashboardTab({
 
   return (
     <div className="space-y-6">
+      {!hasAnyRealAccount(Object.values(accounts)) && <NoAccountsYetBanner />}
       <PeriodFilterBar filter={filter} accounts={accounts} tags={tags} postings={postings} />
       <CategoryDrilldownPie
         categoryTotals={categoryTotals ?? []}

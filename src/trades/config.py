@@ -277,6 +277,19 @@ class DashboardConfig(BaseModel):
     settings_path: Path = _REPO_ROOT / "data" / "trades" / "dashboard_settings.json"
 
 
+class CredentialOverridesConfig(BaseModel):
+    """Where credentials entered via the Settings page are persisted, instead of `.env`.
+
+    See `credentials.resolve_ibkr_credentials` — an override here takes
+    precedence over `.env` field-by-field, so entering just a query id
+    still lets a token already in `.env` resolve normally.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ibkr_credentials_path: Path = _REPO_ROOT / "data" / "trades" / "credentials.json"
+
+
 class AppConfig(BaseModel):
     """Every sub-config for the application, composed into one object."""
 
@@ -292,3 +305,4 @@ class AppConfig(BaseModel):
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    credentials: CredentialOverridesConfig = Field(default_factory=CredentialOverridesConfig)

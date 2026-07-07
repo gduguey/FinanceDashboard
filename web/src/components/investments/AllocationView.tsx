@@ -14,7 +14,7 @@ import { useAllocation, useSetTargetAllocation, useTargetAllocation } from '@/ho
 // type it — "Save" only persists it for next time, it isn't required to
 // see the effect.
 export function AllocationView() {
-  const { data, isLoading } = useAllocation()
+  const { data, isLoading, error } = useAllocation()
   const { data: targets } = useTargetAllocation()
   const setTargets = useSetTargetAllocation()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -49,6 +49,7 @@ export function AllocationView() {
         description="Current value vs. target, by symbol (including cash)"
         isLoading={isLoading}
         isEmpty={!liveRows?.length}
+        error={error?.message}
       >
         <BarChart data={liveRows} layout="vertical" margin={{ left: 8, right: 24, top: 8 }}>
           <CartesianGrid horizontal={false} stroke="var(--border)" />

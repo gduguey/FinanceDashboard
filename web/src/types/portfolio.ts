@@ -182,6 +182,17 @@ export interface BenchmarkSettingUpdate {
   symbol_override: string | null
 }
 
+export interface IbkrSettings {
+  configured: boolean
+  token_set: boolean
+  query_id_set: boolean
+}
+
+export interface IbkrSettingsUpdate {
+  token?: string
+  query_id?: string
+}
+
 export interface SymbolSearchResult {
   symbol: string
   name: string
