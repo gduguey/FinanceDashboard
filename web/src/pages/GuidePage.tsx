@@ -124,7 +124,7 @@ export function GuidePage() {
             Read this once, and the rest of the app should feel obvious
           </p>
           <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-            Every page here — Import, Accounting, Budget, Goals, Net Worth — is a different view onto one shared
+            Every page here — Import, Insights, Transactions, Budget, Goals, Net Worth — is a different view onto one shared
             record of what actually happened in your real accounts. Nothing is duplicated or separately maintained:
             change how a transaction is categorized in one place, and every chart, budget, and goal that touches it
             updates the same way. This page walks through that shared foundation once, end to end, so the
@@ -141,8 +141,8 @@ export function GuidePage() {
             <div>
               <p className="font-semibold text-foreground">Looking for Investments?</p>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                Everything below this point is about the shared cash-accounts side of the app — Import, Accounting,
-                Budget, Goals. Investments isn't one more topic in that same story: it's a separate module tracking
+                Everything below this point is about the shared cash-accounts side of the app — Import, Insights,
+                Transactions, Budget, Goals. Investments isn't one more topic in that same story: it's a separate module tracking
                 brokerage holdings, lots, and market performance, on its own page with its own explanation. The only
                 connection between the two is one placeholder account kind,{' '}
                 <code className="rounded bg-muted px-1 py-0.5 text-xs not-italic">external_investment</code>,
@@ -155,13 +155,14 @@ export function GuidePage() {
 
         <Section id="overview" icon={Compass} title="Overview">
           <p>
-            All of the pages in this app — <span className="font-medium text-foreground">Accounting</span>,{' '}
+            All of the pages in this app — <span className="font-medium text-foreground">Insights</span>,{' '}
+            <span className="font-medium text-foreground">Transactions</span>,{' '}
             <span className="font-medium text-foreground">Budget</span>,{' '}
             <span className="font-medium text-foreground">Goals</span>, and{' '}
             <span className="font-medium text-foreground">Net Worth</span> — work off exactly the same underlying
             data: the transactions you import on the <span className="font-medium text-foreground">Import</span>{' '}
             page. There's no separate "budget data" or "goals data" sitting off to the side — a budget is just a
-            target number laid over the same transactions the Accounting page shows you, and a goal's balance is
+            target number laid over the same transactions the Transactions page shows you, and a goal's balance is
             just a running total of money you've told the app to set aside from that same pool. Once data is in,
             every other page is a lens on it, not a separate copy of it.
           </p>
@@ -345,7 +346,7 @@ export function GuidePage() {
             landing within a configurable number of days of each other (a deposit is checked against postings some
             number of days <em>before</em> it; a payment is checked against postings some number of days{' '}
             <em>after</em> it, since either side of a transfer can be the one that clears first). Matches are shown
-            as suggestions on the Accounting page, each with a proposed rule for both directions, fully editable
+            as suggestions on the Rules page's Suggestions tab, each with a proposed rule for both directions, fully editable
             before you add either one — the heuristic can be wrong (two unrelated transactions that happen to share
             an amount), so nothing is ever applied automatically.
           </p>

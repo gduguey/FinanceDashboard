@@ -10,7 +10,7 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageHeader, type PageHeaderSection } from '@/components/layout/PageHeader'
 import { AccountCompositionBar } from '@/components/accounting/AccountCompositionBar'
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
@@ -262,6 +262,19 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
   )
 }
 
+// Same anchor-nav pattern as Investments' own Dashboard tab — one long
+// scroll broken into thematic, deep-linkable sections rather than tabs,
+// since every block here is part of the same "net worth as of now" view.
+const SECTIONS: PageHeaderSection[] = [
+  { id: 'summary', label: 'Summary' },
+  { id: 'history', label: 'History' },
+  { id: 'allocation', label: 'Allocation' },
+  { id: 'accounts', label: 'Accounts' },
+  { id: 'other-assets', label: 'Other assets' },
+  { id: 'interest', label: 'Interest' },
+  { id: 'exchange-rates', label: 'Exchange rates' },
+]
+
 function daysAgoIsoDate(days: number): string {
   const date = new Date()
   date.setDate(date.getDate() - days)
@@ -292,6 +305,7 @@ export function NetWorthPage() {
             <ExchangeRateSyncButton />
           </>
         }
+        sections={SECTIONS}
       />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
@@ -300,7 +314,7 @@ export function NetWorthPage() {
         ) : (
           <>
             {!hasAnyRealAccount(data.accounts) && <NoAccountsYetBanner />}
-            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <section id="summary" className="scroll-section grid grid-cols-2 gap-4 lg:grid-cols-4">
               <StatCard
                 label="Net worth"
                 value={formatCurrency(data.net_worth, displayCurrency)}
@@ -318,36 +332,49 @@ export function NetWorthPage() {
                 colorClass={signColor(-data.liabilities)}
               />
               <StatCard label="Other assets" value={formatCurrency(data.other_assets_total, displayCurrency)} />
-            </div>
+            </section>
 
-            <NetWorthHistoryChart displayCurrency={displayCurrency} />
-            <NetWorthAllocationPie
-              accounts={data.accounts}
-              otherAssets={data.other_assets}
-              displayCurrency={displayCurrency}
-              ratesToBase={ratesToBase}
-            />
+            <section id="history" className="scroll-section">
+              <NetWorthHistoryChart displayCurrency={displayCurrency} />
+            </section>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>Accounts</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <AccountCompositionBar
-                  accounts={data.accounts}
-                  otherAssets={data.other_assets}
-                  displayCurrency={displayCurrency}
-                  ratesToBase={ratesToBase}
-                />
-                <AccountsTable accounts={data.accounts} otherAssets={data.other_assets} onRemoveOtherAsset={removeOtherAsset} />
-              </CardContent>
-            </Card>
+            <section id="allocation" className="scroll-section">
+              <NetWorthAllocationPie
+                accounts={data.accounts}
+                otherAssets={data.other_assets}
+                displayCurrency={displayCurrency}
+                ratesToBase={ratesToBase}
+              />
+            </section>
 
-            <AddOtherAssetForm otherAssets={data.other_assets} />
+            <section id="accounts" className="scroll-section">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Accounts</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <AccountCompositionBar
+                    accounts={data.accounts}
+                    otherAssets={data.other_assets}
+                    displayCurrency={displayCurrency}
+                    ratesToBase={ratesToBase}
+                  />
+                  <AccountsTable accounts={data.accounts} otherAssets={data.other_assets} onRemoveOtherAsset={removeOtherAsset} />
+                </CardContent>
+              </Card>
+            </section>
 
-            <InterestTrackingPanel />
+            <section id="other-assets" className="scroll-section">
+              <AddOtherAssetForm otherAssets={data.other_assets} />
+            </section>
 
-            <ExchangeRatePanel />
+            <section id="interest" className="scroll-section">
+              <InterestTrackingPanel />
+            </section>
+
+            <section id="exchange-rates" className="scroll-section">
+              <ExchangeRatePanel />
+            </section>
           </>
         )}
       </div>

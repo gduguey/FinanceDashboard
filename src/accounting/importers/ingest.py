@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.importers.canonical.csv import standardize_canonical_csv, standardize_canonical_excel, SkippedRowsInfo
+from accounting.importers.canonical.csv import SkippedRowsInfo, standardize_canonical_csv, standardize_canonical_excel
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
@@ -230,6 +230,8 @@ def ingest_csv(
     ------
     UnsupportedImportError
         If no standardizer is registered for this institution/account-kind pair.
+    ValueError
+        If both the bank-specific and canonical standardizers fail to parse the file.
     """
     standardizer = _STANDARDIZERS.get((institution, account_kind))
     if standardizer is None:

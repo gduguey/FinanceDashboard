@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react'
 import { CheckCircle2, Upload, X, XCircle } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TaxonomyTable } from '@/components/accounting/CategoriesTab'
+import { DuplicateSuggestionsPanel } from '@/components/accounting/DuplicateSuggestionsPanel'
 import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -16,7 +17,6 @@ import {
   useCanonicalImportPreview,
   useImportCanonicalCsv,
   useImportCsv,
-  usePostings,
   useRebuildLedger,
   useSupportedImportKinds,
 } from '@/hooks/useAccountingData'
@@ -121,7 +121,7 @@ function NewCategoriesSummary({
         {expense.length > 0 && <TaxonomyTable title="Expense" taxonomy={expense} />}
         {income.length > 0 && <TaxonomyTable title="Income" taxonomy={income} />}
       </div>
-      <Link to="/accounting?tab=categories" className="inline-block text-xs text-primary underline-offset-4 hover:underline">
+      <Link to="/categories" className="inline-block text-xs text-primary underline-offset-4 hover:underline">
         Review or edit these in Category taxonomy →
       </Link>
     </div>
@@ -268,8 +268,9 @@ export function ImportPage() {
   const [categoryValidation, setCategoryValidation] = useState<{ entry: PendingCsvImport; categories: Category[] } | null>(
     null,
   )
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') ?? 'import'
   const { data: store } = useAccountingStore()
-  const { data: postings } = usePostings()
   const { data: supportedImportKindsList } = useSupportedImportKinds()
   const importCsv = useImportCsv()
   const importCanonicalCsv = useImportCanonicalCsv()
@@ -405,233 +406,244 @@ export function ImportPage() {
   function accountsForInstitution(institution: string): Account[] {
     return registeredAccounts.filter((account) => account.institution === institution).sort((a, b) => a.name.localeCompare(b.name))
   }
-  const accountIdsWithPostings = new Set((postings ?? []).map((posting) => posting.account_id))
 
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader title="Import" />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
-        <div
-          className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border px-6 py-14 text-center text-sm text-muted-foreground"
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => {
-            event.preventDefault()
-            if (event.dataTransfer.files.length) void handleFiles(event.dataTransfer.files)
-          }}
-        >
-          <Upload className="size-6 text-muted-foreground/60" />
-          Drag and drop up to {MAX_FILES_PER_DROP} bank CSV or Excel exports here
-          <label className="cursor-pointer text-primary underline-offset-4 hover:underline">
-            or browse
-            <input
-              type="file"
-              accept=".csv,.CSV,.xlsx,.xls"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                if (event.target.files?.length) void handleFiles(event.target.files)
-                event.target.value = ''
-              }}
-            />
-          </label>
-        </div>
+        <Tabs value={tab} onValueChange={(value) => setSearchParams(value === 'import' ? {} : { tab: value })}>
+          <TabsList>
+            <TabsTrigger value="import">Import statements</TabsTrigger>
+            <TabsTrigger value="paystub">Paystub reconciliation</TabsTrigger>
+            <TabsTrigger value="duplicates">Duplicates</TabsTrigger>
+          </TabsList>
 
-        {pending.map((entry) => (
-          <div key={entry.key} className="relative flex flex-wrap items-end gap-3 rounded-lg border border-border p-4">
-            <button
-              type="button"
-              onClick={() => dismissEntry(entry.key)}
-              disabled={entry.status === 'importing'}
-              className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-              title="Abandon this import"
-            >
-              <X className="size-3.5" />
-            </button>
-            <div className="min-w-0 flex-1 basis-full text-sm font-medium text-foreground">{entry.file.name}</div>
-
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Institution
-              <Select
-                value={entry.institution}
-                onValueChange={(institution) =>
-                  institution &&
-                  updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '', isNewAccount: false })
-                }
-              >
-                <SelectTrigger size="sm" className="w-36">
-                  <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
-                </SelectTrigger>
-                <SelectContent>
-                  {institutions.map((institution) => (
-                    <SelectItem key={institution} value={institution}>
-                      {institution}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Account name
-              <Select
-                value={entry.accountId}
-                onValueChange={(accountId) => {
-                  const account = accountId ? store?.accounts[accountId] : undefined
-                  if (account) {
-                    updateEntry(entry.key, {
-                      accountId: account.account_id,
-                      accountKind: account.kind,
-                      name: account.name,
-                      currency: account.currency,
-                      parentAccountId: account.parent_account_id,
-                      isNewAccount: false,
-                    })
-                  }
+          <TabsContent value="import" className="space-y-6">
+          <div
+            className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border px-6 py-14 text-center text-sm text-muted-foreground"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              if (event.dataTransfer.files.length) void handleFiles(event.dataTransfer.files)
+            }}
+          >
+            <Upload className="size-6 text-muted-foreground/60" />
+            Drag and drop up to {MAX_FILES_PER_DROP} bank CSV or Excel exports here
+            <label className="cursor-pointer text-primary underline-offset-4 hover:underline">
+              or browse
+              <input
+                type="file"
+                accept=".csv,.CSV,.xlsx,.xls"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files?.length) void handleFiles(event.target.files)
+                  event.target.value = ''
                 }}
-                disabled={!entry.institution}
-              >
-                <SelectTrigger size="sm" className="w-52">
-                  <SelectValue
-                    placeholder="Choose an account…"
-                    items={{
-                      ...Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name])),
-                      ...(entry.isNewAccount ? { [entry.accountId]: `${entry.name} (new)` } : {}),
-                    }}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {entry.isNewAccount && (
-                    <SelectItem value={entry.accountId}>{entry.name} (new)</SelectItem>
-                  )}
-                  {accountsForInstitution(entry.institution).map((account) => (
-                    <SelectItem key={account.account_id} value={account.account_id}>
-                      {account.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              />
             </label>
+          </div>
 
-            {entry.institution &&
-              entry.accountKind &&
-              !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Date order
-                  <Select
-                    value={entry.dateOrder ?? ''}
-                    onValueChange={(value) => updateEntry(entry.key, { dateOrder: (value || undefined) as 'MDY' | 'DMY' | undefined })}
-                  >
-                    <SelectTrigger size="sm" className="w-40">
-                      <SelectValue placeholder="Auto (unambiguous)" items={DATE_ORDER_TRIGGER_LABELS} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(DATE_ORDER_ITEMS).map(([value, label]) => (
-                        <SelectItem key={value} value={value}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-              )}
+          {pending.map((entry) => (
+            <div key={entry.key} className="relative flex flex-wrap items-end gap-3 rounded-lg border border-border p-4">
+              <button
+                type="button"
+                onClick={() => dismissEntry(entry.key)}
+                disabled={entry.status === 'importing'}
+                className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+                title="Abandon this import"
+              >
+                <X className="size-3.5" />
+              </button>
+              <div className="min-w-0 flex-1 basis-full text-sm font-medium text-foreground">{entry.file.name}</div>
 
-            <Button
-              size="sm"
-              disabled={
-                entry.status === 'importing' ||
-                entry.status === 'done' ||
-                !entry.institution ||
-                !entry.accountKind ||
-                !entry.accountId
-              }
-              onClick={() => confirmCsvImport(entry)}
-            >
-              Import
-            </Button>
-            {entry.status === 'importing' && <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />}
+              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                Institution
+                <Select
+                  value={entry.institution}
+                  onValueChange={(institution) =>
+                    institution &&
+                    updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '', isNewAccount: false })
+                  }
+                >
+                  <SelectTrigger size="sm" className="w-36">
+                    <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {institutions.map((institution) => (
+                      <SelectItem key={institution} value={institution}>
+                        {institution}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
 
-            {entry.isNewAccount && (
-              <p className="basis-full text-xs text-muted-foreground">
-                This account isn't registered yet — importing will create "{entry.name}" automatically.
-              </p>
-            )}
-            {entry.institution && !entry.isNewAccount && accountsForInstitution(entry.institution).length === 0 ? (
-              <p className="basis-full text-xs text-amber-600">
-                No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
-              </p>
-            ) : null}
-            {entry.institution &&
-              entry.accountKind &&
-              !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) &&
-              entry.status === 'pending' && (
+              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                Account name
+                <Select
+                  value={entry.accountId}
+                  onValueChange={(accountId) => {
+                    const account = accountId ? store?.accounts[accountId] : undefined
+                    if (account) {
+                      updateEntry(entry.key, {
+                        accountId: account.account_id,
+                        accountKind: account.kind,
+                        name: account.name,
+                        currency: account.currency,
+                        parentAccountId: account.parent_account_id,
+                        isNewAccount: false,
+                      })
+                    }
+                  }}
+                  disabled={!entry.institution}
+                >
+                  <SelectTrigger size="sm" className="w-52">
+                    <SelectValue
+                      placeholder="Choose an account…"
+                      items={{
+                        ...Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name])),
+                        ...(entry.isNewAccount ? { [entry.accountId]: `${entry.name} (new)` } : {}),
+                      }}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {entry.isNewAccount && (
+                      <SelectItem value={entry.accountId}>{entry.name} (new)</SelectItem>
+                    )}
+                    {accountsForInstitution(entry.institution).map((account) => (
+                      <SelectItem key={account.account_id} value={account.account_id}>
+                        {account.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+
+              {entry.institution &&
+                entry.accountKind &&
+                !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    Date order
+                    <Select
+                      value={entry.dateOrder ?? ''}
+                      onValueChange={(value) => updateEntry(entry.key, { dateOrder: (value || undefined) as 'MDY' | 'DMY' | undefined })}
+                    >
+                      <SelectTrigger size="sm" className="w-40">
+                        <SelectValue placeholder="Auto (unambiguous)" items={DATE_ORDER_TRIGGER_LABELS} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(DATE_ORDER_ITEMS).map(([value, label]) => (
+                          <SelectItem key={value} value={value}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                )}
+
+              <Button
+                size="sm"
+                disabled={
+                  entry.status === 'importing' ||
+                  entry.status === 'done' ||
+                  !entry.institution ||
+                  !entry.accountKind ||
+                  !entry.accountId
+                }
+                onClick={() => confirmCsvImport(entry)}
+              >
+                Import
+              </Button>
+              {entry.status === 'importing' && <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />}
+
+              {entry.isNewAccount && (
                 <p className="basis-full text-xs text-muted-foreground">
-                  No dedicated importer for {entry.institution} — this will go through the generic CSV parser, which
-                  looks for Date/Description/Amount (or Debit/Credit) columns and guesses the date and number format.
+                  This account isn't registered yet — importing will create "{entry.name}" automatically.
                 </p>
               )}
+              {entry.institution && !entry.isNewAccount && accountsForInstitution(entry.institution).length === 0 ? (
+                <p className="basis-full text-xs text-amber-600">
+                  No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
+                </p>
+              ) : null}
+              {entry.institution &&
+                entry.accountKind &&
+                !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) &&
+                entry.status === 'pending' && (
+                  <p className="basis-full text-xs text-muted-foreground">
+                    No dedicated importer for {entry.institution} — this will go through the generic CSV parser, which
+                    looks for Date/Description/Amount (or Debit/Credit) columns and guesses the date and number format.
+                  </p>
+                )}
 
-            {entry.status === 'done' && (
-              <div className="basis-full space-y-2">
-                <span className="flex items-center gap-1 text-xs text-emerald-600">
-                  <CheckCircle2 className="size-3.5" /> {entry.message}
-                </span>
-                {entry.newCategories && entry.newCategories.length > 0 && store && (
-                  <NewCategoriesSummary newCategories={entry.newCategories} allCategories={store.categories} />
-                )}
-              </div>
-            )}
-            {entry.status === 'error' && (
-              <div className="basis-full space-y-2">
-                <span className="flex items-start gap-1 text-xs text-destructive">
-                  <XCircle className="mt-0.5 size-3.5 shrink-0" /> {entry.message}
-                </span>
-                {!supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
-                  <div className="flex items-end gap-2">
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Separator
-                      <Select
-                        value={entry.separator ?? ''}
-                        onValueChange={(value) => updateEntry(entry.key, { separator: value || undefined })}
-                      >
-                        <SelectTrigger size="sm" className="w-28">
-                          <SelectValue placeholder="Auto-detect" items={SEPARATOR_ITEMS} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {Object.entries(SEPARATOR_ITEMS).map(([value, label]) => (
-                            <SelectItem key={value} value={value}>
-                              {label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </label>
-                    <Button size="sm" variant="outline" onClick={() => confirmCsvImport(entry)}>
-                      Retry
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
+              {entry.status === 'done' && (
+                <div className="basis-full space-y-2">
+                  <span className="flex items-center gap-1 text-xs text-emerald-600">
+                    <CheckCircle2 className="size-3.5" /> {entry.message}
+                  </span>
+                  {entry.newCategories && entry.newCategories.length > 0 && store && (
+                    <NewCategoriesSummary newCategories={entry.newCategories} allCategories={store.categories} />
+                  )}
+                </div>
+              )}
+              {entry.status === 'error' && (
+                <div className="basis-full space-y-2">
+                  <span className="flex items-start gap-1 text-xs text-destructive">
+                    <XCircle className="mt-0.5 size-3.5 shrink-0" /> {entry.message}
+                  </span>
+                  {!supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
+                    <div className="flex items-end gap-2">
+                      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                        Separator
+                        <Select
+                          value={entry.separator ?? ''}
+                          onValueChange={(value) => updateEntry(entry.key, { separator: value || undefined })}
+                        >
+                          <SelectTrigger size="sm" className="w-28">
+                            <SelectValue placeholder="Auto-detect" items={SEPARATOR_ITEMS} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Object.entries(SEPARATOR_ITEMS).map(([value, label]) => (
+                              <SelectItem key={value} value={value}>
+                                {label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </label>
+                      <Button size="sm" variant="outline" onClick={() => confirmCsvImport(entry)}>
+                        Retry
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div className="flex flex-col items-center gap-2 border-t border-border pt-6">
+            <Button variant="outline" size="sm" onClick={() => rebuild.mutate()} disabled={rebuild.isPending}>
+              Rebuild ledger from raw archives
+            </Button>
+            {rebuild.isPending && <LoadingProgressBar step="Rebuilding ledger from raw archives…" />}
+            <p className="max-w-md text-center text-xs text-muted-foreground">
+              Recomputes every posting from every archived raw statement — use this to recover if the derived ledger is
+              ever wrong or corrupted; nothing you've imported is ever lost.
+            </p>
           </div>
-        ))}
+          </TabsContent>
 
-        <div className="flex flex-col items-center gap-2 border-t border-border pt-6">
-          <Button variant="outline" size="sm" onClick={() => rebuild.mutate()} disabled={rebuild.isPending}>
-            Rebuild ledger from raw archives
-          </Button>
-          {rebuild.isPending && <LoadingProgressBar step="Rebuilding ledger from raw archives…" />}
-          <p className="max-w-md text-center text-xs text-muted-foreground">
-            Recomputes every posting from every archived raw statement — use this to recover if the derived ledger is
-            ever wrong or corrupted; nothing you've imported is ever lost.
-          </p>
-        </div>
+          <TabsContent value="paystub">
+            <PaystubReconciliationCard />
+          </TabsContent>
 
-        <PaystubReconciliationCard />
-
-        {store && (
-          <AccountsManagementTable accounts={store.accounts} accountIdsWithPostings={accountIdsWithPostings} />
-        )}
+          <TabsContent value="duplicates">
+            {store && <DuplicateSuggestionsPanel accounts={store.accounts} existingMerges={store.posting_merges} />}
+          </TabsContent>
+        </Tabs>
       </div>
 
       {categoryValidation && (

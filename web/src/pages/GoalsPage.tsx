@@ -46,14 +46,21 @@ function monthBounds(month: string): { start: string; end: string; dayBeforeStar
 function GoalListSection({
   goals,
   defaultCurrency,
+  selectedGoalId,
+  onSelectGoal,
 }: {
   goals: Record<string, import('@/types/accounting').Goal>
   defaultCurrency: CurrencyCode
+  // Doubles as "which row is expanded for inline editing" — a click both
+  // selects the goal (for the detail chart below) and opens its edit
+  // fields, so a master-detail list and a table's own row editor don't
+  // need two separate pieces of selection state.
+  selectedGoalId: string | null
+  onSelectGoal: (goalId: string | null) => void
 }) {
   const setGoals = useSetGoals()
   const { data: currencies } = useCurrencies()
   const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
-  const [expandedGoalId, setExpandedGoalId] = useState<string | null>(null)
   const goalList = Object.values(goals).sort((a, b) => a.created_at.localeCompare(b.created_at))
 
   function update(goalId: string, patch: Partial<import('@/types/accounting').Goal>) {
@@ -62,7 +69,7 @@ function GoalListSection({
   function remove(goalId: string) {
     const { [goalId]: _removed, ...rest } = goals
     setGoals.mutate(rest)
-    if (expandedGoalId === goalId) setExpandedGoalId(null)
+    if (selectedGoalId === goalId) onSelectGoal(null)
   }
   function add() {
     const goalId = `goal:${Date.now()}`
@@ -80,7 +87,7 @@ function GoalListSection({
         created_at: new Date().toISOString(),
       },
     })
-    setExpandedGoalId(goalId)
+    onSelectGoal(goalId)
   }
 
   return (
@@ -109,12 +116,12 @@ function GoalListSection({
             </TableHeader>
             <TableBody>
               {goalList.map((goal) => {
-                const expanded = expandedGoalId === goal.goal_id
+                const expanded = selectedGoalId === goal.goal_id
                 return (
                   <Fragment key={goal.goal_id}>
                     <TableRow
-                      className="cursor-pointer"
-                      onClick={() => setExpandedGoalId(expanded ? null : goal.goal_id)}
+                      className={`cursor-pointer ${expanded ? 'bg-muted/40' : ''}`}
+                      onClick={() => onSelectGoal(expanded ? null : goal.goal_id)}
                     >
                       <TableCell>
                         {expanded ? (
@@ -312,7 +319,14 @@ export function GoalsPage() {
             <TabsTrigger value="automations">Automations</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="space-y-6">
-            <GoalListSection goals={store.goals} defaultCurrency={displayCurrency} />
+            <GoalListSection
+              goals={store.goals}
+              defaultCurrency={displayCurrency}
+              selectedGoalId={selectedGoalId}
+              onSelectGoal={setSelectedGoalId}
+            />
+
+            {selectedGoal && <GoalDetailChart goal={selectedGoal} contributions={contributionList} />}
 
             <div className="flex items-center gap-3">
               <Select value={mode} onValueChange={(value) => value && setMode(value as ViewMode)}>
@@ -341,23 +355,6 @@ export function GoalsPage() {
               mode={mode}
               displayCurrency={displayCurrency}
             />
-
-            {goalList.length > 0 && (
-              <Tabs value={selectedGoal?.goal_id} onValueChange={setSelectedGoalId}>
-                <TabsList>
-                  {goalList.map((goal) => (
-                    <TabsTrigger key={goal.goal_id} value={goal.goal_id}>
-                      {goal.name}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-                {goalList.map((goal) => (
-                  <TabsContent key={goal.goal_id} value={goal.goal_id}>
-                    <GoalDetailChart goal={goal} contributions={contributionList} />
-                  </TabsContent>
-                ))}
-              </Tabs>
-            )}
 
             <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />
           </TabsContent>
