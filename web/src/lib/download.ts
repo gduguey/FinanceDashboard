@@ -46,6 +46,24 @@ export function downloadCsv(rows: object[], filename: string): void {
   triggerDownload(new Blob([toCsv(rows)], { type: 'text/csv' }), filename)
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Firing several `downloadCsv` calls back to back in the same tick (e.g.
+// Settings' "Lots" export, which is really three files: open lots, closed
+// lots, symbol rollup) isn't reliable — browsers treat a burst of
+// programmatic downloads from one click as suspicious and silently drop all
+// but one of them, with no error either side can catch. Spacing each one out
+// gives the browser room to actually start the previous download before the
+// next one fires.
+export async function downloadMultipleCsv(files: { rows: object[]; filename: string }[]): Promise<void> {
+  for (const [index, file] of files.entries()) {
+    if (index > 0) await sleep(300)
+    downloadCsv(file.rows, file.filename)
+  }
+}
+
 // For an endpoint that already returns a file (a `.zip` with its own
 // `Content-Disposition: attachment` header, e.g. the raw-statements
 // exports) — no fetch/blob needed, the browser handles the download

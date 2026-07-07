@@ -32,3 +32,6 @@ AGENTS.md
 CLAUDE.md
 
 info/
+
+# Personal server-setup notes — contain live secrets/tokens, never commit
+docs/server-setup/

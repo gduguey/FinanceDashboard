@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { api } from '@/lib/api'
 import { accountingApi } from '@/lib/accountingApi'
-import { downloadCsv, downloadFromUrl, downloadJson, exportStamp } from '@/lib/download'
+import { downloadCsv, downloadFromUrl, downloadJson, downloadMultipleCsv, exportStamp } from '@/lib/download'
 import {
   useClearIbkrSettings,
   useIbkrSettings,
@@ -334,9 +334,11 @@ function ExportTab() {
                 onExport: withErrorHandling('lots', async () => {
                   const lots = await api.lots()
                   const stamp = exportStamp()
-                  downloadCsv(lots.open_lots, `investments-lots-open-${stamp}.csv`)
-                  downloadCsv(lots.closed_lots, `investments-lots-closed-${stamp}.csv`)
-                  downloadCsv(lots.symbol_rollup, `investments-lots-symbol-rollup-${stamp}.csv`)
+                  await downloadMultipleCsv([
+                    { rows: lots.open_lots, filename: `investments-lots-open-${stamp}.csv` },
+                    { rows: lots.closed_lots, filename: `investments-lots-closed-${stamp}.csv` },
+                    { rows: lots.symbol_rollup, filename: `investments-lots-symbol-rollup-${stamp}.csv` },
+                  ])
                 }),
               },
             ]}
