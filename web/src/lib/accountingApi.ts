@@ -48,6 +48,7 @@ import type {
   Tag,
   TransferRule,
   TransferSuggestion,
+  VerifyResult,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
@@ -105,6 +106,8 @@ export const accountingApi = {
       body: JSON.stringify(update),
     }),
   clearLlmSettings: () => request<LlmSettings>('/api/accounting/settings/llm', { method: 'DELETE' }),
+  verifyLlmSettings: (provider: 'gemini' | 'mistral') =>
+    request<VerifyResult>(`/api/accounting/settings/llm/verify?provider=${provider}`, { method: 'POST' }),
   syncExchangeRates: () => request<ExchangeRateSyncResult>('/api/accounting/sync-exchange-rates', { method: 'POST' }),
   currentExchangeRate: (currency: string) =>
     request<CurrentExchangeRate>(`/api/accounting/exchange-rates/current${queryString({ currency })}`),

@@ -42,3 +42,32 @@ class GeminiProvider:
         except Exception as error:
             raise LLMProviderError(str(error)) from error
         return response.text or ""
+
+
+def verify_gemini_key(api_key: str) -> None:
+    """Check that an API key actually authenticates, without generating any content.
+
+    `models.list()` is a free, read-only call — validates the key the same
+    way `complete()`'s first real call would, without spending a
+    completion on a key that might not even work.
+
+    Parameters
+    ----------
+    api_key
+        The Gemini API key to check.
+
+    Raises
+    ------
+    LLMProviderError
+        If `google-genai` isn't installed, or the key is rejected.
+    """
+    try:
+        from google import genai  # noqa: PLC0415
+    except ImportError as error:
+        message = "google-genai is not installed"
+        raise LLMProviderError(message) from error
+    try:
+        client = genai.Client(api_key=api_key)
+        next(iter(client.models.list(config={"page_size": 1})), None)
+    except Exception as error:
+        raise LLMProviderError(str(error)) from error

@@ -5,7 +5,8 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Skeleton } from '@/components/ui/skeleton'
 import { colorForIndex } from '@/lib/colors'
 import { formatCurrency, formatCurrencyCompact, formatDate } from '@/lib/format'
-import { useNetWorthHistory, useNetWorthHistoryByAccount } from '@/hooks/useAccountingData'
+import { useAccountingStore, useNetWorthHistory, useNetWorthHistoryByAccount } from '@/hooks/useAccountingData'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { CurrencyCode, NetWorthHistoryByAccountPoint } from '@/types/accounting'
 
 function startOfHistoryWindow(): string {
@@ -57,6 +58,14 @@ export function NetWorthHistoryChart({
   const byAccount = useNetWorthHistoryByAccount(start, TODAY, 1, displayCurrency, detailed && !compact)
   const isLoading = detailed && !compact ? byAccount.isLoading : aggregate.isLoading
 
+  // The backend always returns one point per day in the window — even with
+  // zero accounts, that's 365 rows of `net_worth: 0`, never an empty array.
+  // So "no data" has to be checked against real accounts existing, not
+  // against this response's length, or the chart renders a flat zero line
+  // with no explanation instead of the "No data yet" message below.
+  const { data: store } = useAccountingStore()
+  const hasAccounts = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
+
   const { data: detailedData, accounts } = useMemo(() => pivotByAccount(byAccount.data ?? []), [byAccount.data])
 
   function toggleAccount(id: string) {
@@ -69,7 +78,7 @@ export function NetWorthHistoryChart({
   }
 
   const showDetailed = detailed && !compact
-  const isEmpty = showDetailed ? !detailedData.length : !aggregate.data?.length
+  const isEmpty = !hasAccounts || (showDetailed ? !detailedData.length : !aggregate.data?.length)
   const error = showDetailed ? byAccount.error : aggregate.error
   const chartData = showDetailed ? detailedData : (aggregate.data ?? [])
   const plotHeight = compact ? 96 : 288

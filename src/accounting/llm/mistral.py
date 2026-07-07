@@ -47,3 +47,31 @@ class MistralProvider:
             return ""
         content = response.choices[0].message.content
         return content if isinstance(content, str) else ""
+
+
+def verify_mistral_key(api_key: str) -> None:
+    """Check that an API key actually authenticates, without spending a completion.
+
+    `models.list()` is a free, read-only call — validates the key the same
+    way `complete()`'s first real call would, without spending a
+    completion on a key that might not even work.
+
+    Parameters
+    ----------
+    api_key
+        The Mistral API key to check.
+
+    Raises
+    ------
+    LLMProviderError
+        If `mistralai` isn't installed, or the key is rejected.
+    """
+    try:
+        from mistralai.client import Mistral  # noqa: PLC0415
+    except ImportError as error:
+        message = "mistralai is not installed"
+        raise LLMProviderError(message) from error
+    try:
+        Mistral(api_key=api_key).models.list()
+    except Exception as error:
+        raise LLMProviderError(str(error)) from error
