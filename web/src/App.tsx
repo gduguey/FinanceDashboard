@@ -1,5 +1,6 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router-dom'
+import { Toaster, toast } from 'sonner'
 import { ErrorBoundary } from '@/components/layout/ErrorBoundary'
 import { OnboardingModal } from '@/components/layout/OnboardingModal'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -27,6 +28,14 @@ import { TransactionsPage } from '@/pages/TransactionsPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: false } },
+  // One place, not one per button: every `useMutation` in the app
+  // surfaces its failure here automatically, unless it opts out with its
+  // own `onError`. Without this, a failed save just silently doesn't
+  // happen — the exact "bad key still shows Connected" confusion a
+  // permission error on the VM caused, with no error anywhere in the UI.
+  mutationCache: new MutationCache({
+    onError: (error) => toast.error(error instanceof Error ? error.message : 'Something went wrong'),
+  }),
 })
 
 // Needs to render *inside* QueryClientProvider to call useAccountingStore,
@@ -62,6 +71,7 @@ function AppShell() {
         </Routes>
       </ErrorBoundary>
       <OnboardingModal hasAnyData={hasAnyData} />
+      <Toaster position="bottom-right" richColors />
     </div>
   )
 }
