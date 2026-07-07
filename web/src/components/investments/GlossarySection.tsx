@@ -31,7 +31,14 @@ const SECTIONS: { title: string; icon: typeof TrendingUp; terms: GlossaryTerm[] 
   {
     title: 'Benchmarks & counterfactuals',
     icon: GitCompare,
-    terms: ['counterfactual', 'benchmarkIndex', 'benchmarkCounterfactual', 'hysaCounterfactual', 'dollarAlphaHysa'],
+    terms: [
+      'counterfactual',
+      'benchmarkIndex',
+      'benchmarkCounterfactual',
+      'hysaCounterfactual',
+      'cashSittingCounterfactual',
+      'dollarAlphaHysa',
+    ],
   },
   {
     title: 'Lots & trades',

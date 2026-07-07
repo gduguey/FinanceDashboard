@@ -44,6 +44,10 @@ export const GLOSSARY = {
     title: 'Benchmark counterfactual',
     body: "Shows what the same deposits and withdrawals would be worth if every deposit bought the benchmark fund (VOO by default) and every withdrawal sold shares on that day. Dividends are reinvested. This compares the portfolio with buying the benchmark using the exact same cash-flow schedule. Formula: shares(t) = Σ(deposit ÷ benchmark price) − shares sold; value(t) = shares(t) × benchmark price(t).",
   },
+  cashSittingCounterfactual: {
+    title: 'Sitting-cash counterfactual',
+    body: "Two numbers, not one. \"Live\" is what cash sitting right now would be worth had it been invested since it arrived — it tracks the real cash balance's own shape, dropping back toward it once that cash actually gets invested. \"Realized\" is a separate running total, banked once per past sitting episode at the moment it ended, then frozen — it only ever grows, and never resets, because it's the permanent cost of episodes that are already over. It's frozen rather than left compounding so it doesn't double-count against the portfolio's own performance from the day that money was actually invested onward.",
+  },
   benchmarkIndex: {
     title: 'Benchmark',
     body: "The benchmark fund (VOO by default), shown as a growth-of-$100 index. It is not matched to the account's deposits or withdrawals. It simply shows how the benchmark itself performed over time.",

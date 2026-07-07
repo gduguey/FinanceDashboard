@@ -55,11 +55,15 @@ export interface GrowthOf100Point {
 export interface CashHistoryPoint {
   date: string
   cash: number
-  // What all cash ever received would be worth by this day had it been
-  // invested in the benchmark/HYSA the moment it arrived, instead of
-  // ever sitting — see `dashboard.cash_received_counterfactual`.
-  benchmark_value_usd: number
-  hysa_value_usd: number
+  // What *currently-sitting* cash would be worth had it been invested in
+  // the benchmark/HYSA since it arrived — bounded, tracks `cash`'s own
+  // shape. `*_realized_usd` is a running total banked once per past
+  // sitting episode, frozen from the moment it ended — see
+  // `dashboard.cash_received_counterfactual`.
+  benchmark_live_usd: number
+  benchmark_realized_usd: number
+  hysa_live_usd: number
+  hysa_realized_usd: number
 }
 
 export type CashSittingWarningLevel = 'none' | 'light' | 'heavy'

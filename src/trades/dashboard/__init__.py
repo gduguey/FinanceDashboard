@@ -8,11 +8,12 @@ it.
 """
 
 from trades.dashboard.cash_sitting import (
+    CashLot,
     CashSittingSummary,
     cash_received_counterfactual,
     cash_sitting_summary,
     daily_cash_balances,
-    sitting_since_date,
+    open_cash_lots,
 )
 from trades.dashboard.charts import (
     dollar_chart_series,
@@ -39,6 +40,7 @@ from trades.dashboard.tax import LiquidationEstimate, TaxSummary, tax_summary
 from trades.dashboard.valuation import daily_portfolio_values, make_price_lookup
 
 __all__ = [
+    "CashLot",
     "CashSittingSummary",
     "DashboardSettings",
     "LiquidationEstimate",
@@ -59,6 +61,7 @@ __all__ = [
     "make_price_lookup",
     "monthly_pnl",
     "monthly_pnl_by_symbol",
+    "open_cash_lots",
     "overview_cards",
     "reallocation_markers",
     "resolved_benchmark_symbol",
@@ -68,6 +71,5 @@ __all__ = [
     "resolved_tax_regime",
     "risk_stat",
     "save_settings",
-    "sitting_since_date",
     "tax_summary",
 ]
