@@ -1,4 +1,5 @@
 import io
+import zipfile
 from datetime import date, timedelta
 
 import polars as pl
@@ -1746,6 +1747,61 @@ def test_put_account_can_switch_an_external_investment_between_trades_and_manual
     )
     assert back_to_manual.status_code == 200
     assert back_to_manual.json()["external_ref"] is None
+
+
+def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    # A rule that would repoint the payroll deposit's placeholder leg to a
+    # real account — the raw ledger export must stay unaffected by it,
+    # unlike `GET /postings` (the resolved view `TransactionsTab` shows).
+    client.put(
+        "/api/accounting/transfer-rules",
+        json=[
+            {
+                "rule_id": "payroll-rule",
+                "description_contains": "SOME EMPLOYER PAYROLL",
+                "account_id": None,
+                "category_id": None,
+                "subcategory_id": None,
+                "counterparty_account_id": "chase:checking:9579",
+                "priority": 0,
+                "description": "",
+            }
+        ],
+    )
+    response = client.get("/api/accounting/ledger/export")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 4  # two transactions, two postings each
+    placeholder_legs = [row for row in body if row["account_id"] == "uncategorized:income"]
+    assert len(placeholder_legs) == 1  # still on the placeholder — the rule never touched this export
+
+
+def test_accounting_statements_export_returns_a_zip_of_every_raw_upload(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    response = client.get("/api/accounting/statements/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    zip_file = zipfile.ZipFile(io.BytesIO(response.content))
+    assert any(name.endswith(".csv") for name in zip_file.namelist())
 
 
 def test_get_supported_import_kinds_lists_registered_standardizers(client) -> None:

@@ -103,11 +103,13 @@ function SuggestedRulePair({
   accounts,
   existingRules,
   onAdd,
+  onDismiss,
 }: {
   suggestion: TransferSuggestion
   accounts: Record<string, Account>
   existingRules: TransferRule[]
   onAdd: (rules: TransferRule[]) => void
+  onDismiss: () => void
 }) {
   const [drafts, setDrafts] = useState(() => suggestedRuleDrafts(suggestion))
   const existingRuleIds = new Set(existingRules.map((rule) => rule.rule_id))
@@ -140,9 +142,15 @@ function SuggestedRulePair({
           />
         ))}
       </div>
-      <Button size="sm" disabled={allAdded} onClick={handleAddBoth}>
-        {allAdded ? 'Both rules added' : 'Add both rules'}
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button size="sm" disabled={allAdded} onClick={handleAddBoth}>
+          {allAdded ? 'Both rules added' : 'Add both rules'}
+        </Button>
+        <Button variant="ghost" size="sm" className="gap-1.5" onClick={onDismiss}>
+          <Archive className="size-3.5" />
+          Not relevant
+        </Button>
+      </div>
     </div>
   )
 }
@@ -320,12 +328,14 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                               </p>
                             </div>
                           </div>
-                          <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
-                            <SuggestedRulePair suggestion={suggestion} accounts={accounts} existingRules={rules} onAdd={addRules} />
-                            <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => dismiss(suggestion)}>
-                              <Archive className="size-3.5" />
-                              Not relevant
-                            </Button>
+                          <div className="mt-3">
+                            <SuggestedRulePair
+                              suggestion={suggestion}
+                              accounts={accounts}
+                              existingRules={rules}
+                              onAdd={addRules}
+                              onDismiss={() => dismiss(suggestion)}
+                            />
                           </div>
                         </TableCell>
                       </TableRow>

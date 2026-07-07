@@ -42,12 +42,16 @@ the logic.
 src/trades/
   config.py           every tunable parameter, as fields on frozen config objects
   models.py           pydantic schemas — canonical column names live here once
+  credentials.py      IBKR credential override (Settings page), resolved with
+                       `.env` as fallback — see `resolve_ibkr_credentials`
   dashboard/          API-facing aggregation (composes ledger + market_data)
     settings.py       user-editable settings (allocation targets, tax toggles)
     valuation.py      price lookup wiring, daily portfolio values
     overview.py       headline cards (XIRR, TWR, dollar alpha, …)
     charts.py         dollar chart, growth-of-$100, monthly P&L, max drawdown
     holdings.py       lots table, allocation view, data quality
+    cash_sitting.py   idle-cash detection + missed-earnings estimate;
+                       cash_received_counterfactual for the cash-over-time chart
     tax.py            tax summary, liquidation estimate
   ledger/             pure domain logic — no I/O, no broker awareness
     replay.py         walk the ledger → open/closed lots + cash
@@ -67,7 +71,9 @@ src/trades/
       models.py       pydantic schemas for IBKR's raw XML shapes
       preprocessing.py  IBKR rows → LedgerEvent
       main.py         sync, rebuild, load ledger cache
-  api.py              FastAPI JSON layer (needs the `api` extra)
+  api.py              FastAPI JSON layer — the app's only FastAPI instance;
+                       also mounts `accounting.api`'s router (see
+                       `/docs/architecture.md` at the repo root)
   visualization.py    Plotly charts for the notebook
 ```
 
@@ -78,6 +84,7 @@ Deep dives by topic:
 | [ledger.md](ledger.md) | Event types, replay, lots, cashflows |
 | [metrics_and_benchmarks.md](metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
 | [market_data.md](market_data.md) | Price, CPI, and HYSA data sources |
+| [cash_sitting.md](cash_sitting.md) | Idle-cash detection, missed-earnings estimate, cash-over-time chart |
 | [ibkr_flex_api.md](ibkr_flex_api.md) | Syncing from Interactive Brokers |
 | [glossary.md](glossary.md) | Plain-language definitions of dashboard terms |
 

@@ -7,11 +7,11 @@ import { AccountsPage } from '@/pages/AccountsPage'
 import { AllocationPage } from '@/pages/AllocationPage'
 import { BudgetPage } from '@/pages/BudgetPage'
 import { CategoriesPage } from '@/pages/CategoriesPage'
+import { GlossaryPage } from '@/pages/GlossaryPage'
 import { GoalsPage } from '@/pages/GoalsPage'
 import { GuidePage } from '@/pages/GuidePage'
 import { ImportPage } from '@/pages/ImportPage'
 import { InsightsPage } from '@/pages/InsightsPage'
-import { InvestmentsReferencePage } from '@/pages/InvestmentsReferencePage'
 import { NetWorthPage } from '@/pages/NetWorthPage'
 import { OverviewPage } from '@/pages/OverviewPage'
 import { PerformancePage } from '@/pages/PerformancePage'
@@ -49,7 +49,7 @@ export default function App() {
               <Route path="/investments" element={<PerformancePage />} />
               <Route path="/investments/allocation" element={<AllocationPage />} />
               <Route path="/investments/taxes" element={<TaxesPage />} />
-              <Route path="/investments/reference" element={<InvestmentsReferencePage />} />
+              <Route path="/investments/glossary" element={<GlossaryPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/guide" element={<GuidePage />} />
             </Routes>

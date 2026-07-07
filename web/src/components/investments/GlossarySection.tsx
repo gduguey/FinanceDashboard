@@ -1,58 +1,90 @@
-import { Compass } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { GLOSSARY } from '@/lib/glossary'
+import { GitCompare, Layers, PieChart, Percent, TrendingUp } from 'lucide-react'
+import { TermCard } from '@/components/shared/TermCard'
+import { GLOSSARY, type GlossaryTerm } from '@/lib/glossary'
 
-// The "why" behind this page, in plain language — placed right before the
-// glossary since the two answer related questions: what is this page
-// trying to show, and what do the words on it mean.
-function PageMentality() {
-  return (
-    <Card className="border-foreground/10 bg-gradient-to-br from-muted/60 to-transparent">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Compass className="size-4 text-muted-foreground" />
-          How this page thinks
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm leading-relaxed text-muted-foreground">
-        <p>
-          This page exists to answer one question honestly:{' '}
-          <span className="text-foreground">
-            is investing actually working, separate from the fact that you keep putting money in?
-          </span>{' '}
-          A rising account balance is easy to mistake for a good decision, when most of the rise might just be your
-          last paycheck landing in the account. Every number here is built to keep those two things apart.
-        </p>
-        <p>
-          It does that by treating your deposits and withdrawals as a first-class fact — the{' '}
-          <span className="text-foreground">ledger</span> — and replaying that exact history against a few
-          alternatives: what if that same money had sat in a savings account instead, or bought an index fund
-          instead. The gap between what actually happened and those counterfactuals is the answer. From the same
-          ledger, the page also reconstructs every individual purchase as a{' '}
-          <span className="text-foreground">lot</span>, so gains can be traced back to specific holdings and specific
-          holding periods rather than a single blended number.
-        </p>
-      </CardContent>
-    </Card>
-  )
-}
+// Grouped by theme rather than one flat alphabetical list — a wash-sale
+// definition and an XIRR formula have nothing to do with each other, so
+// filing them under the same undifferentiated grid read as noise. Order
+// within a group puts a term next to the ones it's actually related to
+// (XIRR right before its own "(provisional)" footnote, a lot's Return
+// right before its Annualized version) rather than alphabetizing that
+// relationship away. Mirrors the section breakdown in the Guide's own
+// Investments tab and in docs/trades/glossary.md.
+const SECTIONS: { title: string; icon: typeof TrendingUp; terms: GlossaryTerm[] }[] = [
+  {
+    title: 'Portfolio metrics',
+    icon: TrendingUp,
+    terms: [
+      'xirr',
+      'xirrProvisional',
+      'twr',
+      'timingGap',
+      'nav',
+      'growthOf100',
+      'portfolioValue',
+      'contributions',
+      'marketGain',
+      'maxDrawdown',
+      'cpi',
+    ],
+  },
+  {
+    title: 'Benchmarks & counterfactuals',
+    icon: GitCompare,
+    terms: ['counterfactual', 'benchmarkIndex', 'benchmarkCounterfactual', 'hysaCounterfactual', 'dollarAlphaHysa'],
+  },
+  {
+    title: 'Lots & trades',
+    icon: Layers,
+    terms: [
+      'ledger',
+      'lot',
+      'openLot',
+      'closedLot',
+      'lotTerm',
+      'lotReturn',
+      'annualizedReturn',
+      'realizedGain',
+      'unrealizedGain',
+      'alphaVsHysa',
+      'dripReinvestment',
+    ],
+  },
+  {
+    title: 'Allocation',
+    icon: PieChart,
+    terms: ['drift'],
+  },
+  {
+    title: 'Tax',
+    icon: Percent,
+    terms: ['taxRegime', 'ltcg', 'washSaleFlag', 'taxToggle', 'taxOwed', 'liquidationValue'],
+  },
+]
 
-// Every term used across the tooltips on this page, spelled out in full —
-// for anyone who'd rather read definitions once than hover icon by icon.
-// Alphabetical, so it reads like a reference rather than a tour.
+// Every term used across the tooltips on Investments, spelled out in
+// full, grouped by theme — for anyone who'd rather read definitions once
+// than hover icon by icon. The "why" behind these ideas — the ledger,
+// lots, counterfactuals — lives in the Guide's own Investments tab; this
+// page stays a plain lookup, styled the same way Guide's own definitions are.
 export function GlossarySection() {
-  const entries = Object.values(GLOSSARY).sort((a, b) => a.title.localeCompare(b.title))
   return (
-    <div className="space-y-6">
-      <PageMentality />
-      <dl className="grid grid-cols-1 gap-x-10 gap-y-5 md:grid-cols-2 xl:grid-cols-3">
-        {entries.map((entry) => (
-          <div key={entry.title}>
-            <dt className="text-sm font-medium text-foreground">{entry.title}</dt>
-            <dd className="mt-0.5 text-sm leading-relaxed text-muted-foreground">{entry.body}</dd>
-          </div>
-        ))}
-      </dl>
+    <div className="space-y-10">
+      {SECTIONS.map(({ title, icon: Icon, terms }) => (
+        <section key={title} className="space-y-4">
+          <h2 className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-foreground">
+            <Icon className="size-5 text-muted-foreground" />
+            {title}
+          </h2>
+          <dl className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {terms.map((key) => (
+              <TermCard key={key} term={GLOSSARY[key].title}>
+                {GLOSSARY[key].body}
+              </TermCard>
+            ))}
+          </dl>
+        </section>
+      ))}
     </div>
   )
 }

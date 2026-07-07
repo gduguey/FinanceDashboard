@@ -76,7 +76,7 @@ const INVESTMENTS_ITEMS: NavItem[] = [
   { label: 'Performance', icon: LineChart, path: '/investments' },
   { label: 'Allocation', icon: PieChart, path: '/investments/allocation' },
   { label: 'Taxes', icon: Percent, path: '/investments/taxes' },
-  { label: 'Reference', icon: Library, path: '/investments/reference' },
+  { label: 'Glossary', icon: Library, path: '/investments/glossary' },
 ]
 
 const ITEM_CLASSES =
@@ -91,9 +91,10 @@ function NavLinks({ items }: { items: NavItem[] }) {
         <NavLink
           key={label}
           to={path}
-          // `/investments` is itself a prefix of `/investments/reference`
-          // and `/investments/taxes` — end-match it (like the root path)
-          // so Dashboard doesn't show active while viewing one of its siblings.
+          // `/investments` is itself a prefix of `/investments/allocation`,
+          // `/investments/taxes`, and `/investments/glossary` — end-match
+          // it (like the root path) so Performance doesn't show active
+          // while viewing one of its siblings.
           end={path === '/' || path === '/investments'}
           className={({ isActive }) => cn(ITEM_CLASSES, isActive && ACTIVE_ITEM_CLASSES)}
         >
@@ -106,8 +107,8 @@ function NavLinks({ items }: { items: NavItem[] }) {
 }
 
 // The Money/Investments switch — flipping it swaps everything below for
-// that side's own nav (Everyday/Planning/Setup vs. just Dashboard/
-// Reference), while Overview, Net Worth, Settings, and Guide stay put
+// that side's own nav (Everyday/Planning/Setup vs. Performance/Allocation/
+// Taxes/Glossary), while Overview, Net Worth, Settings, and Guide stay put
 // above and below it since they aren't scoped to either side.
 function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
   return (

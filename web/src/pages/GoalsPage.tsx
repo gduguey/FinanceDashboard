@@ -317,6 +317,7 @@ export function GoalsPage() {
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="automations">Automations</TabsTrigger>
+            <TabsTrigger value="ledger">Contribution ledger</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="space-y-6">
             <GoalListSection
@@ -355,8 +356,6 @@ export function GoalsPage() {
               mode={mode}
               displayCurrency={displayCurrency}
             />
-
-            <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />
           </TabsContent>
           <TabsContent value="automations">
             <GoalAutomationsPanel
@@ -364,6 +363,9 @@ export function GoalsPage() {
               recurringAdditions={store.recurring_additions}
               withdrawalPriorities={store.withdrawal_priorities}
             />
+          </TabsContent>
+          <TabsContent value="ledger">
+            <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />
           </TabsContent>
         </Tabs>
       </div>

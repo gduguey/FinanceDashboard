@@ -108,6 +108,10 @@ export interface BudgetComparisonRow {
   currency: CurrencyCode
 }
 
+export interface SyncStatus {
+  last_import_at: string | null
+}
+
 export interface Goal {
   goal_id: string
   name: string

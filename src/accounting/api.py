@@ -11,13 +11,15 @@ API layer too.
 
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal, cast
 
 import polars as pl
-from fastapi import APIRouter, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from accounting.config import AccountingConfig
@@ -38,6 +40,7 @@ from accounting.importers.ingest import (
     ingest_canonical_csv,
     ingest_canonical_excel,
     ingest_csv,
+    last_import_at,
     load_ledger,
     rebuild_from_raw_statements,
     remap_ledger_category_ids,
@@ -835,6 +838,19 @@ def get_supported_import_kinds() -> list[dict[str, str]]:
     ]
 
 
+@router.get("/sync-status")
+def get_sync_status() -> dict[str, str | None]:
+    """When a bank statement was most recently imported, across every institution and account.
+
+    Returns
+    -------
+    dict[str, str | None]
+        `{"last_import_at": ...}`, an ISO 8601 UTC timestamp, or `None` if nothing has ever been imported.
+    """
+    imported_at = last_import_at(state.config)
+    return {"last_import_at": imported_at.isoformat() if imported_at else None}
+
+
 @router.post("/import")
 async def post_import(
     file: UploadFile,
@@ -1180,6 +1196,45 @@ def get_postings() -> list[dict[str, Any]]:
         row["pending_selected"] = override.pending_selected if override is not None else True
         row["resolved_by_transfer_rule_id"] = resolved_by_rule.get(row["transaction_id"])
     return rows
+
+
+@router.get("/ledger/export")
+def get_ledger_export() -> list[dict[str, Any]]:
+    """Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        Every posting for the user's own backup. See `GET /postings` for
+        the same data after every rule/override/split/merge is applied on
+        top — what the Transactions page actually shows.
+    """
+    return load_ledger(state.config).to_dicts()
+
+
+@router.get("/statements/export")
+def get_statements_export() -> Response:
+    """Zip every raw statement archived from an import (CSV or PDF, verbatim as uploaded) for download.
+
+    Returns
+    -------
+    fastapi.Response
+        A `.zip` attachment, one entry per archived file, empty if
+        nothing has been imported yet.
+    """
+    buffer = io.BytesIO()
+    root = state.config.raw_statement_dir
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        if root.exists():
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    zip_file.write(path, path.relative_to(root))
+    filename = f"accounting-statements-{datetime.now(tz=UTC).date().isoformat()}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.put("/postings/{posting_id}/override")

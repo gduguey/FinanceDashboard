@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { CheckCircle2, Upload, X, XCircle } from 'lucide-react'
+import { ArrowRight, CheckCircle2, Landmark, Upload, X, XCircle } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -411,7 +411,7 @@ export function ImportPage() {
     <div className="flex-1 overflow-y-auto">
       <PageHeader title="Import" />
 
-      <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
+      <div className="mx-auto max-w-6xl space-y-6 px-8 py-8">
         <Tabs value={tab} onValueChange={(value) => setSearchParams(value === 'import' ? {} : { tab: value })}>
           <TabsList>
             <TabsTrigger value="import">Import statements</TabsTrigger>
@@ -420,6 +420,20 @@ export function ImportPage() {
           </TabsList>
 
           <TabsContent value="import" className="space-y-6">
+          {registeredAccounts.length === 0 && (
+            <Link
+              to="/accounts"
+              className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-border bg-muted/40 px-4 py-3 text-sm transition-colors hover:bg-muted/70"
+            >
+              <span className="flex items-center gap-2 text-muted-foreground">
+                <Landmark className="size-4" />
+                No accounts yet — a statement needs somewhere to attach to. Create one first, then come back to import.
+              </span>
+              <span className="flex items-center gap-1 font-medium text-foreground">
+                Create account <ArrowRight className="size-3.5" />
+              </span>
+            </Link>
+          )}
           <div
             className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border px-6 py-14 text-center text-sm text-muted-foreground"
             onDragOver={(event) => event.preventDefault()}

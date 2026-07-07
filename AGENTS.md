@@ -5,10 +5,13 @@ one, both change. Keep it that way: if a tool ever needs its own
 differently-named file (e.g. `.cursorrules`), symlink it here too rather
 than duplicating content that can then drift.
 
-For what this repo is and how it's organized, read `README.md` and
-`docs/trades/architecture.md`/`docs/accounting/architecture.md` first. The two conventions below are things a past
-session got explicit, repeated instructions about — treat them as standing
-rules for this repo, not one-off preferences.
+For what this repo is and how it's organized, read `README.md`,
+`docs/architecture.md` (how the `trades`/`accounting` modules and the one
+FastAPI app fit together), and each module's own
+`docs/trades/architecture.md`/`docs/accounting/architecture.md` first. The
+two conventions below are things a past session got explicit, repeated
+instructions about — treat them as standing rules for this repo, not
+one-off preferences.
 
 ## 1. New data source -> canonical schema, always
 

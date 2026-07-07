@@ -188,7 +188,7 @@ const TransactionRow = memo(function TransactionRow({
           </span>
         )}
       </TableCell>
-      <TableCell className="max-w-xs truncate">{posting.description}</TableCell>
+      <TableCell className="max-w-[200px] truncate">{posting.description}</TableCell>
       <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, posting.currency)}</TableCell>
       <TableCell>
         {isRealIncomeExpense ? (
@@ -568,7 +568,7 @@ function TransactionsTable({
             {onlyUncategorized ? 'Nothing left to categorize.' : 'No transactions match — import a statement to start.'}
           </p>
         ) : (
-          <div ref={scrollParentRef} className="max-h-[70vh] overflow-y-auto">
+          <div ref={scrollParentRef} className="max-h-[70vh] overflow-x-auto overflow-y-auto">
             <Table>
               <TableHeader>
                 <TableRow>

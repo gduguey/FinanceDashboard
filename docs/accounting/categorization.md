@@ -57,6 +57,8 @@ configurable number of days of each other. Every match is surfaced as a
 read-only suggestion (with a proposed rule for both directions, editable
 before either is added) — never applied automatically, since the heuristic
 can be wrong (two unrelated transactions that happen to share an amount).
+A suggestion that isn't a real transfer can be archived instead of kept in
+the list forever — see "Dismissing a suggestion" below.
 
 ### Duplicate detection and merging
 
@@ -82,7 +84,25 @@ transaction(s) to drop, and an optional description override —
 `ledger.categorization.apply_posting_merges` then drops every dropped
 transaction's both legs from the resolved ledger and applies the
 description override to the kept one, fresh on every read, the same
-non-destructive way rules and overrides are applied.
+non-destructive way rules and overrides are applied. A group that isn't
+actually a duplicate can be archived the same way a transfer suggestion
+can — see "Dismissing a suggestion" below.
+
+### Dismissing a suggestion
+
+Both suggestion sources above share one dismiss-and-archive mechanism
+(`models.DismissedSuggestion`, `POST`/`GET`/`DELETE
+/dismissed-suggestions`). `suggestion_id` is a stable key derived from the
+suggestion's own content (`api._transfer_suggestion_id`/
+`_duplicate_suggestion_id`), not a random id — the same real-world pair or
+group always dismisses and restores under the same key, regardless of how
+many times the detector recomputes it on a later read. Dismissing never
+touches a transfer rule, a posting, or a merge; it only removes one entry
+from the list of things still being proposed, so restoring it (deleting
+the `DismissedSuggestion` record) is always lossless. Both suggestion
+endpoints filter out anything already dismissed; the frontend's
+`SuggestionArchive` component lists what's currently archived, with a
+restore action per entry.
 
 ### Category patterns and AI suggestions — propose a category, never apply it silently
 

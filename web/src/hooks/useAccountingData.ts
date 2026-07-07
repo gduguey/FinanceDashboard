@@ -33,6 +33,7 @@ const keys = {
   llmUsage: ['accounting', 'llm-usage'],
   llmSettings: ['accounting', 'settings', 'llm'],
   supportedImportKinds: ['accounting', 'supported-import-kinds'],
+  syncStatus: ['accounting', 'sync-status'],
   currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
   exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
   postings: ['accounting', 'postings'],
@@ -149,6 +150,8 @@ export function useClearLlmSettings() {
 
 export const useSupportedImportKinds = () =>
   useQuery({ queryKey: keys.supportedImportKinds, queryFn: accountingApi.supportedImportKinds })
+
+export const useSyncStatus = () => useQuery({ queryKey: keys.syncStatus, queryFn: accountingApi.syncStatus })
 
 export const useCurrentExchangeRate = (currency: string) =>
   useQuery({

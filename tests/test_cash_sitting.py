@@ -6,6 +6,8 @@ import pytest
 from trades.config import AppConfig
 from trades.dashboard.cash_sitting import (
     CashSittingSummary,
+    cash_inflows,
+    cash_received_counterfactual,
     cash_sitting_summary,
     daily_cash_balances,
     sitting_since_date,
@@ -149,3 +151,50 @@ def test_cash_sitting_summary_estimates_missed_earnings_vs_portfolio_and_benchma
     assert summary.missed_earnings_portfolio_usd == pytest.approx(100.0)
     assert summary.hypothetical_value_benchmark_usd == pytest.approx(1050.0)
     assert summary.missed_earnings_benchmark_usd == pytest.approx(50.0)
+
+
+def test_cash_inflows_treats_a_daily_increase_as_a_negative_deposit_flow() -> None:
+    daily_cash = _cash_series(("2026-01-01", 1000.0), ("2026-01-02", 1500.0))
+    flows = cash_inflows(daily_cash)
+    assert flows["event_datetime"].to_list() == [datetime(2026, 1, 1), datetime(2026, 1, 2)]
+    assert flows["amount"].to_list() == pytest.approx([-1000.0, -500.0])
+
+
+def test_cash_inflows_ignores_a_decrease() -> None:
+    # A decrease means the cash was deployed into a real purchase, not
+    # something that should undo the counterfactual's own virtual deposit.
+    daily_cash = _cash_series(("2026-01-01", 1000.0), ("2026-01-02", 400.0), ("2026-01-03", 400.0))
+    flows = cash_inflows(daily_cash)
+    assert flows["event_datetime"].to_list() == [datetime(2026, 1, 1)]
+    assert flows["amount"].to_list() == pytest.approx([-1000.0])
+
+
+def test_cash_received_counterfactual_covers_every_day_and_zero_fills_before_the_first_flow(tmp_path) -> None:
+    config = _config(tmp_path)
+    daily_cash = _cash_series(("2026-01-01", 0.0), ("2026-01-02", 0.0), ("2026-01-03", 1000.0))
+    result = cash_received_counterfactual(
+        daily_cash,
+        date(2026, 1, 3),
+        benchmark_price_lookup=lambda _day: 100.0,
+        hysa_rate_lookup=lambda _day: 0.05,
+        days_per_year=config.returns.days_per_year,
+    )
+    assert result["date"].to_list() == [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)]
+    assert result["benchmark_value_usd"].to_list() == pytest.approx([0.0, 0.0, 1000.0])
+    assert result["hysa_value_usd"].to_list() == pytest.approx([0.0, 0.0, 1000.0])
+
+
+def test_cash_received_counterfactual_grows_a_received_deposit_at_the_benchmark_rate(tmp_path) -> None:
+    config = _config(tmp_path)
+    daily_cash = _cash_series(("2026-01-01", 1000.0), ("2026-01-02", 1000.0))
+    # Benchmark doubles in price from day 1 to day 2 -> the $1000 received
+    # on day 1, invested immediately, would be worth $2000 by day 2.
+    prices = {date(2026, 1, 1): 100.0, date(2026, 1, 2): 200.0}
+    result = cash_received_counterfactual(
+        daily_cash,
+        date(2026, 1, 2),
+        benchmark_price_lookup=lambda day: prices[day],
+        hysa_rate_lookup=lambda _day: 0.0,
+        days_per_year=config.returns.days_per_year,
+    )
+    assert result["benchmark_value_usd"].to_list() == pytest.approx([1000.0, 2000.0])

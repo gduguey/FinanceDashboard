@@ -20,13 +20,15 @@ benchmark takes effect without waiting for a full sync.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 from accounting.api import router as accounting_router
@@ -222,16 +224,32 @@ def get_growth_of_100_chart(start: date | None = None, end: date | None = None) 
 
 @app.get("/api/chart/cash-history")
 def get_cash_history(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
-    """Return the uninvested cash balance for every day in range.
+    """Return the uninvested cash balance for every day in range, plus what it would be worth invested immediately.
 
     Returns
     -------
     list[dict[str, Any]]
-        One `{"date", "cash"}` entry per day. Raises 404 (via `_load_ledger`) if no ledger is cached yet.
+        One `{"date", "cash", "benchmark_value_usd", "hysa_value_usd"}`
+        entry per day — the last two are what all cash ever received
+        would be worth by that day had it been invested in the benchmark/
+        HYSA the moment it arrived, instead of ever sitting (see
+        `dashboard.cash_received_counterfactual`). Raises 404 (via
+        `_load_ledger`) if no ledger is cached yet.
     """
     ledger = _load_ledger()
+    config = _config()
     range_start, range_end = _chart_range(ledger, start, end)
-    return dashboard.daily_cash_balances(ledger, _config(), range_start, range_end).to_dicts()
+    daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, range_end))
+    adjusted_lookup = dashboard.make_price_lookup(config, adjusted=True)
+    benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
+    counterfactual = dashboard.cash_received_counterfactual(
+        daily_cash,
+        range_end,
+        benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
+        hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
+        days_per_year=config.returns.days_per_year,
+    )
+    return daily_cash.join(counterfactual, on="date", how="left").to_dicts()
 
 
 @app.get("/api/cash-sitting")
@@ -764,6 +782,31 @@ def get_ledger_export() -> list[dict[str, Any]]:
         Every ledger row.
     """
     return _load_ledger().to_dicts()
+
+
+@app.get("/api/statements/export")
+def get_statements_export() -> Response:
+    """Zip every raw Flex statement archived from a sync (verbatim XML, as received) for download.
+
+    Returns
+    -------
+    fastapi.Response
+        A `.zip` attachment, one entry per archived statement, empty if
+        nothing has ever been synced.
+    """
+    buffer = io.BytesIO()
+    root = _config().ibkr.raw_statement_dir
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        if root.exists():
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    zip_file.write(path, path.relative_to(root))
+    filename = f"trades-statements-{datetime.now(tz=UTC).date().isoformat()}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/sync/progress")

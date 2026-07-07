@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Landmark } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
@@ -8,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TermCard } from '@/components/shared/TermCard'
 import { formatUsd, signColor } from '@/lib/format'
 import { useSetTaxSettings, useTaxReport, useTaxSettings } from '@/hooks/usePortfolioData'
 import type { AnnualTaxRow, SalePreviewRow, TaxOwedRow, TaxRegime, TaxSettingsUpdate, WashSaleRow } from '@/types/portfolio'
@@ -63,24 +65,19 @@ function regimeRules(regime: TaxRegime, w8benClaimed: boolean): { label: string;
 export function RulesCard({ regime, w8benClaimed }: { regime: TaxRegime; w8benClaimed: boolean }) {
   const rules = regimeRules(regime, w8benClaimed)
   return (
-    <Card className="border-foreground/10 bg-gradient-to-br from-muted/60 to-transparent">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Landmark className="size-4 text-muted-foreground" />
-          How {REGIME_LABELS[regime]} status is taxed here
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <dl className="grid grid-cols-1 gap-4 text-sm leading-relaxed text-muted-foreground md:grid-cols-2">
-          {rules.map((rule) => (
-            <div key={rule.label}>
-              <dt className="font-medium text-foreground">{rule.label}</dt>
-              <dd className="mt-0.5">{rule.text}</dd>
-            </div>
-          ))}
-        </dl>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <h2 className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-foreground">
+        <Landmark className="size-5 text-muted-foreground" />
+        How {REGIME_LABELS[regime]} status is taxed here
+      </h2>
+      <dl className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {rules.map((rule) => (
+          <TermCard key={rule.label} term={rule.label}>
+            {rule.text}
+          </TermCard>
+        ))}
+      </dl>
+    </div>
   )
 }
 
@@ -94,7 +91,7 @@ function RateField({
   resolvedPct,
   onCommit,
 }: {
-  label: string
+  label: ReactNode
   override: number | null
   resolvedPct: number
   onCommit: (pct: number | null) => void
@@ -153,12 +150,24 @@ export function TaxEnabledToggle() {
   if (isLoading) return <Skeleton className="h-8 w-32" />
   if (!settings) return null
 
+  const regime = settings.tax_regime ?? settings.resolved_tax_regime
+
   return (
-    <label className="flex items-center gap-2 text-sm font-medium">
-      Apply taxes
-      <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
-      <InfoTooltip term="taxToggle" />
-    </label>
+    <div className="flex items-center gap-2">
+      <label className="flex items-center gap-2 text-sm font-medium">
+        Apply taxes
+        <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
+        <InfoTooltip term="taxToggle" />
+      </label>
+      {settings.tax_enabled && (
+        <span className="text-xs text-muted-foreground">
+          Applying the {REGIME_LABELS[regime]} tax regime set up in{' '}
+          <Link to="/investments/taxes" className="text-primary underline-offset-4 hover:underline">
+            Taxes
+          </Link>
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -194,7 +203,11 @@ export function TaxRegimeSelector() {
         onCommit={(pct) => update({ marginal_ordinary_rate_pct: pct })}
       />
       <RateField
-        label="LTCG / qualified div. rate"
+        label={
+          <>
+            LTCG / qualified div. rate <InfoTooltip term="ltcg" />
+          </>
+        }
         override={settings.qualified_ltcg_rate_pct}
         resolvedPct={settings.resolved_qualified_ltcg_rate_pct}
         onCommit={(pct) => update({ qualified_ltcg_rate_pct: pct })}
@@ -385,46 +398,6 @@ export function TaxReportTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Annual realized gains &amp; dividends</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <AnnualReportTable rows={report?.annual ?? []} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-1.5">
-            Estimated tax owed <InfoTooltip term="taxOwed" />
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <TaxOwedTable rows={report?.tax_owed ?? []} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-1.5">
-            Flagged wash sales <InfoTooltip term="washSaleFlag" />
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <WashSaleTable rows={report?.wash_sales ?? []} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>If you sold today</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <SalePreviewTable rows={report?.sale_previews ?? []} />
-        </CardContent>
-      </Card>
-
       {report && settings && (
         <Card>
           <CardHeader>
@@ -469,6 +442,46 @@ export function TaxReportTab() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Annual realized gains &amp; dividends</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <AnnualReportTable rows={report?.annual ?? []} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5">
+            Estimated tax owed <InfoTooltip term="taxOwed" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TaxOwedTable rows={report?.tax_owed ?? []} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5">
+            Flagged wash sales <InfoTooltip term="washSaleFlag" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <WashSaleTable rows={report?.wash_sales ?? []} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>If you sold today</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SalePreviewTable rows={report?.sale_previews ?? []} />
+        </CardContent>
+      </Card>
     </div>
   )
 }

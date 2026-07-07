@@ -6,20 +6,27 @@ instead of the priced total — no price lookup needed, since cash needs no
 pricing. `sitting_since_date`/`cash_sitting_summary` are pure arithmetic
 over that series plus a pre-computed growth-of-100 index (see
 `charts.growth_of_100_chart`), so neither touches the ledger or a price
-cache directly.
+cache directly. `cash_inflows`/`cash_received_counterfactual` answer a
+different, chart-shaped question — "if this cash had been invested the
+moment it arrived, instead of ever sitting," as a full time series rather
+than `cash_sitting_summary`'s single as-of snapshot — by reusing the same
+counterfactual engine the dollar chart's benchmark/HYSA lines already run on.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 import polars as pl
 
+from trades.ledger.counterfactuals import benchmark_counterfactual_series, hysa_counterfactual_series
 from trades.ledger.replay import replay_ledger
+from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import date
 
     from trades.config import AppConfig
@@ -180,4 +187,90 @@ def cash_sitting_summary(
         missed_earnings_portfolio_usd=hypothetical_portfolio - cash_usd,
         hypothetical_value_benchmark_usd=hypothetical_benchmark,
         missed_earnings_benchmark_usd=hypothetical_benchmark - cash_usd,
+    )
+
+
+def cash_inflows(daily_cash: pl.DataFrame) -> pl.DataFrame:
+    """Derive one virtual "deposit" flow per day the cash balance increased, from a daily cash-balance series.
+
+    Feeds `cash_received_counterfactual`'s "invested the moment it
+    arrived" question — only ever used for that, never as a real
+    cashflow. A decrease generates no flow: it means the cash was
+    deployed into an actual purchase, and in the counterfactual world
+    that money was already invested from the day it arrived, so there is
+    nothing for a later decrease to undo there.
+
+    Parameters
+    ----------
+    daily_cash
+        Columns `date`, `cash`, sorted ascending by date, as returned by
+        `daily_cash_balances`.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `event_datetime`, `amount` — the same shape as
+        `replay.external_cashflows`, `amount` negative (the `DEPOSIT`
+        convention `benchmark_counterfactual_series`/
+        `hysa_counterfactual_series` expect).
+    """
+    dates = daily_cash["date"].to_list()
+    cash = daily_cash["cash"].to_list()
+    event_datetimes: list[datetime] = []
+    amounts: list[float] = []
+    previous = 0.0
+    for day, amount in zip(dates, cash, strict=True):
+        increase = amount - previous
+        if increase > 0:
+            event_datetimes.append(datetime.combine(day, datetime.min.time()))
+            amounts.append(-increase)
+        previous = amount
+    return pl.DataFrame({"event_datetime": event_datetimes, "amount": amounts})
+
+
+def cash_received_counterfactual(
+    daily_cash: pl.DataFrame,
+    end: date,
+    benchmark_price_lookup: Callable[[date], float | None],
+    hysa_rate_lookup: Callable[[date], float],
+    days_per_year: int,
+) -> pl.DataFrame:
+    """For every day, value what all cash ever received would be worth now had it been invested the moment it arrived.
+
+    Reuses the same counterfactual engine the dollar chart's benchmark/
+    HYSA lines run on (see `ledger.counterfactuals`), fed `cash_inflows`
+    instead of `replay.external_cashflows` — the chart-series counterpart
+    to `cash_sitting_summary`'s single as-of snapshot.
+
+    Parameters
+    ----------
+    daily_cash
+        Columns `date`, `cash`, as returned by `daily_cash_balances` —
+        every date in its range gets a row in the result, even before the
+        first inflow (zero-filled).
+    end
+        The last date to compute the counterfactual for.
+    benchmark_price_lookup
+        Looks up the benchmark's adjusted price as of a given date.
+    hysa_rate_lookup
+        Looks up the annual HYSA rate as of a given date.
+    days_per_year
+        Day-count basis for converting the annual HYSA rate to a daily one.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `date`, `benchmark_value_usd`, `hysa_value_usd`, one row
+        per day in `daily_cash`.
+    """
+    flows = cash_inflows(daily_cash)
+    benchmark_series = collect_if_lazy(benchmark_counterfactual_series(flows, end, benchmark_price_lookup))
+    hysa_series = collect_if_lazy(hysa_counterfactual_series(flows, end, hysa_rate_lookup, days_per_year))
+    return (
+        daily_cash
+        .select("date")
+        .join(benchmark_series.rename({"value": "benchmark_value_usd"}), on="date", how="left")
+        .join(hysa_series.rename({"value": "hysa_value_usd"}), on="date", how="left")
+        .fill_null(0.0)
+        .sort("date")
     )
