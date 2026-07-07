@@ -21,6 +21,8 @@ const keys = {
   lots: ['portfolio', 'lots'],
   risk: (range?: DateRange) => ['portfolio', 'risk', range ?? {}],
   dataQuality: ['portfolio', 'data-quality'],
+  cashHistory: (range?: DateRange) => ['portfolio', 'chart', 'cash-history', range ?? {}],
+  cashSitting: ['portfolio', 'cash-sitting'],
   hysaRates: ['portfolio', 'hysa-rates'],
   hysaSettings: ['portfolio', 'settings', 'hysa'],
   benchmarkSetting: ['portfolio', 'settings', 'benchmark'],
@@ -62,6 +64,11 @@ export const useRisk = (range?: DateRange) =>
   useQuery({ queryKey: keys.risk(range), queryFn: () => api.risk(range) })
 
 export const useDataQuality = () => useQuery({ queryKey: keys.dataQuality, queryFn: api.dataQuality })
+
+export const useCashHistory = (range?: DateRange) =>
+  useQuery({ queryKey: keys.cashHistory(range), queryFn: () => api.cashHistory(range) })
+
+export const useCashSitting = () => useQuery({ queryKey: keys.cashSitting, queryFn: () => api.cashSitting() })
 
 export const useHysaRates = () => useQuery({ queryKey: keys.hysaRates, queryFn: api.hysaRates })
 

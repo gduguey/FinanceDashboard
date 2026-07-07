@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+import { Archive, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -9,10 +9,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { FILTER_ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useDuplicateSuggestions, useSetPostingMerges } from '@/hooks/useAccountingData'
+import { useDismissSuggestion, useDuplicateSuggestions, useSetPostingMerges } from '@/hooks/useAccountingData'
 import type { Account, DuplicateGroup, PostingMerge } from '@/types/accounting'
 
 const ESTIMATED_ROW_HEIGHT = 44
@@ -242,6 +243,15 @@ export function DuplicateSuggestionsPanel({
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
   const [reviewingIndex, setReviewingIndex] = useState<number | null>(null)
   const setMerges = useSetPostingMerges()
+  const dismissSuggestion = useDismissSuggestion()
+
+  function dismiss(row: DuplicateGroupRow) {
+    dismissSuggestion.mutate({
+      suggestion_id: row.suggestion_id,
+      kind: 'duplicate',
+      description: row.descriptionsPreview,
+    })
+  }
 
   function handleWindowDaysChange(value: string) {
     setWindowDaysDraft(value)
@@ -446,12 +456,13 @@ export function DuplicateSuggestionsPanel({
                   <SortableTableHead align="right" active={sort.key === 'urgency'} desc={sort.desc} onClick={() => toggleSort('urgency')}>
                     Certainty
                   </SortableTableHead>
+                  <TableHead className="w-8" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {paddingTop > 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} style={{ height: paddingTop, padding: 0 }} />
+                    <TableCell colSpan={8} style={{ height: paddingTop, padding: 0 }} />
                   </TableRow>
                 )}
                 {virtualRows.map((virtualRow) => {
@@ -480,18 +491,26 @@ export function DuplicateSuggestionsPanel({
                       <TableCell className="text-right tabular-nums">{formatCurrency(row.amount, currency)}</TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">{row.postings.length}</TableCell>
                       <TableCell className="text-right tabular-nums text-muted-foreground">{Math.round(row.certainty * 100)}%</TableCell>
+                      <TableCell onClick={(event) => event.stopPropagation()}>
+                        <Button variant="ghost" size="icon" title="Not a duplicate" onClick={() => dismiss(row)}>
+                          <Archive className="size-3.5 text-muted-foreground" />
+                        </Button>
+                      </TableCell>
                     </TableRow>
                   )
                 })}
                 {paddingBottom > 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} style={{ height: paddingBottom, padding: 0 }} />
+                    <TableCell colSpan={8} style={{ height: paddingBottom, padding: 0 }} />
                   </TableRow>
                 )}
               </TableBody>
             </Table>
           </div>
         )}
+        <div className="mt-4">
+          <SuggestionArchive kind="duplicate" />
+        </div>
       </CardContent>
 
       {reviewing && reviewingIndex !== null && (

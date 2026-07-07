@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict
 from datetime import UTC, date, datetime
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 
 import polars as pl
 from fastapi import APIRouter, Form, HTTPException, UploadFile
@@ -52,7 +52,7 @@ from accounting.ledger.categorization import (
     resolved_transfer_rule_ids_by_transaction,
 )
 from accounting.ledger.currency import DisplayCurrency, convert
-from accounting.ledger.duplicates import find_duplicate_candidates
+from accounting.ledger.duplicates import DuplicateGroup, find_duplicate_candidates
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
     run_recurring_additions,
@@ -85,6 +85,7 @@ from accounting.models import (
     CategoryClassification,
     CategoryPattern,
     CurrencyCode,
+    DismissedSuggestion,
     GeneralBudget,
     Goal,
     GoalContribution,
@@ -1689,6 +1690,32 @@ def post_validate_pending(payload: ValidatePendingRequest) -> dict[str, Any]:
     return {"accepted": accepted, "reverted": reverted}
 
 
+def _transfer_suggestion_id(row: dict[str, Any]) -> str:
+    """Build a stable key for a transfer-suggestion pair, independent of which side comes first in the row.
+
+    Recomputing the candidate list finds the exact same pair under the
+    exact same key every time, so a dismissed suggestion reliably stays
+    dismissed (see `models.DismissedSuggestion`).
+
+    Returns
+    -------
+    str
+        The pair's stable dismiss key.
+    """
+    return "transfer:" + ":".join(sorted([row["posting_id"], row["other_posting_id"]]))
+
+
+def _duplicate_suggestion_id(group: DuplicateGroup) -> str:
+    """Build a stable key for a duplicate group, from its own already-stable `group_key`.
+
+    Returns
+    -------
+    str
+        The group's stable dismiss key.
+    """
+    return f"duplicate:{group.group_key}"
+
+
 @router.get("/transfer-suggestions")
 def get_transfer_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
     """Suggest likely internal transfers no rule has already resolved.
@@ -1704,11 +1731,18 @@ def get_transfer_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
     -------
     list[dict[str, Any]]
         One dict per candidate pair — see `ledger.transfers.find_unmatched_transfer_candidates`.
-        Each carries both sides' own `description`, for the caller to
-        propose a `TransferRule` from — never applied automatically.
+        Each carries both sides' own `description` and a `suggestion_id`,
+        for the caller to propose a `TransferRule` from or dismiss —
+        never applied automatically. Excludes any pair already dismissed
+        (see `POST /dismissed-suggestions`).
     """
-    postings, _store = _resolved_postings_and_store(state.config)
-    return find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
+    postings, store = _resolved_postings_and_store(state.config)
+    rows = find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
+    return [
+        {**row, "suggestion_id": _transfer_suggestion_id(row)}
+        for row in rows
+        if _transfer_suggestion_id(row) not in store.dismissed_suggestions
+    ]
 
 
 @router.get("/duplicate-suggestions")
@@ -1725,10 +1759,84 @@ def get_duplicate_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
     list[dict[str, Any]]
         One dict per candidate group — see `ledger.duplicates.find_duplicate_candidates`.
         Sorted least-certain first, since those need the closest review.
+        Each carries a `suggestion_id` for dismissing it. Excludes any
+        group already dismissed (see `POST /dismissed-suggestions`).
     """
-    postings, _store = _resolved_postings_and_store(state.config)
+    postings, store = _resolved_postings_and_store(state.config)
     groups = find_duplicate_candidates(postings, window_days=window_days)
-    return [asdict(group) for group in groups]
+    return [
+        {**asdict(group), "suggestion_id": _duplicate_suggestion_id(group)}
+        for group in groups
+        if _duplicate_suggestion_id(group) not in store.dismissed_suggestions
+    ]
+
+
+class DismissSuggestionRequest(BaseModel):
+    """Request body for `POST /api/accounting/dismissed-suggestions`."""
+
+    suggestion_id: str
+    kind: Literal["transfer", "duplicate"]
+    description: str
+
+
+@router.get("/dismissed-suggestions")
+def get_dismissed_suggestions() -> list[dict[str, Any]]:
+    """List every archived (dismissed) suggestion, most recently dismissed first.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        See `models.DismissedSuggestion`.
+    """
+    store = load_store(state.config)
+    dismissed = sorted(store.dismissed_suggestions.values(), key=lambda entry: entry.dismissed_at, reverse=True)
+    return [entry.model_dump(mode="json") for entry in dismissed]
+
+
+@router.post("/dismissed-suggestions")
+def post_dismissed_suggestion(request: DismissSuggestionRequest) -> dict[str, Any]:
+    """Archive a suggestion so it stops being proposed, without discarding it.
+
+    Returns
+    -------
+    dict[str, Any]
+        The archived entry just persisted.
+    """
+    store = load_store(state.config)
+    entry = DismissedSuggestion(
+        suggestion_id=request.suggestion_id,
+        kind=request.kind,
+        description=request.description,
+        dismissed_at=datetime.now(tz=UTC),
+    )
+    store = store.model_copy(
+        update={"dismissed_suggestions": {**store.dismissed_suggestions, entry.suggestion_id: entry}}
+    )
+    save_store(store, state.config)
+    return entry.model_dump(mode="json")
+
+
+@router.delete("/dismissed-suggestions/{suggestion_id}")
+def delete_dismissed_suggestion(suggestion_id: str) -> dict[str, str]:
+    """Restore a dismissed suggestion so it can be proposed again.
+
+    Returns
+    -------
+    dict[str, str]
+        `{"suggestion_id": ...}` of the entry just restored.
+
+    Raises
+    ------
+    HTTPException
+        404 if no archived entry has this id.
+    """
+    store = load_store(state.config)
+    if suggestion_id not in store.dismissed_suggestions:
+        raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
+    remaining = {key: value for key, value in store.dismissed_suggestions.items() if key != suggestion_id}
+    store = store.model_copy(update={"dismissed_suggestions": remaining})
+    save_store(store, state.config)
+    return {"suggestion_id": suggestion_id}
 
 
 def _external_investment_values_usd(dates: list[date]) -> dict[date, float] | None:

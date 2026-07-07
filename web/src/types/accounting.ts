@@ -387,6 +387,7 @@ export interface TransferSuggestion {
   other_posting_id: string
   other_description: string
   amount: number
+  suggestion_id: string
 }
 
 export interface DuplicatePosting {
@@ -402,6 +403,22 @@ export interface DuplicateGroup {
   account_id: string
   certainty: number
   postings: DuplicatePosting[]
+  suggestion_id: string
+}
+
+export type DismissedSuggestionKind = 'transfer' | 'duplicate'
+
+export interface DismissedSuggestion {
+  suggestion_id: string
+  kind: DismissedSuggestionKind
+  description: string
+  dismissed_at: string
+}
+
+export interface DismissSuggestionRequest {
+  suggestion_id: string
+  kind: DismissedSuggestionKind
+  description: string
 }
 
 export interface PostingMerge {

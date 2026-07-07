@@ -24,6 +24,7 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CategoryPattern,
+    DismissedSuggestion,
     GeneralBudget,
     Goal,
     GoalContribution,
@@ -471,6 +472,7 @@ class AccountingStore(BaseModel):
     goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
     recurring_additions: list[RecurringAddition] = Field(default_factory=list)
     withdrawal_priorities: list[WithdrawalPriorityEntry] = Field(default_factory=list)
+    dismissed_suggestions: dict[str, DismissedSuggestion] = Field(default_factory=dict)
 
 
 def load_store(config: AccountingConfig) -> AccountingStore:

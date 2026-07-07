@@ -220,6 +220,47 @@ def get_growth_of_100_chart(start: date | None = None, end: date | None = None) 
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+@app.get("/api/chart/cash-history")
+def get_cash_history(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return the uninvested cash balance for every day in range.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One `{"date", "cash"}` entry per day. Raises 404 (via `_load_ledger`) if no ledger is cached yet.
+    """
+    ledger = _load_ledger()
+    range_start, range_end = _chart_range(ledger, start, end)
+    return dashboard.daily_cash_balances(ledger, _config(), range_start, range_end).to_dicts()
+
+
+@app.get("/api/cash-sitting")
+def get_cash_sitting() -> dict[str, Any]:
+    """Report how long the current uninvested cash balance has been sitting idle, and what it's missed out on.
+
+    Returns
+    -------
+    dict[str, Any]
+        See `dashboard.cash_sitting.CashSittingSummary` — `sitting_since` as an ISO date string.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    config = _config()
+    today = datetime.now(tz=UTC).date()
+    range_start = _first_event_date(ledger)
+    try:
+        daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, today))
+        growth_index = dashboard.growth_of_100_chart(ledger, config, range_start, today)
+        summary = dashboard.cash_sitting_summary(daily_cash, growth_index, today, config)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {**asdict(summary), "sitting_since": summary.sitting_since.isoformat()}
+
+
 @app.get("/api/chart/monthly-pnl")
 def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
     """Return each month's value change split into contributions and market gain.

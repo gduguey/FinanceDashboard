@@ -7,6 +7,7 @@ import type {
   Category,
   CategoryPattern,
   CurrencyCode,
+  DismissSuggestionRequest,
   GeneralBudget,
   Goal,
   GoalContribution,
@@ -37,6 +38,7 @@ const keys = {
   postings: ['accounting', 'postings'],
   transferSuggestions: ['accounting', 'transfer-suggestions'],
   duplicateSuggestions: ['accounting', 'duplicate-suggestions'],
+  dismissedSuggestions: ['accounting', 'dismissed-suggestions'],
   netWorth: (asOf?: string, displayCurrency?: string) => ['accounting', 'net-worth', asOf ?? {}, displayCurrency ?? {}],
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) => [
     'accounting',
@@ -196,6 +198,25 @@ export const useDuplicateSuggestions = (windowDays?: number) =>
     queryKey: [...keys.duplicateSuggestions, windowDays ?? {}],
     queryFn: () => accountingApi.duplicateSuggestions(windowDays),
   })
+
+export const useDismissedSuggestions = () =>
+  useQuery({ queryKey: keys.dismissedSuggestions, queryFn: accountingApi.dismissedSuggestions })
+
+export function useDismissSuggestion() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (body: DismissSuggestionRequest) => accountingApi.dismissSuggestion(body),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRestoreSuggestion() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (suggestionId: string) => accountingApi.restoreSuggestion(suggestionId),
+    onSuccess: invalidate,
+  })
+}
 
 export function useSetPostingMerges() {
   const invalidate = useInvalidateAccounting()

@@ -1,4 +1,4 @@
-import type { ComponentType } from 'react'
+import { useEffect, useState, type ComponentType } from 'react'
 import {
   ArrowRightLeft,
   BarChart3,
@@ -9,6 +9,7 @@ import {
   LineChart,
   Library,
   Percent,
+  PieChart,
   Receipt,
   Scale,
   Settings,
@@ -69,12 +70,13 @@ const BOTTOM_ITEMS: NavItem[] = [
   { label: 'Guide', icon: BookOpen, path: '/guide' },
 ]
 
-// At only three items there's no group worth naming, per the mock's own
-// caption on the Money side's larger tree.
+// At only a handful of items there's no group worth naming, per the
+// mock's own caption on the Money side's larger tree.
 const INVESTMENTS_ITEMS: NavItem[] = [
-  { label: 'Dashboard', icon: LineChart, path: '/investments' },
-  { label: 'Reference', icon: Library, path: '/investments/reference' },
+  { label: 'Performance', icon: LineChart, path: '/investments' },
+  { label: 'Allocation', icon: PieChart, path: '/investments/allocation' },
   { label: 'Taxes', icon: Percent, path: '/investments/taxes' },
+  { label: 'Reference', icon: Library, path: '/investments/reference' },
 ]
 
 const ITEM_CLASSES =
@@ -132,9 +134,30 @@ function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
   )
 }
 
-export function Sidebar() {
+// Every path that unambiguously belongs to the Money side — used to
+// resolve which mode the switch should show. Anything not in this set and
+// not under `/investments` (Overview, Net Worth, Settings, Guide) is
+// mode-agnostic: visiting it must never flip the switch away from
+// whichever side the user was already on, since none of the money/
+// investments group is even shown on those pages.
+const MONEY_PATHS = new Set(
+  [...EVERYDAY_ITEMS, ...PLANNING_ITEMS, ...SETUP_ITEMS].map((item) => item.path),
+)
+
+function useSidebarMode(): 'money' | 'investments' {
   const location = useLocation()
-  const mode = location.pathname.startsWith('/investments') ? 'investments' : 'money'
+  const [mode, setMode] = useState<'money' | 'investments'>(
+    location.pathname.startsWith('/investments') ? 'investments' : 'money',
+  )
+  useEffect(() => {
+    if (location.pathname.startsWith('/investments')) setMode('investments')
+    else if (MONEY_PATHS.has(location.pathname)) setMode('money')
+  }, [location.pathname])
+  return mode
+}
+
+export function Sidebar() {
+  const mode = useSidebarMode()
 
   return (
     <aside className="flex h-screen w-56 shrink-0 flex-col border-r border-border bg-white">

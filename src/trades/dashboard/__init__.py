@@ -7,6 +7,12 @@ between the layer that computes something and the layer that serializes
 it.
 """
 
+from trades.dashboard.cash_sitting import (
+    CashSittingSummary,
+    cash_sitting_summary,
+    daily_cash_balances,
+    sitting_since_date,
+)
 from trades.dashboard.charts import (
     dollar_chart_series,
     growth_of_100_chart,
@@ -31,12 +37,15 @@ from trades.dashboard.tax import LiquidationEstimate, TaxSummary, tax_summary
 from trades.dashboard.valuation import daily_portfolio_values, make_price_lookup
 
 __all__ = [
+    "CashSittingSummary",
     "DashboardSettings",
     "LiquidationEstimate",
     "LotsTable",
     "OverviewCards",
     "TaxSummary",
     "allocation_view",
+    "cash_sitting_summary",
+    "daily_cash_balances",
     "daily_portfolio_values",
     "data_quality",
     "dollar_chart_series",
@@ -55,5 +64,6 @@ __all__ = [
     "resolved_tax_regime",
     "risk_stat",
     "save_settings",
+    "sitting_since_date",
     "tax_summary",
 ]

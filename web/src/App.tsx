@@ -4,16 +4,17 @@ import { ErrorBoundary } from '@/components/layout/ErrorBoundary'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { AccountsPage } from '@/pages/AccountsPage'
+import { AllocationPage } from '@/pages/AllocationPage'
 import { BudgetPage } from '@/pages/BudgetPage'
 import { CategoriesPage } from '@/pages/CategoriesPage'
 import { GoalsPage } from '@/pages/GoalsPage'
 import { GuidePage } from '@/pages/GuidePage'
 import { ImportPage } from '@/pages/ImportPage'
 import { InsightsPage } from '@/pages/InsightsPage'
-import { InvestmentsPage } from '@/pages/InvestmentsPage'
 import { InvestmentsReferencePage } from '@/pages/InvestmentsReferencePage'
 import { NetWorthPage } from '@/pages/NetWorthPage'
 import { OverviewPage } from '@/pages/OverviewPage'
+import { PerformancePage } from '@/pages/PerformancePage'
 import { RulesPage } from '@/pages/RulesPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { SimulatorPage } from '@/pages/SimulatorPage'
@@ -45,9 +46,10 @@ export default function App() {
               <Route path="/categories" element={<CategoriesPage />} />
               <Route path="/tags" element={<TagsPage />} />
               <Route path="/rules" element={<RulesPage />} />
-              <Route path="/investments" element={<InvestmentsPage />} />
-              <Route path="/investments/reference" element={<InvestmentsReferencePage />} />
+              <Route path="/investments" element={<PerformancePage />} />
+              <Route path="/investments/allocation" element={<AllocationPage />} />
               <Route path="/investments/taxes" element={<TaxesPage />} />
+              <Route path="/investments/reference" element={<InvestmentsReferencePage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/guide" element={<GuidePage />} />
             </Routes>

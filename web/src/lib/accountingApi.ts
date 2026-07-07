@@ -15,6 +15,8 @@ import type {
   Currency,
   CurrencyCode,
   DetectedAccount,
+  DismissedSuggestion,
+  DismissSuggestionRequest,
   DuplicateGroup,
   ExchangeRateHistoryPoint,
   ExchangeRateSyncResult,
@@ -234,6 +236,13 @@ export const accountingApi = {
     request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
   duplicateSuggestions: (windowDays?: number) =>
     request<DuplicateGroup[]>(`/api/accounting/duplicate-suggestions${queryString({ window_days: windowDays })}`),
+  dismissedSuggestions: () => request<DismissedSuggestion[]>('/api/accounting/dismissed-suggestions'),
+  dismissSuggestion: (body: DismissSuggestionRequest) =>
+    request<DismissedSuggestion>('/api/accounting/dismissed-suggestions', jsonInit('POST', body)),
+  restoreSuggestion: (suggestionId: string) =>
+    request<{ suggestion_id: string }>(`/api/accounting/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
+      method: 'DELETE',
+    }),
   putPostingMerges: (merges: Record<string, PostingMerge>) =>
     request<Record<string, PostingMerge>>('/api/accounting/posting-merges', jsonInit('PUT', merges)),
   netWorth: (asOf?: string, displayCurrency?: string) =>
