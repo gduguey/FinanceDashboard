@@ -1,4 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
+import { InvestmentsEmptyState } from '@/components/investments/InvestmentsEmptyState'
 import { RulesCard, TaxRegimeSelector, TaxReportTab } from '@/components/investments/TaxPanel'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -23,6 +24,8 @@ export function TaxesPage() {
       <PageHeader title="Taxes" />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
+        <InvestmentsEmptyState />
+
         <TaxRegimeSelector />
 
         {isLoading || !settings ? (

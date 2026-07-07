@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CheckCircle2, Download } from 'lucide-react'
+import { CheckCircle2, CircleHelp, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -16,6 +17,48 @@ import {
   useSetIbkrSettings,
 } from '@/hooks/usePortfolioData'
 import { useClearLlmSettings, useLlmSettings, useLlmUsage, useSetLlmSettings } from '@/hooks/useAccountingData'
+
+// Walks through creating a Flex Query on IBKR's own site, since neither
+// field means anything without one already existing there first.
+function IbkrFlexQueryHelp() {
+  return (
+    <Dialog>
+      <DialogTrigger className="inline-flex align-middle text-muted-foreground/70 hover:text-foreground">
+        <CircleHelp className="size-3.5" />
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Setting up an IBKR Flex Query</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm text-muted-foreground">
+          <p>
+            In IBKR's Client Portal: <strong className="text-foreground">Performance &amp; Reports → Flex Queries</strong>{' '}
+            → create a new <strong className="text-foreground">Activity Flex Query</strong>.
+          </p>
+          <p>Include these sections, with the maximum detail level for each:</p>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Trades</li>
+            <li>Cash transactions</li>
+            <li>Open positions</li>
+            <li>Transfers</li>
+          </ul>
+          <p>
+            Set <strong className="text-foreground">Date Period</strong> to the last{' '}
+            <strong className="text-foreground">365 days</strong> — long enough to capture a full year of history
+            without the query becoming slow to generate, and safe to re-run indefinitely since every sync just
+            replays whatever the query returns.
+          </p>
+          <p>
+            Once saved, IBKR shows a <strong className="text-foreground">Query ID</strong> — that's the "Query ID"
+            field. Separately, under{' '}
+            <strong className="text-foreground">Settings → Reporting → Flex Web Service</strong>, generate a token —
+            that's the "Flex Web Service token" field. Both go below.
+          </p>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 // Never shows a saved secret back — the backend only ever reports whether
 // a field is set, never its value, so a field that's already configured
@@ -46,7 +89,10 @@ function IbkrConnectionCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Investments — IBKR connection</CardTitle>
+        <CardTitle className="flex items-center gap-1.5">
+          Investments — IBKR connection
+          <IbkrFlexQueryHelp />
+        </CardTitle>
         <CardDescription>
           Only IBKR's Flex Web Service is supported right now. Without this connected, the Investments page has
           nothing to show.
