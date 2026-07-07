@@ -1,0 +1,102 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: finance-dashboard
+    restart: unless-stopped
+
+    env_file:
+      - .env.docker
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Not published to the host — only reachable from other containers on
+    # this compose network. Caddy is the only thing the internet can reach.
+    expose:
+      - "8000"
+
+    volumes:
+      # Transitional: local file-based data, until Postgres + R2 fully take over.
+      - ./data:/app/data
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 768M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: finance-postgres
+    restart: unless-stopped
+
+    # env_file alone is enough — it injects POSTGRES_DB/USER/PASSWORD from
+    # .env.docker directly into the container's runtime environment, which is
+    # what the official postgres image reads on startup.
+    env_file:
+      - .env.docker
+
+    # No `ports:` entry on purpose — Postgres is never exposed to the host's
+    # public interface, only reachable from other containers on this network.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      # $$ (not $) escapes Compose's own file-level interpolation (which only
+      # reads a file literally named `.env`, not `.env.docker`) so these are
+      # expanded by the container's shell at runtime from its real env instead.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: finance-caddy
+    restart: unless-stopped
+
+    depends_on:
+      - api
+
+    env_file:
+      - .env.docker
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
