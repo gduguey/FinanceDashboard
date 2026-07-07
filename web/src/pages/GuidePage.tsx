@@ -675,20 +675,21 @@ function InvestmentsTab() {
           it's "sitting there."
         </p>
         <Definition term="Sitting since">
-          the clock only resets on a real deployment — cash dropping by at least a fifth from the day before, big
-          enough to look like an actual investment rather than noise. A deposit never resets it, however large, so
-          if fresh cash lands on top of a balance that was already idle, that new money inherits the older "sitting
-          since" date rather than starting its own. Cash is fungible — there's no way to tell "which" dollars are
-          the stale ones — so this is one shared clock for the whole balance, and it leans toward overstating how
-          long the current total has been sitting, never understating it.
+          every dollar that lands in the account is tracked from the day it arrives until it's actually invested —
+          so if fresh cash lands on top of a balance that's already been sitting a while, that new money gets its
+          own clock rather than inheriting the older one. "Sitting since" reports whichever dollar has been waiting
+          the longest, not a blend, so a big recent deposit can never hide a small stale pocket of cash sitting
+          right next to it. A withdrawal only removes dollars, so it can't make whatever's left look any fresher
+          either — it's the same money it always was.
         </Definition>
         <p>
-          The cash-over-time chart on the same page shows a related but separate line: what all cash <em>ever</em>{' '}
-          received would be worth today had each dollar been invested the moment it arrived, instead of only
-          scoring what's sitting right now. Because it only ever adds — a dollar that got invested later doesn't
-          come back off that line — it's best read as "the cost of cash sitting has, historically, run at least
-          this high," not as a live readout of today's idle balance; the card above it, with its own reset clock,
-          is the closer-to-real-time number.
+          The cash-over-time chart on the same page shows two more numbers built the same way. The dashed lines are
+          what <em>currently</em>-sitting cash would be worth today had it been invested since it arrived — they
+          track the real cash balance's own ups and downs, converging back to it the moment that cash actually gets
+          invested. Below the chart, a separate figure adds up whatever's already been missed from cash that's
+          <em> since</em> been invested — money that finished sitting is banked into this total once, at the moment
+          it was deployed, and stays there; it only ever grows, since it's a running record of episodes that are
+          already over, not a live number to react to today.
         </p>
       </Section>
 

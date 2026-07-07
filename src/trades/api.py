@@ -229,11 +229,14 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
     Returns
     -------
     list[dict[str, Any]]
-        One `{"date", "cash", "benchmark_value_usd", "hysa_value_usd"}`
-        entry per day — the last two are what all cash ever received
-        would be worth by that day had it been invested in the benchmark/
-        HYSA the moment it arrived, instead of ever sitting (see
-        `dashboard.cash_received_counterfactual`). Raises 404 (via
+        One `{"date", "cash", "benchmark_live_usd", "benchmark_realized_usd",
+        "hysa_live_usd", "hysa_realized_usd"}` entry per day.
+        `*_live_usd` is what currently-sitting cash would be worth had it
+        been invested in the benchmark/HYSA since it arrived — bounded,
+        tracks `cash`'s own shape. `*_realized_usd` is a running total,
+        banked once per past sitting episode at the moment it ended, of
+        the gain that episode's cash missed out on — frozen from then on
+        (see `dashboard.cash_received_counterfactual`). Raises 404 (via
         `_load_ledger`) if no ledger is cached yet.
     """
     ledger = _load_ledger()
@@ -244,7 +247,6 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
     counterfactual = dashboard.cash_received_counterfactual(
         daily_cash,
-        range_end,
         benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
         hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
         days_per_year=config.returns.days_per_year,

@@ -278,23 +278,17 @@ class DashboardConfig(BaseModel):
 
 
 class CashSittingConfig(BaseModel):
-    """Tunables for detecting uninvested cash that's been sitting idle.
+    """Tunables for the uninvested-cash warning shown on the card.
 
-    See `dashboard.cash_sitting.sitting_since_date` — a day only resets the
-    "sitting since" clock when cash drops by at least this fraction
-    relative to the previous day's balance; a deposit (or a decrease
-    smaller than this) never resets it, since idle cash doesn't become
-    fresher just because more cash arrived.
+    See `dashboard.cash_sitting.open_cash_lots` — every dollar is tracked
+    as its own FIFO lot from the day it arrives, so there's no threshold
+    to tune for "was this decrease big enough to count as deployment";
+    any decrease consumes the oldest lot(s) exactly. Only how long the
+    oldest lot has to sit before it's worth flagging is a tunable.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    decrease_threshold_pct: float = Field(
-        default=0.20,
-        gt=0,
-        le=1,
-        description="Minimum fractional drop from the previous day's cash balance that counts as a real deployment.",
-    )
     light_warning_days: int = Field(default=7, gt=0, description="Days sitting before the light warning shows.")
     heavy_warning_days: int = Field(default=14, gt=0, description="Days sitting before the heavy warning shows.")
 

@@ -130,12 +130,15 @@ def test_cash_history_returns_one_entry_per_day(client) -> None:
 
 
 def test_cash_history_includes_a_benchmark_counterfactual_for_cash_received(client) -> None:
-    # Jan 1: $2000 received -> 4 VOO shares @ 500. Jan 2: cash drops (spent
-    # on a real BUY) -> no new virtual deposit. Jan 3: cash rises by $550
-    # (a SELL's proceeds) -> a further $550 virtual deposit @ 560.
+    # Jan 1: $2000 arrives as one lot. Jan 2: a $1000 real BUY consumes
+    # $1000 of that lot at an unchanged price -> $0 banked, $1000 stays
+    # open. Jan 3: the price rises to 560 and a $550 SELL creates a second,
+    # separate lot -> live value is both lots' current worth: 1000*(560/500)
+    # + 550*(560/560) = 1670; nothing further gets consumed, so realized stays 0.
     body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
-    assert [row["benchmark_value_usd"] for row in body] == pytest.approx([2000.0, 2000.0, 2790.0])
-    assert all(row["hysa_value_usd"] > 0 for row in body)
+    assert [row["benchmark_live_usd"] for row in body] == pytest.approx([2000.0, 1000.0, 1670.0])
+    assert [row["benchmark_realized_usd"] for row in body] == pytest.approx([0.0, 0.0, 0.0])
+    assert all(row["hysa_live_usd"] > 0 for row in body)
 
 
 def test_statements_export_returns_a_zip_of_every_archived_flex_statement(client, isolated_config) -> None:
@@ -153,9 +156,10 @@ def test_statements_export_returns_a_zip_of_every_archived_flex_statement(client
 def test_cash_sitting_reports_current_balance_and_when_it_last_dropped(client) -> None:
     body = client.get("/api/cash-sitting").json()
     assert body["cash_usd"] == pytest.approx(1550.0)
-    # The $1000 BUY on Jan 2 is the last drop >=20% of the previous day's
-    # balance; the Jan 3 SELL is an increase, so it doesn't reset the clock.
-    assert body["sitting_since"] == "2026-01-02"
+    # $1000 of the original Jan 1 lot is still open (Jan 2's BUY only
+    # consumed $1000 of it); Jan 3's SELL proceeds are a separate, newer
+    # lot -- the oldest *open* dollar has been sitting since Jan 1.
+    assert body["sitting_since"] == "2026-01-01"
     assert body["warning_level"] == "heavy"
 
 

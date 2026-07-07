@@ -34,15 +34,15 @@ function buildLegend(benchmarkName: string, hysaName: string, taxAdjusted: boole
   return [
     { label: 'Cash', color: '#0f172a', term: undefined },
     {
-      label: `Benchmark counterfactual (${benchmarkName})`,
+      label: `If still sitting, invested in ${benchmarkName}`,
       color: '#2563eb',
-      term: 'benchmarkCounterfactual' as GlossaryTerm,
+      term: 'cashSittingCounterfactual' as GlossaryTerm,
       dashed: true,
     },
     {
-      label: `HYSA counterfactual (${hysaName})${taxAdjusted ? ' — after tax' : ''}`,
+      label: `If still sitting, invested at ${hysaName}${taxAdjusted ? ' — after tax' : ''}`,
       color: '#059669',
-      term: 'hysaCounterfactual' as GlossaryTerm,
+      term: 'cashSittingCounterfactual' as GlossaryTerm,
       dashed: true,
     },
   ]
@@ -86,98 +86,116 @@ export function CashOverTimeChart() {
   const taxAdjusted = taxSettings?.tax_enabled ?? false
   const benchmarkName = benchmarkLabel(benchmarkSetting)
   const hysaName = hysaLabel(hysaSettings, hysaRates)
-  const benchmarkLineName = `Benchmark counterfactual (${benchmarkName})`
-  const hysaLineName = `HYSA counterfactual (${hysaName})${taxAdjusted ? ' — after tax' : ''}`
+  const benchmarkLineName = `If still sitting, invested in ${benchmarkName}`
+  const hysaLineName = `If still sitting, invested at ${hysaName}${taxAdjusted ? ' — after tax' : ''}`
+  const latest = data && data.length > 0 ? data[data.length - 1] : undefined
 
   return (
-    <ChartCard
-      title={view === 'time' ? 'Cash over time' : 'Cash duration curve'}
-      description={
-        view === 'time'
-          ? "Uninvested cash balance, day by day — dashed lines show what all cash ever received would be worth had it been invested the moment it arrived"
-          : 'Cash amount vs. the percentage of days it stayed at or above that amount'
-      }
-      legend={
-        view === 'time' ? (
-          <>
-            <div className="mb-2 flex flex-wrap items-center gap-4">
-              <BenchmarkPicker />
-              <HysaSettingsPanel />
-            </div>
-            <ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />
-          </>
-        ) : undefined
-      }
-      isLoading={isLoading}
-      isEmpty={!data?.length}
-      error={error?.message}
-      action={
-        <Button variant="outline" size="sm" onClick={() => setView((v) => (v === 'time' ? 'duration' : 'time'))}>
-          {view === 'time' ? 'Show duration curve' : 'Show over time'}
-        </Button>
-      }
-    >
-      {view === 'time' ? (
-        <LineChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
-          <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-          <YAxis
-            tickFormatter={(v) => formatUsd(v, true)}
-            tick={{ fontSize: 12 }}
-            axisLine={false}
-            tickLine={false}
-            width={64}
-          />
-          <Tooltip
-            formatter={(value, name) => [formatUsd(Number(value)), name]}
-            labelFormatter={(label) => formatDate(String(label))}
-          />
-          <Line type="stepAfter" dataKey="cash" name="Cash" stroke="#0f172a" strokeWidth={2} dot={false} />
-          <Line
-            type="monotone"
-            dataKey="benchmark_value_usd"
-            name={benchmarkLineName}
-            stroke="#2563eb"
-            strokeWidth={2}
-            strokeDasharray="4 4"
-            dot={false}
-          />
-          <Line
-            type="monotone"
-            dataKey="hysa_value_usd"
-            name={hysaLineName}
-            stroke="#059669"
-            strokeWidth={2}
-            strokeDasharray="4 4"
-            dot={false}
-          />
-        </LineChart>
-      ) : (
-        <LineChart data={duration} margin={{ left: 8, right: 8, top: 8 }}>
-          <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis
-            dataKey="percentile"
-            type="number"
-            domain={[0, 100]}
-            tickFormatter={(v) => `${v}%`}
-            tick={{ fontSize: 12 }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <YAxis
-            tickFormatter={(v) => formatUsd(v, true)}
-            tick={{ fontSize: 12 }}
-            axisLine={false}
-            tickLine={false}
-            width={64}
-          />
-          <Tooltip
-            formatter={(value) => [formatUsd(Number(value)), 'Cash']}
-            labelFormatter={(label) => `At or above this amount ${Number(label).toFixed(0)}% of the time`}
-          />
-          <Line type="stepAfter" dataKey="cash" stroke="#0f172a" strokeWidth={2} dot={false} />
-        </LineChart>
+    <div className="space-y-2">
+      <ChartCard
+        title={view === 'time' ? 'Cash over time' : 'Cash duration curve'}
+        description={
+          view === 'time'
+            ? "Uninvested cash balance, day by day — dashed lines show what currently-sitting cash would be worth had it been invested since it arrived"
+            : 'Cash amount vs. the percentage of days it stayed at or above that amount'
+        }
+        legend={
+          view === 'time' ? (
+            <>
+              <div className="mb-2 flex flex-wrap items-center gap-4">
+                <BenchmarkPicker />
+                <HysaSettingsPanel />
+              </div>
+              <ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />
+            </>
+          ) : undefined
+        }
+        isLoading={isLoading}
+        isEmpty={!data?.length}
+        error={error?.message}
+        action={
+          <Button variant="outline" size="sm" onClick={() => setView((v) => (v === 'time' ? 'duration' : 'time'))}>
+            {view === 'time' ? 'Show duration curve' : 'Show over time'}
+          </Button>
+        }
+      >
+        {view === 'time' ? (
+          <LineChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
+            <CartesianGrid vertical={false} stroke="var(--border)" />
+            <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+            <YAxis
+              tickFormatter={(v) => formatUsd(v, true)}
+              tick={{ fontSize: 12 }}
+              axisLine={false}
+              tickLine={false}
+              width={64}
+            />
+            <Tooltip
+              formatter={(value, name) => [formatUsd(Number(value)), name]}
+              labelFormatter={(label) => formatDate(String(label))}
+            />
+            <Line type="stepAfter" dataKey="cash" name="Cash" stroke="#0f172a" strokeWidth={2} dot={false} />
+            <Line
+              type="monotone"
+              dataKey="benchmark_live_usd"
+              name={benchmarkLineName}
+              stroke="#2563eb"
+              strokeWidth={2}
+              strokeDasharray="4 4"
+              dot={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="hysa_live_usd"
+              name={hysaLineName}
+              stroke="#059669"
+              strokeWidth={2}
+              strokeDasharray="4 4"
+              dot={false}
+            />
+          </LineChart>
+        ) : (
+          <LineChart data={duration} margin={{ left: 8, right: 8, top: 8 }}>
+            <CartesianGrid vertical={false} stroke="var(--border)" />
+            <XAxis
+              dataKey="percentile"
+              type="number"
+              domain={[0, 100]}
+              tickFormatter={(v) => `${v}%`}
+              tick={{ fontSize: 12 }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis
+              tickFormatter={(v) => formatUsd(v, true)}
+              tick={{ fontSize: 12 }}
+              axisLine={false}
+              tickLine={false}
+              width={64}
+            />
+            <Tooltip
+              formatter={(value) => [formatUsd(Number(value)), 'Cash']}
+              labelFormatter={(label) => `At or above this amount ${Number(label).toFixed(0)}% of the time`}
+            />
+            <Line type="stepAfter" dataKey="cash" stroke="#0f172a" strokeWidth={2} dot={false} />
+          </LineChart>
+        )}
+      </ChartCard>
+
+      {/* A separate, permanently-growing total — kept off the chart's own
+          axes on purpose, since it can dwarf the bounded cash balance
+          after a few years and would flatten that line to a sliver. See
+          `cashSittingCounterfactual` for why it's frozen rather than
+          plotted as a third live line. */}
+      {view === 'time' && latest && (
+        <p className="px-1 text-xs text-muted-foreground">
+          Realized from past sitting episodes:{' '}
+          <span className="font-medium text-foreground">{formatUsd(latest.benchmark_realized_usd)}</span> vs.{' '}
+          {benchmarkName},{' '}
+          <span className="font-medium text-foreground">{formatUsd(latest.hysa_realized_usd)}</span> vs. {hysaName}
+          <InfoTooltip term="cashSittingCounterfactual" />
+        </p>
       )}
-    </ChartCard>
+    </div>
   )
 }
