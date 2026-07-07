@@ -1,0 +1,68 @@
+# Docker build ignore file - keeps image size down
+# Anything listed here won't be copied into the Docker image
+
+# Git & Version Control
+.git
+.gitignore
+.gitattributes
+
+# Development & IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+.env
+.env.*
+!.env.*.example
+
+# Python development
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv/
+env/
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg
+
+# Node development
+node_modules
+npm-debug.log
+yarn-error.log
+web/node_modules
+web/dist
+
+# Documentation & notes
+docs
+notebooks
+*.md
+!README.md
+
+# Runtime/user data — never bake this into the image. It always comes from
+# the volume mount, Postgres, or R2 at runtime, and excluding it here also
+# keeps data changes from invalidating the Docker build cache.
+data/
+
+# Development/test files
+tests/
+info/
+*.ipynb
+NEXT_STEPS.md
+NEW_TASKS.md
+ACCOUNTING_PLAN.md
+AGENTS.md
+CLAUDE.md
+
+# CI/CD
+.github
+.gitlab-ci.yml
+Makefile
+
+# OS files
+Thumbs.db
+.DS_Store
