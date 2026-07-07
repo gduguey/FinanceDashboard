@@ -24,11 +24,14 @@ import io
 import zipfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
+from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from accounting.api import router as accounting_router
@@ -65,6 +68,11 @@ app = FastAPI(title="Investments API")
 app.state.config = AppConfig()
 app.state.sync_progress = SyncProgress(step="Idle", percent=0.0, done=True)
 app.include_router(accounting_router)
+
+# Same layout in the Docker image (built by the frontend-builder stage into
+# web/dist/) and in a local dev checkout (built by hand via `npm run build`)
+# — both put this file at src/trades/api.py, two levels under the repo root.
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 # Lock to prevent concurrent syncs: /api/sync writes to caches and the ledger,
 # so concurrent requests would step on each other's writes.
@@ -887,3 +895,23 @@ def sync() -> dict[str, Any]:
 
         app.state.sync_progress = SyncProgress(step="Done", percent=100.0, done=True)
         return result
+
+
+if _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str) -> FileResponse:
+        """Serve the built React app for anything no route above matched.
+
+        Registered last on purpose: Starlette matches routes in registration
+        order, so every `/api/...` route (and `/docs`, `/openapi.json`)
+        defined earlier in this module is tried first. Falls back to
+        `index.html` for any path that isn't a real file in `web/dist/` —
+        e.g. a hard refresh on `/settings` — so the frontend's client-side
+        router gets a chance to handle it instead of a bare 404.
+        """
+        candidate = _FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")
