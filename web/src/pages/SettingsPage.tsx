@@ -10,7 +10,7 @@ import {
   useIbkrSettings,
   useSetIbkrSettings,
 } from '@/hooks/usePortfolioData'
-import { useClearLlmSettings, useLlmSettings, useSetLlmSettings } from '@/hooks/useAccountingData'
+import { useClearLlmSettings, useLlmSettings, useLlmUsage, useSetLlmSettings } from '@/hooks/useAccountingData'
 
 // Never shows a saved secret back — the backend only ever reports whether
 // a field is set, never its value, so a field that's already configured
@@ -108,8 +108,29 @@ function IbkrConnectionCard() {
   )
 }
 
+function ProviderStatus({ label, configured }: { label: string; configured: boolean }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      {configured ? (
+        <>
+          <CheckCircle2 className="size-4 text-emerald-600" />
+          <span className="text-emerald-600">{label} — Connected</span>
+        </>
+      ) : (
+        <span className="text-muted-foreground">{label} — Not connected</span>
+      )}
+    </span>
+  )
+}
+
+// A provider counts as connected once a key is available from *any*
+// source — an override saved here, or `GEMINI_API_KEY`/`MISTRAL_API_KEY`
+// in `.env` — the same `configured` flag `LlmUsageBanner` shows on
+// Transactions, read here too so a `.env`-only key still shows as
+// connected instead of looking unset just because nothing was typed here.
 function LlmCategorizationCard() {
   const { data, isLoading } = useLlmSettings()
+  const { data: usage } = useLlmUsage()
   const setSettings = useSetLlmSettings()
   const clearSettings = useClearLlmSettings()
   const [geminiKey, setGeminiKey] = useState('')
@@ -143,6 +164,10 @@ function LlmCategorizationCard() {
           <Skeleton className="h-32 w-full" />
         ) : (
           <>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+              <ProviderStatus label="Gemini" configured={usage?.gemini?.configured ?? false} />
+              <ProviderStatus label="Mistral" configured={usage?.mistral?.configured ?? false} />
+            </div>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               Gemini API key
               <Input
