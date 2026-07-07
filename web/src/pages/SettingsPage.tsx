@@ -1,73 +1,30 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CheckCircle2, CircleHelp, Download, XCircle } from 'lucide-react'
+import { CircleHelp, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ConnectionStatus } from '@/components/shared/ConnectionStatus'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { api } from '@/lib/api'
 import { accountingApi } from '@/lib/accountingApi'
 import { downloadCsv, downloadFromUrl, downloadJson, downloadMultipleCsv, exportStamp } from '@/lib/download'
 import {
+  type ConnectionState,
   useClearIbkrSettings,
+  useIbkrConnectionStatus,
   useIbkrSettings,
   useSetIbkrSettings,
-  useVerifyIbkrSettings,
 } from '@/hooks/usePortfolioData'
 import {
   useClearLlmSettings,
+  useLlmConnectionStatus,
   useLlmSettings,
-  useLlmUsage,
   useSetLlmSettings,
-  useVerifyLlmSettings,
 } from '@/hooks/useAccountingData'
-
-// Three real states, not two: a key can be missing, present but rejected
-// by the provider, or present and actually working — "Connected" should
-// mean the latter, not just "something's typed in". `result` is the
-// verify call's outcome; `undefined` while it hasn't resolved yet.
-function ConnectionStatus({
-  configured,
-  isPending,
-  result,
-}: {
-  configured: boolean
-  isPending: boolean
-  result: { ok: boolean; error: string | null } | undefined
-}) {
-  if (!configured) {
-    return <span className="text-sm text-muted-foreground">Not connected</span>
-  }
-  if (isPending || !result) {
-    return <span className="text-sm text-muted-foreground">Checking…</span>
-  }
-  if (!result.ok) {
-    return (
-      <span className="flex min-w-0 items-center gap-1.5 text-sm text-destructive">
-        <XCircle className="size-4 shrink-0" />
-        <span className="shrink-0">Can't authenticate</span>
-        {result.error && (
-          // Provider error text varies wildly in length (a one-line "bad
-          // key" message vs. a whole nested error object) — truncate
-          // rather than let a verbose one blow out the layout; full text
-          // is still there on hover.
-          <span className="min-w-0 truncate" title={result.error}>
-            — {result.error}
-          </span>
-        )}
-      </span>
-    )
-  }
-  return (
-    <span className="flex items-center gap-1.5 text-sm text-emerald-600">
-      <CheckCircle2 className="size-4 shrink-0" />
-      Connected
-    </span>
-  )
-}
 
 // Walks through creating a Flex Query on IBKR's own site, since neither
 // field means anything without one already existing there first.
@@ -120,18 +77,9 @@ function IbkrConnectionCard() {
   const { data, isLoading } = useIbkrSettings()
   const setSettings = useSetIbkrSettings()
   const clearSettings = useClearIbkrSettings()
-  const verify = useVerifyIbkrSettings()
+  const connection = useIbkrConnectionStatus()
   const [token, setToken] = useState('')
   const [queryId, setQueryId] = useState('')
-
-  // Re-check whenever a credential becomes present — on first load if
-  // one's already configured (e.g. via `.env`), and again right after a
-  // save, since a newly-entered key needs its own fresh check rather than
-  // showing whatever the previous key's result happened to be.
-  useEffect(() => {
-    if (data?.configured) verify.mutate()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.configured])
 
   function handleSave() {
     setSettings.mutate(
@@ -140,7 +88,6 @@ function IbkrConnectionCard() {
         onSuccess: () => {
           setToken('')
           setQueryId('')
-          verify.mutate()
         },
       },
     )
@@ -165,7 +112,7 @@ function IbkrConnectionCard() {
           <Skeleton className="h-32 w-full" />
         ) : (
           <>
-            <ConnectionStatus configured={data.configured} isPending={verify.isPending} result={verify.data} />
+            <ConnectionStatus state={connection.state} error={connection.error} />
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               Flex Web Service token
               <Input
@@ -212,21 +159,11 @@ function IbkrConnectionCard() {
   )
 }
 
-function ProviderStatus({
-  label,
-  configured,
-  isPending,
-  result,
-}: {
-  label: string
-  configured: boolean
-  isPending: boolean
-  result: { ok: boolean; error: string | null } | undefined
-}) {
+function ProviderStatus({ label, state, error }: { label: string; state: ConnectionState; error: string | null }) {
   return (
     <span className="flex max-w-full min-w-0 items-center gap-1.5 sm:max-w-80">
       <span className="shrink-0 font-medium text-foreground">{label}</span>
-      <ConnectionStatus configured={configured} isPending={isPending} result={result} />
+      <ConnectionStatus state={state} error={error} />
     </span>
   )
 }
@@ -239,39 +176,20 @@ function ProviderStatus({
 // ConnectionStatus's "Can't authenticate" state instead.
 function LlmCategorizationCard() {
   const { data, isLoading } = useLlmSettings()
-  const { data: usage } = useLlmUsage()
   const setSettings = useSetLlmSettings()
   const clearSettings = useClearLlmSettings()
-  const verifyGemini = useVerifyLlmSettings()
-  const verifyMistral = useVerifyLlmSettings()
+  const geminiConnection = useLlmConnectionStatus('gemini')
+  const mistralConnection = useLlmConnectionStatus('mistral')
   const [geminiKey, setGeminiKey] = useState('')
   const [mistralKey, setMistralKey] = useState('')
 
-  useEffect(() => {
-    if (usage?.gemini?.configured) verifyGemini.mutate('gemini')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [usage?.gemini?.configured])
-
-  useEffect(() => {
-    if (usage?.mistral?.configured) verifyMistral.mutate('mistral')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [usage?.mistral?.configured])
-
   function handleSave() {
-    const enteredGemini = Boolean(geminiKey)
-    const enteredMistral = Boolean(mistralKey)
     setSettings.mutate(
       { ...(geminiKey && { gemini_api_key: geminiKey }), ...(mistralKey && { mistral_api_key: mistralKey }) },
       {
         onSuccess: () => {
           setGeminiKey('')
           setMistralKey('')
-          // The mount effect below only re-checks when `configured` flips
-          // false→true — overwriting an already-configured (but maybe
-          // broken) key needs an explicit re-check here too, since
-          // `configured` itself doesn't change in that case.
-          if (enteredGemini) verifyGemini.mutate('gemini')
-          if (enteredMistral) verifyMistral.mutate('mistral')
         },
       },
     )
@@ -294,18 +212,8 @@ function LlmCategorizationCard() {
         ) : (
           <>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-              <ProviderStatus
-                label="Gemini"
-                configured={usage?.gemini?.configured ?? false}
-                isPending={verifyGemini.isPending}
-                result={verifyGemini.data}
-              />
-              <ProviderStatus
-                label="Mistral"
-                configured={usage?.mistral?.configured ?? false}
-                isPending={verifyMistral.isPending}
-                result={verifyMistral.data}
-              />
+              <ProviderStatus label="Gemini" state={geminiConnection.state} error={geminiConnection.error} />
+              <ProviderStatus label="Mistral" state={mistralConnection.state} error={mistralConnection.error} />
             </div>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               Gemini API key

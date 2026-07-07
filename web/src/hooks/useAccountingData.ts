@@ -32,6 +32,7 @@ const keys = {
   currencies: ['accounting', 'currencies'],
   llmUsage: ['accounting', 'llm-usage'],
   llmSettings: ['accounting', 'settings', 'llm'],
+  llmVerify: (provider: 'gemini' | 'mistral') => ['accounting', 'settings', 'llm', 'verify', provider],
   supportedImportKinds: ['accounting', 'supported-import-kinds'],
   syncStatus: ['accounting', 'sync-status'],
   currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
@@ -155,11 +156,29 @@ export function useClearLlmSettings() {
   })
 }
 
-// A real auth check (one free models.list() call to the provider), not
-// just "is a key present" — a mutation since it's a real live call worth
-// being explicit about, not something to silently re-run on refocus.
-export function useVerifyLlmSettings() {
-  return useMutation({ mutationFn: (provider: 'gemini' | 'mistral') => accountingApi.verifyLlmSettings(provider) })
+export type ConnectionState = 'none' | 'checking' | 'invalid' | 'connected'
+
+// The one shared definition of "is this provider actually connected" —
+// Settings and Transactions' usage banner both read this same cached
+// query rather than each deciding for themselves. A real auth check (one
+// free models.list() call), not just "is a key present" — `configured`
+// alone doesn't catch a wrong/expired key. Saving or clearing a key
+// invalidates `keys.llmSettings`, which — via React Query's prefix
+// matching — invalidates this query too.
+export function useLlmConnectionStatus(provider: 'gemini' | 'mistral'): { state: ConnectionState; error: string | null } {
+  const { data: usage } = useLlmUsage()
+  const configured = usage?.[provider]?.configured ?? false
+  const verify = useQuery({
+    queryKey: keys.llmVerify(provider),
+    queryFn: () => accountingApi.verifyLlmSettings(provider),
+    enabled: configured,
+    staleTime: 30_000,
+  })
+
+  if (!configured) return { state: 'none', error: null }
+  if (verify.isPending || !verify.data) return { state: 'checking', error: null }
+  if (!verify.data.ok) return { state: 'invalid', error: verify.data.error }
+  return { state: 'connected', error: null }
 }
 
 export const useSupportedImportKinds = () =>
