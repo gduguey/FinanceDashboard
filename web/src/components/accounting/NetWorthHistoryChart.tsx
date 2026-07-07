@@ -36,7 +36,16 @@ function pivotByAccount(rows: NetWorthHistoryByAccountPoint[]) {
   return { data, accounts }
 }
 
-export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: CurrencyCode }) {
+// `compact` drops the detailed-by-account toggle and the zoom brush,
+// and shrinks the plot area — for a small trend glance (Overview's health
+// strip) rather than the full drill-down experience the Net Worth page wants.
+export function NetWorthHistoryChart({
+  displayCurrency,
+  compact = false,
+}: {
+  displayCurrency: CurrencyCode
+  compact?: boolean
+}) {
   const [detailed, setDetailed] = useState(false)
   const [hiddenAccountIds, setHiddenAccountIds] = useState<Set<string>>(new Set())
   const start = startOfHistoryWindow()
@@ -45,8 +54,8 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
   // weekly sample would smear over exactly the kind of single-day jump
   // (a big transfer, a statement import) this chart exists to show.
   const aggregate = useNetWorthHistory(start, TODAY, 1, displayCurrency)
-  const byAccount = useNetWorthHistoryByAccount(start, TODAY, 1, displayCurrency, detailed)
-  const isLoading = detailed ? byAccount.isLoading : aggregate.isLoading
+  const byAccount = useNetWorthHistoryByAccount(start, TODAY, 1, displayCurrency, detailed && !compact)
+  const isLoading = detailed && !compact ? byAccount.isLoading : aggregate.isLoading
 
   const { data: detailedData, accounts } = useMemo(() => pivotByAccount(byAccount.data ?? []), [byAccount.data])
 
@@ -59,51 +68,65 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
     })
   }
 
-  const isEmpty = detailed ? !detailedData.length : !aggregate.data?.length
-  const error = detailed ? byAccount.error : aggregate.error
-  const chartData = detailed ? detailedData : (aggregate.data ?? [])
+  const showDetailed = detailed && !compact
+  const isEmpty = showDetailed ? !detailedData.length : !aggregate.data?.length
+  const error = showDetailed ? byAccount.error : aggregate.error
+  const chartData = showDetailed ? detailedData : (aggregate.data ?? [])
+  const plotHeight = compact ? 96 : 288
 
   return (
     <Card className="gap-3">
-      <CardHeader>
-        <CardTitle>Net worth over time</CardTitle>
-        <CardDescription>
-          Last 12 months, daily — drag the handles below the chart to zoom into a range
-        </CardDescription>
-        <CardAction>
-          <Button variant="outline" size="sm" onClick={() => setDetailed((prev) => !prev)}>
-            {detailed ? 'Show total' : 'Detailed'}
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent>
+      {!compact && (
+        <CardHeader>
+          <CardTitle>Net worth over time</CardTitle>
+          <CardDescription>
+            Last 12 months, daily — drag the handles below the chart to zoom into a range
+          </CardDescription>
+          <CardAction>
+            <Button variant="outline" size="sm" onClick={() => setDetailed((prev) => !prev)}>
+              {detailed ? 'Show total' : 'Detailed'}
+            </Button>
+          </CardAction>
+        </CardHeader>
+      )}
+      <CardContent className={compact ? 'p-0' : undefined}>
         {isLoading ? (
-          <Skeleton className="h-72 w-full" />
+          <Skeleton className={compact ? 'h-24 w-full' : 'h-72 w-full'} />
         ) : isEmpty ? (
-          <div className="flex h-72 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+          <div
+            className={`flex items-center justify-center px-6 text-center text-sm text-muted-foreground ${compact ? 'h-24' : 'h-72'}`}
+          >
             {error?.message || 'No data yet'}
           </div>
         ) : (
           <div className="flex gap-4">
-            <ResponsiveContainer width="100%" height={288} className="flex-1">
+            <ResponsiveContainer width="100%" height={plotHeight} className="flex-1">
               <LineChart data={chartData} margin={{ left: 8, right: 8, top: 8 }}>
-                <CartesianGrid vertical={false} stroke="var(--border)" />
-                <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-                <YAxis
-                  tickFormatter={(v) => formatCurrencyCompact(v, displayCurrency)}
-                  tick={{ fontSize: 12 }}
+                {!compact && <CartesianGrid vertical={false} stroke="var(--border)" />}
+                <XAxis
+                  dataKey="date"
+                  tickFormatter={formatDate}
+                  tick={compact ? false : { fontSize: 12 }}
                   axisLine={false}
                   tickLine={false}
-                  width={64}
+                  hide={compact}
+                />
+                <YAxis
+                  tickFormatter={(v) => formatCurrencyCompact(v, displayCurrency)}
+                  tick={compact ? false : { fontSize: 12 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={compact ? 0 : 64}
+                  hide={compact}
                 />
                 <Tooltip
                   formatter={(value, name) => [
                     formatCurrency(Number(value), displayCurrency),
-                    detailed ? (accounts.find((a) => a.id === name)?.name ?? name) : 'Net worth',
+                    showDetailed ? (accounts.find((a) => a.id === name)?.name ?? name) : 'Net worth',
                   ]}
                   labelFormatter={(label) => formatDate(String(label))}
                 />
-                {detailed ? (
+                {showDetailed ? (
                   accounts
                     .filter((account) => !hiddenAccountIds.has(account.id))
                     .map((account) => (
@@ -127,20 +150,23 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
                     of whatever Brush would otherwise pick on its own; the
                     `key` resets that selection when the underlying series
                     actually changes (aggregate vs. detailed) rather than
-                    preserving a now-stale range. */}
-                <Brush
-                  key={chartData.length}
-                  dataKey="date"
-                  height={20}
-                  tickFormatter={formatDate}
-                  stroke="#94a3b8"
-                  travellerWidth={8}
-                  startIndex={0}
-                  endIndex={chartData.length - 1}
-                />
+                    preserving a now-stale range. Skipped in compact mode —
+                    a glance-sized chart has no room to zoom into anyway. */}
+                {!compact && (
+                  <Brush
+                    key={chartData.length}
+                    dataKey="date"
+                    height={20}
+                    tickFormatter={formatDate}
+                    stroke="#94a3b8"
+                    travellerWidth={8}
+                    startIndex={0}
+                    endIndex={chartData.length - 1}
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
-            {detailed && (
+            {showDetailed && (
               <ul className="flex w-48 shrink-0 flex-col gap-1 overflow-y-auto text-sm">
                 {accounts.map((account) => {
                   const hidden = hiddenAccountIds.has(account.id)

@@ -397,6 +397,37 @@ def _apply_canonical_outcome(
     )
 
 
+def last_import_at(config: AccountingConfig) -> datetime | None:
+    """Find the most recent moment any statement was archived, across every institution and account.
+
+    Reads the timestamp encoded in each archive's own filename (see
+    `_raw_statement_path`) rather than the file's on-disk mtime, so a
+    copy/rsync of `data/` onto another machine can't make an old import
+    look freshly done.
+
+    Parameters
+    ----------
+    config
+        Application configuration; `config.raw_statement_dir` is read.
+
+    Returns
+    -------
+    datetime.datetime or None
+        Timezone-aware (UTC), or `None` if nothing has ever been imported.
+    """
+    paths = [
+        *config.raw_statement_dir.glob("*/*/*.csv"),
+        *config.raw_statement_dir.glob(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
+    ]
+    timestamps: list[datetime] = []
+    for path in paths:
+        try:
+            timestamps.append(datetime.strptime(path.stem, "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC))
+        except ValueError:
+            continue
+    return max(timestamps) if timestamps else None
+
+
 def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     """Recompute the whole ledger from every archived raw CSV.
 

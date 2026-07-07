@@ -136,7 +136,8 @@ src/accounting/
   config.py             AccountingConfig — every on-disk path, derived from one data_dir
   models.py             pydantic schemas — Account, Posting, Category, Tag, TransferRule,
                          CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
-                         ManualTransfer, PostingMerge, Currency — canonical, declared once
+                         ManualTransfer, PostingMerge, DismissedSuggestion, Currency —
+                         canonical, declared once
   store.py              persisted accounts/categories/tags/rules/goals/budgets/etc.
                          (store.json) — seeded defaults, not fetched data
 
@@ -228,12 +229,26 @@ since each is a substantial topic on its own:
 
 The SoFi savings export shows money leaving to a brokerage
 ("INTERACTIVE BROK ... DIRECT_PAY"). Rather than tracking brokerage detail
-twice, that posting's counterparty is a placeholder account
-(`kind="external_investment"`) whose balance is *never* computed by
-replaying postings — `dashboard.net_worth` instead reads that value live
-from `trades.dashboard.overview_cards()`. This is the one explicit,
-one-directional coupling between the two modules: accounting reads trades,
-trades never reads accounting.
+twice, that posting's counterparty can be a placeholder account
+(`kind="external_investment"`) whose balance is pulled live from `trades`
+instead of being computed by replaying postings — but only when the
+account's own `external_ref` field is set to `"trades"`. This is a choice
+made once, when the account is created (or edited): "pull from
+Investments" sets `external_ref="trades"`; "set manually" leaves it `None`,
+and `dashboard.net_worth.base_balance` then values that account exactly
+like any other — from its own postings and opening balance. A manually-
+tracked `external_investment` account (a friend-managed fund, a brokerage
+this app doesn't sync with) never reaches into `trades` at all.
+
+When it does pull, `api._external_investment_values_usd` reads the value
+live from the *running* `trades.api` app's own `app.state.config`, via
+`trades.dashboard.valuation.daily_portfolio_values` (one batched
+computation across every requested date, rather than replaying the whole
+ledger once per date — net worth history can ask for a year of daily
+points). This is the one explicit, one-directional coupling between the
+two modules: accounting reads trades, trades never reads accounting. See
+`/docs/architecture.md` (repo root) for how the two modules share one
+process end to end.
 
 ## Core conventions
 

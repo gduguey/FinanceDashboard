@@ -2,8 +2,13 @@ import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
+import { InfoTooltip } from '@/components/ui/info-tooltip'
+import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
+import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
 import { formatDate, formatUsd } from '@/lib/format'
-import { useCashHistory } from '@/hooks/usePortfolioData'
+import { benchmarkLabel, hysaLabel } from '@/lib/labels'
+import { useBenchmarkSetting, useCashHistory, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
+import type { GlossaryTerm } from '@/lib/glossary'
 import type { CashHistoryPoint } from '@/types/portfolio'
 
 interface DurationPoint {
@@ -25,18 +30,83 @@ function durationCurve(points: CashHistoryPoint[]): DurationPoint[] {
   return sorted.map((cash, index) => ({ percentile: (index / (n - 1)) * 100, cash }))
 }
 
+function buildLegend(benchmarkName: string, hysaName: string, taxAdjusted: boolean) {
+  return [
+    { label: 'Cash', color: '#0f172a', term: undefined },
+    {
+      label: `Benchmark counterfactual (${benchmarkName})`,
+      color: '#2563eb',
+      term: 'benchmarkCounterfactual' as GlossaryTerm,
+      dashed: true,
+    },
+    {
+      label: `HYSA counterfactual (${hysaName})${taxAdjusted ? ' — after tax' : ''}`,
+      color: '#059669',
+      term: 'hysaCounterfactual' as GlossaryTerm,
+      dashed: true,
+    },
+  ]
+}
+
+function ChartLegend({
+  benchmarkName,
+  hysaName,
+  taxAdjusted,
+}: {
+  benchmarkName: string
+  hysaName: string
+  taxAdjusted: boolean
+}) {
+  const items = buildLegend(benchmarkName, hysaName, taxAdjusted)
+  return (
+    <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+      {items.map((item) => (
+        <span key={item.label} className="inline-flex items-center gap-1">
+          <span
+            className="inline-block h-0.5 w-3"
+            style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }}
+          />
+          {item.label}
+          {item.term && <InfoTooltip term={item.term} />}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function CashOverTimeChart() {
   const [view, setView] = useState<'time' | 'duration'>('time')
   const { data, isLoading, error } = useCashHistory()
+  const { data: benchmarkSetting } = useBenchmarkSetting()
+  const { data: hysaSettings } = useHysaSettings()
+  const { data: hysaRates } = useHysaRates()
+  const { data: taxSettings } = useTaxSettings()
   const duration = useMemo(() => durationCurve(data ?? []), [data])
+
+  const taxAdjusted = taxSettings?.tax_enabled ?? false
+  const benchmarkName = benchmarkLabel(benchmarkSetting)
+  const hysaName = hysaLabel(hysaSettings, hysaRates)
+  const benchmarkLineName = `Benchmark counterfactual (${benchmarkName})`
+  const hysaLineName = `HYSA counterfactual (${hysaName})${taxAdjusted ? ' — after tax' : ''}`
 
   return (
     <ChartCard
       title={view === 'time' ? 'Cash over time' : 'Cash duration curve'}
       description={
         view === 'time'
-          ? 'Uninvested cash balance, day by day'
+          ? "Uninvested cash balance, day by day — dashed lines show what all cash ever received would be worth had it been invested the moment it arrived"
           : 'Cash amount vs. the percentage of days it stayed at or above that amount'
+      }
+      legend={
+        view === 'time' ? (
+          <>
+            <div className="mb-2 flex flex-wrap items-center gap-4">
+              <BenchmarkPicker />
+              <HysaSettingsPanel />
+            </div>
+            <ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />
+          </>
+        ) : undefined
       }
       isLoading={isLoading}
       isEmpty={!data?.length}
@@ -59,10 +129,28 @@ export function CashOverTimeChart() {
             width={64}
           />
           <Tooltip
-            formatter={(value) => [formatUsd(Number(value)), 'Cash']}
+            formatter={(value, name) => [formatUsd(Number(value)), name]}
             labelFormatter={(label) => formatDate(String(label))}
           />
-          <Line type="stepAfter" dataKey="cash" stroke="#0f172a" strokeWidth={2} dot={false} />
+          <Line type="stepAfter" dataKey="cash" name="Cash" stroke="#0f172a" strokeWidth={2} dot={false} />
+          <Line
+            type="monotone"
+            dataKey="benchmark_value_usd"
+            name={benchmarkLineName}
+            stroke="#2563eb"
+            strokeWidth={2}
+            strokeDasharray="4 4"
+            dot={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="hysa_value_usd"
+            name={hysaLineName}
+            stroke="#059669"
+            strokeWidth={2}
+            strokeDasharray="4 4"
+            dot={false}
+          />
         </LineChart>
       ) : (
         <LineChart data={duration} margin={{ left: 8, right: 8, top: 8 }}>

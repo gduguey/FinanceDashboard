@@ -76,7 +76,7 @@ export function GrowthOf100Chart() {
       <LineChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} stroke="var(--border)" />
         <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-        <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
+        <YAxis domain={['auto', 'auto']} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
         <Tooltip
           formatter={(value, name, item) => {
             const formatted = Number(value).toFixed(1)

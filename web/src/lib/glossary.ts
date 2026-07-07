@@ -118,19 +118,23 @@ export const GLOSSARY = {
   },
   taxRegime: {
     title: 'Tax regime',
-    body: "Which U.S. tax treatment applies: NRA (nonresident alien, e.g. F-1 student status) generally owes no U.S. tax on bank interest or on security sales at all; RESIDENT (e.g. H-1B, once the substantial-presence test is met) is taxed the same way a U.S. citizen is, on both.",
+    body: "Which U.S. tax treatment applies: NRA (nonresident alien, e.g. F-1 student status) generally owes no U.S. tax on bank interest or on security sales at all, as long as you're present in the U.S. fewer than 183 days in the tax year; RESIDENT (e.g. H-1B, once the substantial-presence test is met) is taxed the same way a U.S. citizen is, on both. This app doesn't count your actual days present — picking a regime here is a statement of which one applies to you, not something it verifies.",
+  },
+  ltcg: {
+    title: 'LTCG — Long-Term Capital Gains',
+    body: "The profit from selling a lot held longer than 365 days (see Term) — taxed, under the RESIDENT regime, at this lower rate instead of your regular marginal rate. A qualified dividend gets the same lower rate. Only ever applies under RESIDENT: an NRA's capital gains aren't U.S.-taxed at all, so no LTCG rate applies to them regardless of holding period.",
   },
   washSaleFlag: {
     title: 'Wash-sale',
-    body: "A loss sale is flagged when the same security — or one on a declared similar-fund list — was bought back within 30 days before or after the sale. On this page it is just a mechanical proximity check, to surfaces the risk.",
+    body: "A loss sale is flagged when the same security — or one on a declared similar-fund list — was bought back within 30 days before or after the sale. On this page it is just a mechanical proximity check, to surface the risk — it doesn't disallow the loss in any of the numbers shown here, since that adjustment lives on an actual tax return, not this dashboard.",
   },
   taxToggle: {
     title: 'Taxes',
-    body: "Changes how this page and Allocation show tax's effect on your numbers — the full annual report, estimated tax owed, flagged wash sales, and sale previews always live on the separate Taxes page regardless of this switch. Here, it changes two things: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. On Allocation, lot-level dividend figures switch from gross to net of withholding, reflecting the actual cash received; XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized.",
+    body: "Changes how this page and Allocation show tax's effect on your numbers — the full annual report, estimated tax owed, flagged wash sales, and sale previews always live on the separate Taxes page regardless of this switch. Here, it changes two things: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. On Allocation, lot-level dividend figures switch from gross to net of withholding, reflecting the actual cash received; XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized. The regime and rates it applies are set on the Taxes page, not here.",
   },
   taxOwed: {
     title: 'Estimated tax owed',
-    body: "Capital-gains tax on the year's net realized gain, plus dividend/interest tax, at the rates set above — a resident alien pays the marginal rate on short-term gains and ordinary income, the lower rate on long-term gains and qualified dividends; a nonresident alien owes nothing on gains or interest and a flat rate on dividends. A net loss in a bucket is floored at zero, not a rebate. Balance due nets this estimate against tax already withheld by the broker.",
+    body: "Capital-gains tax on the year's net realized gain, plus dividend/interest tax, at the rates set above — a resident alien pays the marginal rate on short-term gains and ordinary income, the lower LTCG rate on long-term gains and qualified dividends; a nonresident alien owes nothing on gains or interest, and a flat rate on dividends (a tax treaty's negotiated rate if W-8BEN is claimed, otherwise the default 30% statutory withholding). A net loss in a bucket is floored at zero, not a rebate. Balance due nets this estimate against tax already withheld by the broker.",
   },
   liquidationValue: {
     title: 'After-tax liquidation value',

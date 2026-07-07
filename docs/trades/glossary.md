@@ -215,40 +215,62 @@ shares and their future gains are still included in portfolio performance.
 
 ## Tax
 
+Taxes has its own top-level page now (`/investments/taxes`, two tabs:
+Report and How it's taxed), separate from Performance and Allocation. The
+regime/rate selector lives only there; Performance and Allocation only
+carry the plain on/off "Apply taxes" switch (see Taxes (toggle) below).
+
 ### Tax regime
 
 Which U.S. tax treatment applies: NRA (nonresident alien, e.g. F-1 student
 status) generally owes no U.S. tax on bank interest or on security sales
-at all; RESIDENT (e.g. H-1B, once the substantial-presence test is met) is
-taxed the same way a U.S. citizen is, on both.
+at all, as long as you're present in the U.S. fewer than 183 days in the
+tax year; RESIDENT (e.g. H-1B, once the substantial-presence test is met)
+is taxed the same way a U.S. citizen is, on both. This app doesn't count
+actual days present — picking a regime is a statement of which one
+applies, not something it verifies.
+
+### LTCG — Long-Term Capital Gains
+
+The profit from selling a lot held longer than 365 days (see Term) —
+taxed, under the RESIDENT regime, at this lower rate instead of the
+regular marginal rate. A qualified dividend gets the same lower rate.
+Never applies under NRA: those capital gains aren't U.S.-taxed at all,
+regardless of holding period.
 
 ### Wash-sale
 
 A loss sale is flagged when the same security — or one on a declared
 similar-fund list — was bought back within 30 days before or after the
-sale. On this page it is just a mechanical proximity check, to surface the
-risk.
+sale. This is just a mechanical proximity check, to surface the risk — it
+doesn't disallow the loss in any number shown here, since that adjustment
+lives on an actual tax return, not this dashboard.
 
 ### Taxes (toggle)
 
-Reveals the tax section: the annual realized-gain and dividend report, an
-estimated tax-owed summary, flagged wash sales, and open-lot sale previews.
-
-When enabled, the HYSA line and rate switch from the published rate to an
-after-tax rate (labeled "(after tax)"), and the overview's "Dollar alpha
-vs. HYSA" card is recomputed the same way. Portfolio value, XIRR, TWR, and
-the benchmark comparison are never taxed here — a gain sitting unsold owes
+Shown on Performance and Allocation, not on the Taxes page itself (which
+always shows its report regardless of this switch). Changes two things:
+the HYSA line and rate switch from the published rate to an after-tax rate
+(labeled "(after tax)"), and the overview's "Dollar alpha vs. HYSA" card is
+recomputed the same way; on Allocation, lot-level dividend figures switch
+from gross to net of withholding. Portfolio value, XIRR, TWR, and the
+benchmark comparison are never taxed here — a gain sitting unsold owes
 nothing.
 
 ### Estimated tax owed
 
 Capital-gains tax on the year's net realized gain, plus dividend/interest
-tax, at the rates set above. A net loss in a bucket is floored at zero,
-not a rebate. Balance due nets this estimate against tax already withheld
-by the broker.
+tax, at the rates set on the Taxes page — a resident pays the marginal
+rate on short-term gains and ordinary income, the lower LTCG rate on
+long-term gains and qualified dividends; a nonresident owes nothing on
+gains or interest, and a flat rate on dividends (a tax treaty's negotiated
+rate if W-8BEN is claimed, otherwise the default 30% statutory
+withholding). A net loss in a bucket is floored at zero, not a rebate.
+Balance due nets this estimate against tax already withheld by the broker.
 
 ### After-tax liquidation value
 
 Today's portfolio value minus the capital-gains tax a full sale of every
 open lot, right now, would trigger. A snapshot of what selling everything
 today would actually leave you with, not a projection of any other date.
+Shown at the top of the Taxes page's Report tab.

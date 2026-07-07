@@ -1,3 +1,5 @@
+import io
+import zipfile
 from datetime import date, datetime
 
 import polars as pl
@@ -125,6 +127,27 @@ def test_growth_of_100_chart_returns_one_entry_per_day(client) -> None:
 def test_cash_history_returns_one_entry_per_day(client) -> None:
     body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert [row["cash"] for row in body] == pytest.approx([2000.0, 1000.0, 1550.0])
+
+
+def test_cash_history_includes_a_benchmark_counterfactual_for_cash_received(client) -> None:
+    # Jan 1: $2000 received -> 4 VOO shares @ 500. Jan 2: cash drops (spent
+    # on a real BUY) -> no new virtual deposit. Jan 3: cash rises by $550
+    # (a SELL's proceeds) -> a further $550 virtual deposit @ 560.
+    body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert [row["benchmark_value_usd"] for row in body] == pytest.approx([2000.0, 2000.0, 2790.0])
+    assert all(row["hysa_value_usd"] > 0 for row in body)
+
+
+def test_statements_export_returns_a_zip_of_every_archived_flex_statement(client, isolated_config) -> None:
+    raw_dir = isolated_config.ibkr.raw_statement_dir
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "2026-01-01T00-00-00.xml").write_text("<FlexQueryResponse />")
+
+    response = client.get("/api/statements/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    zip_file = zipfile.ZipFile(io.BytesIO(response.content))
+    assert zip_file.namelist() == ["2026-01-01T00-00-00.xml"]
 
 
 def test_cash_sitting_reports_current_balance_and_when_it_last_dropped(client) -> None:

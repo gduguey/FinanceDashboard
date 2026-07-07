@@ -44,6 +44,7 @@ import type {
   RecurringAddition,
   SimulatorScenario,
   SpendCurvePoint,
+  SyncStatus,
   Tag,
   TransferRule,
   TransferSuggestion,
@@ -199,6 +200,7 @@ export const accountingApi = {
   },
   rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
   postings: () => request<Posting[]>('/api/accounting/postings'),
+  ledgerExport: () => request<Posting[]>('/api/accounting/ledger/export'),
   putPostingOverride: (postingId: string, override: ManualOverride) =>
     request<ManualOverride>(`/api/accounting/postings/${encodeURIComponent(postingId)}/override`, jsonInit('PUT', override)),
   putPostingSplit: (postingId: string, legs: PostingSplitLeg[]) =>
@@ -311,6 +313,7 @@ export const accountingApi = {
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
+  syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
   goalsSummary: (asOf?: string, displayCurrency?: string) =>
     request<GoalsSummary>(`/api/accounting/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   runRecurringAdditions: (asOf?: string) =>

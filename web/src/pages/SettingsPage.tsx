@@ -1,10 +1,15 @@
 import { useState } from 'react'
-import { CheckCircle2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { CheckCircle2, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { api } from '@/lib/api'
+import { accountingApi } from '@/lib/accountingApi'
+import { downloadCsv, downloadFromUrl, downloadJson, exportStamp } from '@/lib/download'
 import {
   useClearIbkrSettings,
   useIbkrSettings,
@@ -156,7 +161,7 @@ function LlmCategorizationCard() {
         <CardTitle>AI categorization</CardTitle>
         <CardDescription>
           Powers the "AI suggest category" button on Transactions. Either key is optional, without one, that
-          provider just isn't offered. Mistral and Gemeni both have a free tier, but you must create an account and generate an API key to use them.
+          provider just isn't offered. Mistral and Gemini both have a free tier, but you must create an account and generate an API key to use them.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -214,13 +219,213 @@ function LlmCategorizationCard() {
   )
 }
 
+interface ExportRowProps {
+  label: string
+  description: string
+  error?: string
+  // One button per entry — a raw-statements row passes a single "Export"
+  // action (it's already a file); a ledger/lots/postings row passes one
+  // action per format (JSON, CSV) so both render side by side.
+  exports: { label: string; onExport: () => void | Promise<void> }[]
+}
+
+function ExportRow({ label, description, error, exports }: ExportRowProps) {
+  const [pendingLabel, setPendingLabel] = useState<string | null>(null)
+
+  function handleClick(exportLabel: string, run: () => void | Promise<void>) {
+    return async () => {
+      setPendingLabel(exportLabel)
+      try {
+        await run()
+      } finally {
+        setPendingLabel(null)
+      }
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-lg border border-border p-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
+        {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+      </div>
+      <div className="flex shrink-0 gap-2">
+        {exports.map((entry) => (
+          <Button
+            key={entry.label}
+            variant="outline"
+            size="sm"
+            onClick={handleClick(entry.label, entry.onExport)}
+            disabled={pendingLabel !== null}
+          >
+            <Download className="size-3.5" />
+            {entry.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Every export on the dashboard, in one place — the ledgers and postings
+// each also have a page-local export button right next to the data they
+// come from (Transactions, Allocation's Data quality panel), for whoever's
+// already looking at that data. This tab exists for the opposite case:
+// you know you want a backup or a raw file, and don't want to remember
+// which page it lives on.
+function ExportTab() {
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  function withErrorHandling(key: string, run: () => Promise<void>) {
+    return async () => {
+      try {
+        await run()
+        setErrors((prev) => {
+          const { [key]: _removed, ...rest } = prev
+          return rest
+        })
+      } catch (error) {
+        setErrors((prev) => ({ ...prev, [key]: error instanceof Error ? error.message : 'Export failed' }))
+      }
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Investments</CardTitle>
+          <CardDescription>Everything behind the Performance, Allocation, and Taxes pages.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <ExportRow
+            label="Ledger"
+            description="Every deposit, withdrawal, buy, sell, dividend, fee, and split ever synced."
+            error={errors.investmentsLedger}
+            exports={[
+              {
+                label: 'JSON',
+                onExport: withErrorHandling('investmentsLedger', async () => {
+                  downloadJson(await api.ledgerExport(), `investments-ledger-${exportStamp()}.json`)
+                }),
+              },
+              {
+                label: 'CSV',
+                onExport: withErrorHandling('investmentsLedger', async () => {
+                  downloadCsv(await api.ledgerExport(), `investments-ledger-${exportStamp()}.csv`)
+                }),
+              },
+            ]}
+          />
+          <ExportRow
+            label="Lots"
+            description="Every open and closed lot, plus the per-symbol rollup shown on Allocation. CSV downloads all three as separate files."
+            error={errors.lots}
+            exports={[
+              {
+                label: 'JSON',
+                onExport: withErrorHandling('lots', async () => {
+                  downloadJson(await api.lots(), `investments-lots-${exportStamp()}.json`)
+                }),
+              },
+              {
+                label: 'CSV',
+                onExport: withErrorHandling('lots', async () => {
+                  const lots = await api.lots()
+                  const stamp = exportStamp()
+                  downloadCsv(lots.open_lots, `investments-lots-open-${stamp}.csv`)
+                  downloadCsv(lots.closed_lots, `investments-lots-closed-${stamp}.csv`)
+                  downloadCsv(lots.symbol_rollup, `investments-lots-symbol-rollup-${stamp}.csv`)
+                }),
+              },
+            ]}
+          />
+          <ExportRow
+            label="Raw statements"
+            description="Every Flex statement archived from a sync, verbatim, as a .zip of the original XML files."
+            exports={[{ label: 'Export', onExport: () => downloadFromUrl('/api/statements/export') }]}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Accounting</CardTitle>
+          <CardDescription>Everything behind Transactions, Budget, Goals, and Net Worth.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <ExportRow
+            label="Ledger (raw)"
+            description="Every posting exactly as imported — before transfer rules, overrides, splits, or merges."
+            error={errors.accountingLedger}
+            exports={[
+              {
+                label: 'JSON',
+                onExport: withErrorHandling('accountingLedger', async () => {
+                  downloadJson(await accountingApi.ledgerExport(), `accounting-ledger-${exportStamp()}.json`)
+                }),
+              },
+              {
+                label: 'CSV',
+                onExport: withErrorHandling('accountingLedger', async () => {
+                  downloadCsv(await accountingApi.ledgerExport(), `accounting-ledger-${exportStamp()}.csv`)
+                }),
+              },
+            ]}
+          />
+          <ExportRow
+            label="Postings (resolved)"
+            description="The same postings after every rule and override is applied — what Transactions actually shows."
+            error={errors.postings}
+            exports={[
+              {
+                label: 'JSON',
+                onExport: withErrorHandling('postings', async () => {
+                  downloadJson(await accountingApi.postings(), `accounting-postings-${exportStamp()}.json`)
+                }),
+              },
+              {
+                label: 'CSV',
+                onExport: withErrorHandling('postings', async () => {
+                  downloadCsv(await accountingApi.postings(), `accounting-postings-${exportStamp()}.csv`)
+                }),
+              },
+            ]}
+          />
+          <ExportRow
+            label="Raw statements"
+            description="Every bank/card CSV or statement PDF you've ever uploaded, verbatim, as a .zip."
+            exports={[{ label: 'Export', onExport: () => downloadFromUrl('/api/accounting/statements/export') }]}
+          />
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 export function SettingsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') ?? 'connections'
+  const setTab = (value: string) => setSearchParams(value === 'connections' ? {} : { tab: value })
+
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader title="Settings" />
-      <div className="mx-auto max-w-2xl space-y-6 px-8 py-8">
-        <IbkrConnectionCard />
-        <LlmCategorizationCard />
+      <div className="mx-auto max-w-2xl px-8 py-8">
+        <Tabs value={tab} onValueChange={setTab}>
+          <TabsList>
+            <TabsTrigger value="connections">Connections</TabsTrigger>
+            <TabsTrigger value="export">Export</TabsTrigger>
+          </TabsList>
+          <TabsContent value="connections" className="space-y-6 pt-6">
+            <IbkrConnectionCard />
+            <LlmCategorizationCard />
+          </TabsContent>
+          <TabsContent value="export" className="pt-6">
+            <ExportTab />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )

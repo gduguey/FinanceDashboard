@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHeader, TableRow, TableHead } from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { useRenameCategory, useSetCategories, useSetCategoryPatterns } from '@/hooks/useAccountingData'
@@ -598,12 +600,27 @@ export function CategoriesTab({
   categories: Record<string, Category>
   patterns: Record<string, CategoryPattern>
 }) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = searchParams.get('tab') ?? 'categories'
+  const setTab = (value: string) => setSearchParams(value === 'categories' ? {} : { tab: value })
+
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <ClassificationSection classification="expense" categories={categories} />
-      <ClassificationSection classification="income" categories={categories} />
-      <CategoryPatternsSection patterns={patterns} categories={categories} />
-      <TaxonomyIdeasSection />
-    </div>
+    <Tabs value={tab} onValueChange={setTab}>
+      <TabsList>
+        <TabsTrigger value="categories">Categories</TabsTrigger>
+        <TabsTrigger value="patterns">Patterns</TabsTrigger>
+        <TabsTrigger value="reference">Reference</TabsTrigger>
+      </TabsList>
+      <TabsContent value="categories" className="grid gap-6 pt-2 lg:grid-cols-2">
+        <ClassificationSection classification="expense" categories={categories} />
+        <ClassificationSection classification="income" categories={categories} />
+      </TabsContent>
+      <TabsContent value="patterns" className="pt-2">
+        <CategoryPatternsSection patterns={patterns} categories={categories} />
+      </TabsContent>
+      <TabsContent value="reference" className="pt-2">
+        <TaxonomyIdeasSection />
+      </TabsContent>
+    </Tabs>
   )
 }

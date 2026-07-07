@@ -9,6 +9,7 @@ it.
 
 from trades.dashboard.cash_sitting import (
     CashSittingSummary,
+    cash_received_counterfactual,
     cash_sitting_summary,
     daily_cash_balances,
     sitting_since_date,
@@ -25,6 +26,7 @@ from trades.dashboard.holdings import LotsTable, allocation_view, data_quality, 
 from trades.dashboard.overview import OverviewCards, overview_cards
 from trades.dashboard.settings import (
     DashboardSettings,
+    hysa_rate_lookup,
     load_settings,
     resolved_benchmark_symbol,
     resolved_marginal_ordinary_rate,
@@ -44,12 +46,14 @@ __all__ = [
     "OverviewCards",
     "TaxSummary",
     "allocation_view",
+    "cash_received_counterfactual",
     "cash_sitting_summary",
     "daily_cash_balances",
     "daily_portfolio_values",
     "data_quality",
     "dollar_chart_series",
     "growth_of_100_chart",
+    "hysa_rate_lookup",
     "load_settings",
     "lots_table",
     "make_price_lookup",

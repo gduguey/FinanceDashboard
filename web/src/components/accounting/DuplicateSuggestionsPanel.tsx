@@ -425,7 +425,7 @@ export function DuplicateSuggestionsPanel({
         {sorted.length === 0 ? (
           <p className="text-sm text-muted-foreground">No likely duplicates within {windowDays} days.</p>
         ) : (
-          <div ref={scrollParentRef} className="max-h-[70vh] overflow-y-auto">
+          <div ref={scrollParentRef} className="max-h-[70vh] overflow-x-auto overflow-y-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -485,7 +485,7 @@ export function DuplicateSuggestionsPanel({
                       </TableCell>
                       <TableCell className="text-muted-foreground">{accounts[row.account_id]?.name ?? row.account_id}</TableCell>
                       <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.earliestDate)}</TableCell>
-                      <TableCell className="max-w-xs truncate text-muted-foreground" title={row.descriptionsPreview}>
+                      <TableCell className="max-w-[220px] truncate text-muted-foreground" title={row.descriptionsPreview}>
                         {row.descriptionsPreview}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{formatCurrency(row.amount, currency)}</TableCell>

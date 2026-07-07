@@ -15,8 +15,8 @@ import { useTaxSettings } from '@/hooks/usePortfolioData'
 export function TaxesPage() {
   const { data: settings, isLoading } = useTaxSettings()
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = searchParams.get('tab') ?? 'how-it-works'
-  const setTab = (value: string) => setSearchParams(value === 'how-it-works' ? {} : { tab: value })
+  const tab = searchParams.get('tab') ?? 'report'
+  const setTab = (value: string) => setSearchParams(value === 'report' ? {} : { tab: value })
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -30,17 +30,17 @@ export function TaxesPage() {
         ) : (
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
-              <TabsTrigger value="how-it-works">How it's taxed</TabsTrigger>
               <TabsTrigger value="report">Report</TabsTrigger>
+              <TabsTrigger value="how-it-works">How it's taxed</TabsTrigger>
             </TabsList>
+            <TabsContent value="report" className="pt-2">
+              <TaxReportTab />
+            </TabsContent>
             <TabsContent value="how-it-works" className="pt-2">
               <RulesCard
                 regime={settings.tax_regime ?? settings.resolved_tax_regime}
                 w8benClaimed={settings.w8ben_claimed}
               />
-            </TabsContent>
-            <TabsContent value="report" className="pt-2">
-              <TaxReportTab />
             </TabsContent>
           </Tabs>
         )}
