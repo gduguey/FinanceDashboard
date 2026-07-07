@@ -8,11 +8,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
 import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
 import { withAlpha } from '@/lib/colors'
 import { formatCurrency } from '@/lib/format'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import {
@@ -326,6 +328,7 @@ export function BudgetPage() {
       />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
+        {!storeLoading && store && !hasAnyRealAccount(Object.values(store.accounts)) && <NoAccountsYetBanner />}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle>Budgets</CardTitle>

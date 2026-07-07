@@ -421,6 +421,16 @@ export interface LlmProviderUsage {
 
 export type LlmUsage = Record<string, LlmProviderUsage>
 
+export interface LlmSettings {
+  gemini_key_set: boolean
+  mistral_key_set: boolean
+}
+
+export interface LlmSettingsUpdate {
+  gemini_api_key?: string
+  mistral_api_key?: string
+}
+
 export interface CategoryTotalRow {
   classification: CategoryClassification
   category_id: string

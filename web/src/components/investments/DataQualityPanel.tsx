@@ -13,7 +13,7 @@ import { useDataQuality } from '@/hooks/usePortfolioData'
 // price sync per symbol, and make the ledger exportable so your financial
 // history never lives only in this local cache.
 export function DataQualityPanel() {
-  const { data, isLoading, isError } = useDataQuality()
+  const { data, isLoading, isError, error } = useDataQuality()
   const { sorted, sort, toggleSort } = useSortableRows(data, 'symbol')
 
   async function exportLedger() {
@@ -37,7 +37,7 @@ export function DataQualityPanel() {
         {isLoading ? (
           <Skeleton className="h-32 w-full" />
         ) : isError || !data ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">No data yet</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{error?.message || 'No data yet'}</p>
         ) : (
           <Table>
             <TableHeader>

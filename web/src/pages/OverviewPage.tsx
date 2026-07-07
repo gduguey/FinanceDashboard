@@ -1,10 +1,12 @@
 import { Skeleton } from '@/components/ui/skeleton'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
 import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useAccountingStore, useCategoryTotals, useGoalsSummary } from '@/hooks/useAccountingData'
 
@@ -20,7 +22,7 @@ function currentMonthBounds(): { start: string; end: string } {
 // is a bird's-eye view rather than having to pick a page first. Every
 // chart here is the exact same component its own page renders; this page
 // adds no new data logic of its own, just a light-touch aggregation.
-export function DashboardPage() {
+export function OverviewPage() {
   const { displayCurrency } = useDisplayCurrency()
   const { data: store, isLoading } = useAccountingStore()
   const { start, end } = currentMonthBounds()
@@ -30,7 +32,7 @@ export function DashboardPage() {
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader
-        title="Dashboard"
+        title="Overview"
         actions={
           <>
             <DisplayCurrencyToggle />
@@ -44,6 +46,7 @@ export function DashboardPage() {
           <Skeleton className="h-64 w-full" />
         ) : (
           <>
+            {!hasAnyRealAccount(Object.values(store.accounts)) && <NoAccountsYetBanner />}
             <NetWorthHistoryChart displayCurrency={displayCurrency} />
             <CashflowSankeyChart
               categoryTotals={categoryTotals ?? []}

@@ -118,6 +118,7 @@ export function MonthlyPnlChart() {
 
   const isLoading = bySymbol ? perSymbol.isLoading : aggregate.isLoading
   const isEmpty = bySymbol ? !pivoted.length : !aggregate.data?.length
+  const error = bySymbol ? perSymbol.error : aggregate.error
 
   return (
     <ChartCard
@@ -126,6 +127,7 @@ export function MonthlyPnlChart() {
       description="What you put in, separated from what the market actually did"
       isLoading={isLoading}
       isEmpty={isEmpty}
+      error={error?.message}
       action={
         <Button variant="outline" size="sm" onClick={() => setBySymbol((v) => !v)}>
           {bySymbol ? 'Show total' : 'Break down by symbol'}

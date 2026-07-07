@@ -23,6 +23,8 @@ import type {
   GoalsSummary,
   ImportResult,
   InterestAccountRow,
+  LlmSettings,
+  LlmSettingsUpdate,
   LlmUsage,
   ManualOverride,
   ManualTransfer,
@@ -75,6 +77,7 @@ export interface AccountUpdate {
   institution: string
   kind: string
   currency: string
+  external_ref?: string | null
   meta: Record<string, string>
 }
 
@@ -91,6 +94,14 @@ export const accountingApi = {
   store: () => request<AccountingStore>('/api/accounting/store'),
   currencies: () => request<Currency[]>('/api/accounting/currencies'),
   llmUsage: () => request<LlmUsage>('/api/accounting/llm-usage'),
+  llmSettings: () => request<LlmSettings>('/api/accounting/settings/llm'),
+  setLlmSettings: (update: LlmSettingsUpdate) =>
+    request<LlmSettings>('/api/accounting/settings/llm', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    }),
+  clearLlmSettings: () => request<LlmSettings>('/api/accounting/settings/llm', { method: 'DELETE' }),
   syncExchangeRates: () => request<ExchangeRateSyncResult>('/api/accounting/sync-exchange-rates', { method: 'POST' }),
   currentExchangeRate: (currency: string) =>
     request<CurrentExchangeRate>(`/api/accounting/exchange-rates/current${queryString({ currency })}`),

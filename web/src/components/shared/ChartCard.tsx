@@ -13,6 +13,7 @@ export function ChartCard({
   legend,
   isLoading,
   isEmpty,
+  error,
   children,
 }: {
   title: string
@@ -22,6 +23,11 @@ export function ChartCard({
   legend?: ReactNode
   isLoading?: boolean
   isEmpty?: boolean
+  // The backend's own error message (e.g. "No ledger cached yet. Hit Sync
+  // to pull it from IBKR.") — shown instead of the generic "No data yet"
+  // whenever the empty state was actually caused by a failed request, so
+  // "never synced" and "sync failed" no longer read as the same thing.
+  error?: string | null
   children: ReactElement
 }) {
   return (
@@ -38,8 +44,8 @@ export function ChartCard({
         {isLoading ? (
           <Skeleton className="h-72 w-full" />
         ) : isEmpty ? (
-          <div className="flex h-72 items-center justify-center text-sm text-muted-foreground">
-            No data yet
+          <div className="flex h-72 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+            {error || 'No data yet'}
           </div>
         ) : (
           <>

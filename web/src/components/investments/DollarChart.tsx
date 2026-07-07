@@ -57,7 +57,7 @@ function ChartLegend({
 // distances answer "what's happening / am I beating cash / is the gap
 // growing" at a glance.
 export function DollarChart() {
-  const { data, isLoading } = useDollarChart()
+  const { data, isLoading, error } = useDollarChart()
   const { data: benchmarkSetting } = useBenchmarkSetting()
   const { data: hysaSettings } = useHysaSettings()
   const { data: hysaRates } = useHysaRates()
@@ -78,6 +78,7 @@ export function DollarChart() {
       legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />}
       isLoading={isLoading}
       isEmpty={!series?.length}
+      error={error?.message}
     >
       <LineChart data={series} margin={{ left: 8, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} stroke="var(--border)" />

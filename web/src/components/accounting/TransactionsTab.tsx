@@ -13,12 +13,14 @@ import { CategorySelect, SubcategorySelect } from '@/components/accounting/Categ
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { anyLlmProviderAvailable } from '@/lib/llm'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import {
   useAiSuggestCategory,
   useDeletePostingSplit,
+  useLlmUsage,
   usePatternSuggestCategory,
   usePatternSuggestCategoryBulk,
   useSetPostingOverride,
@@ -126,6 +128,7 @@ interface TransactionRowProps {
   withSubcategories: Set<string>
   aiMessage: string | undefined
   aiPending: boolean
+  aiAvailable: boolean
   onOverride: (postingId: string, override: ManualOverride) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
@@ -151,6 +154,7 @@ const TransactionRow = memo(function TransactionRow({
   withSubcategories,
   aiMessage,
   aiPending,
+  aiAvailable,
   onOverride,
   onAiSuggest,
   onSplit,
@@ -228,8 +232,8 @@ const TransactionRow = memo(function TransactionRow({
             <Button
               variant="ghost"
               size="icon"
-              title={aiMessage || 'AI suggestion'}
-              disabled={aiPending}
+              title={aiMessage || (aiAvailable ? 'AI suggestion' : 'No AI provider configured — add a key in Settings')}
+              disabled={aiPending || !aiAvailable}
               onClick={() => onAiSuggest(posting)}
             >
               <Sparkles className="size-3.5 text-muted-foreground" />
@@ -280,6 +284,8 @@ function TransactionsTable({
   const patternSuggest = usePatternSuggestCategory()
   const patternSuggestBulk = usePatternSuggestCategoryBulk()
   const validatePending = useValidatePending()
+  const { data: llmUsage } = useLlmUsage()
+  const aiAvailable = anyLlmProviderAvailable(llmUsage)
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
@@ -470,7 +476,13 @@ function TransactionsTable({
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle>{onlyUncategorized ? 'Needs categorizing' : 'All transactions'}</CardTitle>
           {bulkTargets.length > 0 && (
-            <Button variant="outline" size="sm" disabled={bulkSuggesting} onClick={() => runBulkAiSuggest(bulkTargets)}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkSuggesting || !aiAvailable}
+              title={aiAvailable ? undefined : 'No AI provider configured — add a key in Settings'}
+              onClick={() => runBulkAiSuggest(bulkTargets)}
+            >
               <Sparkles className="size-3.5" />
               {bulkProgress ? `Suggesting ${bulkProgress.done}/${bulkProgress.total}…` : `AI suggest all (${bulkTargets.length})`}
             </Button>
@@ -620,6 +632,7 @@ function TransactionsTable({
                       withSubcategories={withSubcategories}
                       aiMessage={suggestMessages[posting.posting_id]}
                       aiPending={aiSuggest.isPending || bulkSuggesting || patternSuggest.isPending || bulkPatternSuggesting}
+                      aiAvailable={aiAvailable}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
                       onSplit={setSplitting}

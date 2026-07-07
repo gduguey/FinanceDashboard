@@ -39,7 +39,7 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
-from trades.utils.io_utils import write_json_atomic
+from accounting.utils.io_utils import write_json_atomic
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

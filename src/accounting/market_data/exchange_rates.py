@@ -25,7 +25,7 @@ import polars as pl
 import requests
 
 from accounting.models import BASE_CURRENCY, SUPPORTED_CURRENCIES
-from trades.utils.io_utils import write_csv_atomic
+from accounting.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
     from collections.abc import Iterable

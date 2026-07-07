@@ -32,7 +32,14 @@ from pydantic import BaseModel
 from accounting.api import router as accounting_router
 from trades import dashboard
 from trades.brokers.ibkr import api, main
-from trades.config import AppConfig, IbkrFlexCredentials, TaxRegime
+from trades.config import AppConfig, TaxRegime
+from trades.credentials import (
+    IbkrCredentialOverride,
+    ibkr_is_configured,
+    load_ibkr_credential_override,
+    resolve_ibkr_credentials,
+    save_ibkr_credential_override,
+)
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
@@ -456,6 +463,78 @@ def put_tax_settings(update: TaxSettingsUpdate) -> dict[str, Any]:
     return _tax_settings_response(config)
 
 
+class IbkrCredentialsUpdate(BaseModel):
+    """Request body for `PUT /api/settings/ibkr`.
+
+    Either field left `None` leaves that one exactly as it was — a query
+    id entered with no token doesn't clear an existing token, the same
+    partial-merge convention `PUT /api/settings/benchmark`/`/tax` use.
+    """
+
+    token: str | None = None
+    query_id: str | None = None
+
+
+@app.get("/api/settings/ibkr")
+def get_ibkr_settings() -> dict[str, Any]:
+    """Report whether IBKR credentials are available, without ever exposing their value.
+
+    Returns
+    -------
+    dict[str, Any]
+        `configured` (true if a token and query id are available from
+        either the Settings-page override or `.env`), `token_set` and
+        `query_id_set` (whether the Settings-page override itself has
+        each field, regardless of `.env`).
+    """
+    config = _config()
+    override = load_ibkr_credential_override(config)
+    return {
+        "configured": ibkr_is_configured(config),
+        "token_set": bool(override.token),
+        "query_id_set": bool(override.query_id),
+    }
+
+
+@app.put("/api/settings/ibkr")
+def put_ibkr_settings(update: IbkrCredentialsUpdate) -> dict[str, Any]:
+    """Persist an IBKR credential override (merges into the existing one).
+
+    Returns
+    -------
+    dict[str, Any]
+        Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
+    """
+    config = _config()
+    existing = load_ibkr_credential_override(config)
+    updated = existing.model_copy(
+        update={
+            "token": update.token if update.token is not None else existing.token,
+            "query_id": update.query_id if update.query_id is not None else existing.query_id,
+        }
+    )
+    save_ibkr_credential_override(updated, config)
+    return {
+        "configured": ibkr_is_configured(config),
+        "token_set": bool(updated.token),
+        "query_id_set": bool(updated.query_id),
+    }
+
+
+@app.delete("/api/settings/ibkr")
+def delete_ibkr_settings() -> dict[str, Any]:
+    """Clear the Settings-page IBKR credential override, falling back to `.env` (if any) again.
+
+    Returns
+    -------
+    dict[str, Any]
+        Same shape as `GET /api/settings/ibkr`.
+    """
+    config = _config()
+    save_ibkr_credential_override(IbkrCredentialOverride(), config)
+    return {"configured": ibkr_is_configured(config), "token_set": False, "query_id_set": False}
+
+
 @app.get("/api/tax/report")
 def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
     """Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
@@ -665,7 +744,7 @@ def get_sync_progress() -> dict[str, Any]:
 
 def _run_sync(config: AppConfig) -> dict[str, Any]:
     _report_sync_progress("Connecting to IBKR", 0.0)
-    credentials = IbkrFlexCredentials()  # type: ignore[call-arg]  # token/query_id come from the environment
+    credentials = resolve_ibkr_credentials(config)
     sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
 
     ledger = _load_ledger()

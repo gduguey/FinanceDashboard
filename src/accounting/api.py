@@ -67,7 +67,12 @@ from accounting.llm import categorize
 from accounting.llm.gemini import GeminiProvider
 from accounting.llm.mistral import MistralProvider
 from accounting.llm.provider import LLMProvider, LLMProviderError, complete_with_fallback
-from accounting.llm.settings import LLMCredentials
+from accounting.llm.settings import (
+    LLMCredentialOverride,
+    load_llm_credential_override,
+    resolve_llm_credentials,
+    save_llm_credential_override,
+)
 from accounting.llm.usage import RESET_PERIOD, TrackedProvider, load_usage
 from accounting.market_data import exchange_rates
 from accounting.models import (
@@ -373,6 +378,8 @@ def put_categories(categories: dict[str, Category]) -> dict[str, Any]:
 
 
 class CategoryRenameRequest(BaseModel):
+    """Request body for `POST /categories/{category_id}/rename`."""
+
     name: str
 
 
@@ -590,12 +597,16 @@ class AccountUpdate(BaseModel):
     `put_account`, not here, since that check needs the ledger. `closed`
     isn't edited here — see `close_account`/`reopen_account`, which pair it
     with recording where a closed account's remaining balance went.
+    `external_ref` is never locked — it only ever changes which value an
+    `external_investment` account shows (see `dashboard.net_worth`), never
+    what it has already recorded, so it's free to toggle regardless of postings.
     """
 
     name: str
     institution: str
     kind: AccountKind
     currency: CurrencyCode
+    external_ref: str | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
 
@@ -636,6 +647,7 @@ def put_account(account_id: str, update: AccountUpdate) -> dict[str, Any]:
             "institution": update.institution,
             "kind": update.kind,
             "currency": update.currency,
+            "external_ref": update.external_ref,
             "meta": update.meta,
         }
     )
@@ -1298,7 +1310,7 @@ def _llm_providers() -> list[LLMProvider]:
     list[LLMProvider]
         Gemini first (if `GEMINI_API_KEY` is set), then Mistral (if `MISTRAL_API_KEY` is set) — empty if neither is.
     """
-    credentials = LLMCredentials()
+    credentials = resolve_llm_credentials(state.config)
     providers: list[LLMProvider] = []
     if credentials.gemini_api_key is not None:
         providers.append(
@@ -1331,7 +1343,7 @@ def get_llm_usage() -> dict[str, Any]:
         provider's own error text from the last refused call, `None` if
         it hasn't been refused since its count last reset).
     """
-    credentials = LLMCredentials()
+    credentials = resolve_llm_credentials(state.config)
     configured = {
         "gemini": credentials.gemini_api_key is not None,
         "mistral": credentials.mistral_api_key is not None,
@@ -1347,6 +1359,71 @@ def get_llm_usage() -> dict[str, Any]:
         }
         for provider, entry in usage.items()
     }
+
+
+class LLMSettingsUpdate(BaseModel):
+    """Request body for `PUT /api/accounting/settings/llm`.
+
+    Either field left `None` leaves that one exactly as it was — entering
+    a Gemini key doesn't clear an existing Mistral one.
+    """
+
+    gemini_api_key: str | None = None
+    mistral_api_key: str | None = None
+
+
+def _llm_settings_response(*, gemini_set: bool, mistral_set: bool) -> dict[str, bool]:
+    return {"gemini_key_set": gemini_set, "mistral_key_set": mistral_set}
+
+
+@router.get("/settings/llm")
+def get_llm_settings() -> dict[str, bool]:
+    """Report whether each LLM provider's Settings-page key override is set, without exposing its value.
+
+    Returns
+    -------
+    dict[str, bool]
+        `gemini_key_set`, `mistral_key_set` — whether the Settings-page
+        override itself has each key, regardless of `.env` (see `GET
+        /llm-usage`'s own `configured`, which reflects both sources).
+    """
+    override = load_llm_credential_override(state.config)
+    return _llm_settings_response(gemini_set=bool(override.gemini_api_key), mistral_set=bool(override.mistral_api_key))
+
+
+@router.put("/settings/llm")
+def put_llm_settings(update: LLMSettingsUpdate) -> dict[str, bool]:
+    """Persist an LLM API key override (merges into the existing one).
+
+    Returns
+    -------
+    dict[str, bool]
+        Same shape as `GET /settings/llm`, reflecting what was just persisted.
+    """
+    existing = load_llm_credential_override(state.config)
+    updated = existing.model_copy(
+        update={
+            "gemini_api_key": update.gemini_api_key if update.gemini_api_key is not None else existing.gemini_api_key,
+            "mistral_api_key": (
+                update.mistral_api_key if update.mistral_api_key is not None else existing.mistral_api_key
+            ),
+        }
+    )
+    save_llm_credential_override(updated, state.config)
+    return _llm_settings_response(gemini_set=bool(updated.gemini_api_key), mistral_set=bool(updated.mistral_api_key))
+
+
+@router.delete("/settings/llm")
+def delete_llm_settings() -> dict[str, bool]:
+    """Clear the Settings-page LLM key override, falling back to `.env` (if any) again.
+
+    Returns
+    -------
+    dict[str, bool]
+        Same shape as `GET /settings/llm`.
+    """
+    save_llm_credential_override(LLMCredentialOverride(), state.config)
+    return _llm_settings_response(gemini_set=False, mistral_set=False)
 
 
 Example = tuple[str, str, str | None]
@@ -1746,7 +1823,10 @@ def get_net_worth(as_of: date | None = None, display_currency: CurrencyCode = "U
         See `dashboard.net_worth.NetWorthSummary`.
     """
     postings, store = _resolved_postings_and_store(state.config)
-    has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
+    has_external_investment = any(
+        account.kind == "external_investment" and account.external_ref == "trades"
+        for account in store.accounts.values()
+    )
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     external_values = _external_investment_values_usd([resolved_as_of]) if has_external_investment else None
     summary = net_worth_summary(
@@ -1787,7 +1867,10 @@ def get_net_worth_history(
         One `{"date": ..., "net_worth": ...}` per point, oldest first.
     """
     postings, store = _resolved_postings_and_store(state.config)
-    has_external_investment = any(account.kind == "external_investment" for account in store.accounts.values())
+    has_external_investment = any(
+        account.kind == "external_investment" and account.external_ref == "trades"
+        for account in store.accounts.values()
+    )
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     external_values = _external_investment_values_usd(dates) if has_external_investment else None
     return [
@@ -1834,7 +1917,9 @@ def get_net_worth_history_by_account(
         for account_id, account in store.accounts.items()
         if account.kind not in _VIRTUAL_ACCOUNT_KINDS
     }
-    has_external_investment = any(account.kind == "external_investment" for account in real_accounts.values())
+    has_external_investment = any(
+        account.kind == "external_investment" and account.external_ref == "trades" for account in real_accounts.values()
+    )
     external_values = _external_investment_values_usd(dates) if has_external_investment else None
 
     balances = cast("pl.DataFrame", account_balances_over_time(postings, dates))
@@ -1844,7 +1929,7 @@ def get_net_worth_history_by_account(
     for day in dates:
         display = _display_currency(display_currency, store, day)
         for account_id, account in real_accounts.items():
-            if account.kind == "external_investment":
+            if account.kind == "external_investment" and account.external_ref == "trades":
                 native = (external_values or {}).get(day, 0.0)
             else:
                 native = balance_lookup.get((account_id, day), 0.0)

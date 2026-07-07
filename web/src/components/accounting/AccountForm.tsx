@@ -4,13 +4,16 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { useCurrencies } from '@/hooks/useAccountingData'
+import { useIbkrSettings } from '@/hooks/usePortfolioData'
 import type { Account, AccountKind, CurrencyCode } from '@/types/accounting'
 
-// Every real, importable account kind — excludes the virtual
-// `income_source`/`expense_payee` placeholders and `external_investment`
-// (owned by `trades`, never created here) and `other_asset` (that's a
-// manually-entered net-worth line, not an importable account).
-const ACCOUNT_KINDS: AccountKind[] = ['checking', 'savings', 'credit_card', 'vault', 'cash', 'loan']
+// Every real, importable account kind, plus `external_investment` — a
+// placeholder that either mirrors the tracked portfolio in Investments or
+// is valued manually like any other account (see the pull-vs-manual choice
+// below). Excludes the virtual `income_source`/`expense_payee` placeholders
+// and `other_asset` (that's a manually-entered net-worth line, not an
+// importable account).
+const ACCOUNT_KINDS: AccountKind[] = ['checking', 'savings', 'credit_card', 'vault', 'cash', 'loan', 'external_investment']
 const ACCOUNT_KIND_ITEMS: Record<string, string> = Object.fromEntries(
   ACCOUNT_KINDS.map((kind) => [kind, ACCOUNT_KIND_LABELS[kind]]),
 )
@@ -34,6 +37,11 @@ export interface AccountFormValue {
   name: string
   parentAccountId: string | null
   openingBalance: string
+  // Only meaningful when `kind === 'external_investment'` — `'trades'` pulls
+  // its value from the tracked portfolio in Investments (see
+  // `accounting.dashboard.net_worth.base_balance`), `null` values it
+  // manually from its own opening balance, same as any other account.
+  externalRef: string | null
 }
 
 export function AccountForm({
@@ -127,17 +135,31 @@ export function AccountForm({
           </SelectContent>
         </Select>
       </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Last 4 digits
-        <Input
-          className="w-24"
-          value={value.last4}
-          maxLength={4}
-          onChange={(event) => updateIdentity({ last4: event.target.value.replace(/\D/g, '').slice(0, 4) })}
-          disabled={locked}
-          placeholder="1234"
-        />
-      </label>
+      {value.kind === 'external_investment' ? (
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Label
+          <Input
+            className="w-24"
+            value={value.last4}
+            maxLength={16}
+            onChange={(event) => updateIdentity({ last4: event.target.value })}
+            disabled={locked}
+            placeholder="main"
+          />
+        </label>
+      ) : (
+        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+          Last 4 digits
+          <Input
+            className="w-24"
+            value={value.last4}
+            maxLength={4}
+            onChange={(event) => updateIdentity({ last4: event.target.value.replace(/\D/g, '').slice(0, 4) })}
+            disabled={locked}
+            placeholder="1234"
+          />
+        </label>
+      )}
       {value.kind === 'vault' && showOpeningBalance && (
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Parent account (optional)
@@ -171,7 +193,13 @@ export function AccountForm({
           }}
         />
       </label>
-      {showOpeningBalance && (
+      {value.kind === 'external_investment' && (
+        <ExternalInvestmentSourceToggle
+          value={value.externalRef}
+          onChange={(externalRef) => onChange({ ...value, externalRef })}
+        />
+      )}
+      {showOpeningBalance && !(value.kind === 'external_investment' && value.externalRef === 'trades') && (
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Opening balance (optional)
           <Input
@@ -184,6 +212,57 @@ export function AccountForm({
           />
         </label>
       )}
+    </div>
+  )
+}
+
+// Only shown while creating/editing an `external_investment` account —
+// lets the user choose between mirroring the tracked portfolio in
+// Investments or tracking this one manually like any other account. The
+// "pull" option is disabled whenever IBKR isn't connected, since there'd be
+// nothing for it to pull (see `useIbkrSettings`/`SettingsPage`).
+function ExternalInvestmentSourceToggle({
+  value,
+  onChange,
+}: {
+  value: string | null
+  onChange: (value: string | null) => void
+}) {
+  const { data: ibkrSettings, isLoading } = useIbkrSettings()
+  const canPull = Boolean(ibkrSettings?.configured)
+
+  return (
+    <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+      <span>Value comes from</span>
+      <div className="flex flex-col gap-1.5">
+        <label className={`flex items-center gap-1.5 ${canPull ? '' : 'opacity-50'}`}>
+          <input
+            type="radio"
+            name="external-investment-source"
+            className="size-3.5 accent-current"
+            checked={value === 'trades'}
+            disabled={!canPull}
+            onChange={() => onChange('trades')}
+          />
+          Pull from Investments
+        </label>
+        {!isLoading && !canPull && (
+          <p className="pl-5 text-[11px] text-amber-600">
+            Can't pull from there — IBKR isn't connected yet. Set it up in Settings, or set this account's value
+            manually below.
+          </p>
+        )}
+        <label className="flex items-center gap-1.5">
+          <input
+            type="radio"
+            name="external-investment-source"
+            className="size-3.5 accent-current"
+            checked={value !== 'trades'}
+            onChange={() => onChange(null)}
+          />
+          Set manually
+        </label>
+      </div>
     </div>
   )
 }

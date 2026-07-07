@@ -2,6 +2,17 @@ import type { Account, Posting } from '@/types/accounting'
 
 const VIRTUAL_ACCOUNT_KINDS = new Set(['income_source', 'expense_payee'])
 
+// True once the user has added at least one account of their own — the
+// two virtual placeholder counterparties every fresh install seeds
+// (`uncategorized:expense`/`uncategorized:income`, see `accounting.store`)
+// don't count, since they never represent money the user actually has.
+// Takes any iterable of account-shaped rows (the full `Account` store, or a
+// lighter `NetWorthAccountRow` list) rather than one specific type, since
+// both callers only ever need `kind`.
+export function hasAnyRealAccount(accounts: Iterable<{ kind: string }>): boolean {
+  return [...accounts].some((account) => !VIRTUAL_ACCOUNT_KINDS.has(account.kind))
+}
+
 // Mirrors the backend's own `_real_income_expense_legs` test (see
 // `dashboard.income_statement`): a posting only ever represents real
 // income or a real expense — as opposed to an internal transfer between

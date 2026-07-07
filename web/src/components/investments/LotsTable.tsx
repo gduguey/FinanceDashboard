@@ -80,7 +80,7 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
 // self-inflicted survivorship bias — so open and closed lots get their
 // own tabs, plus a per-symbol rollup that doesn't exist anywhere else.
 export function LotsTable() {
-  const { data, isLoading, isError } = useLots()
+  const { data, isLoading, isError, error } = useLots()
   const { data: taxSettings } = useTaxSettings()
   const [aggregateByDay, setAggregateByDay] = useState(false)
   const taxEnabled = taxSettings?.tax_enabled ?? false
@@ -96,7 +96,7 @@ export function LotsTable() {
           <Skeleton className="h-64 w-full" />
         ) : isError || !data ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            No lots yet — hit Sync to pull trade history.
+            {error?.message || 'No lots yet — hit Sync to pull trade history.'}
           </p>
         ) : (
           <div className="space-y-6">

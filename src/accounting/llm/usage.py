@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict
 
 from accounting.llm.provider import LLMProviderError
-from trades.utils.io_utils import write_json_atomic
+from accounting.utils.io_utils import write_json_atomic
 
 if TYPE_CHECKING:
     from pathlib import Path

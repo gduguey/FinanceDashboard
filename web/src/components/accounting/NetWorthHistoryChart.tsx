@@ -60,6 +60,7 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
   }
 
   const isEmpty = detailed ? !detailedData.length : !aggregate.data?.length
+  const error = detailed ? byAccount.error : aggregate.error
   const chartData = detailed ? detailedData : (aggregate.data ?? [])
 
   return (
@@ -79,7 +80,9 @@ export function NetWorthHistoryChart({ displayCurrency }: { displayCurrency: Cur
         {isLoading ? (
           <Skeleton className="h-72 w-full" />
         ) : isEmpty ? (
-          <div className="flex h-72 items-center justify-center text-sm text-muted-foreground">No data yet</div>
+          <div className="flex h-72 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+            {error?.message || 'No data yet'}
+          </div>
         ) : (
           <div className="flex gap-4">
             <ResponsiveContainer width="100%" height={288} className="flex-1">

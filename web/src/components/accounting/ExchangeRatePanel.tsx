@@ -9,14 +9,14 @@ import type { CurrencyCode } from '@/types/accounting'
 const BASE_CURRENCY: CurrencyCode = 'USD'
 
 function OneCurrencyPanel({ currency }: { currency: CurrencyCode }) {
-  const { data: history, isLoading, isError } = useExchangeRateHistory(currency)
+  const { data: history, isLoading, isError, error } = useExchangeRateHistory(currency)
   const { data: current } = useCurrentExchangeRate(currency)
 
   if (isLoading) return <Skeleton className="h-72 w-full" />
   if (isError || !history?.length) {
     return (
-      <p className="flex h-72 items-center justify-center text-sm text-muted-foreground">
-        No {currency}/{BASE_CURRENCY} history yet — click Sync above.
+      <p className="flex h-72 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+        {error?.message || `No ${currency}/${BASE_CURRENCY} history yet — click Sync above.`}
       </p>
     )
   }

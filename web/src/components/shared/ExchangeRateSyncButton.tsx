@@ -11,6 +11,7 @@ export function ExchangeRateSyncButton() {
   return (
     <div className="flex items-center gap-2">
       {sync.isPending && <LoadingProgressBar step="Fetching latest FX rates from the European Central Bank…" />}
+      {sync.isError && <span className="text-xs text-destructive">{sync.error.message}</span>}
       <Button variant="outline" size="sm" onClick={() => sync.mutate()} disabled={sync.isPending}>
         <RefreshCw className={sync.isPending ? 'size-3.5 animate-spin' : 'size-3.5'} />
         {sync.isPending ? 'Syncing…' : 'Sync rates'}

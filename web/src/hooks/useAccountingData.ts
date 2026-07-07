@@ -10,6 +10,7 @@ import type {
   GeneralBudget,
   Goal,
   GoalContribution,
+  LlmSettingsUpdate,
   ManualOverride,
   ManualTransfer,
   OpeningBalance,
@@ -29,6 +30,7 @@ const keys = {
   store: ['accounting', 'store'],
   currencies: ['accounting', 'currencies'],
   llmUsage: ['accounting', 'llm-usage'],
+  llmSettings: ['accounting', 'settings', 'llm'],
   supportedImportKinds: ['accounting', 'supported-import-kinds'],
   currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
   exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
@@ -124,6 +126,24 @@ export const useAccountingStore = () => useQuery({ queryKey: keys.store, queryFn
 export const useCurrencies = () => useQuery({ queryKey: keys.currencies, queryFn: accountingApi.currencies })
 
 export const useLlmUsage = () => useQuery({ queryKey: keys.llmUsage, queryFn: accountingApi.llmUsage })
+
+export const useLlmSettings = () => useQuery({ queryKey: keys.llmSettings, queryFn: accountingApi.llmSettings })
+
+export function useSetLlmSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (update: LlmSettingsUpdate) => accountingApi.setLlmSettings(update),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.llmSettings }),
+  })
+}
+
+export function useClearLlmSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => accountingApi.clearLlmSettings(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.llmSettings }),
+  })
+}
 
 export const useSupportedImportKinds = () =>
   useQuery({ queryKey: keys.supportedImportKinds, queryFn: accountingApi.supportedImportKinds })

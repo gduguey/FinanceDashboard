@@ -40,6 +40,7 @@ function emptyDraft(): AccountFormValue {
     name: '',
     parentAccountId: null,
     openingBalance: '',
+    externalRef: null,
   }
 }
 
@@ -139,7 +140,7 @@ export function AccountsManagementTable({
         institution: value.institution,
         currency: value.currency,
         parent_account_id: value.parentAccountId,
-        external_ref: null,
+        external_ref: value.externalRef,
         meta: {},
         closed: false,
       })
@@ -164,7 +165,14 @@ export function AccountsManagementTable({
     try {
       await updateAccount.mutateAsync({
         accountId,
-        update: { name: value.name, institution: value.institution, kind: value.kind, currency: value.currency, meta: {} },
+        update: {
+          name: value.name,
+          institution: value.institution,
+          kind: value.kind,
+          currency: value.currency,
+          external_ref: value.externalRef,
+          meta: {},
+        },
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not update account')
@@ -321,6 +329,7 @@ export function AccountsManagementTable({
             name: editing.name,
             parentAccountId: editing.parent_account_id,
             openingBalance: '',
+            externalRef: editing.external_ref,
           }}
           locked={accountIdsWithPostings.has(editing.account_id)}
           knownInstitutions={knownInstitutions}

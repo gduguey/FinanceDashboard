@@ -51,7 +51,7 @@ function ChartLegend({
 // to 100 at the same start, so your NAV is directly comparable to
 // published benchmark numbers with no cashflow matching.
 export function GrowthOf100Chart() {
-  const { data, isLoading } = useGrowthOf100Chart()
+  const { data, isLoading, error } = useGrowthOf100Chart()
   const { data: benchmarkSetting } = useBenchmarkSetting()
   const { data: hysaSettings } = useHysaSettings()
   const { data: hysaRates } = useHysaRates()
@@ -71,6 +71,7 @@ export function GrowthOf100Chart() {
       legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />}
       isLoading={isLoading}
       isEmpty={!data?.length}
+      error={error?.message}
     >
       <LineChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} stroke="var(--border)" />
