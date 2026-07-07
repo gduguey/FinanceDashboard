@@ -1,9 +1,11 @@
+import type { ReactNode } from 'react'
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
 import { ErrorBoundary } from '@/components/layout/ErrorBoundary'
 import { OnboardingModal } from '@/components/layout/OnboardingModal'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
@@ -17,6 +19,7 @@ import { GuidePage } from '@/pages/GuidePage'
 import { ImportPage } from '@/pages/ImportPage'
 import { InsightsPage } from '@/pages/InsightsPage'
 import { NetWorthPage } from '@/pages/NetWorthPage'
+import { OnboardingPage } from '@/pages/OnboardingPage'
 import { OverviewPage } from '@/pages/OverviewPage'
 import { PerformancePage } from '@/pages/PerformancePage'
 import { RulesPage } from '@/pages/RulesPage'
@@ -42,26 +45,35 @@ const queryClient = new QueryClient({
 // so it can't live in App itself — App is the component that creates that
 // provider, one level above where its own context becomes available.
 function AppShell() {
-  const { data: store } = useAccountingStore()
+  const { data: store, isError: storeIsError } = useAccountingStore()
   const hasAnyData = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
+
+  // The whole Money side reads from the same underlying data layer (see
+  // docs/server-setup/storage-and-volumes.md's bind-mount permission
+  // gotcha) — if the core store call is failing outright, every one of
+  // these pages would too, each in its own slightly different way, some
+  // of them blank rather than erroring. One fallback here, instead of
+  // trusting every page's own error handling to catch it.
+  const moneyPage = (page: ReactNode) => (storeIsError ? <PageErrorFallback /> : page)
 
   return (
     <div className="flex h-screen bg-white">
       <Sidebar />
       <ErrorBoundary>
         <Routes>
-          <Route path="/" element={<OverviewPage />} />
-          <Route path="/net-worth" element={<NetWorthPage />} />
-          <Route path="/insights" element={<InsightsPage />} />
-          <Route path="/transactions" element={<TransactionsPage />} />
-          <Route path="/accounts" element={<AccountsPage />} />
-          <Route path="/import" element={<ImportPage />} />
-          <Route path="/budget" element={<BudgetPage />} />
-          <Route path="/goals" element={<GoalsPage />} />
-          <Route path="/simulator" element={<SimulatorPage />} />
-          <Route path="/categories" element={<CategoriesPage />} />
-          <Route path="/tags" element={<TagsPage />} />
-          <Route path="/rules" element={<RulesPage />} />
+          <Route path="/onboarding" element={<OnboardingPage />} />
+          <Route path="/" element={moneyPage(<OverviewPage />)} />
+          <Route path="/net-worth" element={moneyPage(<NetWorthPage />)} />
+          <Route path="/insights" element={moneyPage(<InsightsPage />)} />
+          <Route path="/transactions" element={moneyPage(<TransactionsPage />)} />
+          <Route path="/accounts" element={moneyPage(<AccountsPage />)} />
+          <Route path="/import" element={moneyPage(<ImportPage />)} />
+          <Route path="/budget" element={moneyPage(<BudgetPage />)} />
+          <Route path="/goals" element={moneyPage(<GoalsPage />)} />
+          <Route path="/simulator" element={moneyPage(<SimulatorPage />)} />
+          <Route path="/categories" element={moneyPage(<CategoriesPage />)} />
+          <Route path="/tags" element={moneyPage(<TagsPage />)} />
+          <Route path="/rules" element={moneyPage(<RulesPage />)} />
           <Route path="/investments" element={<PerformancePage />} />
           <Route path="/investments/allocation" element={<AllocationPage />} />
           <Route path="/investments/taxes" element={<TaxesPage />} />

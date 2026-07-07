@@ -170,11 +170,18 @@ export interface LedgerEvent {
   meta: Record<string, string>
 }
 
+export interface SyncStep {
+  label: string
+  ok: boolean
+  error: string | null
+}
+
 export interface SyncResult {
   synced_at: string | null
   new_event_count: number
   total_event_count: number
   symbols_refreshed: string[]
+  steps: SyncStep[]
 }
 
 export interface HysaBank {

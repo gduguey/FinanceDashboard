@@ -512,7 +512,13 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
     assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
 
 
-def test_sync_progress_reflects_failure_and_still_raises(client, monkeypatch) -> None:
+def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, monkeypatch) -> None:
+    """A bad IBKR token shouldn't hide whether prices/CPI/HYSA rates still refreshed.
+
+    Each leg is independent now — the overall request still succeeds
+    (200), `steps` reports IBKR as the one failure, and the other legs
+    ran and reported success regardless.
+    """
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
@@ -521,10 +527,36 @@ def test_sync_progress_reflects_failure_and_still_raises(client, monkeypatch) ->
         raise ValueError(message)
 
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", failing_sync)
+    price_calls = []
+    monkeypatch.setattr(
+        trades_api.prices, "update_price_caches", lambda symbols, since, as_of, config: price_calls.append(symbols)
+    )
+    monkeypatch.setattr(
+        trades_api.prices, "update_price_cache", lambda symbol, since, as_of, config, adjusted=False: None
+    )
+    cpi_calls = []
+    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", cpi_calls.append)
+    hysa_rates_calls = []
+    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", hysa_rates_calls.append)
 
-    with pytest.raises(ValueError, match="too many requests"):
-        client.post("/api/sync")
+    response = client.post("/api/sync")
 
-    body = client.get("/api/sync/progress").json()
-    assert body["done"] is True
-    assert body["error"] is not None
+    assert response.status_code == 200
+    steps = {step["label"]: step for step in response.json()["steps"]}
+    assert steps["Portfolio data"] == {
+        "label": "Portfolio data",
+        "ok": False,
+        "error": "IBKR Flex API error 1018: too many requests",
+    }
+    assert steps["Market prices"]["ok"] is True
+    assert steps["Benchmark prices"]["ok"] is True
+    assert steps["Inflation data"]["ok"] is True
+    assert steps["Savings rates"]["ok"] is True
+    assert len(price_calls) == 1
+    assert len(cpi_calls) == 1
+    assert len(hysa_rates_calls) == 1
+
+    # The sync as a *whole* still finished normally — only the individual
+    # leg is what failed.
+    progress = client.get("/api/sync/progress").json()
+    assert progress == {"step": "Done", "percent": 100.0, "done": True, "error": None}

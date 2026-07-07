@@ -864,32 +864,84 @@ def get_sync_progress() -> dict[str, Any]:
     return asdict(cast("SyncProgress", app.state.sync_progress))
 
 
-def _run_sync(config: AppConfig) -> dict[str, Any]:
-    _report_sync_progress("Connecting to IBKR", 0.0)
-    credentials = resolve_ibkr_credentials(config)
-    sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
+@dataclass
+class _SyncStep:
+    """One independent leg of a sync — a UI-friendly label, not the underlying provider's name."""
 
-    ledger = _load_ledger()
+    label: str
+    ok: bool
+    error: str | None = None
+
+
+def _run_sync(config: AppConfig) -> dict[str, Any]:
+    """Run every leg of a sync independently — one failing never skips the rest.
+
+    A bad IBKR token shouldn't also block a benchmark price refresh that
+    has nothing to do with IBKR; each leg below is caught on its own, so
+    e.g. market prices and savings rates still update even if IBKR itself
+    is down. `steps` in the return value reports each leg's own
+    success/failure — that's what the UI shows, not just one overall
+    pass/fail.
+    """
+    steps: list[_SyncStep] = []
+
+    _report_sync_progress("Connecting to IBKR", 0.0)
+    sync_result = None
+    try:
+        credentials = resolve_ibkr_credentials(config)
+        sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
+        steps.append(_SyncStep("Portfolio data", True))
+    except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
+        steps.append(_SyncStep("Portfolio data", False, str(error)))
+
+    raw_ledger = main.load_ledger(config)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
-    held_symbols = sorted(set(ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol})
-    raw_symbols = sorted({*held_symbols, benchmark_symbol})
-    first_event = _first_event_date(ledger)
     today = datetime.now(tz=UTC).date()
+    if raw_ledger.is_empty():
+        # Nothing's ever been synced successfully — nothing to backfill
+        # held-symbol prices for, but the benchmark/CPI/HYSA legs below are
+        # still worth attempting on their own.
+        held_symbols: list[str] = []
+        first_event = today
+    else:
+        held_symbols = sorted(set(raw_ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol})
+        first_event = _first_event_date(raw_ledger)
+    raw_symbols = sorted({*held_symbols, benchmark_symbol})
 
     _report_sync_progress("Updating price history", 65.0)
-    prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
+    try:
+        prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
+        steps.append(_SyncStep("Market prices", True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Market prices", False, str(error)))
+
     _report_sync_progress("Updating benchmark prices", 80.0)
-    prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
+    try:
+        prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
+        steps.append(_SyncStep("Benchmark prices", True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Benchmark prices", False, str(error)))
+
     _report_sync_progress("Updating CPI index", 90.0)
-    cpi_module.update_cpi_cache(config)
+    try:
+        cpi_module.update_cpi_cache(config)
+        steps.append(_SyncStep("Inflation data", True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Inflation data", False, str(error)))
+
     _report_sync_progress("Updating savings rates", 95.0)
-    hysa_rates_module.update_hysa_rates_cache(config)
+    try:
+        hysa_rates_module.update_hysa_rates_cache(config)
+        steps.append(_SyncStep("Savings rates", True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Savings rates", False, str(error)))
 
     return {
         "synced_at": _last_synced_iso(),
-        "new_event_count": sync_result.new_event_count,
-        "total_event_count": sync_result.total_event_count,
+        "new_event_count": sync_result.new_event_count if sync_result else 0,
+        "total_event_count": sync_result.total_event_count if sync_result else raw_ledger.height,
         "symbols_refreshed": raw_symbols,
+        "steps": [asdict(step) for step in steps],
     }
 
 
@@ -912,12 +964,17 @@ def sync() -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`.
+        `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`,
+        and `steps` — each leg's own `label`/`ok`/`error`, since one
+        failing (e.g. a bad IBKR token) no longer aborts the rest.
     """
     with _sync_lock:
         try:
             result = _run_sync(_config())
         except Exception as error:
+            # Only reachable for something outside every leg's own
+            # try/except in _run_sync — each expected failure mode is
+            # already caught there and reported per-step instead.
             app.state.sync_progress = SyncProgress(step="Sync failed", percent=100.0, done=True, error=str(error))
             raise
 

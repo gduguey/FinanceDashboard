@@ -1,6 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
-import { AlertTriangle } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 
 // The last line of defense: without this, any component throwing for a
 // reason nobody's hit yet unmounts the *entire* React tree, and the user
@@ -20,15 +19,6 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
 
   render() {
     if (!this.state.error) return this.props.children
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-        <AlertTriangle className="size-8 text-destructive" />
-        <p className="text-sm font-medium text-foreground">Something went wrong displaying this page.</p>
-        <p className="max-w-sm text-xs text-muted-foreground">{this.state.error.message}</p>
-        <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-          Reload
-        </Button>
-      </div>
-    )
+    return <PageErrorFallback detail={this.state.error.message} />
   }
 }

@@ -29,6 +29,7 @@ const keys = {
   taxSettings: ['portfolio', 'settings', 'tax'],
   taxReport: ['portfolio', 'tax-report'],
   ibkrSettings: ['portfolio', 'settings', 'ibkr'],
+  ibkrVerify: ['portfolio', 'settings', 'ibkr', 'verify'],
 } as const
 
 export const useOverview = () => useQuery({ queryKey: keys.overview, queryFn: () => api.overview() })
@@ -126,12 +127,31 @@ export function useClearIbkrSettings() {
   })
 }
 
-// A real auth check (one fast HTTP call to IBKR), not just "is a value
-// present" — a mutation rather than a query since it has a real side
-// effect worth being explicit about (a live call to IBKR) and shouldn't
-// silently re-run on window refocus/etc. the way a query would.
-export function useVerifyIbkrSettings() {
-  return useMutation({ mutationFn: () => api.verifyIbkrSettings() })
+export type ConnectionState = 'none' | 'checking' | 'invalid' | 'connected'
+
+// The one shared definition of "is IBKR actually connected" — Settings,
+// the sidebar's Investments switch, and the onboarding page all read this
+// same cached query rather than each deciding for themselves, so they can
+// never disagree. A real auth check (one fast HTTP call to IBKR), not
+// just "is a value present" — `configured` alone doesn't catch a
+// wrong/expired token, only "something was typed in". Saving or clearing
+// credentials invalidates `keys.ibkrSettings`, which — via React Query's
+// prefix matching — invalidates this query too, so it always re-checks
+// against whatever credential is actually in effect right now.
+export function useIbkrConnectionStatus(): { state: ConnectionState; error: string | null } {
+  const { data: settings } = useIbkrSettings()
+  const configured = settings?.configured ?? false
+  const verify = useQuery({
+    queryKey: keys.ibkrVerify,
+    queryFn: () => api.verifyIbkrSettings(),
+    enabled: configured,
+    staleTime: 30_000,
+  })
+
+  if (!configured) return { state: 'none', error: null }
+  if (verify.isPending || !verify.data) return { state: 'checking', error: null }
+  if (!verify.data.ok) return { state: 'invalid', error: verify.data.error }
+  return { state: 'connected', error: null }
 }
 
 export function useSync() {

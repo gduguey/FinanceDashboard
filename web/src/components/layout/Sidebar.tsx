@@ -3,6 +3,7 @@ import {
   ArrowRightLeft,
   BarChart3,
   BookOpen,
+  CircleCheckBig,
   FlaskConical,
   Home,
   Landmark,
@@ -21,7 +22,8 @@ import {
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useIbkrSettings } from '@/hooks/usePortfolioData'
+import { useIbkrConnectionStatus } from '@/hooks/usePortfolioData'
+import { useOnboardingProgress } from '@/hooks/useOnboardingProgress'
 import { cn } from '@/lib/utils'
 
 interface NavItem {
@@ -113,8 +115,11 @@ function NavLinks({ items }: { items: NavItem[] }) {
 // Taxes/Glossary), while Overview, Net Worth, Settings, and Guide stay put
 // above and below it since they aren't scoped to either side.
 function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
-  const { data: ibkr } = useIbkrSettings()
-  const ibkrConfigured = ibkr?.configured ?? false
+  // `connected`, not just `configured` — a bad token still counts as
+  // "something's typed in", but shouldn't unlock a page that has nothing
+  // real to show once IBKR actually rejects it.
+  const { state } = useIbkrConnectionStatus()
+  const ibkrConnected = state === 'connected'
 
   return (
     <div className="my-2 flex rounded-lg border border-border bg-muted/40 p-0.5">
@@ -127,7 +132,7 @@ function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
       >
         Money
       </Link>
-      {ibkrConfigured ? (
+      {ibkrConnected ? (
         <Link
           to="/investments"
           className={cn(
@@ -180,6 +185,31 @@ function useSidebarMode(): 'money' | 'investments' {
   return mode
 }
 
+// Shown above Overview only while there's still something to do — an
+// account and real data both — and gone for good once both exist,
+// matching useOnboardingProgress's stricter rule (the welcome *popup*
+// only checks for an account; this checks for both, since it's a
+// standing nav item, not a one-time nudge).
+function OnboardingNavItem() {
+  const { isComplete } = useOnboardingProgress()
+  if (isComplete) return null
+
+  return (
+    <NavLink
+      to="/onboarding"
+      className={({ isActive }) =>
+        cn(
+          'flex items-center gap-2.5 rounded-lg border border-emerald-600/30 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100',
+          isActive && 'border-emerald-600 bg-emerald-100',
+        )
+      }
+    >
+      <CircleCheckBig className="size-4" />
+      Onboarding
+    </NavLink>
+  )
+}
+
 export function Sidebar() {
   const mode = useSidebarMode()
 
@@ -189,6 +219,7 @@ export function Sidebar() {
         <span className="text-sm font-semibold tracking-tight text-foreground">Finance Dashboard</span>
       </div>
       <nav className="flex flex-col gap-0.5 px-3">
+        <OnboardingNavItem />
         <NavLinks items={PINNED_ITEMS} />
       </nav>
 
