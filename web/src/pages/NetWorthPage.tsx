@@ -295,6 +295,11 @@ export function NetWorthPage() {
     setOtherAssets.mutate(data.other_assets.filter((asset) => asset.asset_id !== assetId))
   }
 
+  // Jumping to History/Allocation/Interest/etc. is meaningless when there's
+  // nothing in any of them yet — the anchor nav only earns its place once
+  // there's an account for those sections to actually show something about.
+  const hasData = Boolean(data) && hasAnyRealAccount(data?.accounts ?? [])
+
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader
@@ -305,7 +310,7 @@ export function NetWorthPage() {
             <ExchangeRateSyncButton />
           </>
         }
-        sections={SECTIONS}
+        sections={hasData ? SECTIONS : undefined}
       />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">

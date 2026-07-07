@@ -3,6 +3,7 @@ import { CashSittingCard } from '@/components/investments/CashSittingCard'
 import { DollarChart } from '@/components/investments/DollarChart'
 import { GrowthOf100Chart } from '@/components/investments/GrowthOf100Chart'
 import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
+import { InvestmentsEmptyState } from '@/components/investments/InvestmentsEmptyState'
 import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
 import { SyncButton } from '@/components/investments/SyncButton'
@@ -15,17 +16,20 @@ import { useOverview } from '@/hooks/usePortfolioData'
 // longer more than one view left here worth tabbing between, so this is
 // just one page, not a `Tabs` wrapper around what used to be sections.
 export function PerformancePage() {
-  const { data: overview } = useOverview()
+  const { data: overview, isError } = useOverview()
+  const hasData = Boolean(overview) && !isError
 
   return (
     <div className="flex-1 overflow-y-auto">
       <PageHeader
         title="Performance"
         actions={<SyncButton lastSyncedAt={overview?.last_synced_at ?? null} />}
-        controls={<TaxEnabledToggle />}
+        controls={hasData ? <TaxEnabledToggle /> : undefined}
       />
 
       <div className="mx-auto max-w-6xl space-y-10 px-8 py-8">
+        <InvestmentsEmptyState />
+
         <OverviewCards />
 
         <CashSittingCard />

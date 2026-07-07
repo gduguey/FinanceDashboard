@@ -22,10 +22,10 @@ const WARNING_CLASSES: Record<CashSittingWarningLevel, string> = {
 // leaving it to be noticed only as a lower-than-expected balance. See
 // `dashboard.cash_sitting` for exactly what counts as "sitting" and why.
 export function CashSittingCard() {
-  const { data, isLoading } = useCashSitting()
+  const { data, isLoading, isError, error } = useCashSitting()
   const { data: benchmarkSetting } = useBenchmarkSetting()
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return (
       <Card>
         <CardHeader>
@@ -33,6 +33,21 @@ export function CashSittingCard() {
         </CardHeader>
         <CardContent>
           <Skeleton className="h-24 w-full" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (isError || !data) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Uninvested cash</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            {error?.message || 'No portfolio data yet — hit Sync to pull it from IBKR.'}
+          </p>
         </CardContent>
       </Card>
     )

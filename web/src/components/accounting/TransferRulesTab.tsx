@@ -205,6 +205,13 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
             </TableRow>
           </TableHeader>
           <TableBody>
+            {sorted.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} className="py-6 text-center text-sm text-muted-foreground">
+                  No rules yet — add one below to automatically categorize recurring transfers.
+                </TableCell>
+              </TableRow>
+            )}
             {sorted.map((rule) => (
               <TableRow key={rule.rule_id} className={rule.active ? '' : 'opacity-50'}>
                 <TableCell className="font-medium">{rule.description_contains}</TableCell>

@@ -20,6 +20,8 @@ import {
   Wallet,
 } from 'lucide-react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useIbkrSettings } from '@/hooks/usePortfolioData'
 import { cn } from '@/lib/utils'
 
 interface NavItem {
@@ -111,6 +113,9 @@ function NavLinks({ items }: { items: NavItem[] }) {
 // Taxes/Glossary), while Overview, Net Worth, Settings, and Guide stay put
 // above and below it since they aren't scoped to either side.
 function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
+  const { data: ibkr } = useIbkrSettings()
+  const ibkrConfigured = ibkr?.configured ?? false
+
   return (
     <div className="my-2 flex rounded-lg border border-border bg-muted/40 p-0.5">
       <Link
@@ -122,15 +127,33 @@ function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
       >
         Money
       </Link>
-      <Link
-        to="/investments"
-        className={cn(
-          'flex-1 rounded-md py-1 text-center text-xs font-semibold',
-          mode === 'investments' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-        )}
-      >
-        Investments
-      </Link>
+      {ibkrConfigured ? (
+        <Link
+          to="/investments"
+          className={cn(
+            'flex-1 rounded-md py-1 text-center text-xs font-semibold',
+            mode === 'investments' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          Investments
+        </Link>
+      ) : (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Link
+                to="/settings"
+                className="flex-1 rounded-md py-1 text-center text-xs font-semibold text-muted-foreground/40 hover:text-muted-foreground/70"
+              />
+            }
+          >
+            Investments
+          </TooltipTrigger>
+          <TooltipContent className="max-w-56 text-pretty">
+            Only works with IBKR for now — set up your key in Settings to unlock.
+          </TooltipContent>
+        </Tooltip>
+      )}
     </div>
   )
 }
