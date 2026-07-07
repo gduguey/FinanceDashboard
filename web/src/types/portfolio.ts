@@ -220,6 +220,11 @@ export interface IbkrSettingsUpdate {
   query_id?: string
 }
 
+export interface VerifyResult {
+  ok: boolean
+  error: string | null
+}
+
 export interface SymbolSearchResult {
   symbol: string
   name: string

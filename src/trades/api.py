@@ -32,7 +32,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from accounting.api import router as accounting_router
 from trades import dashboard
@@ -602,6 +602,34 @@ def delete_ibkr_settings() -> dict[str, Any]:
     config = _config()
     save_ibkr_credential_override(IbkrCredentialOverride(), config)
     return {"configured": ibkr_is_configured(config), "token_set": False, "query_id_set": False}
+
+
+@app.post("/api/settings/ibkr/verify")
+def verify_ibkr_settings() -> dict[str, Any]:
+    """Actually attempt to authenticate with IBKR, not just check that something's typed in.
+
+    A single fast HTTP call (see `verify_flex_credentials`) — not a full
+    sync — so this is cheap enough for the Settings page to call whenever
+    it wants a real "does this work" answer instead of "is this set".
+
+    Returns
+    -------
+    dict[str, Any]
+        `ok` (whether IBKR accepted the token/query id) and `error`
+        (IBKR's own message, or a generic one, only when `ok` is false).
+    """
+    config = _config()
+    try:
+        credentials = resolve_ibkr_credentials(config)
+    except ValidationError:
+        return {"ok": False, "error": "No credentials configured"}
+    try:
+        api.verify_flex_credentials(credentials, config)
+    except api.FlexApiError as error:
+        return {"ok": False, "error": error.message}
+    except Exception as error:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
+        return {"ok": False, "error": str(error)}
+    return {"ok": True, "error": None}
 
 
 @app.get("/api/tax/report")

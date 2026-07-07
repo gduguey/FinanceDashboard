@@ -25,6 +25,7 @@ import type {
   TaxReport,
   TaxSettings,
   TaxSettingsUpdate,
+  VerifyResult,
 } from '@/types/portfolio'
 
 export class ApiError extends Error {}
@@ -115,4 +116,5 @@ export const api = {
       body: JSON.stringify(update),
     }),
   clearIbkrSettings: () => request<IbkrSettings>('/api/settings/ibkr', { method: 'DELETE' }),
+  verifyIbkrSettings: () => request<VerifyResult>('/api/settings/ibkr/verify', { method: 'POST' }),
 }

@@ -452,6 +452,11 @@ export interface LlmSettingsUpdate {
   mistral_api_key?: string
 }
 
+export interface VerifyResult {
+  ok: boolean
+  error: string | null
+}
+
 export interface CategoryTotalRow {
   classification: CategoryClassification
   category_id: string

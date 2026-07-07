@@ -67,8 +67,8 @@ from accounting.ledger.pending import resolve_pending_suggestion, stage_pending_
 from accounting.ledger.replay import account_balances_over_time
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
 from accounting.llm import categorize
-from accounting.llm.gemini import GeminiProvider
-from accounting.llm.mistral import MistralProvider
+from accounting.llm.gemini import GeminiProvider, verify_gemini_key
+from accounting.llm.mistral import MistralProvider, verify_mistral_key
 from accounting.llm.provider import LLMProvider, LLMProviderError, complete_with_fallback
 from accounting.llm.settings import (
     LLMCredentialOverride,
@@ -1415,6 +1415,49 @@ def get_llm_usage() -> dict[str, Any]:
         }
         for provider, entry in usage.items()
     }
+
+
+@router.post("/settings/llm/verify")
+def verify_llm_settings(provider: str) -> dict[str, Any]:
+    """Actually attempt to authenticate with a provider, not just check that a key is typed in.
+
+    `verify_gemini_key`/`verify_mistral_key` make a single free, read-only
+    call (`models.list()`) — cheap enough for the Settings page to call
+    whenever it wants a real "does this work" answer instead of "is this set".
+
+    Parameters
+    ----------
+    provider
+        `"gemini"` or `"mistral"`.
+
+    Returns
+    -------
+    dict[str, Any]
+        `ok` (whether the provider accepted the key) and `error` (its own
+        message, or a generic one, only when `ok` is false).
+
+    Raises
+    ------
+    HTTPException
+        400 if `provider` isn't `"gemini"` or `"mistral"`.
+    """
+    credentials = resolve_llm_credentials(state.config)
+    if provider == "gemini":
+        key = credentials.gemini_api_key
+        verify = verify_gemini_key
+    elif provider == "mistral":
+        key = credentials.mistral_api_key
+        verify = verify_mistral_key
+    else:
+        raise HTTPException(status_code=400, detail="provider must be 'gemini' or 'mistral'")
+
+    if key is None:
+        return {"ok": False, "error": "No key configured"}
+    try:
+        verify(key.get_secret_value())
+    except LLMProviderError as error:
+        return {"ok": False, "error": str(error)}
+    return {"ok": True, "error": None}
 
 
 class LLMSettingsUpdate(BaseModel):

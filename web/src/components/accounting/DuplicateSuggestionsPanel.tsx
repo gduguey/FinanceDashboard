@@ -11,6 +11,7 @@ import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { useDismissSuggestion, useDuplicateSuggestions, useSetPostingMerges } from '@/hooks/useAccountingData'
@@ -238,7 +239,7 @@ export function DuplicateSuggestionsPanel({
 }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.duplicate-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
-  const { data } = useDuplicateSuggestions(windowDays)
+  const { data, isLoading, isError, error } = useDuplicateSuggestions(windowDays)
   const [filters, setFilters] = useState<FilterState>(defaultFilterState())
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
   const [reviewingIndex, setReviewingIndex] = useState<number | null>(null)
@@ -356,7 +357,37 @@ export function DuplicateSuggestionsPanel({
     )
   }
 
-  if (!data) return null
+  if (isLoading) return null
+
+  if (isError || !data) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Possible duplicate transactions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            {error?.message || "Couldn't check for duplicates — try again in a moment."}
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!hasAnyRealAccount(Object.values(accounts))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Possible duplicate transactions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            No accounts yet — import a statement under "Import statements" above to get started.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <Card>

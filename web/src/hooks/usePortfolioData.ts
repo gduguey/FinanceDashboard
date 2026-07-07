@@ -126,6 +126,14 @@ export function useClearIbkrSettings() {
   })
 }
 
+// A real auth check (one fast HTTP call to IBKR), not just "is a value
+// present" — a mutation rather than a query since it has a real side
+// effect worth being explicit about (a live call to IBKR) and shouldn't
+// silently re-run on window refocus/etc. the way a query would.
+export function useVerifyIbkrSettings() {
+  return useMutation({ mutationFn: () => api.verifyIbkrSettings() })
+}
+
 export function useSync() {
   const queryClient = useQueryClient()
   return useMutation({

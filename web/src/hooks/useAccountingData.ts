@@ -136,7 +136,14 @@ export function useSetLlmSettings() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (update: LlmSettingsUpdate) => accountingApi.setLlmSettings(update),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.llmSettings }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.llmSettings })
+      // `configured` (used to decide whether to re-verify a saved key)
+      // lives in llm-usage's response, not llm-settings' — without this,
+      // saving a brand-new key wouldn't flip `configured` to true until
+      // some unrelated refetch happened to touch this query.
+      queryClient.invalidateQueries({ queryKey: keys.llmUsage })
+    },
   })
 }
 
@@ -146,6 +153,13 @@ export function useClearLlmSettings() {
     mutationFn: () => accountingApi.clearLlmSettings(),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.llmSettings }),
   })
+}
+
+// A real auth check (one free models.list() call to the provider), not
+// just "is a key present" — a mutation since it's a real live call worth
+// being explicit about, not something to silently re-run on refocus.
+export function useVerifyLlmSettings() {
+  return useMutation({ mutationFn: (provider: 'gemini' | 'mistral') => accountingApi.verifyLlmSettings(provider) })
 }
 
 export const useSupportedImportKinds = () =>

@@ -11,6 +11,7 @@ import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useDismissSuggestion, useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
 
 function suggestionKey(suggestion: TransferSuggestion): string {
@@ -163,7 +164,7 @@ function SuggestedRulePair({
 export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record<string, Account>; rules: TransferRule[] }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.transfer-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
-  const { data } = useTransferSuggestions(windowDays)
+  const { data, isLoading, isError, error } = useTransferSuggestions(windowDays)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const setRules = useSetTransferRules()
   const dismissSuggestion = useDismissSuggestion()
@@ -227,7 +228,35 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
   const paddingBottom = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
 
-  if (!data) return null
+  if (isLoading) return null
+
+  if (isError || !data) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Suggested transfer matches</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            {error?.message || "Couldn't check for transfer matches — try again in a moment."}
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!hasAnyRealAccount(Object.values(accounts))) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Suggested transfer matches</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">No accounts yet — import a statement to get started.</p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <Card>

@@ -116,6 +116,31 @@ def _poll_flex_statement(
     raise FlexApiError("timeout", message)
 
 
+def verify_flex_credentials(credentials: IbkrFlexCredentials, config: AppConfig) -> None:
+    """Check that the token/query id actually authenticate, without generating a full report.
+
+    Just the SendRequest step — a single fast HTTP call — not the
+    GetStatement poll loop `fetch_flex_statement` does afterward, which
+    can take up to a minute waiting for IBKR to generate the report.
+    An invalid token or query id surfaces here immediately as a non-Success
+    status, so this is cheap enough to run whenever Settings wants to know
+    "does this actually work" rather than just "is something typed in."
+
+    Parameters
+    ----------
+    credentials
+        The IBKR Flex Web Service token and query id to check.
+    config
+        Application configuration; `config.ibkr` is read.
+
+    Raises
+    ------
+    FlexApiError
+        If IBKR rejects the token/query id.
+    """
+    _send_flex_request(credentials, config)
+
+
 def fetch_flex_statement(
     credentials: IbkrFlexCredentials, config: AppConfig, on_progress: Callable[[str, float], None] | None = None
 ) -> str:
