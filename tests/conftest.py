@@ -30,28 +30,37 @@ import pytest
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 
-import accounting.db  # noqa: F401  (registers accounting.* tables on Base.metadata)
-import accounting.utils.statement_archive as accounting_storage
 import db.models
-import trades.db  # noqa: F401  (registers trades.* tables on Base.metadata)
-import trades.utils.statement_archive as trades_storage
 from db.base import Base
 from db.settings import TestDatabaseSettings
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-_R2_ENV_VARS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_ENDPOINT_URL")
+# `accounting` and `trades` are independent packages (see docs/architecture.md:
+# deleting either one should never break the other's tests) — guarded rather than
+# imported unconditionally, so a tree with only one of them still collects fine.
+try:
+    import accounting.db  # noqa: F401  (registers accounting.* tables on Base.metadata)
+    import accounting.utils.statement_archive as accounting_storage
+except ModuleNotFoundError:
+    accounting_storage = None
+
+try:
+    import trades.db  # noqa: F401  (registers trades.* tables on Base.metadata)
+    import trades.utils.statement_archive as trades_storage
+except ModuleNotFoundError:
+    trades_storage = None
 
 
 @pytest.fixture(autouse=True)
 def _no_r2_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in _R2_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(trades_storage, "get_r2_credentials", lambda: trades_storage.R2Credentials(_env_file=None))
-    monkeypatch.setattr(
-        accounting_storage, "get_r2_credentials", lambda: accounting_storage.R2Credentials(_env_file=None)
-    )
+    if trades_storage is not None:
+        monkeypatch.setattr(trades_storage, "get_r2_credentials", lambda: trades_storage.R2Credentials(_env_file=None))
+    if accounting_storage is not None:
+        monkeypatch.setattr(
+            accounting_storage, "get_r2_credentials", lambda: accounting_storage.R2Credentials(_env_file=None)
+        )
 
 
 @pytest.fixture(scope="session")
