@@ -74,15 +74,23 @@ def test_standardize_chase_credit_card_uses_post_date_and_keeps_source_category(
     assert toll["meta"]["source_category"] == "Travel"
 
 
-def test_standardize_chase_credit_card_drops_payment_thank_you_rows() -> None:
+def test_standardize_chase_credit_card_keeps_payment_thank_you_rows() -> None:
     csv_text = (
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
         "06/30/2026,07/01/2026,SOME TOLL PLAZA,Travel,Sale,-33.70,\n"
         "06/27/2026,06/28/2026,Payment Thank You-Mobile,,Payment,70.00,\n"
     )
     result = standardize_chase_credit_card(csv_text, "chase:credit_card:1234")
-    assert len(result) == 2  # only the toll's own pair — the payment row is dropped entirely
-    assert "Payment Thank You-Mobile" not in result["description"].to_list()
+    assert len(result) == 4  # both rows' own pair — nothing is dropped at import time
+    payment = result.filter(
+        (pl.col("description") == "Payment Thank You-Mobile") & (pl.col("account_id") == "chase:credit_card:1234")
+    ).row(0, named=True)
+    assert payment["amount"] == pytest.approx(70.00)
+    # Not yet repointed at the paying checking account — that's a `TransferRule`'s job, not this importer's.
+    counterparty = result.filter(
+        (pl.col("description") == "Payment Thank You-Mobile") & (pl.col("account_id") == UNCATEGORIZED_INCOME_ACCOUNT_ID)
+    )
+    assert len(counterparty) == 1
 
 
 def test_standardize_sofi_checking_maps_interest_and_withdrawal() -> None:
