@@ -8,7 +8,6 @@ cache needs to be thrown away and regenerated.
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+import accounting.db as adb
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
     SkippedRowsInfo,
@@ -28,11 +28,15 @@ from accounting.importers.sofi.csv import standardize_sofi_checking, standardize
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_pdf
 from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
-from accounting.utils.io_utils import write_csv_atomic
-from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
+from accounting.utils.statement_archive import DEFAULT_USER_ID as ARCHIVE_DEFAULT_USER_ID
+from accounting.utils.statement_archive import StatementArchive
+from db.current_user import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
+    import uuid
     from collections.abc import Callable
+
+    from sqlalchemy.orm import Session
     from typing import Any
 
     from accounting.config import AccountingConfig
@@ -85,51 +89,130 @@ class IngestResult:
     skipped_rows: SkippedRowsInfo | None = None  # Rows that couldn't be parsed (bank-specific or canonical fallback)
 
 
-def load_ledger(config: AccountingConfig) -> pl.DataFrame:
+def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.DataFrame:
     """Load the full posting ledger.
-
-    `meta` round-trips through the CSV as JSON, the same reason
-    `trades.brokers.ibkr.main.load_ledger` does it — a dict has no native
-    CSV type. `tag_ids` round-trips as a `|`-joined string instead (a
-    native polars list expression, not a JSON encode/decode, since
-    `map_elements` on an all-empty-list column has a known edge case where
-    polars runs the callback on the whole series rather than per-element);
-    splitting an empty string back would otherwise produce `[""]` instead
-    of `[]`, so that case is filtered out explicitly. `*_id` columns are
-    forced to string dtype so an all-numeric id never round-trips as an
-    integer.
 
     Parameters
     ----------
-    config
-        Application configuration; `config.ledger_csv_path` is read.
+    session
+        An open database session.
+    user_id
+        Whose ledger to load. Defaults to the single seeded user — see
+        `accounting.store.load_store` for why every caller today can leave
+        this at its default.
 
     Returns
     -------
     polars.DataFrame
-        The ledger, or an empty frame if nothing has been imported yet.
+        Shaped exactly like `Posting.polars_schema` — every other ledger
+        and dashboard module depends on that shape, not on how it's
+        actually stored, so nothing downstream of this function needed to
+        change when its own storage moved from `ledger.csv` to Postgres.
+        An empty frame if nothing has been imported yet.
     """
-    if not config.ledger_csv_path.exists():
+    rows = session.query(adb.Posting).filter_by(user_id=user_id).all()
+    if not rows:
         return pl.DataFrame(schema=Posting.polars_schema)
-    ledger = pl.read_csv(
-        config.ledger_csv_path,
-        schema_overrides={"posting_id": pl.Utf8, "transaction_id": pl.Utf8, "account_id": pl.Utf8},
-        try_parse_dates=True,
+    tag_ids_by_posting: dict[str, list[str]] = defaultdict(list)
+    for posting_tag in session.query(adb.PostingTag).filter_by(user_id=user_id):
+        tag_ids_by_posting[posting_tag.posting_id].append(posting_tag.tag_id)
+    records = [
+        {
+            "posting_id": row.posting_id,
+            "transaction_id": row.transaction_id,
+            "account_id": row.account_id,
+            "posted_at": row.posted_at,
+            "amount": row.amount,
+            "currency": row.currency,
+            "category_id": row.category_id,
+            "subcategory_id": row.subcategory_id,
+            "budget_id": row.budget_id,
+            "tag_ids": tag_ids_by_posting.get(row.posting_id, []),
+            "description": row.description,
+            "meta": row.meta,
+        }
+        for row in rows
+    ]
+    return pl.DataFrame(records, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+
+
+def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> None:
+    """Persist the full posting ledger, overwriting whatever was saved before.
+
+    `transactions`/`postings` are upserted and pruned rather than deleted
+    wholesale and reinserted — `manual_overrides`, `posting_splits`,
+    `posting_merges`, and `goal_contributions.source_posting_id` all
+    foreign-key into them (see `accounting.store.save_store`'s own
+    `_upsert_and_prune` for the same reasoning applied to accounts,
+    categories, and tags). `posting_tags` has nothing foreign-keying into
+    it, so it's safe to delete in full and rebuild from `ledger`'s own
+    `tag_ids` column every time.
+
+    Parameters
+    ----------
+    ledger
+        The full ledger to persist, shaped like `Posting.polars_schema`.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose ledger this is. See `load_ledger` for why it defaults.
+    """
+    rows = ledger.to_dicts()
+
+    transaction_ids = {row["transaction_id"] for row in rows}
+    for transaction_id in transaction_ids:
+        session.merge(adb.Transaction(user_id=user_id, transaction_id=transaction_id))
+    session.flush()
+
+    posting_ids = {row["posting_id"] for row in rows}
+    for row in rows:
+        session.merge(
+            adb.Posting(
+                user_id=user_id,
+                posting_id=row["posting_id"],
+                transaction_id=row["transaction_id"],
+                account_id=row["account_id"],
+                posted_at=row["posted_at"],
+                amount=row["amount"],
+                currency=row["currency"],
+                category_id=row["category_id"],
+                subcategory_id=row["subcategory_id"],
+                budget_id=row["budget_id"],
+                description=row["description"],
+                meta=row["meta"],
+            )
+        )
+    session.flush()
+
+    # Postings first, then transactions — a transaction that lost every one of
+    # its postings would otherwise still be referenced by the very rows this
+    # step is trying to delete first.
+    existing_posting_ids = {row.posting_id for row in session.query(adb.Posting.posting_id).filter_by(user_id=user_id)}
+    removed_posting_ids = existing_posting_ids - posting_ids
+    if removed_posting_ids:
+        session.query(adb.Posting).filter_by(user_id=user_id).filter(
+            adb.Posting.posting_id.in_(removed_posting_ids)
+        ).delete(synchronize_session=False)
+
+    existing_transaction_ids = {
+        row.transaction_id for row in session.query(adb.Transaction.transaction_id).filter_by(user_id=user_id)
+    }
+    removed_transaction_ids = existing_transaction_ids - transaction_ids
+    if removed_transaction_ids:
+        session.query(adb.Transaction).filter_by(user_id=user_id).filter(
+            adb.Transaction.transaction_id.in_(removed_transaction_ids)
+        ).delete(synchronize_session=False)
+
+    session.query(adb.PostingTag).filter_by(user_id=user_id).delete()
+    session.add_all(
+        adb.PostingTag(user_id=user_id, posting_id=row["posting_id"], tag_id=tag_id)
+        for row in rows
+        for tag_id in row["tag_ids"]
     )
-    return ledger.with_columns(
-        pl.col("meta").map_elements(json.loads, return_dtype=pl.Object),
-        tag_ids=pl.col("tag_ids").str.split("|").list.eval(pl.element().filter(pl.element() != "")),  # noqa: PLC1901
-    )
+    session.commit()
 
 
-def _write_ledger(ledger: pl.DataFrame, config: AccountingConfig) -> None:
-    serialized = ledger.with_columns(
-        pl.col("meta").map_elements(json.dumps, return_dtype=pl.Utf8), tag_ids=pl.col("tag_ids").list.join("|")
-    )
-    write_csv_atomic(serialized, config.ledger_csv_path)
-
-
-def remap_ledger_category_ids(id_remap: dict[str, str], config: AccountingConfig) -> None:
+def remap_ledger_category_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> None:
     """Repoint every posting's `category_id`/`subcategory_id` after a category merge, in place.
 
     A canonical import can bake a category straight onto a posting at
@@ -145,14 +228,16 @@ def remap_ledger_category_ids(id_remap: dict[str, str], config: AccountingConfig
     id_remap
         `old_id -> new_id`, as returned by `store.plan_category_rename` —
         a no-op when empty.
-    config
-        Application configuration; `config.ledger_csv_path` is read and rewritten.
+    session
+        An open database session.
+    user_id
+        Whose ledger this is. See `load_ledger` for why it defaults.
     """
     if not id_remap:
         return
-    ledger = load_ledger(config)
+    ledger = load_ledger(session, user_id=user_id)
     ledger = ledger.with_columns(pl.col("category_id").replace(id_remap), pl.col("subcategory_id").replace(id_remap))
-    _write_ledger(ledger, config)
+    _write_ledger(ledger, session, user_id=user_id)
 
 
 def _fingerprint(row: dict[str, Any]) -> _Fingerprint:
@@ -303,12 +388,14 @@ def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
 def _archive_raw_statement(
     institution: str, account_id: str, data: bytes, config: AccountingConfig, suffix: str = "csv"
 ) -> None:
-    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{ARCHIVE_DEFAULT_USER_ID}")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
     archive.write(f"{institution}/{account_id}/{timestamp}.{suffix}", data)
 
 
-def _merge_discovered_accounts(discovered: dict[str, Account], config: AccountingConfig) -> None:
+def _merge_discovered_accounts(
+    discovered: dict[str, Account], session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
+) -> None:
     """Add newly-seen accounts to the store, and refresh `meta` on ones already known.
 
     Unlike a rule's counterparty (only ever created the first time it's
@@ -321,11 +408,13 @@ def _merge_discovered_accounts(discovered: dict[str, Account], config: Accountin
     ----------
     discovered
         Every account this statement describes, keyed by `account_id`.
-    config
-        Application configuration; the store is read and, if anything
+    session
+        An open database session; the store is read and, if anything
         changed, written back.
+    user_id
+        Whose store this is. See `load_ledger` for why it defaults.
     """
-    store = load_store(config)
+    store = load_store(session, user_id=user_id)
     accounts = dict(store.accounts)
     changed = False
     for account_id, discovered_account in discovered.items():
@@ -337,11 +426,11 @@ def _merge_discovered_accounts(discovered: dict[str, Account], config: Accountin
             accounts[account_id] = existing.model_copy(update={"meta": {**existing.meta, **discovered_account.meta}})
             changed = True
     if changed:
-        save_store(store.model_copy(update={"accounts": accounts}), config)
+        save_store(store.model_copy(update={"accounts": accounts}), session, user_id=user_id)
 
 
 def _fallback_to_canonical_csv(
-    csv_text: str, account_id: str, config: AccountingConfig
+    csv_text: str, account_id: str, config: AccountingConfig, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
 ) -> tuple[pl.DataFrame, SkippedRowsInfo | None]:
     """Standardize via the canonical CSV importer, merging any newly-created categories into the store.
 
@@ -359,16 +448,22 @@ def _fallback_to_canonical_csv(
     tuple[pl.DataFrame, SkippedRowsInfo | None]
         The standardized postings, and info about any skipped rows.
     """
-    store = load_store(config)
+    store = load_store(session, user_id=user_id)
     canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
     if canonical_result.new_categories:
         merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
-        save_store(store.model_copy(update={"categories": merged_categories}), config)
+        save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)
     return canonical_result.postings, canonical_result.skipped_rows
 
 
 def ingest_csv(
-    csv_text: str, institution: str, account_kind: str, account_id: str, config: AccountingConfig
+    csv_text: str,
+    institution: str,
+    account_kind: str,
+    account_id: str,
+    config: AccountingConfig,
+    session: Session,
+    user_id: uuid.UUID = DEFAULT_USER_ID,
 ) -> IngestResult:
     """Archive one uploaded CSV verbatim, standardize it, and merge the result into the ledger.
 
@@ -393,7 +488,12 @@ def ingest_csv(
     account_id
         The account these rows belong to.
     config
-        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
+        Application configuration; `config.raw_statement_dir` is used (the
+        raw file archive stays on disk/R2, not Postgres).
+    session
+        An open database session.
+    user_id
+        Whose store/ledger this is. See `load_ledger` for why it defaults.
 
     Returns
     -------
@@ -422,7 +522,7 @@ def ingest_csv(
         # Bank-specific standardizer failed (likely validation, parsing, or format mismatch).
         # Fall back to canonical CSV importer, which is more forgiving about column names/formats.
         try:
-            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, config)
+            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, config, session, user_id=user_id)
         except (CanonicalCsvError, ValueError, KeyError, RuntimeError) as canonical_error:
             # Both standardizers failed; raise the original bank error with fallback note
             message = (
@@ -432,9 +532,9 @@ def ingest_csv(
             )
             raise ValueError(message) from error
 
-    existing = load_ledger(config)
+    existing = load_ledger(session, user_id=user_id)
     merged = _merge_ledger(existing, new_postings)
-    _write_ledger(merged, config)
+    _write_ledger(merged, session, user_id=user_id)
 
     return IngestResult(
         account_id=account_id,
@@ -455,10 +555,12 @@ class CanonicalIngestResult:
     skipped_rows: SkippedRowsInfo | None = None  # Rows that couldn't be parsed
 
 
-def ingest_canonical_csv(
+def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the CSV-parsing options, push this one over)
     csv_text: str,
     account_id: str,
     config: AccountingConfig,
+    session: Session,
+    user_id: uuid.UUID = DEFAULT_USER_ID,
     separator: str | None = None,
     date_order: DateOrder = "MDY",
     category_overrides: CategoryOverrides | None = None,
@@ -479,7 +581,12 @@ def ingest_canonical_csv(
     account_id
         The account these rows belong to — must already be registered.
     config
-        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
+        Application configuration; `config.raw_statement_dir` is used (the
+        raw file archive stays on disk/R2, not Postgres).
+    session
+        An open database session.
+    user_id
+        Whose store/ledger this is. See `load_ledger` for why it defaults.
     separator
         The column separator to use, overriding auto-detection.
     date_order
@@ -493,20 +600,22 @@ def ingest_canonical_csv(
     CanonicalIngestResult
         How many postings were newly added, and any categories created.
     """
-    store = load_store(config)
+    store = load_store(session, user_id=user_id)
     account = store.accounts[account_id]
 
     _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config)
     outcome = standardize_canonical_csv(
         csv_text, account_id, account.currency, store.categories, separator, date_order, category_overrides
     )
-    return _apply_canonical_outcome(outcome, account_id, store, config)
+    return _apply_canonical_outcome(outcome, account_id, store, session, user_id=user_id)
 
 
 def ingest_canonical_excel(
     file_bytes: bytes,
     account_id: str,
     config: AccountingConfig,
+    session: Session,
+    user_id: uuid.UUID = DEFAULT_USER_ID,
     date_order: DateOrder = "MDY",
     category_overrides: CategoryOverrides | None = None,
 ) -> CanonicalIngestResult:
@@ -522,7 +631,12 @@ def ingest_canonical_excel(
     account_id
         The account these rows belong to — must already be registered.
     config
-        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
+        Application configuration; `config.raw_statement_dir` is used (the
+        raw file archive stays on disk/R2, not Postgres).
+    session
+        An open database session.
+    user_id
+        Whose store/ledger this is. See `load_ledger` for why it defaults.
     date_order
         Whether an ambiguous, all-numeric date reads month-first or day-first.
     category_overrides
@@ -534,26 +648,30 @@ def ingest_canonical_excel(
     CanonicalIngestResult
         How many postings were newly added, and any categories created.
     """
-    store = load_store(config)
+    store = load_store(session, user_id=user_id)
     account = store.accounts[account_id]
 
     _archive_raw_statement(account.institution, account_id, file_bytes, config, suffix="xlsx")
     outcome = standardize_canonical_excel(
         file_bytes, account_id, account.currency, store.categories, date_order, category_overrides
     )
-    return _apply_canonical_outcome(outcome, account_id, store, config)
+    return _apply_canonical_outcome(outcome, account_id, store, session, user_id=user_id)
 
 
 def _apply_canonical_outcome(
-    outcome: CanonicalImportResult, account_id: str, store: AccountingStore, config: AccountingConfig
+    outcome: CanonicalImportResult,
+    account_id: str,
+    store: AccountingStore,
+    session: Session,
+    user_id: uuid.UUID = DEFAULT_USER_ID,
 ) -> CanonicalIngestResult:
     if outcome.new_categories:
         merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
-        save_store(store.model_copy(update={"categories": merged_categories}), config)
+        save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)
 
-    existing = load_ledger(config)
+    existing = load_ledger(session, user_id=user_id)
     merged = _merge_ledger(existing, outcome.postings)
-    _write_ledger(merged, config)
+    _write_ledger(merged, session, user_id=user_id)
 
     return CanonicalIngestResult(
         account_id=account_id,
@@ -582,7 +700,7 @@ def last_import_at(config: AccountingConfig) -> datetime | None:
     datetime.datetime or None
         Timezone-aware (UTC), or `None` if nothing has ever been imported.
     """
-    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{ARCHIVE_DEFAULT_USER_ID}")
     relative_paths = [
         *archive.list_relative_paths("*/*/*.csv"),
         *archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
@@ -598,10 +716,12 @@ def last_import_at(config: AccountingConfig) -> datetime | None:
     return max(timestamps) if timestamps else None
 
 
-def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
+def rebuild_from_raw_statements(
+    config: AccountingConfig, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
+) -> pl.DataFrame:
     """Recompute the whole ledger from every archived raw CSV.
 
-    Discards whatever ledger is currently on disk. The account id and kind
+    Discards whatever ledger is currently persisted. The account id and kind
     for each archive are recovered from its own directory name
     (`raw_statement_dir/{institution}/{account_id}/...`) and `account_id`'s
     own `{institution}:{kind}:{number}` shape — no separate registry of
@@ -611,6 +731,10 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     ----------
     config
         Application configuration; `config.raw_statement_dir` is read.
+    session
+        An open database session.
+    user_id
+        Whose store/ledger this is. See `load_ledger` for why it defaults.
 
     Returns
     -------
@@ -624,7 +748,7 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     UnsupportedImportError
         If an archived directory's institution/account-kind has no registered standardizer.
     """
-    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{ARCHIVE_DEFAULT_USER_ID}")
     csv_relative_paths = archive.list_relative_paths("*/*/*.csv")
     pdf_relative_paths = archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf")
     if not csv_relative_paths and not pdf_relative_paths:
@@ -653,8 +777,8 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
         frames.append(pdf_postings)
         discovered_accounts.update(pdf_accounts)
     if discovered_accounts:
-        _merge_discovered_accounts(discovered_accounts, config)
+        _merge_discovered_accounts(discovered_accounts, session, user_id=user_id)
 
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
-    _write_ledger(ledger, config)
+    _write_ledger(ledger, session, user_id=user_id)
     return ledger

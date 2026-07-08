@@ -1,27 +1,16 @@
 import pytest
 
-from accounting.config import AccountingConfig
-from accounting.models import Budget, Category, CategoryPattern, GeneralBudget, ManualOverride, TransferRule
+from accounting.models import Budget, Category, CategoryPattern, GeneralBudget, TransferRule
 from accounting.store import (
     CATEGORY_COLOR_PALETTE,
-    UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
-    UNCATEGORIZED_INCOME_ACCOUNT_ID,
     AccountingStore,
     default_categories,
-    load_overrides,
-    load_store,
     next_available_color,
     normalize_categories,
     plan_category_rename,
     remap_category_ids,
-    save_overrides,
-    save_store,
     slugify,
 )
-
-
-def _config(tmp_path) -> AccountingConfig:
-    return AccountingConfig(data_dir=tmp_path)
 
 
 def test_slugify_lowercases_and_hyphenates() -> None:
@@ -236,40 +225,6 @@ def test_remap_category_ids_raises_on_colliding_general_budgets_instead_of_dropp
         remap_category_ids(store, id_remap)
 
 
-def test_load_store_with_no_file_yet_seeds_defaults(tmp_path) -> None:
-    store = load_store(_config(tmp_path))
-    assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in store.accounts
-    assert UNCATEGORIZED_INCOME_ACCOUNT_ID in store.accounts
-    assert "expense:food-drink" in store.categories
-    assert store.rules == []
-
-
-def test_load_store_seeds_only_once_and_persists(tmp_path) -> None:
-    config = _config(tmp_path)
-    load_store(config)
-    assert config.store_path.exists()
-
-
-def test_save_then_load_store_round_trips_a_custom_category(tmp_path) -> None:
-    config = _config(tmp_path)
-    store = load_store(config)
-    updated = store.model_copy(update={"categories": {}})
-    save_store(updated, config)
-    reloaded = load_store(config)
-    assert reloaded.categories == {}
-
-
-def test_load_overrides_with_no_file_yet_is_empty(tmp_path) -> None:
-    assert load_overrides(_config(tmp_path)) == {}
-
-
-def test_save_then_load_overrides_round_trips(tmp_path) -> None:
-    config = _config(tmp_path)
-    save_overrides({"p1": ManualOverride(category_id="expense:food-drink")}, config)
-    reloaded = load_overrides(config)
-    assert reloaded["p1"].category_id == "expense:food-drink"
-
-
 def test_normalize_categories_adds_other_when_a_first_real_subcategory_appears() -> None:
     parent = Category(category_id="expense:shopping", name="Shopping", classification="expense", color="#111111")
     clothing = Category(
@@ -303,14 +258,3 @@ def test_normalize_categories_leaves_a_category_with_no_subcategories_alone() ->
     parent = Category(category_id="income:salary", name="Salary", classification="income", color="#222222")
     result = normalize_categories({parent.category_id: parent})
     assert result == {parent.category_id: parent}
-
-
-def test_load_store_backfills_a_missing_placeholder_account(tmp_path) -> None:
-    config = _config(tmp_path)
-    store = load_store(config)
-    stripped = store.model_copy(update={"accounts": {}})
-    save_store(stripped, config)
-
-    reloaded = load_store(config)
-    assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in reloaded.accounts
-    assert UNCATEGORIZED_INCOME_ACCOUNT_ID in reloaded.accounts

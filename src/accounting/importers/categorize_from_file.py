@@ -30,12 +30,13 @@ from accounting.importers.canonical.csv import (
 )
 from accounting.models import ManualOverride
 from accounting.store import load_overrides, save_overrides
+from db.current_user import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
+    import uuid
     from datetime import datetime
     from typing import Any
-
-    from accounting.config import AccountingConfig
+    from sqlalchemy.orm import Session
     from accounting.importers.canonical.csv import DateOrder, SkippedRowsInfo
     from accounting.models import Category
 
@@ -275,7 +276,9 @@ class ConfirmedCategorization:
     subcategory_id: str | None
 
 
-def apply_categorize_from_file(config: AccountingConfig, confirmed: list[ConfirmedCategorization]) -> int:
+def apply_categorize_from_file(
+    session: Session, confirmed: list[ConfirmedCategorization], user_id: uuid.UUID = DEFAULT_USER_ID
+) -> int:
     """Set category/subcategory on every confirmed posting, through the same override a hand edit would make.
 
     Uses `ManualOverride`'s usual field-level merge (see `api.put_posting_override`) — an entry with only
@@ -284,11 +287,13 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
 
     Parameters
     ----------
-    config
-        Application configuration; `config.overrides_path` is read and written.
+    session
+        An open database session.
     confirmed
         Every match the caller has reviewed and wants applied — typically a subset of
         `CategorizeFromFilePreview.matches`, with unmatched or rejected rows filtered out first.
+    user_id
+        Whose overrides these are. See `accounting.store.load_store` for why it defaults.
 
     Returns
     -------
@@ -299,7 +304,7 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
     if not applicable:
         return 0
 
-    overrides = load_overrides(config)
+    overrides = load_overrides(session, user_id=user_id)
     for entry in applicable:
         patch: dict[str, str] = {}
         if entry.category_id is not None:
@@ -313,5 +318,5 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
             overrides[entry.posting_id] = ManualOverride(
                 category_id=patch.get("category_id"), subcategory_id=patch.get("subcategory_id")
             )
-    save_overrides(overrides, config)
+    save_overrides(overrides, session, user_id=user_id)
     return len(applicable)

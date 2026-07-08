@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
+import trades.db as tdb
+from db.current_user import DEFAULT_USER_ID
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
 from trades.models import LedgerEvent
-from trades.utils.io_utils import write_csv_atomic
-from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
+from trades.utils.statement_archive import DEFAULT_USER_ID as ARCHIVE_DEFAULT_USER_ID
+from trades.utils.statement_archive import StatementArchive
 
 if TYPE_CHECKING:
+    import uuid
     from collections.abc import Callable
     from datetime import date
+
+    from sqlalchemy.orm import Session
 
     from trades.brokers.ibkr.api import ParsedStatement
     from trades.config import AppConfig, IbkrFlexCredentials
@@ -47,38 +51,103 @@ def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def load_ledger(config: AppConfig) -> pl.DataFrame:
-    """Load the full event ledger.
+_DEFAULT_CONNECTION_ID = "ibkr"
+"""The one broker connection every event belongs to today.
 
-    `meta` round-trips through the CSV as JSON (a dict has no native CSV
-    type). `*_id` columns are forced to string dtype, or an all-numeric ID
-    like "9001" would round-trip as an integer and silently break dedup
-    against the str "9001" freshly parsed from XML.
+There's no per-user IBKR credential management yet — one set of
+Flex Web Service credentials in `.env`, shared by the whole (single-user)
+deployment — so every `LedgerEvent` foreign-keys against this one fixed
+`BrokerConnection` row, created on first write if it doesn't exist yet.
+When real per-user broker connections exist, this becomes a real id chosen
+at connection-creation time instead of a constant.
+"""
+
+
+def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.DataFrame:
+    """Load the full event ledger.
 
     Parameters
     ----------
-    config
-        Application configuration; `config.ibkr.ledger_csv_path` is read.
+    session
+        An open database session.
+    user_id
+        Whose ledger to load. Defaults to the single seeded user — see
+        `accounting.store.load_store` for why every caller today can leave
+        this at its default.
 
     Returns
     -------
     polars.DataFrame
-        The ledger, or an empty frame if it has never been synced.
+        Shaped exactly like `LedgerEvent.polars_schema` — every other
+        ledger and dashboard module depends on that shape, not on how it's
+        actually stored. An empty frame if it has never been synced.
     """
-    path = config.ibkr.ledger_csv_path
-    if not path.exists():
+    rows = session.query(tdb.LedgerEvent).filter_by(user_id=user_id).all()
+    if not rows:
         return pl.DataFrame(schema=LedgerEvent.polars_schema)
-    ledger = pl.read_csv(path, schema_overrides={"event_id": pl.Utf8}, try_parse_dates=True)
-    return ledger.with_columns(pl.col("meta").map_elements(json.loads, return_dtype=pl.Object))
+    records = [
+        {
+            "event_id": row.event_id,
+            "event_datetime": row.event_datetime,
+            "symbol": row.symbol,
+            "event_type": row.event_type,
+            "shares": row.shares,
+            "price": row.price,
+            "amount": row.amount,
+            "currency": row.currency,
+            "meta": row.meta,
+        }
+        for row in rows
+    ]
+    return pl.DataFrame(records, schema=LedgerEvent.polars_schema).sort("event_datetime", "symbol", "event_id")
 
 
-def _write_ledger(ledger: pl.DataFrame, config: AppConfig) -> None:
-    serialized = ledger.with_columns(pl.col("meta").map_elements(json.dumps, return_dtype=pl.Utf8))
-    write_csv_atomic(serialized, config.ibkr.ledger_csv_path)
+def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> None:
+    """Persist the full event ledger, overwriting whatever was saved before.
+
+    Unlike `accounting.importers.ingest._write_ledger`, this is a plain
+    delete-all-then-reinsert — nothing else in this schema foreign-keys
+    into `ledger_events`, so there's no risk of deleting a row still
+    referenced elsewhere (see `DATABASE_SCHEMA.md`).
+
+    Parameters
+    ----------
+    ledger
+        The full ledger to persist, shaped like `LedgerEvent.polars_schema`.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose ledger this is. See `load_ledger` for why it defaults.
+    """
+    session.merge(tdb.BrokerConnection(user_id=user_id, connection_id=_DEFAULT_CONNECTION_ID, broker="ibkr"))
+    session.flush()
+
+    session.query(tdb.LedgerEvent).filter_by(user_id=user_id).delete()
+    session.add_all(
+        tdb.LedgerEvent(
+            user_id=user_id,
+            connection_id=_DEFAULT_CONNECTION_ID,
+            event_id=row["event_id"],
+            event_datetime=row["event_datetime"],
+            symbol=row["symbol"],
+            event_type=row["event_type"],
+            shares=row["shares"],
+            price=row["price"],
+            amount=row["amount"],
+            currency=row["currency"],
+            meta=row["meta"],
+        )
+        for row in ledger.to_dicts()
+    )
+    session.commit()
 
 
 def sync_ibkr_account(
-    credentials: IbkrFlexCredentials, config: AppConfig, on_progress: Callable[[str, float], None] | None = None
+    credentials: IbkrFlexCredentials,
+    config: AppConfig,
+    session: Session,
+    user_id: uuid.UUID = DEFAULT_USER_ID,
+    on_progress: Callable[[str, float], None] | None = None,
 ) -> IbkrSyncResult:
     """Pull the configured Flex Query once and bring the local ledger cache in sync.
 
@@ -92,7 +161,12 @@ def sync_ibkr_account(
     credentials
         The IBKR Flex Web Service token and query id.
     config
-        Application configuration; `config.ibkr` is read.
+        Application configuration; `config.ibkr` is used for the raw
+        statement archive (which stays on disk/R2, not Postgres).
+    session
+        An open database session.
+    user_id
+        Whose ledger this is. See `load_ledger` for why it defaults.
     on_progress
         Called with a short step description and a 0-100 percentage as the
         pull proceeds, for a live sync-progress display. Optional.
@@ -113,7 +187,7 @@ def sync_ibkr_account(
     save_raw_statement(xml_text, datetime.now(UTC).replace(tzinfo=None), config)
     statement = parse_statement(xml_text)
 
-    existing_ledger = load_ledger(config)
+    existing_ledger = load_ledger(session, user_id=user_id)
     if not existing_ledger.is_empty():
         last_covered_date = cast("datetime", existing_ledger["event_datetime"].max()).date()
         if last_covered_date < statement.from_date:
@@ -127,7 +201,7 @@ def sync_ibkr_account(
     if on_progress:
         on_progress("Merging into ledger", 55.0)
     merged_ledger = _merge_ledger(existing_ledger, statement_to_ledger(statement, config))
-    _write_ledger(merged_ledger, config)
+    _write_ledger(merged_ledger, session, user_id=user_id)
 
     return IbkrSyncResult(
         pulled_at=statement.when_generated,
@@ -138,10 +212,12 @@ def sync_ibkr_account(
     )
 
 
-def rebuild_from_raw_statements(config: AppConfig) -> IbkrSyncResult:
+def rebuild_from_raw_statements(
+    config: AppConfig, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
+) -> IbkrSyncResult:
     """Recompute the ledger from every archived raw statement.
 
-    Discards whatever ledger is currently on disk. Use this to recover if
+    Discards whatever ledger is currently persisted. Use this to recover if
     the derived ledger is ever wrong or corrupted. Does not gap-check: it
     faithfully reconstructs from whatever was archived, which is the same
     coverage `sync_ibkr_account` already verified as gap-free when each
@@ -151,6 +227,10 @@ def rebuild_from_raw_statements(config: AppConfig) -> IbkrSyncResult:
     ----------
     config
         Application configuration; `config.ibkr` is read.
+    session
+        An open database session.
+    user_id
+        Whose ledger this is. See `load_ledger` for why it defaults.
 
     Returns
     -------
@@ -162,7 +242,7 @@ def rebuild_from_raw_statements(config: AppConfig) -> IbkrSyncResult:
     FileNotFoundError
         If no raw statements have ever been archived.
     """
-    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{ARCHIVE_DEFAULT_USER_ID}/ibkr")
     relative_paths = archive.list_relative_paths("*.xml")
     if not relative_paths:
         message = (
@@ -180,7 +260,7 @@ def rebuild_from_raw_statements(config: AppConfig) -> IbkrSyncResult:
         pl.DataFrame(schema=LedgerEvent.polars_schema),
         pl.concat([statement_to_ledger(statement, config) for statement in statements], how="vertical"),
     )
-    _write_ledger(ledger, config)
+    _write_ledger(ledger, session, user_id=user_id)
 
     return IbkrSyncResult(
         pulled_at=statements[-1].when_generated,

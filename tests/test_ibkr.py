@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
@@ -6,7 +9,11 @@ import pytest
 from trades.brokers.ibkr import api, main
 from trades.brokers.ibkr import models as ibkr_models
 from trades.config import AppConfig, IbkrFlexCredentials
-from trades.utils.io_utils import write_csv_atomic
+
+if TYPE_CHECKING:
+    import uuid
+
+    from sqlalchemy.orm import Session
 
 FIXTURE_XML = """<FlexQueryResponse queryName="Trade History API" type="AF">
 <FlexStatements count="1">
@@ -79,7 +86,7 @@ def _ledger_row(event_id: str, event_datetime: str, event_type: str = "BUY") -> 
         "price": 600.0,
         "amount": 600.0,
         "currency": "USD",
-        "meta": "{}",
+        "meta": {},
     }
 
 
@@ -133,24 +140,27 @@ def test_merge_ledger_dedupes_by_event_id() -> None:
     assert set(merged["event_id"]) == {"ibkr:9001", "ibkr:9002"}
 
 
-def test_sync_ibkr_account_writes_ledger_and_returns_result(tmp_path, monkeypatch) -> None:
+def test_sync_ibkr_account_writes_ledger_and_returns_result(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
-    result = main.sync_ibkr_account(CREDENTIALS, config)
+    result = main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
 
     assert result.statement_from_date == date(2026, 6, 30)
     assert result.new_event_count == 2  # one BUY + its FEE (ibCommission=-1.00)
     assert result.total_event_count == 2
-    assert config.ibkr.ledger_csv_path.exists()
 
-    ledger = main.load_ledger(config)
+    ledger = main.load_ledger(db_session, user_id=test_user_id)
     assert len(ledger) == 2
     assert set(ledger["event_type"]) == {"BUY", "FEE"}
     assert ledger.filter(pl.col("event_type") == "BUY")["symbol"][0] == "VOO"
 
 
-def test_sync_ibkr_account_reports_progress_through_each_stage(tmp_path, monkeypatch) -> None:
+def test_sync_ibkr_account_reports_progress_through_each_stage(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     def fake_fetch(credentials, config, on_progress=None):
         if on_progress:
             on_progress("Requesting IBKR statement", 5.0)
@@ -160,51 +170,61 @@ def test_sync_ibkr_account_reports_progress_through_each_stage(tmp_path, monkeyp
     config = _config(tmp_path)
     steps = []
 
-    main.sync_ibkr_account(CREDENTIALS, config, on_progress=lambda step, pct: steps.append((step, pct)))
+    main.sync_ibkr_account(
+        CREDENTIALS, config, db_session, user_id=test_user_id, on_progress=lambda step, pct: steps.append((step, pct))
+    )
 
     assert steps[0] == ("Requesting IBKR statement", 5.0)
     assert any(step == "Parsing statement" for step, _ in steps)
     assert any(step == "Merging into ledger" for step, _ in steps)
 
 
-def test_sync_ibkr_account_is_idempotent_same_day(tmp_path, monkeypatch) -> None:
+def test_sync_ibkr_account_is_idempotent_same_day(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
-    main.sync_ibkr_account(CREDENTIALS, config)
-    second = main.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
+    second = main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
 
     assert second.new_event_count == 0
     assert second.total_event_count == 2
 
 
-def test_sync_ibkr_account_raises_on_uncovered_gap(tmp_path, monkeypatch) -> None:
+def test_sync_ibkr_account_raises_on_uncovered_gap(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     existing_ledger = pl.DataFrame([_ledger_row("ibkr:8000", "2026-06-24 09:30:00")])
-    write_csv_atomic(existing_ledger, config.ibkr.ledger_csv_path)
+    main._write_ledger(existing_ledger, db_session, user_id=test_user_id)
     monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
 
     with pytest.raises(main.TradeHistoryGapError):
-        main.sync_ibkr_account(CREDENTIALS, config)
+        main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
 
 
-def test_sync_ibkr_account_archives_raw_statement_before_parsing(tmp_path, monkeypatch) -> None:
+def test_sync_ibkr_account_archives_raw_statement_before_parsing(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
-    main.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
 
     archived = list(config.ibkr.raw_statement_dir.glob("*.xml"))
     assert len(archived) == 1
     assert archived[0].read_text(encoding="utf-8") == FIXTURE_XML
 
 
-def test_sync_ibkr_account_archives_every_call_without_overwriting(tmp_path, monkeypatch) -> None:
+def test_sync_ibkr_account_archives_every_call_without_overwriting(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     monkeypatch.setattr(main, "fetch_flex_statement", lambda credentials, config, on_progress=None: FIXTURE_XML)
     config = _config(tmp_path)
 
-    main.sync_ibkr_account(CREDENTIALS, config)
-    main.sync_ibkr_account(CREDENTIALS, config)
+    main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
+    main.sync_ibkr_account(CREDENTIALS, config, db_session, user_id=test_user_id)
 
     archived = list(config.ibkr.raw_statement_dir.glob("*.xml"))
     assert len(archived) == 2
@@ -227,26 +247,30 @@ def test_last_synced_at_reads_the_latest_raw_statement_filename(tmp_path) -> Non
     assert api.last_synced_at(config) == datetime(2026, 7, 1, 19, 9, 8)
 
 
-def test_rebuild_from_raw_statements_raises_without_archive(tmp_path) -> None:
+def test_rebuild_from_raw_statements_raises_without_archive(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     with pytest.raises(FileNotFoundError):
-        main.rebuild_from_raw_statements(config)
+        main.rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
 
-def test_rebuild_from_raw_statements_recomputes_ledger(tmp_path) -> None:
+def test_rebuild_from_raw_statements_recomputes_ledger(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     raw_dir = config.ibkr.raw_statement_dir
     raw_dir.mkdir(parents=True)
     (raw_dir / "20260625T060000.xml").write_text(EARLIER_FIXTURE_XML, encoding="utf-8")
     (raw_dir / "20260701T060000.xml").write_text(FIXTURE_XML, encoding="utf-8")
 
-    result = main.rebuild_from_raw_statements(config)
+    result = main.rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
     assert result.statement_from_date == date(2026, 6, 24)
     assert result.statement_to_date == date(2026, 6, 30)
     assert result.total_event_count == 4  # 2 trades x (BUY + FEE) each
 
-    ledger = main.load_ledger(config)
+    ledger = main.load_ledger(db_session, user_id=test_user_id)
     assert set(ledger["event_id"]) == {
         "ibkr:8000",
         "ibkr:8000:fee",
@@ -255,17 +279,19 @@ def test_rebuild_from_raw_statements_recomputes_ledger(tmp_path) -> None:
     }
 
 
-def test_rebuild_from_raw_statements_recovers_a_corrupted_derived_cache(tmp_path) -> None:
+def test_rebuild_from_raw_statements_recovers_a_wrong_derived_cache(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     raw_dir = config.ibkr.raw_statement_dir
     raw_dir.mkdir(parents=True)
     (raw_dir / "20260701T060000.xml").write_text(FIXTURE_XML, encoding="utf-8")
 
-    # Simulate a corrupted/wrong derived cache — the exact failure mode this
-    # feature exists to make recoverable.
-    write_csv_atomic(pl.DataFrame({"garbage": [1, 2, 3]}), config.ibkr.ledger_csv_path)
+    # Simulate a wrong/stale derived cache — the exact failure mode this
+    # feature exists to make recoverable — with an event no archive backs.
+    main._write_ledger(pl.DataFrame([_ledger_row("bogus:1", "2020-01-01 00:00:00")]), db_session, user_id=test_user_id)
 
-    main.rebuild_from_raw_statements(config)
+    main.rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
-    ledger = main.load_ledger(config)
+    ledger = main.load_ledger(db_session, user_id=test_user_id)
     assert set(ledger["event_id"]) == {"ibkr:9001", "ibkr:9001:fee"}
