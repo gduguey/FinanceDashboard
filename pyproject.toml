@@ -19,6 +19,9 @@ dependencies = [
     "python-dateutil>=2.9",
     "fastexcel>=0.12",
     "boto3>=1.43.42",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +46,7 @@ dev = [
     "httpx>=0.27",
     "plotly>=5.22",
     "xlsxwriter>=3.2",
+    "mypy>=2.2.0",
 ]
 
 [project.urls]
@@ -53,13 +57,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/trades", "src/accounting"]
+packages = ["src/trades", "src/accounting", "src/db"]
 
 [tool.mypy]
 python_version = "3.14"
 mypy_path = "src"
 explicit_package_bases = true
-packages = ["trades", "accounting"]
+packages = ["trades", "accounting", "db"]
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_incomplete_defs = true
@@ -76,7 +80,7 @@ ignore_missing_imports = true
 target-version = "py314"
 line-length = 120
 preview = true
-exclude = ["examples/", "*.ipynb"]
+exclude = ["examples/", "*.ipynb", "alembic/"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -115,6 +119,14 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "TC001",   # pydantic needs these types at runtime to build the schema, not just for type-checking
     "TC002",
     "TC003",
+    "RUF012",  # SQLAlchemy's own `__table_args__` convention is a plain dict/tuple class attribute, not instance state
+]
+
+"src/accounting/db/*.py" = [
+    "TC001",   # SQLAlchemy's declarative mapping resolves `Mapped[...]` annotations at runtime too, same reason as models.py
+    "TC002",
+    "TC003",
+    "RUF012",  # SQLAlchemy's own `__table_args__` convention is a plain dict/tuple class attribute, not instance state
 ]
 
 "**/config.py" = [
@@ -125,6 +137,18 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
 
 "**/dashboard/settings.py" = [
     "TC001",   # DashboardSettings is a pydantic model too; same reason as models.py/config.py
+    "TC002",
+    "TC003",
+]
+
+"**/accounting/api.py" = [
+    "TC001",   # FastAPI's Depends() resolves `Session`'s annotation at runtime too, same reason as models.py/config.py
+    "TC002",
+    "TC003",
+]
+
+"**/trades/api.py" = [
+    "TC001",   # Same as accounting/api.py: FastAPI's Depends() resolves `Session`'s annotation at runtime too
     "TC002",
     "TC003",
 ]
@@ -145,6 +169,7 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "PLR2004", # Magic value used in comparison, ...
     "S311",    # Standard pseudo-random generators are not suitable for cryptographic purposes
     "SLF001",  # Tests may need private access for behavior validation
+    "PLC2701", # Import-level equivalent of SLF001 above — tests may import a private name directly
     "W292",    # Trailing newline formatting noise in tests
     "PLR6301",  # Unused self in function.
 ]

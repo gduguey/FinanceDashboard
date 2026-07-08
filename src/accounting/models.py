@@ -327,6 +327,9 @@ class GeneralBudget(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+CompoundingFrequency = Literal["annually", "monthly", "daily"]
+
+
 class SimulatorScenario(BaseModel):
     """A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`).
 
@@ -343,7 +346,7 @@ class SimulatorScenario(BaseModel):
     monthly_contribution: float
     horizon_years: float
     annual_rate_pct: float
-    compounding_frequency: Literal["annually", "monthly", "daily"] = "monthly"
+    compounding_frequency: CompoundingFrequency = "monthly"
     currency: CurrencyCode = "USD"
 
 

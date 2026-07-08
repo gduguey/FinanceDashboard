@@ -4,10 +4,13 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+import db.models as dbm
 from accounting import api as accounting_api
 from accounting.config import AccountingConfig
 from accounting.market_data import exchange_rates
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
+from db.current_user import DEFAULT_USER_ID
+from db.session import get_db
 from trades import api as trades_api
 
 CHECKING_CSV = (
@@ -27,6 +30,22 @@ def _fake_rate_history() -> pl.DataFrame:
 @pytest.fixture(autouse=True)
 def isolated_accounting_config(tmp_path, monkeypatch):
     monkeypatch.setattr(accounting_api.state, "config", AccountingConfig(data_dir=tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _db_for_api(db_session):
+    """See `test_accounting_api.py`'s fixture of the same name — routes every request through
+    this test's own rolled-back session instead of the real (shared, never-rolled-back) one.
+    """
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.commit()
+
+    def _override_get_db():
+        yield db_session
+
+    trades_api.app.dependency_overrides[get_db] = _override_get_db
+    yield
+    trades_api.app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture

@@ -7,12 +7,15 @@ import pytest
 import xlsxwriter
 from fastapi.testclient import TestClient
 
+import db.models as dbm
 from accounting import api as accounting_api
 from accounting.config import AccountingConfig
 from accounting.importers import ingest as ingest_module
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
 from accounting.market_data import exchange_rates
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
+from db.current_user import DEFAULT_USER_ID
+from db.session import get_db
 from trades import api as trades_api
 from trades.config import AppConfig
 
@@ -26,6 +29,27 @@ CHASE_CHECKING_CSV = (
 @pytest.fixture(autouse=True)
 def isolated_accounting_config(tmp_path, monkeypatch):
     monkeypatch.setattr(accounting_api.state, "config", AccountingConfig(data_dir=tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _db_for_api(db_session):
+    """Route every request the `TestClient` makes through this test's own rolled-back session.
+
+    Every accounting route defaults to `db.current_user.DEFAULT_USER_ID`
+    (there's no login flow yet — see `accounting.store.load_store`), so the
+    one `User` row FK-satisfying every table has to exist under that exact
+    id, not a random `test_user_id` (that fixture is for tests that call
+    store/ledger functions directly with an explicit `user_id`).
+    """
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.commit()
+
+    def _override_get_db():
+        yield db_session
+
+    trades_api.app.dependency_overrides[get_db] = _override_get_db
+    yield
+    trades_api.app.dependency_overrides.pop(get_db, None)
 
 
 @pytest.fixture
