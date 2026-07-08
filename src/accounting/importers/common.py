@@ -63,7 +63,7 @@ def row_hash(*parts: str) -> str:
     str
         A short, stable hex digest.
     """
-    return hashlib.sha256("::".join(parts).encode()).hexdigest()[:16]
+    return hashlib.sha256("\x1e".join(parts).encode()).hexdigest()[:16]
 
 
 def posting_pair(

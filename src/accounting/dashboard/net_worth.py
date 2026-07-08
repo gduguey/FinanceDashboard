@@ -119,8 +119,11 @@ def net_worth_summary(
     balance_by_account = dict(zip(balances["account_id"].to_list(), balances["balance"].to_list(), strict=True))
     opening_balances = opening_balances or {}
 
+    def is_trades_linked(account: Account) -> bool:
+        return account.kind == "external_investment" and account.external_ref == "trades"
+
     def base_balance(account: Account) -> float:
-        if account.kind == "external_investment" and account.external_ref == "trades":
+        if is_trades_linked(account):
             return external_investment_value_usd or 0.0
         balance = balance_by_account.get(account.account_id, 0.0)
         opening = opening_balances.get(account.account_id)
@@ -135,7 +138,11 @@ def net_worth_summary(
             kind=account.kind,
             parent_account_id=account.parent_account_id,
             balance=base_balance(account),
-            currency=account.currency,
+            # `external_investment_value_usd` is always USD (see this function's
+            # docstring) regardless of what currency the account itself is set
+            # to — trusting `account.currency` here would silently run it
+            # through an FX conversion it never needs.
+            currency="USD" if is_trades_linked(account) else account.currency,
         )
         for account in accounts.values()
         if account.kind not in _VIRTUAL_KINDS

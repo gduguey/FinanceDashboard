@@ -42,7 +42,7 @@ def matching_pattern(patterns: dict[str, CategoryPattern], description: str) -> 
 _MATCH_SCHEMA = {"posting_id": pl.Utf8, "category_id": pl.Utf8, "subcategory_id": pl.Utf8}
 
 
-def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.DataFrame) -> pl.DataFrame:
+def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
     """Match many postings' descriptions against every pattern at once, in a single polars pass.
 
     The vectorized counterpart to calling `matching_pattern` once per
@@ -67,8 +67,11 @@ def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.D
         Postings with no match are simply absent.
     """
     active_patterns = [pattern for pattern in patterns.values() if pattern.active]
-    if not active_patterns or descriptions.is_empty():
-        return pl.DataFrame(schema=_MATCH_SCHEMA)
+    is_lazy = isinstance(descriptions, pl.LazyFrame)
+    lazy_descriptions = descriptions if is_lazy else descriptions.lazy()
+    if not active_patterns:
+        empty = pl.LazyFrame(schema=_MATCH_SCHEMA)
+        return empty if is_lazy else empty.collect()
 
     patterns_df = pl.DataFrame({
         "pattern_description": [pattern.description_contains.lower() for pattern in active_patterns],
@@ -76,9 +79,8 @@ def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.D
         "pattern_subcategory_id": [pattern.subcategory_id for pattern in active_patterns],
         "pattern_priority": [pattern.priority for pattern in active_patterns],
     })
-    return (
-        descriptions
-        .lazy()
+    result = (
+        lazy_descriptions
         .with_columns(description_lower=pl.col("description").str.to_lowercase())
         .join(patterns_df.lazy(), how="cross")
         .filter(pl.col("description_lower").str.contains(pl.col("pattern_description"), literal=True))
@@ -90,5 +92,5 @@ def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.D
             pl.col("pattern_category_id").alias("category_id"),
             pl.col("pattern_subcategory_id").alias("subcategory_id"),
         )
-        .collect()
     )
+    return result if is_lazy else result.collect()

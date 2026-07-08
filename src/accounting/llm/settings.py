@@ -65,8 +65,10 @@ def load_llm_credential_override(config: AccountingConfig) -> LLMCredentialOverr
     path = config.llm_credentials_path
     if not path.exists():
         return LLMCredentialOverride()
-    return LLMCredentialOverride.model_validate_json(path.read_text())
-
+    try:
+        return LLMCredentialOverride.model_validate_json(path.read_text())
+    except ValueError:
+        return LLMCredentialOverride()
 
 def save_llm_credential_override(override: LLMCredentialOverride, config: AccountingConfig) -> None:
     """Persist an LLM credential override, overwriting whatever was saved before.

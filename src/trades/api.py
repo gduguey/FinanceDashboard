@@ -255,12 +255,15 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
     daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, range_end))
     adjusted_lookup = dashboard.make_price_lookup(config, adjusted=True)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
-    counterfactual = dashboard.cash_received_counterfactual(
-        daily_cash,
-        benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
-        hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
-        days_per_year=config.returns.days_per_year,
-    )
+    try:
+        counterfactual = dashboard.cash_received_counterfactual(
+            daily_cash,
+            benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
+            hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
+            days_per_year=config.returns.days_per_year,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return daily_cash.join(counterfactual, on="date", how="left").to_dicts()
 
 

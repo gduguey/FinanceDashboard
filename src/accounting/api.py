@@ -12,6 +12,7 @@ API layer too.
 from __future__ import annotations
 
 import io
+import json
 import re
 import zipfile
 from dataclasses import asdict
@@ -33,6 +34,12 @@ from accounting.importers.canonical.csv import (
     DateOrder,
     standardize_canonical_csv,
     standardize_canonical_excel,
+)
+from accounting.importers.categorize_from_file import (
+    CategorizationMatch,
+    ConfirmedCategorization,
+    apply_categorize_from_file,
+    preview_categorize_from_file,
 )
 from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
@@ -418,7 +425,10 @@ def post_category_rename(category_id: str, request: CategoryRenameRequest) -> di
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
     categories, id_remap = plan_category_rename(store.categories, category_id, request.name)
-    store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
+    try:
+        store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     save_store(store, state.config)
 
     remap_ledger_category_ids(id_remap, state.config)
@@ -1083,6 +1093,186 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
         }
 
     return response_data
+
+
+def _match_response(match: CategorizationMatch) -> dict[str, Any]:
+    return {
+        "row_number": match.row_number,
+        "posted_at": match.posted_at.isoformat(),
+        "description": match.description,
+        "amount": match.amount,
+        "proposed_category_id": match.proposed_category_id,
+        "proposed_category_name": match.proposed_category_name,
+        "proposed_subcategory_id": match.proposed_subcategory_id,
+        "proposed_subcategory_name": match.proposed_subcategory_name,
+        "posting_id": match.posting_id,
+        "transaction_id": match.transaction_id,
+        "matched_description": match.matched_description,
+        "existing_category_id": match.existing_category_id,
+        "confidence": match.confidence,
+    }
+
+
+@router.post("/import/categorize-from-file/preview")
+async def post_categorize_from_file_preview(
+    file: UploadFile,
+    account_ids: Annotated[str | None, Form()] = None,
+    separator: Annotated[str | None, Form()] = None,
+    date_order: Annotated[str, Form()] = "MDY",
+    window_days: Annotated[int, Form()] = 5,
+) -> dict[str, Any]:
+    """Match a categorized personal file against the ledger without persisting anything.
+
+    Unlike `post_canonical_import_preview`, this never creates postings —
+    see `importers.categorize_from_file`'s docstring for why. Meant to run
+    before `post_categorize_from_file_apply`: the caller reviews each
+    row's proposed match (and can drop any it disagrees with) before
+    confirming.
+
+    Parameters
+    ----------
+    file
+        The CSV/Excel file to match — same column rules as a normal import (see `REQUIRED_COLUMNS_HELP`).
+    account_ids
+        Comma-separated account ids to restrict candidate postings to. Omit to search every account.
+    separator
+        The CSV column separator to use, overriding auto-detection. Ignored for Excel.
+    date_order
+        Whether an ambiguous, all-numeric date reads month-first (`"MDY"`) or day-first (`"DMY"`).
+    window_days
+        How many days apart a file row's date and a candidate posting's date can be and still match.
+
+    Returns
+    -------
+    dict[str, Any]
+        `matches` (one entry per file row; `posting_id` is `None` when nothing matched),
+        `new_categories`, and `skipped_rows` (same shape as `post_canonical_import_preview`).
+
+    Raises
+    ------
+    HTTPException
+        422 if the file couldn't be parsed.
+    """
+    store = load_store(state.config)
+    ledger = load_ledger(state.config)
+    date_order_literal = cast("DateOrder", date_order)
+    is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
+    ids = [account_id.strip() for account_id in account_ids.split(",") if account_id.strip()] if account_ids else None
+    try:
+        preview = preview_categorize_from_file(
+            await file.read(),
+            is_excel=is_excel,
+            existing_categories=store.categories,
+            ledger=ledger,
+            account_ids=ids,
+            separator=separator,
+            date_order=date_order_literal,
+            window_days=window_days,
+        )
+    except CanonicalCsvError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    response_data: dict[str, Any] = {
+        "matches": [_match_response(match) for match in preview.matches],
+        "new_categories": [category.model_dump(mode="json") for category in preview.new_categories.values()],
+    }
+    if preview.skipped_rows:
+        response_data["skipped_rows"] = {
+            "total_rows": preview.skipped_rows.total_rows,
+            "skipped_count": preview.skipped_rows.skipped_count,
+            "bad_dates": preview.skipped_rows.bad_dates,
+            "bad_amounts": preview.skipped_rows.bad_amounts,
+            "skipped_row_numbers": preview.skipped_rows.skipped_row_numbers,
+        }
+    return response_data
+
+
+@router.post("/import/categorize-from-file/apply")
+async def post_categorize_from_file_apply(
+    file: UploadFile,
+    confirmed_row_numbers: Annotated[str, Form()],
+    account_ids: Annotated[str | None, Form()] = None,
+    separator: Annotated[str | None, Form()] = None,
+    date_order: Annotated[str, Form()] = "MDY",
+    window_days: Annotated[int, Form()] = 5,
+    category_overrides: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    """Re-match the file (stateless, same as `post_canonical_import`'s preview/confirm split) and apply confirmed rows.
+
+    Nothing from the preview call is cached server-side — the file is
+    re-read and re-matched exactly the same way, then narrowed down to
+    just `confirmed_row_numbers`. The category/subcategory actually
+    applied always comes from this server-side re-match, never from the
+    caller — a row's checkbox means "yes, apply what I was shown for this
+    row," not "trust whatever category id I send." This only ever calls
+    `put_posting_override`'s same underlying mechanism (see
+    `apply_categorize_from_file`) — it can never create a posting, no
+    matter what the file contains.
+
+    Parameters
+    ----------
+    file
+        The same file `post_categorize_from_file_preview` was called with.
+    confirmed_row_numbers
+        A JSON-encoded list of `row_number`s (from the preview response) the caller has reviewed and wants applied
+        — typically every matched row the caller didn't uncheck.
+    account_ids, separator, date_order, window_days
+        Same as `post_categorize_from_file_preview` — must match, so the same rows resolve to the same postings.
+    category_overrides
+        A JSON-encoded `CanonicalCategoryOverridesRequest`, same as `post_canonical_import`'s.
+
+    Returns
+    -------
+    dict[str, Any]
+        `updated_posting_count` and `new_categories` (each newly-created category, if the file's own
+        Category/Subcategory columns introduced any not already in the store).
+
+    Raises
+    ------
+    HTTPException
+        422 if the file couldn't be parsed.
+    """
+    store = load_store(state.config)
+    ledger = load_ledger(state.config)
+    date_order_literal = cast("DateOrder", date_order)
+    is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
+    ids = [account_id.strip() for account_id in account_ids.split(",") if account_id.strip()] if account_ids else None
+    overrides = _read_category_overrides(category_overrides)
+    try:
+        preview = preview_categorize_from_file(
+            await file.read(),
+            is_excel=is_excel,
+            existing_categories=store.categories,
+            ledger=ledger,
+            account_ids=ids,
+            separator=separator,
+            date_order=date_order_literal,
+            category_overrides=overrides,
+            window_days=window_days,
+        )
+    except CanonicalCsvError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    if preview.new_categories:
+        store = store.model_copy(update={"categories": {**store.categories, **preview.new_categories}})
+        save_store(store, state.config)
+
+    wanted_row_numbers = set(json.loads(confirmed_row_numbers))
+    to_apply = [
+        ConfirmedCategorization(
+            posting_id=match.posting_id,
+            category_id=match.proposed_category_id,
+            subcategory_id=match.proposed_subcategory_id,
+        )
+        for match in preview.matches
+        if match.row_number in wanted_row_numbers and match.posting_id is not None
+    ]
+    updated_count = apply_categorize_from_file(state.config, to_apply)
+
+    return {
+        "updated_posting_count": updated_count,
+        "new_categories": [category.model_dump(mode="json") for category in preview.new_categories.values()],
+    }
 
 
 @router.post("/import/paystub")

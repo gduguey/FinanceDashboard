@@ -260,9 +260,10 @@ def apply_posting_merges(postings: pl.DataFrame, merges: dict[str, PostingMerge]
     result = postings.filter(~pl.col("transaction_id").is_in(list(dropped_transaction_ids)))
     if not description_by_kept_transaction:
         return result
-    rows = result.to_dicts()
-    for row in rows:
-        description = description_by_kept_transaction.get(row["transaction_id"])
-        if description is not None:
-            row["description"] = description
-    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return result.with_columns(
+        pl
+        .when(pl.col("transaction_id").is_in(list(description_by_kept_transaction)))
+        .then(pl.col("transaction_id").replace(description_by_kept_transaction))
+        .otherwise(pl.col("description"))
+        .alias("description")
+    ).sort("posted_at", "posting_id")

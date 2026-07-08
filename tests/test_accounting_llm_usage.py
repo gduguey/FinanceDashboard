@@ -25,6 +25,15 @@ def test_load_usage_with_no_file_yet_starts_every_provider_at_zero(tmp_path) -> 
     assert usage["mistral"].used_count == 0
 
 
+def test_load_usage_resets_a_provider_with_a_corrupted_stored_entry_instead_of_raising(tmp_path) -> None:
+    path = tmp_path / "llm_usage.json"
+    path.write_text('{"gemini": {"used_count": "not-a-number"}, "mistral": {"used_count": 3}}', encoding="utf-8")
+    usage = load_usage(path)
+    assert usage["gemini"].used_count == 0
+    assert usage["gemini"].is_limited is False
+    assert usage["mistral"].used_count == 0
+
+
 def test_record_call_increments_count_on_success(tmp_path) -> None:
     path = tmp_path / "llm_usage.json"
     record_call("gemini", path, error=None)

@@ -9,6 +9,8 @@ import type {
   CanonicalImportPreview,
   CanonicalImportResult,
   Category,
+  CategorizeFromFileApplyResult,
+  CategorizeFromFilePreview,
   CategoryPattern,
   CategoryTotalRow,
   CurrentExchangeRate,
@@ -200,6 +202,27 @@ export const accountingApi = {
     const formData = new FormData()
     formData.append('file', file)
     return request<PaystubReconciliationResult>('/api/accounting/import/paystub', { method: 'POST', body: formData })
+  },
+  previewCategorizeFromFile: (file: File, separator?: string, dateOrder?: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (separator) formData.append('separator', separator)
+    if (dateOrder) formData.append('date_order', dateOrder)
+    return request<CategorizeFromFilePreview>('/api/accounting/import/categorize-from-file/preview', {
+      method: 'POST',
+      body: formData,
+    })
+  },
+  applyCategorizeFromFile: (file: File, confirmedRowNumbers: number[], separator?: string, dateOrder?: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('confirmed_row_numbers', JSON.stringify(confirmedRowNumbers))
+    if (separator) formData.append('separator', separator)
+    if (dateOrder) formData.append('date_order', dateOrder)
+    return request<CategorizeFromFileApplyResult>('/api/accounting/import/categorize-from-file/apply', {
+      method: 'POST',
+      body: formData,
+    })
   },
   rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
   postings: () => request<Posting[]>('/api/accounting/postings'),

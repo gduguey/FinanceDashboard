@@ -18,7 +18,7 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from accounting.llm.provider import LLMProviderError
 from accounting.utils.io_utils import write_json_atomic
@@ -70,7 +70,14 @@ def load_usage(path: Path, now: datetime | None = None) -> dict[str, ProviderUsa
     for provider, period in RESET_PERIOD.items():
         current_start = _current_period_start(period, now)
         stored = raw.get(provider)
-        entry = ProviderUsage.model_validate(stored) if stored is not None else None
+        entry = None
+        if stored is not None:
+            try:
+                entry = ProviderUsage.model_validate(stored)
+            except ValidationError:
+                # A corrupted entry (e.g. from a schema change) should reset
+                # that one provider's usage, not brick every future call.
+                entry = None
         usage[provider] = (
             entry
             if entry is not None and entry.period_start >= current_start

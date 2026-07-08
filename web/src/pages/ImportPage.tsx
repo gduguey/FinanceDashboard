@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react'
-import { ArrowRight, CheckCircle2, Landmark, Upload, X, XCircle } from 'lucide-react'
+import { useCallback, useState, type ReactNode } from 'react'
+import { ArrowRight, CheckCircle2, Info, Landmark, Upload, X, XCircle } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { TaxonomyTable } from '@/components/accounting/CategoriesTab'
+import { CategorizeFromFilePanel } from '@/components/accounting/CategorizeFromFilePanel'
 import { DuplicateSuggestionsPanel } from '@/components/accounting/DuplicateSuggestionsPanel'
 import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
@@ -247,6 +248,21 @@ function ValidateCategoriesDialog({
   )
 }
 
+// Shared visual shell for both tabs' "what this accepts" callouts — same
+// muted-card treatment `GuidePage`'s `Definition` uses, so an explanation
+// box reads the same whether it's teaching a term or describing a file format.
+function InfoBox({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex gap-3 rounded-lg border border-foreground/10 bg-muted/40 px-4 py-3.5">
+      <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p className="text-sm leading-relaxed text-muted-foreground">{children}</p>
+      </div>
+    </div>
+  )
+}
+
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 type PendingImport = PendingCsvImport
@@ -415,11 +431,23 @@ export function ImportPage() {
         <Tabs value={tab} onValueChange={(value) => setSearchParams(value === 'import' ? {} : { tab: value })}>
           <TabsList>
             <TabsTrigger value="import">Import statements</TabsTrigger>
-            <TabsTrigger value="paystub">Paystub reconciliation</TabsTrigger>
+            <TabsTrigger value="categorize">Categorize from file</TabsTrigger>
             <TabsTrigger value="duplicates">Duplicates</TabsTrigger>
+            <TabsTrigger value="paystub">Paystub reconciliation</TabsTrigger>
           </TabsList>
 
           <TabsContent value="import" className="space-y-6">
+          <InfoBox title="What files this accepts">
+            A CSV or Excel export from any bank works here. Chase and SoFi exports are recognized automatically; anything
+            else goes through the generic parser, which needs a <strong className="text-foreground">Date</strong> column, a{' '}
+            <strong className="text-foreground">Description</strong> column, and either an{' '}
+            <strong className="text-foreground">Amount</strong> column (positive for money in, negative for money out) or
+            separate <strong className="text-foreground">Debit</strong>/<strong className="text-foreground">Credit</strong>{' '}
+            columns — that's the 3 it needs. Two more are optional: a{' '}
+            <strong className="text-foreground">Category</strong> column and a{' '}
+            <strong className="text-foreground">Subcategory</strong> column, which create or match categories automatically
+            if present.
+          </InfoBox>
           {registeredAccounts.length === 0 && (
             <Link
               to="/accounts"
@@ -650,12 +678,28 @@ export function ImportPage() {
           </div>
           </TabsContent>
 
-          <TabsContent value="paystub">
-            <PaystubReconciliationCard />
+          <TabsContent value="categorize" className="space-y-6">
+            <InfoBox title="What this is for">
+              Same file format as Import statements — a CSV or Excel export with a Date, Description, and Amount (or
+              Debit/Credit) column, plus optional Category and Subcategory columns. But this tab doesn't add new
+              transactions. It's for when you've already been tracking your own spending by hand — in a spreadsheet built
+              from old statements, categorized transaction by transaction — and want to bring that categorization work into
+              transactions that are already sitting in your ledger here, instead of starting over from scratch.{' '}
+              <em>
+                For example: your spreadsheet has a row for 7/3/2026, –$5.00, "Starbucks," categorized as Dining Out. If
+                that same transaction already exists in your ledger — say, from a Chase statement you imported earlier —
+                this sets its category to Dining Out. It never creates a second transaction for it.
+              </em>
+            </InfoBox>
+            <CategorizeFromFilePanel />
           </TabsContent>
 
           <TabsContent value="duplicates">
             {store && <DuplicateSuggestionsPanel accounts={store.accounts} existingMerges={store.posting_merges} />}
+          </TabsContent>
+
+          <TabsContent value="paystub">
+            <PaystubReconciliationCard />
           </TabsContent>
         </Tabs>
       </div>
