@@ -6,9 +6,13 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+import db.models as dbm
+from db.current_user import DEFAULT_USER_ID
+from db.session import get_db
 from trades import api as trades_api
-from trades.brokers.ibkr.main import IbkrSyncResult
+from trades.brokers.ibkr.main import IbkrSyncResult, _write_ledger
 from trades.config import AppConfig
+from trades.models import LedgerEvent
 from trades.utils.io_utils import write_csv_atomic
 
 LEDGER_ROWS = [
@@ -21,7 +25,7 @@ LEDGER_ROWS = [
         "price": None,
         "amount": 2000.0,
         "currency": "USD",
-        "meta": "{}",
+        "meta": {},
     },
     {
         "event_id": "ibkr:2",
@@ -32,7 +36,7 @@ LEDGER_ROWS = [
         "price": 500.0,
         "amount": 1000.0,
         "currency": "USD",
-        "meta": "{}",
+        "meta": {},
     },
     {
         "event_id": "ibkr:3",
@@ -43,13 +47,33 @@ LEDGER_ROWS = [
         "price": 550.0,
         "amount": 550.0,
         "currency": "USD",
-        "meta": "{}",
+        "meta": {},
     },
 ]
 
 
 @pytest.fixture(autouse=True)
-def isolated_config(tmp_path, monkeypatch):
+def _db_for_api(db_session):
+    """Route every request the `TestClient` makes through this test's own rolled-back session.
+
+    See `tests/test_accounting_api.py`'s fixture of the same name — every
+    trades route defaults to `db.current_user.DEFAULT_USER_ID` (no login
+    flow yet), so the one `User` row FK-satisfying `ledger_events`/
+    `broker_connections` has to exist under that exact id.
+    """
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.commit()
+
+    def _override_get_db():
+        yield db_session
+
+    trades_api.app.dependency_overrides[get_db] = _override_get_db
+    yield
+    trades_api.app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch, db_session):
     """Point the module-level config at a throwaway cache dir.
 
     Seeds a minimal local ledger + price + CPI history so GET endpoints
@@ -68,7 +92,7 @@ def isolated_config(tmp_path, monkeypatch):
         trades_api.app.state, "sync_progress", trades_api.SyncProgress(step="Idle", percent=0.0, done=True)
     )
 
-    write_csv_atomic(pl.DataFrame(LEDGER_ROWS), config.ibkr.ledger_csv_path)
+    _write_ledger(pl.DataFrame(LEDGER_ROWS, schema=LedgerEvent.polars_schema), db_session, user_id=DEFAULT_USER_ID)
     price_history = pl.DataFrame({
         "price_date": [date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)],
         "close": [500.0, 500.0, 560.0],
@@ -106,8 +130,10 @@ def test_overview_reports_value_and_gain(client) -> None:
     assert body["realized_gain_usd"] == pytest.approx(50.0)
 
 
-def test_overview_no_ledger_is_a_404(client, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(trades_api.app.state, "config", AppConfig(ibkr={"cache_dir": tmp_path / "empty"}))
+def test_overview_no_ledger_is_a_404(client, db_session) -> None:
+    # isolated_config's autouse fixture always seeds a ledger — undo that
+    # for this one test by overwriting it with nothing.
+    _write_ledger(pl.DataFrame(schema=LedgerEvent.polars_schema), db_session, user_id=DEFAULT_USER_ID)
     assert client.get("/api/overview").status_code == 404
 
 
@@ -434,7 +460,7 @@ def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_netw
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
-    def fake_sync(credentials, config, on_progress=None):
+    def fake_sync(credentials, config, session, on_progress=None):
         raw_dir = config.ibkr.raw_statement_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
@@ -487,7 +513,7 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
-    def fake_sync(credentials, config, on_progress=None):
+    def fake_sync(credentials, config, session, on_progress=None):
         raw_dir = config.ibkr.raw_statement_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
@@ -525,7 +551,7 @@ def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, 
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
-    def failing_sync(credentials, config, on_progress=None):
+    def failing_sync(credentials, config, session, on_progress=None):
         message = "IBKR Flex API error 1018: too many requests"
         raise ValueError(message)
 

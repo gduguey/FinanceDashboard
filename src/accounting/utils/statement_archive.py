@@ -26,20 +26,24 @@ from botocore.exceptions import ClientError
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from db.current_user import DEFAULT_USER_ID as _DEFAULT_USER_ID
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-DEFAULT_USER_ID = "8f14e45f-ceea-467e-bb1c-a2e2f7cbc09e"
+DEFAULT_USER_ID = str(_DEFAULT_USER_ID)
 """Placeholder owner id prefixed onto every R2 object key (`statements/<user_id>/...`).
 
-There is no auth/Postgres users table yet, so every statement in this
-single-user deployment is archived under one fixed id. Once real users
-exist, every call site that constructs a `StatementArchive` is the thing
-that needs to start passing the authenticated request's actual
-`current_user.id` here instead — the key layout already assumes that
-shape, so nothing about where objects live in the bucket has to change.
+There is no login flow yet, so every statement in this single-user
+deployment is archived under the one seeded `db.models.User` row's id
+(`db.current_user.DEFAULT_USER_ID`) — the same id every Postgres-backed
+row in this app defaults to today. Once a real login flow exists, every
+call site that constructs a `StatementArchive` is the thing that needs to
+start passing the authenticated request's actual `current_user.id` here
+instead — the key layout already assumes that shape, so nothing about
+where objects live in the bucket has to change.
 Deliberately the same literal value as `trades.utils.statement_archive`'s
 constant of the same name — both packages archive one person's data.
 """

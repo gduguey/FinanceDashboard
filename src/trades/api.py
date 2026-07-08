@@ -26,16 +26,18 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from zoneinfo import ZoneInfo
 
 import requests
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.orm import Session
 
 from accounting.api import router as accounting_router
+from db.session import get_db
 from trades import dashboard
 from trades.brokers.ibkr import api, main
 from trades.config import AppConfig, TaxRegime
@@ -101,8 +103,13 @@ def _report_sync_progress(step: str, percent: float) -> None:
     app.state.sync_progress = SyncProgress(step=step, percent=percent, done=False)
 
 
-def _load_ledger() -> pl.DataFrame:
+def _load_ledger(session: Session) -> pl.DataFrame:
     """Load the cached ledger. Read-only — never touches the network.
+
+    Parameters
+    ----------
+    session
+        An open database session.
 
     Returns
     -------
@@ -114,7 +121,7 @@ def _load_ledger() -> pl.DataFrame:
     HTTPException
         If no ledger has been cached yet (404).
     """
-    ledger = main.load_ledger(_config())
+    ledger = main.load_ledger(session)
     if ledger.is_empty():
         message = "No ledger cached yet. Hit Sync to pull it from IBKR."
         raise HTTPException(status_code=404, detail=message)
@@ -166,7 +173,7 @@ def _last_synced_iso() -> str | None:
 
 
 @app.get("/api/overview")
-def get_overview(as_of: date | None = None) -> dict[str, Any]:
+def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> dict[str, Any]:
     """Return the overview card row: value, gain split, XIRR, dollar alpha, TWR.
 
     Returns
@@ -179,7 +186,7 @@ def get_overview(as_of: date | None = None) -> dict[str, Any]:
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     try:
         cards = dashboard.overview_cards(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
@@ -188,7 +195,9 @@ def get_overview(as_of: date | None = None) -> dict[str, Any]:
 
 
 @app.get("/api/chart/dollar")
-def get_dollar_chart(start: date | None = None, end: date | None = None) -> dict[str, Any]:
+def get_dollar_chart(
+    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+) -> dict[str, Any]:
     """Return the three/four-line dollar chart plus reallocation markers.
 
     Returns
@@ -201,7 +210,7 @@ def get_dollar_chart(start: date | None = None, end: date | None = None) -> dict
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         series = dashboard.dollar_chart_series(ledger, _config(), range_start, range_end)
@@ -212,7 +221,9 @@ def get_dollar_chart(start: date | None = None, end: date | None = None) -> dict
 
 
 @app.get("/api/chart/growth-of-100")
-def get_growth_of_100_chart(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+def get_growth_of_100_chart(
+    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+) -> list[dict[str, Any]]:
     """Return the growth-of-$100 chart: NAV plus every benchmark, indexed to 100.
 
     Returns
@@ -225,7 +236,7 @@ def get_growth_of_100_chart(start: date | None = None, end: date | None = None) 
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         return dashboard.growth_of_100_chart(ledger, _config(), range_start, range_end).to_dicts()
@@ -234,7 +245,9 @@ def get_growth_of_100_chart(start: date | None = None, end: date | None = None) 
 
 
 @app.get("/api/chart/cash-history")
-def get_cash_history(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+def get_cash_history(
+    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+) -> list[dict[str, Any]]:
     """Return the uninvested cash balance for every day in range, plus what it would be worth invested immediately.
 
     Returns
@@ -254,7 +267,7 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
     HTTPException
         Via `_load_ledger`, if no ledger is cached yet (404).
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     config = _config()
     range_start, range_end = _chart_range(ledger, start, end)
     daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, range_end))
@@ -273,7 +286,7 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
 
 
 @app.get("/api/cash-sitting")
-def get_cash_sitting() -> dict[str, Any]:
+def get_cash_sitting(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
     """Report how long the current uninvested cash balance has been sitting idle, and what it's missed out on.
 
     Returns
@@ -286,7 +299,7 @@ def get_cash_sitting() -> dict[str, Any]:
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     config = _config()
     today = datetime.now(tz=UTC).date()
     range_start = _first_event_date(ledger)
@@ -300,7 +313,9 @@ def get_cash_sitting() -> dict[str, Any]:
 
 
 @app.get("/api/chart/monthly-pnl")
-def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+def get_monthly_pnl(
+    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+) -> list[dict[str, Any]]:
     """Return each month's value change split into contributions and market gain.
 
     Returns
@@ -313,7 +328,7 @@ def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         return dashboard.monthly_pnl(ledger, _config(), range_start, range_end).to_dicts()
@@ -322,7 +337,9 @@ def get_monthly_pnl(start: date | None = None, end: date | None = None) -> list[
 
 
 @app.get("/api/chart/monthly-pnl/by-symbol")
-def get_monthly_pnl_by_symbol(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+def get_monthly_pnl_by_symbol(
+    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+) -> list[dict[str, Any]]:
     """Return each month's value change split into contributions and market gain, per symbol.
 
     Returns
@@ -335,7 +352,7 @@ def get_monthly_pnl_by_symbol(start: date | None = None, end: date | None = None
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         return dashboard.monthly_pnl_by_symbol(ledger, _config(), range_start, range_end).to_dicts()
@@ -344,7 +361,9 @@ def get_monthly_pnl_by_symbol(start: date | None = None, end: date | None = None
 
 
 @app.get("/api/allocation")
-def get_allocation(as_of: date | None = None) -> list[dict[str, Any]]:
+def get_allocation(
+    session: Annotated[Session, Depends(get_db)], as_of: date | None = None
+) -> list[dict[str, Any]]:
     """Return the current-value allocation by symbol (including cash), against the target.
 
     Returns
@@ -357,7 +376,7 @@ def get_allocation(as_of: date | None = None) -> list[dict[str, Any]]:
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     try:
         return dashboard.allocation_view(ledger, _config(), as_of or datetime.now(tz=UTC).date()).to_dicts()
     except ValueError as error:
@@ -646,7 +665,7 @@ def verify_ibkr_settings() -> dict[str, Any]:
 
 
 @app.get("/api/tax/report")
-def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
+def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> dict[str, Any]:
     """Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
 
     Returns
@@ -666,7 +685,7 @@ def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     try:
         summary = dashboard.tax_summary(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
@@ -720,7 +739,7 @@ def get_symbol_search(q: str) -> list[dict[str, str]]:
 
 
 @app.post("/api/symbols/{symbol}/ensure-priced")
-def ensure_symbol_priced(symbol: str) -> dict[str, Any]:
+def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
     """Refresh one symbol's price cache if it isn't already current, without a full sync.
 
     Lets picking a new benchmark symbol take effect immediately —
@@ -739,7 +758,7 @@ def ensure_symbol_priced(symbol: str) -> dict[str, Any]:
         404 if no ledger is cached yet; 422 if Yahoo Finance has no data for `symbol`.
     """
     config = _config()
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     first_event = _first_event_date(ledger)
     today = datetime.now(tz=UTC).date()
 
@@ -760,7 +779,7 @@ def ensure_symbol_priced(symbol: str) -> dict[str, Any]:
 
 
 @app.get("/api/lots")
-def get_lots(as_of: date | None = None) -> dict[str, Any]:
+def get_lots(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> dict[str, Any]:
     """Return the trade-level table: open lots, closed lots, per-symbol rollup.
 
     Returns
@@ -773,7 +792,7 @@ def get_lots(as_of: date | None = None) -> dict[str, Any]:
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     try:
         table = dashboard.lots_table(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
@@ -786,7 +805,9 @@ def get_lots(as_of: date | None = None) -> dict[str, Any]:
 
 
 @app.get("/api/risk")
-def get_risk(start: date | None = None, end: date | None = None) -> dict[str, Any]:
+def get_risk(
+    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+) -> dict[str, Any]:
     """Return the largest peak-to-trough NAV decline over a window.
 
     Returns
@@ -799,7 +820,7 @@ def get_risk(start: date | None = None, end: date | None = None) -> dict[str, An
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         return {"max_drawdown_pct": dashboard.risk_stat(ledger, _config(), range_start, range_end)}
@@ -808,7 +829,7 @@ def get_risk(start: date | None = None, end: date | None = None) -> dict[str, An
 
 
 @app.get("/api/data-quality")
-def get_data_quality() -> list[dict[str, Any]]:
+def get_data_quality(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
     """Return the last cached price date per symbol ever held or benchmarked against.
 
     Returns
@@ -817,14 +838,14 @@ def get_data_quality() -> list[dict[str, Any]]:
         One entry per symbol.
     """
     config = _config()
-    ledger = _load_ledger()
+    ledger = _load_ledger(session)
     held_and_benchmark = {*ledger["symbol"].unique().to_list(), dashboard.resolved_benchmark_symbol(config)}
     symbols = sorted(held_and_benchmark - {config.ledger.cash_symbol})
     return dashboard.data_quality(symbols, config).to_dicts()
 
 
 @app.get("/api/ledger/export")
-def get_ledger_export() -> list[dict[str, Any]]:
+def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
     """Export the full ledger, for the user's own backup.
 
     Returns
@@ -832,7 +853,7 @@ def get_ledger_export() -> list[dict[str, Any]]:
     list[dict[str, Any]]
         Every ledger row.
     """
-    return _load_ledger().to_dicts()
+    return _load_ledger(session).to_dicts()
 
 
 @app.get("/api/statements/export")
@@ -884,7 +905,7 @@ class _SyncStep:
     error: str | None = None
 
 
-def _run_sync(config: AppConfig) -> dict[str, Any]:
+def _run_sync(config: AppConfig, session: Session) -> dict[str, Any]:
     """Run every leg of a sync independently — one failing never skips the rest.
 
     A bad IBKR token shouldn't also block a benchmark price refresh that
@@ -906,7 +927,7 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
     sync_result = None
     try:
         credentials = resolve_ibkr_credentials(config)
-        sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
+        sync_result = main.sync_ibkr_account(credentials, config, session, on_progress=_report_sync_progress)
         steps.append(_SyncStep("Portfolio data", ok=True))
     except requests.exceptions.RequestException:
         # Not str(error): a request-level failure's own message includes the
@@ -916,7 +937,7 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
     except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
         steps.append(_SyncStep("Portfolio data", ok=False, error=str(error)))
 
-    raw_ledger = main.load_ledger(config)
+    raw_ledger = main.load_ledger(session)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
     today = datetime.now(tz=UTC).date()
     if raw_ledger.is_empty():
@@ -968,7 +989,7 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
 
 
 @app.post("/api/sync")
-def sync() -> dict[str, Any]:
+def sync(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
     """Pull the latest IBKR statement and refresh the price/CPI/HYSA-rate caches.
 
     Refreshes the raw price cache for every symbol ever held plus the
@@ -992,7 +1013,7 @@ def sync() -> dict[str, Any]:
     """
     with _sync_lock:
         try:
-            result = _run_sync(_config())
+            result = _run_sync(_config(), session)
         except Exception as error:
             # Only reachable for something outside every leg's own
             # try/except in _run_sync — each expected failure mode is
