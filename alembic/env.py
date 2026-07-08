@@ -1,15 +1,22 @@
+from contextlib import suppress
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
-# Registers every table on `Base.metadata` — required before `target_metadata`
-# is read below, and before `--autogenerate` can see any of these tables.
-import accounting.db  # noqa: F401
-import db.models  # noqa: F401
-import trades.db  # noqa: F401
 from alembic import context
 from db.base import Base
 from db.settings import DatabaseSettings
+
+# Registers every table on `Base.metadata` — required before `target_metadata`
+# is read below, and before `--autogenerate` can see any of these tables.
+# `accounting` and `trades` are independent packages (see docs/architecture.md:
+# deleting either one should never break the other), so each import is guarded —
+# a tree with only one of them still generates/runs migrations for that one.
+import db.models  # noqa: F401
+with suppress(ModuleNotFoundError):
+    import accounting.db  # noqa: F401
+with suppress(ModuleNotFoundError):
+    import trades.db  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
