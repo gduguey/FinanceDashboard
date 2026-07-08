@@ -69,7 +69,7 @@ def parse_date_flexible(text: str, *, dayfirst: bool = False) -> date | None:
         return None
     try:
         return dateutil_parser.parse(cleaned, dayfirst=dayfirst).date()
-    except dateutil_parser.ParserError, ValueError, OverflowError, TypeError:
+    except (dateutil_parser.ParserError, ValueError, OverflowError, TypeError):
         return None
 
 

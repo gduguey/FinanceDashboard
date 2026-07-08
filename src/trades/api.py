@@ -29,6 +29,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+import requests
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -628,8 +629,11 @@ def verify_ibkr_settings() -> dict[str, Any]:
         api.verify_flex_credentials(credentials, config)
     except api.FlexApiError as error:
         return {"ok": False, "error": error.message}
-    except Exception as error:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
-        return {"ok": False, "error": str(error)}
+    except Exception:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
+        # Not str(error): a connection/HTTP error's own message includes the
+        # full request URL, which embeds the token as a query param (see
+        # `_send_flex_request`) — that must never round-trip back to the client.
+        return {"ok": False, "error": "Could not reach IBKR to verify credentials"}
     return {"ok": True, "error": None}
 
 
@@ -890,6 +894,11 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
         credentials = resolve_ibkr_credentials(config)
         sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
         steps.append(_SyncStep("Portfolio data", True))
+    except requests.exceptions.RequestException:
+        # Not str(error): a request-level failure's own message includes the
+        # full IBKR request URL, which embeds the token as a query param (see
+        # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
+        steps.append(_SyncStep("Portfolio data", False, "Could not reach IBKR"))
     except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
         steps.append(_SyncStep("Portfolio data", False, str(error)))
 
@@ -995,7 +1004,7 @@ if _FRONTEND_DIST.is_dir():
         e.g. a hard refresh on `/settings` — so the frontend's client-side
         router gets a chance to handle it instead of a bare 404.
         """
-        candidate = _FRONTEND_DIST / full_path
-        if full_path and candidate.is_file():
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if full_path and candidate.is_relative_to(_FRONTEND_DIST) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_FRONTEND_DIST / "index.html")

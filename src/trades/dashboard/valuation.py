@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from trades.config import AppConfig
+    from trades.ledger.replay import ReplayResult
 
 
 def make_price_lookup(config: AppConfig, *, adjusted: bool = False) -> Callable[[str, date], float | None]:
@@ -65,9 +66,15 @@ def daily_portfolio_values(
     from the same day-by-day valuation rather than each recomputing it.
 
     Optimization: Instead of replaying the ledger for every calendar day
-    (O(days x ledger size)), this computes values only for event dates and
-    forward-fills for days with no events. This reduces replay calls to
-    O(unique_event_dates), which is typically much smaller.
+    (O(days x ledger size)), this replays only at event dates and
+    forward-fills the resulting *position* for days with no events —
+    positions can't change without an event. Each calendar day is still
+    priced individually via `price_lookup` using its own date, since a
+    price (unlike a position) keeps moving on days with no ledger
+    activity; `price_lookup` is a cheap in-memory cache lookup (see
+    `make_price_lookup`), so this daily repricing is negligible next to
+    the replay itself. Net effect: replay calls drop to
+    O(unique_event_dates), while the value stays accurate for every day.
 
     Parameters
     ----------
@@ -102,23 +109,24 @@ def daily_portfolio_values(
     )
     event_dates: list[date] = [] if event_dates_result.is_empty() else event_dates_result["event_datetime"].to_list()
 
-    # Compute portfolio value at each event date
-    values_by_date: dict[date, float] = {}
+    # Compute replayed position at each event date — positions are what's
+    # actually cheap to forward-fill, since they don't move without an event.
+    state_by_date: dict[date, ReplayResult] = {}
     for event_date in event_dates:
-        result = replay_ledger(
+        state_by_date[event_date] = replay_ledger(
             ledger_df.filter(pl.col("event_datetime").dt.date() <= event_date), config
         )
-        values_by_date[event_date] = portfolio_value(result, price_lookup, event_date)
 
-    # Generate all calendar dates and forward-fill values
+    # Generate all calendar dates: forward-fill the position, but reprice
+    # it as of that calendar day's own date, not the event date.
     all_dates = [start + timedelta(days=n) for n in range((end - start).days + 1)]
     values: list[float] = []
     for cal_date in all_dates:
         # Find most recent event date <= this calendar date
         recent_event_dates = [d for d in event_dates if d <= cal_date]
         if recent_event_dates:
-            recent_date = max(recent_event_dates)
-            values.append(values_by_date[recent_date])
+            state = state_by_date[max(recent_event_dates)]
+            values.append(portfolio_value(state, price_lookup, cal_date))
         else:
             # No events yet; portfolio value is 0
             values.append(0.0)

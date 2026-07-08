@@ -1,6 +1,6 @@
 import io
 import zipfile
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 import polars as pl
 import pytest
@@ -378,7 +378,10 @@ def test_ensure_symbol_priced_refreshes_raw_and_adjusted_caches(client, monkeypa
 
 
 def test_ensure_symbol_priced_reports_not_stale_when_cache_already_covers_today(client, monkeypatch) -> None:
-    today = datetime.now().date()
+    # Must match the endpoint's own UTC "today" (src/trades/api.py's `ensure_symbol_priced`,
+    # and every other `as_of`-default in this codebase) — a naive local `datetime.now()`
+    # can land on the previous UTC day depending on machine timezone/time of day.
+    today = datetime.now(UTC).date()
     cached = pl.DataFrame({"price_date": [today], "close": [500.0]})
     monkeypatch.setattr(trades_api.prices, "load_price_cache", lambda symbol, config: cached)
     monkeypatch.setattr(

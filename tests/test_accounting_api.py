@@ -851,7 +851,9 @@ def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monke
     body = client.get("/api/accounting/llm-usage").json()
     assert body["gemini"] == {
         "configured": True,
-        "used_count": 1,
+        # A failed call freezes the counter rather than incrementing it —
+        # see test_accounting_llm_usage.py's record_call tests.
+        "used_count": 0,
         "period": "daily",
         "is_limited": True,
         "last_error": "429 RESOURCE_EXHAUSTED",
