@@ -237,7 +237,7 @@ def test_overview_cards_reports_gross_deposits_and_dividends(tmp_path) -> None:
 
     assert cards.total_deposited_usd == pytest.approx(1000.0)
     assert cards.total_withdrawn_usd == pytest.approx(200.0)
-    assert cards.total_dividends_usd == pytest.approx(5.0)
+    assert cards.total_dividends_gross_usd == pytest.approx(5.0)
 
 
 def test_reallocation_markers_flags_a_date_with_both_a_sell_and_a_buy(tmp_path) -> None:

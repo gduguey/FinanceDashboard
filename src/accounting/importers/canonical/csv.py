@@ -400,6 +400,139 @@ def _resolve_subcategories(
     return subcategory_ids
 
 
+@dataclass(frozen=True)
+class ResolvedCategorizationRow:
+    """One file row, fully parsed, with its Category/Subcategory columns already resolved to real ids.
+
+    Used by the "categorize from file" flow (see `importers.categorize_from_file`),
+    which stops here rather than going on to `_build_postings` — those rows
+    are meant to be matched against transactions already in the ledger,
+    never turned into new postings.
+    """
+
+    posted_at: datetime
+    amount: float
+    description: str
+    category_id: str | None
+    subcategory_id: str | None
+    row_number: int
+
+
+def resolve_categorization_rows(
+    header: list[str],
+    data_rows: list[list[str]],
+    existing_categories: dict[str, Category],
+    date_order: DateOrder = "MDY",
+    category_overrides: CategoryOverrides | None = None,
+) -> tuple[list[ResolvedCategorizationRow], dict[str, Category], SkippedRowsInfo | None]:
+    """Parse rows and resolve their Category/Subcategory columns, without building any postings.
+
+    Shares every parsing and category matching-or-creation rule
+    `_standardize_rows` uses (see `_resolve_columns`, `_parse_rows`,
+    `_resolve_top_categories`, `_resolve_subcategories`) — the only
+    difference is this stops one step short of `_build_postings`.
+
+    Parameters
+    ----------
+    header
+        The file's header row.
+    data_rows
+        Every other row, in file order.
+    existing_categories
+        Every category already in the store, keyed by `category_id`.
+    date_order
+        Whether an ambiguous, all-numeric date reads month-first or day-first.
+    category_overrides
+        User-provided renames for categories/subcategories this file would otherwise auto-create.
+
+    Returns
+    -------
+    tuple[list[ResolvedCategorizationRow], dict[str, Category], SkippedRowsInfo | None]
+        Every row ready to match against the ledger, any newly-encountered
+        categories/subcategories, and info about any rows that failed to parse.
+    """
+    columns = _resolve_columns(header)
+    parsed_rows, skip_info = _parse_rows(data_rows, header, columns, date_order)
+    overrides = category_overrides or CategoryOverrides()
+
+    new_categories: dict[str, Category] = {}
+    top_category_ids = _resolve_top_categories(parsed_rows, existing_categories, new_categories, overrides.categories)
+    subcategory_ids = _resolve_subcategories(
+        parsed_rows, top_category_ids, existing_categories, new_categories, overrides.subcategories
+    )
+
+    resolved = [
+        ResolvedCategorizationRow(
+            posted_at=row.posted_at,
+            amount=row.amount,
+            description=row.description,
+            category_id=(top_category_ids.get(row.category_name.strip().lower()) if row.category_name else None),
+            subcategory_id=(
+                subcategory_ids.get((row.category_name.strip().lower(), row.subcategory_name.strip().lower()))
+                if row.category_name and row.subcategory_name
+                else None
+            ),
+            row_number=row.row_number,
+        )
+        for row in parsed_rows
+    ]
+    return resolved, new_categories, skip_info
+
+
+def read_tabular_rows(
+    file_bytes: bytes, *, is_excel: bool, separator: str | None = None
+) -> tuple[list[str], list[list[str]]]:
+    """Read a CSV or Excel file into a header row and data rows, the shared first step of every canonical-shaped import.
+
+    An Excel workbook often carries more than one sheet — the real
+    transaction data plus, say, a pivot-table summary — so every sheet is
+    checked in turn and the first whose header has the expected columns
+    (see `_resolve_columns`) is used; the rest are assumed to be something
+    else entirely.
+
+    Parameters
+    ----------
+    file_bytes
+        The raw file contents, exactly as uploaded.
+    is_excel
+        Whether to read this as an `.xlsx`/`.xls` workbook rather than CSV text.
+    separator
+        The CSV column separator to use, overriding auto-detection. Ignored for Excel.
+
+    Returns
+    -------
+    tuple[list[str], list[list[str]]]
+        The header row, and every data row.
+
+    Raises
+    ------
+    CanonicalCsvError
+        If no sheet (or the file itself) has the expected columns, or the separator can't be guessed.
+    """
+    if is_excel:
+        sheets = _read_excel_sheets(file_bytes)
+        if not sheets:
+            raise CanonicalCsvError("This workbook has no sheets.")
+        for header, data_rows in sheets.values():
+            try:
+                _resolve_columns(header)
+            except CanonicalCsvError:
+                continue
+            return header, data_rows
+        sheet_names = ", ".join(sheets)
+        message = (
+            f"Couldn't find the expected columns in any sheet of this workbook ({sheet_names}). {REQUIRED_COLUMNS_HELP}"
+        )
+        raise CanonicalCsvError(message)
+
+    csv_text = file_bytes.decode("utf-8-sig")
+    delimiter = separator or _detect_separator(csv_text)
+    rows = list(csv_module.reader(io.StringIO(csv_text), delimiter=delimiter))
+    if not rows:
+        raise CanonicalCsvError("This file has no rows.")
+    return rows[0], rows[1:]
+
+
 def _build_postings(
     parsed_rows: list[_ParsedRow],
     account_id: str,
@@ -416,9 +549,11 @@ def _build_postings(
             if top_key and row.subcategory_name
             else None
         )
-        transaction_hash = row_hash(
-            account_id, row.posted_at.isoformat(), f"{row.amount:.4f}", row.description, str(row.row_number)
-        )
+        # No row_number here on purpose — it's this file's line number, not a fact about the
+        # transaction, so it changed on every re-export and made re-imports mint duplicate IDs.
+        # Two rows that look identical on every real field are now told apart by
+        # `_reassign_colliding_transaction_ids` at merge time instead. See its docstring in ingest.py.
+        transaction_hash = row_hash(account_id, row.posted_at.isoformat(), f"{row.amount:.4f}", row.description)
         transaction_id = f"canonical:{account_id}:{transaction_hash}"
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
         postings.extend([

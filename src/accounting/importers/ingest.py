@@ -9,13 +9,19 @@ cache needs to be thrown away and regenerated.
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.importers.canonical.csv import SkippedRowsInfo, standardize_canonical_csv, standardize_canonical_excel
+from accounting.importers.canonical.csv import (
+    CanonicalCsvError,
+    SkippedRowsInfo,
+    standardize_canonical_csv,
+    standardize_canonical_excel,
+)
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
@@ -23,10 +29,10 @@ from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_p
 from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.io_utils import write_csv_atomic
+from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
@@ -145,20 +151,157 @@ def remap_ledger_category_ids(id_remap: dict[str, str], config: AccountingConfig
     _write_ledger(ledger, config)
 
 
+def _fingerprint(row: dict) -> tuple:
+    """Build the (account, date, amount, description) tuple that makes two transactions look identical.
+
+    Parameters
+    ----------
+    row
+        One posting, as a plain dict (e.g. from `DataFrame.to_dicts()`).
+
+    Returns
+    -------
+    tuple
+        Two transactions with the same fingerprint look the same on paper, whether or not they're the same one.
+    """
+    return (row["account_id"], row["posted_at"], row["amount"], row["description"])
+
+
+def _occurrence_suffix(transaction_id: str) -> int:
+    """Read back which copy of a duplicate a transaction_id is, so duplicates sort oldest-first.
+
+    Parameters
+    ----------
+    transaction_id
+        A plain id, or one already reassigned to `...#N` by `_reassign_colliding_transaction_ids`.
+
+    Returns
+    -------
+    int
+        0 for a plain id (the first copy ever seen), N for one ending in `#N`.
+    """
+    if "#" not in transaction_id:
+        return 0
+    return int(transaction_id.rsplit("#", 1)[1])
+
+
+def _existing_ids_by_fingerprint(existing: pl.DataFrame) -> dict[tuple, list[str]]:
+    """Map every fingerprint already in the ledger to the transaction_ids that share it, oldest first.
+
+    Parameters
+    ----------
+    existing
+        The ledger as it stands before this import.
+
+    Returns
+    -------
+    dict[tuple, list[str]]
+        Fingerprint (see `_fingerprint`) to the transaction_ids of every existing transaction that
+        looks like it, ordered oldest-first so new duplicates match the longest-standing one first.
+    """
+    if existing.is_empty():
+        return {}
+    grouped: dict[tuple, list[str]] = defaultdict(list)
+    for row in existing.filter(pl.col("posting_id").str.ends_with(":0")).to_dicts():
+        grouped[_fingerprint(row)].append(row["transaction_id"])
+    for transaction_ids in grouped.values():
+        transaction_ids.sort(key=_occurrence_suffix)
+    return grouped
+
+
+def _reassign_colliding_transaction_ids(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
+    """Give same-day duplicate transactions their own id instead of letting them overwrite each other.
+
+    Every importer builds a transaction's id by hashing the facts that
+    describe it — account, date, amount, description (see `row_hash`'s
+    docstring for why it's only ever those facts, never something like
+    which line of the file the row was on). That's the right call, but it
+    has one side effect: two transactions that genuinely look identical —
+    two coffees bought at the same place on the same morning — hash to the
+    exact same id. Without this step, the second one would silently
+    overwrite the first in the ledger instead of being added alongside it.
+
+    The fix is to count instead of just hash. Say the ledger already has
+    one "Starbucks $5, July 3rd", and the statement you just imported has
+    two rows that also look like "Starbucks $5, July 3rd" (a real second
+    coffee that day, not a duplicate upload). The first of those two new
+    rows matches the one already in the ledger, so it simply reuses that
+    same id — nothing changes there. The second new row has nothing left to
+    match, so it's treated as genuinely new: it gets its own id (the same
+    id with `#2` appended) and is added as a second transaction. The ledger
+    ends up with two coffees, not one.
+
+    This also makes re-imports safe no matter what order the bank lists
+    rows in. Re-importing that same statement next week, even if the bank
+    happens to print those two rows in the opposite order this time, still
+    produces the same result — because rows are matched by how many share a
+    fingerprint, not by their position in the file.
+
+    Parameters
+    ----------
+    existing
+        The ledger as it stands before this import.
+    new
+        Freshly parsed postings from the file just uploaded, straight out of the importer.
+
+    Returns
+    -------
+    polars.DataFrame
+        `new`, with any colliding transaction_id/posting_id reassigned so distinct
+        same-day transactions never collide, and re-imports of the same transaction stay stable.
+    """
+    if new.is_empty():
+        return new
+
+    existing_ids_by_fingerprint = _existing_ids_by_fingerprint(existing)
+
+    rows = new.to_dicts()
+    real_leg_indexes_by_id: dict[str, list[int]] = defaultdict(list)
+    counterparty_leg_indexes_by_id: dict[str, list[int]] = defaultdict(list)
+    for index, row in enumerate(rows):
+        if row["posting_id"].endswith(":0"):
+            real_leg_indexes_by_id[row["transaction_id"]].append(index)
+        else:
+            counterparty_leg_indexes_by_id[row["transaction_id"]].append(index)
+
+    for original_id, real_indexes in real_leg_indexes_by_id.items():
+        existing_ids = existing_ids_by_fingerprint.get(_fingerprint(rows[real_indexes[0]]), [])
+        counterparty_indexes = counterparty_leg_indexes_by_id.get(original_id, [])
+
+        for occurrence, real_index in enumerate(real_indexes):
+            if occurrence < len(existing_ids):
+                final_id = existing_ids[occurrence]
+            elif occurrence == 0:
+                final_id = original_id
+            else:
+                final_id = f"{original_id}#{occurrence + 1}"
+
+            rows[real_index]["transaction_id"] = final_id
+            rows[real_index]["posting_id"] = f"{final_id}:0"
+            if occurrence < len(counterparty_indexes):
+                counterparty_index = counterparty_indexes[occurrence]
+                rows[counterparty_index]["transaction_id"] = final_id
+                rows[counterparty_index]["posting_id"] = f"{final_id}:1"
+
+    return pl.DataFrame(rows, schema=Posting.polars_schema)
+
+
 def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
+    reconciled = _reassign_colliding_transaction_ids(existing, new)
     return (
         pl
-        .concat([existing, new], how="vertical")
+        .concat([existing, reconciled], how="vertical")
         .unique(subset="posting_id", keep="last")
         .sort("posted_at", "posting_id")
     )
 
 
-def _raw_statement_path(institution: str, account_id: str, config: AccountingConfig, suffix: str = "csv") -> Path:
-    directory = config.raw_statement_dir / institution / account_id
-    directory.mkdir(parents=True, exist_ok=True)
+def _archive_raw_statement(
+    institution: str, account_id: str, data: bytes, config: AccountingConfig, suffix: str = "csv"
+) -> None:
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
-    return directory / f"{timestamp}.{suffix}"
+    archive.write(f"{institution}/{account_id}/{timestamp}.{suffix}", data)
 
 
 def _merge_discovered_accounts(discovered: dict[str, Account], config: AccountingConfig) -> None:
@@ -238,7 +381,7 @@ def ingest_csv(
         message = f"No importer for institution={institution!r}, account_kind={account_kind!r}."
         raise UnsupportedImportError(message)
 
-    _raw_statement_path(institution, account_id, config).write_text(csv_text, encoding="utf-8")
+    _archive_raw_statement(institution, account_id, csv_text.encode("utf-8"), config)
 
     skip_info: SkippedRowsInfo | None = None
     # Try the bank-specific standardizer first; if it fails, fall back to canonical CSV
@@ -254,9 +397,9 @@ def ingest_csv(
             skip_info = canonical_result.skipped_rows  # Capture skip info from fallback
             # Merge any newly-created categories into the store
             if canonical_result.new_categories:
-                store = store.model_copy(update={"categories": {**store.categories, **canonical_result.new_categories}})
-                save_store(store, config)
-        except Exception as canonical_error:
+                merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
+                save_store(store.model_copy(update={"categories": merged_categories}), config)
+        except (CanonicalCsvError, ValueError, KeyError, RuntimeError) as canonical_error:
             # Both standardizers failed; raise the original bank error with fallback note
             message = (
                 f"Could not parse file with {institution} {account_kind} format: {error}\n\n"
@@ -329,7 +472,7 @@ def ingest_canonical_csv(
     store = load_store(config)
     account = store.accounts[account_id]
 
-    _raw_statement_path(account.institution, account_id, config).write_text(csv_text, encoding="utf-8")
+    _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config)
     outcome = standardize_canonical_csv(
         csv_text, account_id, account.currency, store.categories, separator, date_order, category_overrides
     )
@@ -370,7 +513,7 @@ def ingest_canonical_excel(
     store = load_store(config)
     account = store.accounts[account_id]
 
-    _raw_statement_path(account.institution, account_id, config, suffix="xlsx").write_bytes(file_bytes)
+    _archive_raw_statement(account.institution, account_id, file_bytes, config, suffix="xlsx")
     outcome = standardize_canonical_excel(
         file_bytes, account_id, account.currency, store.categories, date_order, category_overrides
     )
@@ -415,14 +558,17 @@ def last_import_at(config: AccountingConfig) -> datetime | None:
     datetime.datetime or None
         Timezone-aware (UTC), or `None` if nothing has ever been imported.
     """
-    paths = [
-        *config.raw_statement_dir.glob("*/*/*.csv"),
-        *config.raw_statement_dir.glob(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    relative_paths = [
+        *archive.list_relative_paths("*/*/*.csv"),
+        *archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
     ]
     timestamps: list[datetime] = []
-    for path in paths:
+    for relative_path in relative_paths:
+        filename = relative_path.rsplit("/", 1)[-1]
+        stem = filename.rsplit(".", 1)[0]
         try:
-            timestamps.append(datetime.strptime(path.stem, "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC))
+            timestamps.append(datetime.strptime(stem, "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC))
         except ValueError:
             continue
     return max(timestamps) if timestamps else None
@@ -454,32 +600,32 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     UnsupportedImportError
         If an archived directory's institution/account-kind has no registered standardizer.
     """
-    csv_paths = sorted(config.raw_statement_dir.glob("*/*/*.csv"))
-    pdf_paths = sorted(config.raw_statement_dir.glob(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"))
-    if not csv_paths and not pdf_paths:
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    csv_relative_paths = archive.list_relative_paths("*/*/*.csv")
+    pdf_relative_paths = archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf")
+    if not csv_relative_paths and not pdf_relative_paths:
         message = f"No archived raw statements under {config.raw_statement_dir}"
         raise FileNotFoundError(message)
 
     frames = [pl.DataFrame(schema=Posting.polars_schema)]
-    for path in csv_paths:
-        institution = path.parent.parent.name
-        account_id = path.parent.name
+    for relative_path in csv_relative_paths:
+        institution, account_id, _filename = relative_path.split("/")
         account_kind = account_id.split(":")[1]
         standardizer = _STANDARDIZERS.get((institution, account_kind))
         if standardizer is None:
             message = f"No importer for institution={institution!r}, account_kind={account_kind!r}."
             raise UnsupportedImportError(message)
-        frames.append(standardizer(path.read_text(encoding="utf-8"), account_id))
+        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id))
 
     # New statement-PDF imports are retired (SoFi CSV now covers checking,
     # savings, and vaults — see `importers.sofi.csv`) — there is no upload
-    # path left that writes into `pdf_paths` going forward. But any PDF
-    # archived by a past import still needs to be re-derived here, or a
+    # path left that writes into `pdf_relative_paths` going forward. But any
+    # PDF archived by a past import still needs to be re-derived here, or a
     # rebuild would silently drop those postings and orphan their
     # categorization (see `models.ManualOverride`, keyed by posting_id).
     discovered_accounts: dict[str, Account] = {}
-    for path in pdf_paths:
-        pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(path.read_bytes())
+    for relative_path in pdf_relative_paths:
+        pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(archive.read(relative_path))
         frames.append(pdf_postings)
         discovered_accounts.update(pdf_accounts)
     if discovered_accounts:

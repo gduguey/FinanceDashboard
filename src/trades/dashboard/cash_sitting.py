@@ -84,12 +84,12 @@ def daily_cash_balances(
         cash_by_date[event_date] = result.cash_balance
 
     all_dates = [start + timedelta(days=n) for n in range((end - start).days + 1)]
-    cash: list[float] = []
-    for cal_date in all_dates:
-        recent_event_dates = [d for d in event_dates if d <= cal_date]
-        cash.append(cash_by_date[max(recent_event_dates)] if recent_event_dates else 0.0)
-
-    result = pl.DataFrame({"date": all_dates, "cash": cash})
+    calendar = pl.DataFrame({"date": all_dates})
+    if event_dates:
+        events = pl.DataFrame({"date": event_dates, "cash": [cash_by_date[d] for d in event_dates]})
+        result = calendar.join_asof(events, on="date", strategy="backward").with_columns(pl.col("cash").fill_null(0.0))
+    else:
+        result = calendar.with_columns(cash=pl.lit(0.0))
     return result if was_eager else result.lazy()
 
 
@@ -211,6 +211,14 @@ def cash_sitting_summary(
     Returns
     -------
     CashSittingSummary
+
+    Raises
+    ------
+    ValueError
+        If `growth_index`'s `benchmark_index` is missing (null) for `as_of`
+        or any open lot's arrival date — e.g. the benchmark's price cache
+        doesn't cover the full range — rather than failing later with a
+        `TypeError` from dividing by `None`.
     """
     cash_row = daily_cash.filter(pl.col("date") == as_of)
     cash_usd = float(cash_row["cash"][0])
@@ -229,6 +237,10 @@ def cash_sitting_summary(
     growth_dates = growth_index["date"].to_list()
     portfolio_index_at = dict(zip(growth_dates, growth_index["portfolio_index"].to_list(), strict=True))
     benchmark_index_at = dict(zip(growth_dates, growth_index["benchmark_index"].to_list(), strict=True))
+    needed_dates = {as_of, *(lot.arrival_date for lot in lots)}
+    if any(benchmark_index_at.get(needed) is None for needed in needed_dates):
+        message = "No benchmark price history covers every cash lot's arrival date."
+        raise ValueError(message)
     end_portfolio = portfolio_index_at[as_of]
     end_benchmark = benchmark_index_at[as_of]
 

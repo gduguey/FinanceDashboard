@@ -157,6 +157,17 @@ def test_net_worth_defaults_a_missing_external_investment_value_to_zero() -> Non
     assert summary.assets == pytest.approx(0.0)
 
 
+def test_net_worth_treats_the_trades_value_as_usd_even_if_the_account_is_set_to_a_different_currency() -> None:
+    eur_external_investment = EXTERNAL_INVESTMENT.model_copy(update={"currency": "EUR"})
+    accounts = {eur_external_investment.account_id: eur_external_investment}
+    display = DisplayCurrency(code="USD", rates_to_base={"USD": 1.0, "EUR": 2.0})
+    summary = net_worth_summary(
+        _postings(), accounts, [], date(2026, 6, 30), display=display, external_investment_value_usd=42000.0
+    )
+    assert summary.assets == pytest.approx(42000.0)
+    assert summary.accounts[0].currency == "USD"
+
+
 def test_net_worth_ignores_the_trades_value_for_a_manual_external_investment_account() -> None:
     postings = _postings(
         _posting("p1", "t1", "external:friends-fund", 5000.0),

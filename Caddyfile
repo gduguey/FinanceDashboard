@@ -1,3 +1,6 @@
 {$PUBLIC_DOMAIN} {
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_PASSWORD_HASH}
+	}
 	reverse_proxy api:8000
 }

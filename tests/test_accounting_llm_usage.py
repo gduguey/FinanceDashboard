@@ -25,6 +25,15 @@ def test_load_usage_with_no_file_yet_starts_every_provider_at_zero(tmp_path) -> 
     assert usage["mistral"].used_count == 0
 
 
+def test_load_usage_resets_a_provider_with_a_corrupted_stored_entry_instead_of_raising(tmp_path) -> None:
+    path = tmp_path / "llm_usage.json"
+    path.write_text('{"gemini": {"used_count": "not-a-number"}, "mistral": {"used_count": 3}}', encoding="utf-8")
+    usage = load_usage(path)
+    assert usage["gemini"].used_count == 0
+    assert usage["gemini"].is_limited is False
+    assert usage["mistral"].used_count == 0
+
+
 def test_record_call_increments_count_on_success(tmp_path) -> None:
     path = tmp_path / "llm_usage.json"
     record_call("gemini", path, error=None)
@@ -39,7 +48,9 @@ def test_record_call_marks_limited_on_failure_and_keeps_the_error(tmp_path) -> N
     path = tmp_path / "llm_usage.json"
     record_call("gemini", path, error="429 RESOURCE_EXHAUSTED: quota exceeded")
     usage = load_usage(path)
-    assert usage["gemini"].used_count == 1
+    # A failed call doesn't count against the quota shown to the user — the
+    # counter freezes at whatever it was, only the limited flag/error move.
+    assert usage["gemini"].used_count == 0
     assert usage["gemini"].is_limited is True
     assert usage["gemini"].last_error == "429 RESOURCE_EXHAUSTED: quota exceeded"
 
@@ -51,7 +62,9 @@ def test_record_call_success_clears_a_previous_limited_state(tmp_path) -> None:
     usage = load_usage(path)
     assert usage["gemini"].is_limited is False
     assert usage["gemini"].last_error is None
-    assert usage["gemini"].used_count == 2
+    # Recovering from a limit starts the count fresh rather than resuming
+    # the frozen pre-limit count.
+    assert usage["gemini"].used_count == 0
 
 
 def test_record_call_does_not_affect_other_providers(tmp_path) -> None:
@@ -110,6 +123,6 @@ def test_tracked_provider_records_and_reraises_a_failure(tmp_path) -> None:
     with pytest.raises(LLMProviderError, match="rate limited"):
         provider.complete("system", "user")
     usage = load_usage(path)
-    assert usage["mistral"].used_count == 1
+    assert usage["mistral"].used_count == 0
     assert usage["mistral"].is_limited is True
     assert usage["mistral"].last_error == "rate limited"

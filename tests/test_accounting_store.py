@@ -1,3 +1,5 @@
+import pytest
+
 from accounting.config import AccountingConfig
 from accounting.models import Budget, Category, CategoryPattern, GeneralBudget, ManualOverride, TransferRule
 from accounting.store import (
@@ -208,6 +210,30 @@ def test_remap_category_ids_updates_every_reference() -> None:
     assert "expense:food" in updated.general_budgets
     assert "expense:nourriture" not in updated.general_budgets
     assert updated.general_budgets["expense:food"].category_id == "expense:food"
+
+
+def test_remap_category_ids_raises_on_colliding_budgets_instead_of_dropping_one() -> None:
+    store = AccountingStore(
+        budgets=[
+            Budget(budget_id="b1", month="2026-06", category_id="expense:nourriture", amount=100.0),
+            Budget(budget_id="b2", month="2026-06", category_id="expense:food", amount=200.0),
+        ]
+    )
+    id_remap = {"expense:nourriture": "expense:food"}
+    with pytest.raises(ValueError, match="collide"):
+        remap_category_ids(store, id_remap)
+
+
+def test_remap_category_ids_raises_on_colliding_general_budgets_instead_of_dropping_one() -> None:
+    store = AccountingStore(
+        general_budgets={
+            "expense:nourriture": GeneralBudget(category_id="expense:nourriture", amount=50.0),
+            "expense:food": GeneralBudget(category_id="expense:food", amount=75.0),
+        }
+    )
+    id_remap = {"expense:nourriture": "expense:food"}
+    with pytest.raises(ValueError, match="collide"):
+        remap_category_ids(store, id_remap)
 
 
 def test_load_store_with_no_file_yet_seeds_defaults(tmp_path) -> None:

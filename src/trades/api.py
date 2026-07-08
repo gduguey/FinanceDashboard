@@ -29,6 +29,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+import requests
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -49,6 +50,7 @@ from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
 from trades.market_data import symbol_search as symbol_search_module
+from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     import polars as pl
@@ -253,12 +255,15 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
     daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, range_end))
     adjusted_lookup = dashboard.make_price_lookup(config, adjusted=True)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
-    counterfactual = dashboard.cash_received_counterfactual(
-        daily_cash,
-        benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
-        hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
-        days_per_year=config.returns.days_per_year,
-    )
+    try:
+        counterfactual = dashboard.cash_received_counterfactual(
+            daily_cash,
+            benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
+            hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
+            days_per_year=config.returns.days_per_year,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     return daily_cash.join(counterfactual, on="date", how="left").to_dicts()
 
 
@@ -627,8 +632,11 @@ def verify_ibkr_settings() -> dict[str, Any]:
         api.verify_flex_credentials(credentials, config)
     except api.FlexApiError as error:
         return {"ok": False, "error": error.message}
-    except Exception as error:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
-        return {"ok": False, "error": str(error)}
+    except Exception:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
+        # Not str(error): a connection/HTTP error's own message includes the
+        # full request URL, which embeds the token as a query param (see
+        # `_send_flex_request`) — that must never round-trip back to the client.
+        return {"ok": False, "error": "Could not reach IBKR to verify credentials"}
     return {"ok": True, "error": None}
 
 
@@ -833,12 +841,10 @@ def get_statements_export() -> Response:
         nothing has ever been synced.
     """
     buffer = io.BytesIO()
-    root = _config().ibkr.raw_statement_dir
+    archive = StatementArchive(_config().ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        if root.exists():
-            for path in sorted(root.rglob("*")):
-                if path.is_file():
-                    zip_file.write(path, path.relative_to(root))
+        for relative_path, data in archive.read_all():
+            zip_file.writestr(relative_path, data)
     filename = f"trades-statements-{datetime.now(tz=UTC).date().isoformat()}.zip"
     return Response(
         content=buffer.getvalue(),
@@ -891,6 +897,11 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
         credentials = resolve_ibkr_credentials(config)
         sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
         steps.append(_SyncStep("Portfolio data", True))
+    except requests.exceptions.RequestException:
+        # Not str(error): a request-level failure's own message includes the
+        # full IBKR request URL, which embeds the token as a query param (see
+        # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
+        steps.append(_SyncStep("Portfolio data", False, "Could not reach IBKR"))
     except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
         steps.append(_SyncStep("Portfolio data", False, str(error)))
 
@@ -996,7 +1007,7 @@ if _FRONTEND_DIST.is_dir():
         e.g. a hard refresh on `/settings` — so the frontend's client-side
         router gets a chance to handle it instead of a bare 404.
         """
-        candidate = _FRONTEND_DIST / full_path
-        if full_path and candidate.is_file():
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if full_path and candidate.is_relative_to(_FRONTEND_DIST) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_FRONTEND_DIST / "index.html")

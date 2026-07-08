@@ -522,6 +522,32 @@ export function useCanonicalImportPreview() {
   })
 }
 
+// Read-only — matches a file against the ledger without persisting anything, so no cache invalidation.
+export function useCategorizeFromFilePreview() {
+  return useMutation({
+    mutationFn: ({ file, separator, dateOrder }: { file: File; separator?: string; dateOrder?: string }) =>
+      accountingApi.previewCategorizeFromFile(file, separator, dateOrder),
+  })
+}
+
+export function useApplyCategorizeFromFile() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({
+      file,
+      confirmedRowNumbers,
+      separator,
+      dateOrder,
+    }: {
+      file: File
+      confirmedRowNumbers: number[]
+      separator?: string
+      dateOrder?: string
+    }) => accountingApi.applyCategorizeFromFile(file, confirmedRowNumbers, separator, dateOrder),
+    onSuccess: invalidate,
+  })
+}
+
 // Read-only — reconciliation applies nothing, so no cache invalidation on success.
 export function useImportPaystub() {
   return useMutation({ mutationFn: (file: File) => accountingApi.importPaystub(file) })

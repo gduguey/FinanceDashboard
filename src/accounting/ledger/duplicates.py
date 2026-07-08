@@ -138,10 +138,9 @@ def find_duplicate_candidates(postings: pl.DataFrame, window_days: int = 3) -> l
     if real.is_empty():
         return []
 
-    joined = real.join(real, how="cross", suffix="_other")
+    joined = real.join(real, on="account_id", suffix="_other")
     pairs = joined.filter(
-        (pl.col("account_id") == pl.col("account_id_other"))
-        & (pl.col("transaction_id") != pl.col("transaction_id_other"))
+        (pl.col("transaction_id") != pl.col("transaction_id_other"))
         & (pl.col("posting_id") < pl.col("posting_id_other"))
         & ((pl.col("amount") - pl.col("amount_other")).abs() < _AMOUNT_TOLERANCE)
         & ((pl.col("posted_at") - pl.col("posted_at_other")).abs() <= pl.duration(days=window_days))

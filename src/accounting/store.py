@@ -332,6 +332,12 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
     AccountingStore
         The same store, with every `category_id`/`subcategory_id` field
         referencing a merged-away id repointed to its replacement.
+
+    Raises
+    ------
+    ValueError
+        If the merge would collide two budgets (or two general budgets)
+        onto the same category/subcategory/month, so neither is silently dropped.
     """
     if not id_remap:
         return store
@@ -355,13 +361,29 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
             update={"category_id": remap(budget.category_id), "subcategory_id": remap(budget.subcategory_id)}
         )
         budget_key = updated_budget.month, updated_budget.category_id, updated_budget.subcategory_id
+        collision = budgets_by_key.get(budget_key)
+        if collision is not None:
+            message = (
+                f"Merging categories would collide two budgets for {budget_key[0]}: "
+                f"{collision.amount} ({collision.budget_id}) and {updated_budget.amount} ({updated_budget.budget_id}). "
+                "Delete or reconcile one of them before merging."
+            )
+            raise ValueError(message)
         budgets_by_key[budget_key] = updated_budget
     general_budgets: dict[str, GeneralBudget] = {}
     for general_key, general in store.general_budgets.items():
         updated_general = general.model_copy(
             update={"category_id": remap(general.category_id), "subcategory_id": remap(general.subcategory_id)}
         )
-        general_budgets[id_remap.get(general_key, general_key)] = updated_general
+        new_key = id_remap.get(general_key, general_key)
+        collision = general_budgets.get(new_key)
+        if collision is not None:
+            message = (
+                f"Merging categories would collide two general budgets: "
+                f"{collision.amount} and {updated_general.amount}. Delete or reconcile one of them before merging."
+            )
+            raise ValueError(message)
+        general_budgets[new_key] = updated_general
     posting_splits = {
         posting_id: split.model_copy(
             update={
