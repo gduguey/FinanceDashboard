@@ -65,13 +65,19 @@ def _send_flex_request(
 ) -> tuple[str, str]:
     if on_progress:
         on_progress("Requesting IBKR statement", 5.0)
-    response = requests.get(
-        config.ibkr.send_request_url,
-        params={"v": "3", "t": credentials.token.get_secret_value(), "q": credentials.query_id},
-        headers=config.ibkr.request_headers,
-        timeout=config.ibkr.request_timeout_seconds,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.get(
+            config.ibkr.send_request_url,
+            params={"v": "3", "t": credentials.token.get_secret_value(), "q": credentials.query_id},
+            headers=config.ibkr.request_headers,
+            timeout=config.ibkr.request_timeout_seconds,
+        )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        # Not str(error): a request-level failure's own message includes the
+        # full request URL, which embeds the token as a query param above —
+        # never let that reach a caller.
+        raise FlexApiError("network_error", "Could not reach IBKR's Flex Web Service") from error
     root = ElementTree.fromstring(response.text)
     if root.findtext("Status") != "Success":
         raise FlexApiError(root.findtext("ErrorCode", "unknown"), root.findtext("ErrorMessage", response.text))
