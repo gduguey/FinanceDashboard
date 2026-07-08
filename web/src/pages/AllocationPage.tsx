@@ -4,6 +4,7 @@ import { CashOverTimeChart } from '@/components/investments/CashOverTimeChart'
 import { DataQualityPanel } from '@/components/investments/DataQualityPanel'
 import { InvestmentsEmptyState } from '@/components/investments/InvestmentsEmptyState'
 import { LotsTable } from '@/components/investments/LotsTable'
+import { SyncButton } from '@/components/investments/SyncButton'
 import { TaxEnabledToggle } from '@/components/investments/TaxPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -24,7 +25,11 @@ export function AllocationPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader title="Allocation" controls={hasData ? <TaxEnabledToggle /> : undefined} />
+      <PageHeader
+        title="Allocation"
+        actions={<SyncButton lastSyncedAt={overview?.last_synced_at ?? null} />}
+        controls={hasData ? <TaxEnabledToggle /> : undefined}
+      />
 
       <div className="mx-auto max-w-6xl space-y-6 px-8 py-8">
         <InvestmentsEmptyState />
