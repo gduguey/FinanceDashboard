@@ -249,10 +249,16 @@ Sheet 1: [Empty, Empty, Date, Description, Amount]  ← Uses columns C, D, E
 Sheet 2: Not checked (Sheet 1 matched)
 ```
 
+**Example:** ✓ Works (a non-matching sheet is skipped, not fatal)
+```
+Sheet 1: [Empty, Empty, Empty]  ← No columns found, skipped
+Sheet 2: [Date, Description, Amount]  ← Used instead
+```
+
 **Example:** ❌ Fails
 ```
 Sheet 1: [Empty, Empty, Empty]  ← No columns found
-Sheet 2: [Date, Description, Amount]  ← Would match, but Sheet 1 failed first
+Sheet 2: [Foo, Bar, Baz]        ← No columns found either
 ```
 
 ---

@@ -349,6 +349,32 @@ export interface CanonicalCategoryOverrides {
   subcategories: Record<string, Record<string, string>>
 }
 
+export interface CategorizationMatch {
+  row_number: number
+  posted_at: string
+  description: string
+  amount: number
+  proposed_category_id: string | null
+  proposed_category_name: string | null
+  proposed_subcategory_id: string | null
+  proposed_subcategory_name: string | null
+  posting_id: string | null
+  transaction_id: string | null
+  matched_description: string | null
+  existing_category_id: string | null
+  confidence: number | null
+}
+
+export interface CategorizeFromFilePreview {
+  matches: CategorizationMatch[]
+  new_categories: Category[]
+}
+
+export interface CategorizeFromFileApplyResult {
+  updated_posting_count: number
+  new_categories: Category[]
+}
+
 export interface NetWorthAccountRow {
   account_id: string
   name: string

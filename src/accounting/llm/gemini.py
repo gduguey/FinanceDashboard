@@ -39,9 +39,10 @@ class GeminiProvider:
                 contents=user_prompt,
                 config={"system_instruction": system_prompt},
             )
+            text = response.text
         except Exception as error:
             raise LLMProviderError(str(error)) from error
-        return response.text or ""
+        return text or ""
 
 
 def verify_gemini_key(api_key: str) -> None:

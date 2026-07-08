@@ -53,6 +53,55 @@ def test_ingest_csv_reimporting_the_same_file_is_a_no_op(tmp_path) -> None:
     assert second.total_posting_count == 4
 
 
+def test_ingest_csv_two_identical_same_day_purchases_both_survive(tmp_path) -> None:
+    # Two real coffees, same account/day/amount/description — must not collapse into one.
+    csv_text = (
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+        "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2500.00,,\n"
+        "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2495.00,,\n"
+    )
+    config = _config(tmp_path)
+    result = ingest_csv(csv_text, "Chase", "checking", "chase:checking:1234", config)
+    assert result.new_posting_count == 4  # 2 transactions x 2 postings, not 1x2
+    ledger = load_ledger(config)
+    assert ledger["transaction_id"].n_unique() == 2
+
+
+def test_ingest_csv_reimporting_duplicate_purchases_stays_a_no_op(tmp_path) -> None:
+    csv_text = (
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+        "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2500.00,,\n"
+        "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2495.00,,\n"
+    )
+    config = _config(tmp_path)
+    ingest_csv(csv_text, "Chase", "checking", "chase:checking:1234", config)
+    before = load_ledger(config).sort("posting_id")
+
+    second = ingest_csv(csv_text, "Chase", "checking", "chase:checking:1234", config)
+
+    assert second.new_posting_count == 0
+    assert second.total_posting_count == 4
+    after = load_ledger(config).sort("posting_id")
+    assert after["posting_id"].to_list() == before["posting_id"].to_list()
+
+
+def test_ingest_csv_a_third_matching_purchase_adds_one_more_not_a_collision(tmp_path) -> None:
+    config = _config(tmp_path)
+    two_coffees = (
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+        "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2500.00,,\n"
+        "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2495.00,,\n"
+    )
+    three_coffees = two_coffees + "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2490.00,,\n"
+
+    ingest_csv(two_coffees, "Chase", "checking", "chase:checking:1234", config)
+    result = ingest_csv(three_coffees, "Chase", "checking", "chase:checking:1234", config)
+
+    assert result.new_posting_count == 2  # only the third coffee is new
+    ledger = load_ledger(config)
+    assert ledger["transaction_id"].n_unique() == 3
+
+
 def test_ingest_csv_two_different_accounts_both_land_in_the_ledger(tmp_path) -> None:
     config = _config(tmp_path)
     ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config)

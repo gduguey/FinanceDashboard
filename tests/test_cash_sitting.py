@@ -135,6 +135,21 @@ def test_cash_sitting_summary_a_partial_withdrawal_does_not_make_the_leftover_lo
     assert summary.days_sitting == 4
 
 
+def test_cash_sitting_summary_raises_a_value_error_when_benchmark_history_is_missing() -> None:
+    # A benchmark price cache that doesn't cover the lot's arrival date
+    # leaves `benchmark_index` null there -- this must surface as a clean
+    # ValueError (mapped to a 422 by the API), not an unhandled TypeError
+    # from dividing by None.
+    daily_cash = _cash_series(("2026-01-01", 1000.0))
+    growth_index = pl.DataFrame({
+        "date": [date(2026, 1, 1)],
+        "portfolio_index": [100.0],
+        "benchmark_index": [None],
+    })
+    with pytest.raises(ValueError, match="benchmark"):
+        cash_sitting_summary(daily_cash, growth_index, date(2026, 1, 1), AppConfig())
+
+
 def test_cash_sitting_summary_flags_light_warning_past_one_week() -> None:
     daily_cash = _cash_series(("2026-01-01", 1000.0), ("2026-01-09", 1000.0))
     growth_index = pl.DataFrame({

@@ -239,6 +239,143 @@ def test_canonical_import_returns_a_422_for_an_unparseable_file(client) -> None:
     assert "Date" in response.json()["detail"]
 
 
+def _import_chase_checking(client, account_id: str = "chase:checking:9579") -> None:
+    response = client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={"institution": "Chase", "account_kind": "checking", "account_id": account_id, "account_name": "Chase Checking"},
+    )
+    assert response.status_code == 200
+
+
+def test_categorize_from_file_preview_matches_an_existing_posting_and_proposes_its_category(client) -> None:
+    _import_chase_checking(client)
+    # Same real-world transaction as CHASE_CHECKING_CSV's payroll row, hand-categorized in a personal sheet.
+    sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,Salary\n"
+    response = client.post(
+        "/api/accounting/import/categorize-from-file/preview",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["matches"]) == 1
+    match = body["matches"][0]
+    assert match["posting_id"] is not None
+    assert match["proposed_category_name"] == "Salary"
+    assert match["confidence"] > 0
+
+
+def test_categorize_from_file_preview_does_not_persist_anything(client) -> None:
+    _import_chase_checking(client)
+    # "Freelance Gig Income" isn't one of the default-seeded category names (unlike "Salary"),
+    # so its absence afterward actually proves the preview created nothing.
+    sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,Freelance Gig Income\n"
+    client.post(
+        "/api/accounting/import/categorize-from-file/preview",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+    )
+    postings = client.get("/api/accounting/postings").json()
+    real_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    assert real_leg["category_id"] is None
+
+    store = client.get("/api/accounting/store").json()
+    assert not any(category["name"] == "Freelance Gig Income" for category in store["categories"].values())
+
+
+def test_categorize_from_file_preview_reports_an_unmatched_row(client) -> None:
+    _import_chase_checking(client)
+    sheet_csv = "Date,Description,Amount,Category\n01/15/2026,Some Unrelated Purchase,-999.99,Shopping\n"
+    response = client.post(
+        "/api/accounting/import/categorize-from-file/preview",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+    )
+    assert response.status_code == 200
+    match = response.json()["matches"][0]
+    assert match["posting_id"] is None
+    assert match["confidence"] is None
+
+
+def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(client) -> None:
+    _import_chase_checking(client)
+    sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,Salary\n"
+    preview = client.post(
+        "/api/accounting/import/categorize-from-file/preview",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+    ).json()
+    row_number = preview["matches"][0]["row_number"]
+
+    response = client.post(
+        "/api/accounting/import/categorize-from-file/apply",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+        data={"confirmed_row_numbers": f"[{row_number}]"},
+    )
+    assert response.status_code == 200
+    assert response.json()["updated_posting_count"] == 1
+
+    postings = client.get("/api/accounting/postings").json()
+    real_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    assert real_leg["category_id"] is not None
+    store = client.get("/api/accounting/store").json()
+    assert store["categories"][real_leg["category_id"]]["name"] == "Salary"
+
+    # Never creates a new transaction — same two postings as right after the original import.
+    assert len(postings) == 4
+
+
+def test_categorize_from_file_apply_skips_rows_not_confirmed(client) -> None:
+    _import_chase_checking(client)
+    sheet_csv = (
+        "Date,Description,Amount,Category\n"
+        "06/30/2026,Payroll,1500.00,Salary\n"
+        "06/29/2026,Payment to Chase card ending in 1234 06/29,-70.00,Credit Card Payment\n"
+    )
+    client.post(
+        "/api/accounting/import/categorize-from-file/apply",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+        data={"confirmed_row_numbers": "[2]"},  # only the payroll row (header is row 1, so first data row is row 2)
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payment_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] < 0)
+    assert payroll_leg["category_id"] is not None
+    assert payment_leg["category_id"] is None
+
+
+def test_categorize_from_file_apply_never_matches_the_same_posting_twice(client) -> None:
+    # Two real, distinct $5 coffees on the same day — matching must not collapse them onto one posting.
+    _import_chase_checking(client)
+    two_coffees_csv = (
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+        "DEBIT,06/28/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2500.00,,\n"
+        "DEBIT,06/28/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2495.00,,\n"
+    )
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579-2.csv", two_coffees_csv, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking",
+        },
+    )
+    sheet_csv = (
+        "Date,Description,Amount,Category\n"
+        "06/28/2026,Coffee Shop,-5.00,Dining Out\n"
+        "06/28/2026,Coffee Shop,-5.00,Dining Out\n"
+    )
+    response = client.post(
+        "/api/accounting/import/categorize-from-file/preview",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+    )
+    matches = response.json()["matches"]
+    coffee_matches = [m for m in matches if m["amount"] == -5.0]
+    assert len(coffee_matches) == 2
+    matched_posting_ids = {m["posting_id"] for m in coffee_matches}
+    assert None not in matched_posting_ids
+    assert len(matched_posting_ids) == 2  # each row claimed a different posting, not the same one twice
+
+
 def test_postings_leaves_category_none_when_no_seed_rule_matches(client) -> None:
     client.post(
         "/api/accounting/import",
