@@ -55,36 +55,38 @@ def contributions_to_frame(contributions: dict[str, GoalContribution]) -> pl.Dat
     return pl.DataFrame([c.model_dump() for c in contributions.values()], schema=CONTRIBUTION_SCHEMA).sort("date")
 
 
-def _converted_amount(frame: pl.DataFrame, display: DisplayCurrency) -> pl.Series:
-    """Build the `amount` series for `frame`, converted from its own `currency` column into `display.code`.
+def _with_converted_amount(frame: pl.LazyFrame, display: DisplayCurrency) -> pl.LazyFrame:
+    """Return `frame` with `amount` replaced by its `display.code`-converted value, from its own `currency` column.
 
-    Mirrors `dashboard.income_statement._real_income_expense_legs`'s own
+    Mirrors `dashboard.income_statement.real_income_expense_legs`'s own
     rate-table join — a contribution keeps its own currency at rest (see
     `models.GoalContribution`) exactly like a posting does, so converting
-    it for aggregation here never mutates the persisted row.
+    it for aggregation here never mutates the persisted row. Stays a
+    `LazyFrame` in and out, so a caller can keep composing (a `group_by`,
+    a further `filter`) before collecting once at its own boundary.
 
     Parameters
     ----------
     frame
-        Any frame with `amount` and `currency` columns — a contributions frame here.
+        Any lazy frame with `amount` and `currency` columns — a contributions frame here.
     display
         The currency (and rate) every row's amount is converted into.
 
     Returns
     -------
-    polars.Series
-        `amount`, converted into `display.code`.
+    polars.LazyFrame
+        `frame`, with `amount` converted into `display.code`.
     """
-    rate_table = pl.DataFrame(
+    rate_table = pl.LazyFrame(
         {"currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
         schema={"currency": pl.Utf8, "rate_to_base": pl.Float64},
     )
-    rate = frame.select("currency").join(rate_table, on="currency", how="left")["rate_to_base"]
-    return pl.Series("amount", frame["amount"] * rate / display.rates_to_base[display.code])
+    converted = pl.col("amount") * pl.col("rate_to_base") / display.rates_to_base[display.code]
+    return frame.join(rate_table, on="currency", how="left").with_columns(amount=converted).drop("rate_to_base")
 
 
 def goal_balance(
-    contributions: pl.DataFrame,
+    contributions: pl.DataFrame | pl.LazyFrame,
     goal_id: str,
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
@@ -107,19 +109,24 @@ def goal_balance(
     float
         `0.0` for a goal with no contributions yet.
     """
-    legs = contributions.filter((pl.col("goal_id") == goal_id) & (pl.col("date").dt.date() <= as_of))
-    if legs.is_empty():
-        return 0.0
-    return float(_converted_amount(legs, display).sum())
+    legs = contributions.lazy().filter((pl.col("goal_id") == goal_id) & (pl.col("date").dt.date() <= as_of))
+    total = _with_converted_amount(legs, display).select(pl.col("amount").sum().fill_null(0.0)).collect().item()
+    return float(total)
 
 
 def all_goal_balances(
-    contributions: pl.DataFrame,
+    contributions: pl.DataFrame | pl.LazyFrame,
     goal_ids: list[str],
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
 ) -> dict[str, float]:
-    """`goal_balance` for every id in `goal_ids` at once.
+    """Every id in `goal_ids`'s running balance at `as_of`, in one pass over `contributions`.
+
+    One `group_by` rather than calling `goal_balance` once per id (which
+    would re-filter and re-convert the whole `contributions` frame
+    `len(goal_ids)` times) — the same reasoning
+    `ledger.replay.account_balances_over_time` gives for not calling
+    `account_balances` once per date.
 
     Parameters
     ----------
@@ -137,13 +144,16 @@ def all_goal_balances(
     dict[str, float]
         One entry per id in `goal_ids`, `0.0` for a goal with no contributions yet.
     """
-    return {goal_id: goal_balance(contributions, goal_id, as_of, display) for goal_id in goal_ids}
+    dated = contributions.lazy().filter(pl.col("date").dt.date() <= as_of)
+    totals = _with_converted_amount(dated, display).group_by("goal_id").agg(amount=pl.col("amount").sum()).collect()
+    total_by_goal = dict(zip(totals["goal_id"].to_list(), totals["amount"].to_list(), strict=True))
+    return {goal_id: total_by_goal.get(goal_id, 0.0) for goal_id in goal_ids}
 
 
 def unallocated_balance(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
-    contributions: pl.DataFrame,
+    contributions: pl.DataFrame | pl.LazyFrame,
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
 ) -> float:
@@ -170,6 +180,7 @@ def unallocated_balance(
     float
     """
     net_income = net_income_expense_total(postings, accounts, as_of, display)
-    dated = contributions.filter(pl.col("date").dt.date() <= as_of)
-    total_contributed = 0.0 if dated.is_empty() else float(_converted_amount(dated, display).sum())
-    return net_income - total_contributed
+    dated = contributions.lazy().filter(pl.col("date").dt.date() <= as_of)
+    contributed = _with_converted_amount(dated, display).select(pl.col("amount").sum().fill_null(0.0))
+    total_contributed = contributed.collect().item()
+    return net_income - float(total_contributed)
