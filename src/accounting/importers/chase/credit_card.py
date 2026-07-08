@@ -23,13 +23,18 @@ def standardize_chase_credit_card(csv_text: str, account_id: str) -> pl.DataFram
     Uses `Post Date` over `Transaction Date` when both are present, the
     same preference the account's own statement balance is based on.
     Chase's own `Category` column is kept in `meta` for a future rule to
-    read, never acted on here. Rows of `Type` `"Payment"` ("Payment Thank
-    You-Mobile") are dropped entirely — Chase's credit-card export books
-    a payment on both sides of the transfer: once here, implicitly, and
-    once explicitly as an outgoing "Payment to Chase card ending in ..."
-    row on the paying checking account. Keeping both would double-count
-    every payment; the checking side is the one a rule can actually match
-    (it names which card), so it's the side kept.
+    read, never acted on here. Every row becomes a posting, including
+    `Type` `"Payment"` rows ("Payment Thank You-Mobile") — Chase's
+    credit-card export books a payment on both sides of the transfer:
+    once here, implicitly, and once explicitly as an outgoing "Payment to
+    Chase card ending in ..." row on the paying checking account. This
+    importer never decides that for you: it's not this file's place to
+    guess which of a user's own accounts paid it, or whether they even
+    have both accounts registered here at all. Add a `TransferRule` on
+    the Rules page (trigger: description contains "Payment Thank You",
+    counterparty: the paying checking account) to repoint this row's
+    placeholder counterparty at the real account and stop it from
+    double-counting as spend — same mechanism as any other transfer.
 
     Parameters
     ----------
@@ -41,13 +46,11 @@ def standardize_chase_credit_card(csv_text: str, account_id: str) -> pl.DataFram
     Returns
     -------
     polars.DataFrame
-        Posting-shaped rows, two per kept input row, validated through `Posting`.
+        Posting-shaped rows, two per input row, validated through `Posting`.
     """
     postings: list[Posting] = []
     for raw in csv.DictReader(io.StringIO(csv_text)):
         row = ChaseCreditCardRow.model_validate(raw)
-        if row.type == "Payment":
-            continue
         date_text = row.post_date.strip() or row.transaction_date.strip()
         posted_at = datetime.combine(parse_us_date(date_text), datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID

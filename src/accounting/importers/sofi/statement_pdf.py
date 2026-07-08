@@ -24,10 +24,13 @@ The statement double-books every internal transfer: a vault's own section
 shows "Deposit From savings balance" mirroring the savings account's
 "Withdrawal To <Name> Vault", and checking/savings mutually show
 "Withdrawal To Savings - 3680" / "Deposit From Checking - 9169" for the
-same transfer. `_is_mirrored_incoming_leg` drops the "From ..." side of
-each pair at parse time, the same fix already applied to Chase credit
-card's "Payment Thank You" rows — the "To ..." side survives and is
-repointed at the real counterparty by `ledger.categorization`.
+same transfer. Both sides of every pair are kept — this importer never
+decides which one to drop, since that's a judgment about the user's own
+accounts, not a fact about the file. A `TransferRule` (the Rules page)
+repoints each side's placeholder counterparty at the real account on the
+other end, the same mechanism `chase.credit_card` relies on for its own
+"Payment Thank You" rows — until one exists, both legs land on the usual
+uncategorized placeholder like any other row.
 """
 
 from __future__ import annotations
@@ -60,7 +63,6 @@ _ROW = re.compile(
     r"Transaction ID: (?P<txn_id>[\w-]+)$",
     re.MULTILINE,
 )
-_MIRRORED_INCOMING_LEG = re.compile(r"^From (?:(?:Checking|Savings) - \d+|savings balance)$", re.IGNORECASE)
 _TYPES_BY_LENGTH_DESC = sorted(
     ["Interest Earned", "Direct Deposit", "Direct Payment", "Withdrawal", "Deposit"], key=len, reverse=True
 )
@@ -69,7 +71,7 @@ _INTEREST_EARNED_CATEGORY_ID = "income:interest-earned"
 
 @dataclass(frozen=True)
 class ParsedRow:
-    """One de-duplicated statement row, still in the PDF's own vocabulary (`source_type`, not a category)."""
+    """One statement row, still in the PDF's own vocabulary (`source_type`, not a category)."""
 
     account_id: str
     posted_at: datetime
@@ -81,7 +83,7 @@ class ParsedRow:
 
 @dataclass(frozen=True)
 class ParsedStatement:
-    """Everything one SoFi statement PDF describes: its accounts and their de-duplicated rows."""
+    """Everything one SoFi statement PDF describes: its accounts and every row across all of them."""
 
     accounts: dict[str, Account]
     rows: list[ParsedRow]
@@ -139,8 +141,6 @@ def _section_rows(section_text: str, account_id: str) -> list[ParsedRow]:
     rows: list[ParsedRow] = []
     for row_match in _ROW.finditer(section_text):
         source_type, description = _split_type_and_description(row_match.group("body").strip())
-        if _MIRRORED_INCOMING_LEG.match(description):
-            continue
         rows.append(
             ParsedRow(
                 account_id=account_id,
@@ -177,7 +177,7 @@ def _section_account_id_and_new_vault(
 
 
 def parse_sofi_statement_pdf(pdf_bytes: bytes) -> ParsedStatement:
-    """Parse a SoFi monthly statement PDF into accounts and de-duplicated rows.
+    """Parse a SoFi monthly statement PDF into accounts and every row across all of them.
 
     Parameters
     ----------
@@ -194,7 +194,7 @@ def parse_sofi_statement_pdf(pdf_bytes: bytes) -> ParsedStatement:
 
 
 def parse_sofi_statement_text(text: str) -> ParsedStatement:
-    """Parse a SoFi monthly statement's already-extracted text into accounts and de-duplicated rows.
+    """Parse a SoFi monthly statement's already-extracted text into accounts and every row across all of them.
 
     Split out from `parse_sofi_statement_pdf` so the actual parsing logic
     can be exercised directly against hand-written text fixtures, without
@@ -209,7 +209,7 @@ def parse_sofi_statement_text(text: str) -> ParsedStatement:
     -------
     ParsedStatement
         Every checking/savings/vault account the statement describes
-        (with `meta["apy_pct"]` set), and every real (non-mirrored) row.
+        (with `meta["apy_pct"]` set), and every row across all of them.
 
     Raises
     ------
@@ -279,8 +279,7 @@ def _postings_for_parsed_statement(parsed: ParsedStatement) -> tuple[pl.DataFram
     Returns
     -------
     tuple[polars.DataFrame, dict[str, Account]]
-        Posting-shaped rows, two per real (non-mirrored) statement row, and
-        every checking/savings/vault account the statement describes.
+        Posting-shaped rows, two per statement row, and every checking/savings/vault account the statement describes.
     """
     postings: list[Posting] = []
     for row in parsed.rows:

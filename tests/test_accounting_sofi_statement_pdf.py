@@ -4,8 +4,8 @@ import pytest
 from accounting.importers.sofi.statement_pdf import parse_sofi_statement_text, standardize_sofi_statement_text
 
 # Modeled verbatim on a real SoFi monthly statement's extracted text (see
-# `accounting.importers.sofi.statement_pdf`'s module docstring for why the
-# double-booked "From ..." mirrors below must not survive parsing).
+# `accounting.importers.sofi.statement_pdf`'s module docstring for the
+# double-booked "From ..." mirrors it contains, both sides kept as-is).
 STATEMENT_TEXT = """\
 Checking Account - 9169
 Current Balance Monthly Interest Paid1 Annual Percentage Yield Earned1
@@ -71,11 +71,13 @@ def test_parse_discovers_checking_savings_and_vault_accounts_with_apy() -> None:
     assert vault.meta["apy_pct"] == "4.02"  # vaults share the parent savings account's rate
 
 
-def test_parse_drops_the_mirrored_from_side_of_internal_transfers() -> None:
+def test_parse_keeps_both_sides_of_internal_transfers() -> None:
+    # Neither side of a double-booked transfer is dropped at parse time — a `TransferRule`
+    # (the Rules page) is what repoints either leg's counterparty, not this importer.
     parsed = parse_sofi_statement_text(STATEMENT_TEXT)
     descriptions = [row.description for row in parsed.rows]
-    assert "From Checking - 9169" not in descriptions
-    assert "From savings balance" not in descriptions
+    assert "From Checking - 9169" in descriptions
+    assert "From savings balance" in descriptions
     assert "To Savings - 3680" in descriptions
     assert "To Emergency Fund Vault" in descriptions
 
