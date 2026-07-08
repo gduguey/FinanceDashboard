@@ -18,6 +18,7 @@ dependencies = [
     "pdfplumber>=0.11",
     "python-dateutil>=2.9",
     "fastexcel>=0.12",
+    "boto3>=1.43.42",
 ]
 
 [project.optional-dependencies]
@@ -67,7 +68,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["plotly.*", "defusedxml.*", "pdfplumber.*", "dateutil.*"]
+module = ["plotly.*", "defusedxml.*", "pdfplumber.*", "dateutil.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
