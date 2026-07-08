@@ -39,9 +39,9 @@ const STEPS: Step[] = [
 // timeline rather than a wall of text, since these three steps are
 // sequential (step 3 makes no sense before 1-2 exist) and the visual
 // makes that order obvious at a glance instead of requiring a re-read.
-export function OnboardingModal({ hasAnyData }: { hasAnyData: boolean }) {
+export function OnboardingModal({ hasAnyData, isLoading }: { hasAnyData: boolean; isLoading: boolean }) {
   const [dismissed, setDismissed] = usePersistedState('onboarding-dismissed', false)
-  const open = !dismissed && !hasAnyData
+  const open = !dismissed && !hasAnyData && !isLoading
 
   return (
     <Dialog open={open} onOpenChange={(next) => !next && setDismissed(true)}>
