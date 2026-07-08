@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.dashboard.income_statement import category_totals
+from accounting.dashboard.income_statement import category_totals, real_income_expense_legs
 from accounting.ledger.currency import DisplayCurrency
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ def _previous_month(month: str) -> str:
 
 
 def suggested_budget_amount(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     category_id: str,
     month: str,
@@ -74,7 +74,11 @@ def suggested_budget_amount(
 
     Median rather than mean (porting Maybe's `median_monthly_expense`) — a
     single unusually large month (a one-off purchase) shouldn't drag the
-    suggestion up the way an average would.
+    suggestion up the way an average would. Filters `postings` directly to
+    this one category (rather than calling `category_totals`, which builds
+    a full classification/color breakdown across every category) and
+    groups by month in a single pass over the whole lookback span, instead
+    of one full re-scan of `postings` per lookback month.
 
     Parameters
     ----------
@@ -100,17 +104,35 @@ def suggested_budget_amount(
         The median of the trailing months' actual spend, or 0.0 if there's no history.
     """
     cursor = month
-    totals: list[float] = []
+    months: list[str] = []
     for _ in range(lookback_months):
         cursor = _previous_month(cursor)
-        start, end = month_bounds(cursor)
-        rows = category_totals(postings, accounts, {}, start, end, display=display)
-        matching = rows.filter(pl.col("category_id") == category_id)
-        if subcategory_id is not None:
-            matching = matching.filter(pl.col("subcategory_id") == subcategory_id)
-        totals.append(float(matching["amount"].sum()) if not matching.is_empty() else 0.0)
-    if not totals:
+        months.append(cursor)
+    if not months:
         return 0.0
+
+    bounds = [month_bounds(one_month) for one_month in months]
+    earliest_start = min(start for start, _ in bounds)
+    latest_end = max(end for _, end in bounds)
+
+    legs = real_income_expense_legs(postings, accounts, display).filter(
+        (pl.col("posted_at").dt.date() >= earliest_start)
+        & (pl.col("posted_at").dt.date() <= latest_end)
+        & (pl.col("category_id") == category_id)
+    )
+    if subcategory_id is not None:
+        legs = legs.filter(pl.col("subcategory_id") == subcategory_id)
+
+    monthly = (
+        legs
+        .with_columns(month=pl.col("posted_at").dt.strftime("%Y-%m"))
+        .group_by("month")
+        .agg(amount=pl.col("amount").abs().sum())
+        .collect()
+    )
+    total_by_month = dict(zip(monthly["month"].to_list(), monthly["amount"].to_list(), strict=True))
+    totals = [total_by_month.get(one_month, 0.0) for one_month in months]
+
     ordered = sorted(totals)
     mid = len(ordered) // 2
     if len(ordered) % 2 == 0:
@@ -119,7 +141,7 @@ def suggested_budget_amount(
 
 
 def budget_comparison(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     categories: dict[str, Category],
     budgets: list[Budget],
@@ -155,6 +177,9 @@ def budget_comparison(
     """
     start, end = month_bounds(month)
     actual = category_totals(postings, accounts, categories, start, end, display=display)
+    # `actual` matches `postings`'s own type (see `category_totals`) — row
+    # iteration below is a hard boundary that needs it materialized regardless.
+    actual = actual.collect() if isinstance(actual, pl.LazyFrame) else actual
     actual_by_subcategory: dict[tuple[str, str | None], float] = {}
     actual_by_category: dict[str, float] = {}
     for row in actual.iter_rows(named=True):

@@ -76,6 +76,15 @@ def test_suggested_budget_amount_is_zero_with_no_history() -> None:
     assert suggested_budget_amount(_postings(), ACCOUNTS, "expense:food", "2026-06") == pytest.approx(0.0)
 
 
+def test_suggested_budget_amount_accepts_a_lazyframe() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -100.0, "2026-05-15", "expense:food"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, "2026-05-15"),
+    )
+    suggestion = suggested_budget_amount(postings.lazy(), ACCOUNTS, "expense:food", "2026-06", lookback_months=1)
+    assert suggestion == pytest.approx(100.0)
+
+
 def test_budget_comparison_only_includes_categories_budgeted_for_that_month() -> None:
     postings = _postings(
         _posting("p1", "t1", "chase:checking:9579", -150.0, "2026-06-10", "expense:food"),
@@ -127,3 +136,13 @@ def test_budget_comparison_scopes_a_subcategory_budget_to_that_subcategorys_actu
     assert rows[0].subcategory_id == "expense:food:groceries"
     assert rows[0].subcategory_name == "Groceries"
     assert rows[0].actual == pytest.approx(100.0)
+
+
+def test_budget_comparison_accepts_a_lazyframe() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -150.0, "2026-06-10", "expense:food"),
+        _posting("p2", "t1", "uncategorized:expense", 150.0, "2026-06-10"),
+    )
+    budgets = [Budget(budget_id="b1", month="2026-06", category_id="expense:food", amount=200.0)]
+    rows = budget_comparison(postings.lazy(), ACCOUNTS, CATEGORIES, budgets, "2026-06")
+    assert rows[0].actual == pytest.approx(150.0)

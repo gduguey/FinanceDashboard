@@ -41,44 +41,48 @@ class Scope:
     tag_id: str | None = None
 
 
-def _real_income_expense_legs(
-    postings: pl.DataFrame, accounts: dict[str, Account], display: DisplayCurrency
-) -> pl.DataFrame:
+def real_income_expense_legs(
+    postings: pl.DataFrame | pl.LazyFrame, accounts: dict[str, Account], display: DisplayCurrency
+) -> pl.LazyFrame:
     """Filter to postings that are real income/expense, with `amount` converted into `display.code`.
 
     Every posting keeps its own account's native currency at rest (see
     `dashboard.net_worth`'s docstring) — this only converts the copy used
     for aggregation here, the same way `net_worth_summary` converts
-    balances rather than storing pre-converted ones.
+    balances rather than storing pre-converted ones. Always returns a
+    `LazyFrame` regardless of `postings`'s own type — every caller is
+    itself a public function that continues the lazy chain and only
+    collects at its own final boundary (see e.g. `category_totals`).
 
     Returns
     -------
-    polars.DataFrame
+    polars.LazyFrame
         The subset of `postings` on a real account whose transaction has
         at least one virtual-counterparty leg, with `amount` replaced by
         its `display.code`-converted value.
     """
+    lazy = postings.lazy()
     virtual_ids = [account.account_id for account in accounts.values() if account.kind in _VIRTUAL_KINDS]
     sibling_flags = (
-        postings
+        lazy
         .select("transaction_id", "account_id")
         .with_columns(is_virtual=pl.col("account_id").is_in(virtual_ids))
         .group_by("transaction_id")
         .agg(any_virtual_sibling=pl.col("is_virtual").any())
     )
-    real_currencies = pl.DataFrame(
+    real_currencies = pl.LazyFrame(
         {
             "account_id": list(accounts.keys()),
             "account_currency": [account.currency for account in accounts.values()],
         },
         schema={"account_id": pl.Utf8, "account_currency": pl.Utf8},
     )
-    rate_table = pl.DataFrame(
+    rate_table = pl.LazyFrame(
         {"account_currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
         schema={"account_currency": pl.Utf8, "rate_to_base": pl.Float64},
     )
     legs = (
-        postings
+        lazy
         .join(sibling_flags, on="transaction_id", how="left")
         .filter(pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids))
         .drop("any_virtual_sibling")
@@ -90,21 +94,26 @@ def _real_income_expense_legs(
 
 
 def category_totals(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     categories: dict[str, Category],
     start: date,
     end: date,
     scope: Scope = Scope(),  # noqa: B008
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Sum real income/expense postings by classification, category, and subcategory.
 
     An uncategorized posting (no rule or manual edit has classified it yet)
     still needs somewhere to go in a chart — it's bucketed by its own sign
     into a synthetic `"Uncategorized"` category per classification, with
     ids `UNCATEGORIZED_INCOME_ID`/`UNCATEGORIZED_EXPENSE_ID` rather than a
-    real `Category` row, since it isn't one the user chose.
+    real `Category` row, since it isn't one the user chose. `categories` is
+    turned into two small lookup frames (by top-level id, by subcategory
+    id) and joined rather than walked row-by-row in Python — the join's
+    left side stays lazy end to end, and naturally yields zero rows with
+    the right dtypes when there's nothing to total, so no separate
+    empty-input branch is needed either.
 
     Parameters
     ----------
@@ -125,33 +134,22 @@ def category_totals(
 
     Returns
     -------
-    polars.DataFrame
-        Columns `classification`, `category_id`, `category_name`,
-        `subcategory_id`, `subcategory_name`, `color` (the subcategory's own
-        color if there is one, else the top-level category's), `category_color`
-        (always the top-level category's own), `amount` (always non-negative —
-        `classification` says which side it's on).
+    polars.DataFrame or polars.LazyFrame
+        Same type as `postings`. Columns `classification`, `category_id`,
+        `category_name`, `subcategory_id`, `subcategory_name`, `color` (the
+        subcategory's own color if there is one, else the top-level
+        category's), `category_color` (always the top-level category's
+        own), `amount` (always non-negative — `classification` says which
+        side it's on).
     """
-    legs = _real_income_expense_legs(postings, accounts, display).filter(
+    was_eager = isinstance(postings, pl.DataFrame)
+    legs = real_income_expense_legs(postings, accounts, display).filter(
         (pl.col("posted_at").dt.date() >= start) & (pl.col("posted_at").dt.date() <= end)
     )
     if scope.account_ids is not None:
         legs = legs.filter(pl.col("account_id").is_in(scope.account_ids))
     if scope.tag_id is not None:
         legs = legs.filter(pl.col("tag_ids").list.contains(scope.tag_id))
-    if legs.is_empty():
-        return pl.DataFrame(
-            schema={
-                "classification": pl.Utf8,
-                "category_id": pl.Utf8,
-                "category_name": pl.Utf8,
-                "subcategory_id": pl.Utf8,
-                "subcategory_name": pl.Utf8,
-                "color": pl.Utf8,
-                "category_color": pl.Utf8,
-                "amount": pl.Float64,
-            }
-        )
 
     tagged = legs.with_columns(
         top_category_id=pl
@@ -161,58 +159,71 @@ def category_totals(
         .then(pl.lit(UNCATEGORIZED_INCOME_ID))
         .otherwise(pl.lit(UNCATEGORIZED_EXPENSE_ID)),
     )
-    rows = []
-    for row in (
-        tagged
-        .group_by("top_category_id", "subcategory_id")
-        .agg(amount=pl.col("amount").abs().sum())
-        .iter_rows(named=True)
-    ):
-        top_category_id = row["top_category_id"]
-        category = categories.get(top_category_id)
-        subcategory = categories.get(row["subcategory_id"]) if row["subcategory_id"] else None
-        is_income_sentinel = top_category_id == UNCATEGORIZED_INCOME_ID
-        classification = category.classification if category else ("income" if is_income_sentinel else "expense")
-        category_color = category.color if category else "#9ca3af"
-        rows.append({
-            "classification": classification,
-            "category_id": top_category_id,
-            "category_name": category.name if category else "Uncategorized",
-            "subcategory_id": row["subcategory_id"],
-            "subcategory_name": subcategory.name if subcategory else None,
-            # The subcategory's own color when there is one (each subcategory
-            # gets a color distinct from its parent and siblings — see
-            # `store.next_available_color`) — falls back to the top-level
-            # category's color for a row with no subcategory. `category_color`
-            # is always the top-level category's own, regardless, for a
-            # drilldown that aggregates several subcategories back into one
-            # top-level slice and needs one stable color for it.
-            "color": subcategory.color if subcategory else category_color,
-            "category_color": category_color,
-            "amount": row["amount"],
-        })
-    return pl.DataFrame(
-        rows,
-        schema={
-            "classification": pl.Utf8,
-            "category_id": pl.Utf8,
-            "category_name": pl.Utf8,
-            "subcategory_id": pl.Utf8,
-            "subcategory_name": pl.Utf8,
-            "color": pl.Utf8,
-            "category_color": pl.Utf8,
-            "amount": pl.Float64,
+    totals = tagged.group_by("top_category_id", "subcategory_id").agg(amount=pl.col("amount").abs().sum())
+
+    category_lookup = pl.LazyFrame(
+        {
+            "category_id": [category.category_id for category in categories.values()],
+            "name": [category.name for category in categories.values()],
+            "classification": [category.classification for category in categories.values()],
+            "color": [category.color for category in categories.values()],
         },
+        schema={"category_id": pl.Utf8, "name": pl.Utf8, "classification": pl.Utf8, "color": pl.Utf8},
     )
+    top_lookup = category_lookup.rename({
+        "category_id": "top_category_id",
+        "name": "category_name",
+        "color": "category_color",
+    })
+    subcategory_lookup = category_lookup.select(
+        pl.col("category_id").alias("subcategory_id"), pl.col("name").alias("subcategory_name"), pl.col("color")
+    )
+
+    result = (
+        totals
+        .join(top_lookup, on="top_category_id", how="left")
+        .join(subcategory_lookup, on="subcategory_id", how="left")
+        .with_columns(
+            # The subcategory's own color when there is one (each
+            # subcategory gets a color distinct from its parent and
+            # siblings — see `store.next_available_color`) — falls back to
+            # the top-level category's color for a row with no
+            # subcategory. `category_color` is always the top-level
+            # category's own, regardless, for a drilldown that aggregates
+            # several subcategories back into one top-level slice and
+            # needs one stable color for it.
+            classification=pl.col("classification").fill_null(
+                pl
+                .when(pl.col("top_category_id") == UNCATEGORIZED_INCOME_ID)
+                .then(pl.lit("income"))
+                .otherwise(pl.lit("expense"))
+            ),
+            category_name=pl.col("category_name").fill_null("Uncategorized"),
+            category_color=pl.col("category_color").fill_null("#9ca3af"),
+        )
+        .with_columns(color=pl.col("color").fill_null(pl.col("category_color")))
+        .rename({"top_category_id": "category_id"})
+        .select(
+            "classification",
+            "category_id",
+            "category_name",
+            "subcategory_id",
+            "subcategory_name",
+            "color",
+            "category_color",
+            "amount",
+        )
+    )
+    return result.collect() if was_eager else result
 
 
 def monthly_income_expense(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     start: date,
     end: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Sum real income and real expense per calendar month.
 
     Parameters
@@ -230,16 +241,14 @@ def monthly_income_expense(
 
     Returns
     -------
-    polars.DataFrame
-        Columns `month` (`"YYYY-MM"`), `income`, `expense` (both non-negative).
+    polars.DataFrame or polars.LazyFrame
+        Same type as `postings`. Columns `month` (`"YYYY-MM"`), `income`, `expense` (both non-negative).
     """
-    legs = _real_income_expense_legs(postings, accounts, display).filter(
+    was_eager = isinstance(postings, pl.DataFrame)
+    legs = real_income_expense_legs(postings, accounts, display).filter(
         (pl.col("posted_at").dt.date() >= start) & (pl.col("posted_at").dt.date() <= end)
     )
-    schema = {"month": pl.Utf8, "income": pl.Float64, "expense": pl.Float64}
-    if legs.is_empty():
-        return pl.DataFrame(schema=schema)
-    return (
+    result = (
         legs
         .with_columns(month=pl.col("posted_at").dt.strftime("%Y-%m"))
         .group_by("month")
@@ -250,10 +259,11 @@ def monthly_income_expense(
         .with_columns(pl.col("income", "expense").fill_null(0.0))
         .sort("month")
     )
+    return result.collect() if was_eager else result
 
 
 def net_income_expense_total(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
@@ -281,19 +291,18 @@ def net_income_expense_total(
     float
         Positive if cumulative income exceeds cumulative expense.
     """
-    legs = _real_income_expense_legs(postings, accounts, display).filter(pl.col("posted_at").dt.date() <= as_of)
-    if legs.is_empty():
-        return 0.0
-    return float(legs["amount"].sum())
+    legs = real_income_expense_legs(postings, accounts, display).filter(pl.col("posted_at").dt.date() <= as_of)
+    total = legs.select(pl.col("amount").sum().fill_null(0.0)).collect().item()
+    return float(total)
 
 
 def spend_curve_vs_average(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     month: date,
     lookback_months: int = 3,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
-) -> pl.DataFrame:
+) -> pl.DataFrame | pl.LazyFrame:
     """Cumulative daily spend through one month, next to the same day-of-month average over the prior months.
 
     Parameters
@@ -311,26 +320,31 @@ def spend_curve_vs_average(
 
     Returns
     -------
-    polars.DataFrame
-        Columns `day`, `current_month_cumulative`, `average_previous_months_cumulative`.
+    polars.DataFrame or polars.LazyFrame
+        Same type as `postings`. Columns `day`, `current_month_cumulative`,
+        `average_previous_months_cumulative`. The running day-of-month
+        average is a genuine sequential carry-forward (like
+        `trades.dashboard.cash_sitting.daily_cash_balances`'s own
+        event-replay walk) and collects internally regardless of
+        `postings`'s type — only the final result's type is chosen to match it.
     """
-    legs = _real_income_expense_legs(postings, accounts, display).filter(pl.col("amount") < 0)
+    was_eager = isinstance(postings, pl.DataFrame)
+    legs = real_income_expense_legs(postings, accounts, display).filter(pl.col("amount") < 0)
     month_start = month.replace(day=1)
 
     def _cumulative_by_day(period_start: date, period_end: date) -> dict[int, float]:
-        period = legs.filter(
-            (pl.col("posted_at").dt.date() >= period_start) & (pl.col("posted_at").dt.date() <= period_end)
-        )
-        if period.is_empty():
-            return {}
         daily = (
-            period
+            legs
+            .filter((pl.col("posted_at").dt.date() >= period_start) & (pl.col("posted_at").dt.date() <= period_end))
             .with_columns(day=pl.col("posted_at").dt.day())
             .group_by("day")
             .agg(spent=pl.col("amount").abs().sum())
             .sort("day")
             .with_columns(cumulative=pl.col("spent").cum_sum())
+            .collect()
         )
+        if daily.is_empty():
+            return {}
         return dict(zip(daily["day"].to_list(), daily["cumulative"].to_list(), strict=True))
 
     next_month_start = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -360,7 +374,7 @@ def spend_curve_vs_average(
             "current_month_cumulative": running_current,
             "average_previous_months_cumulative": (sum(averages) / len(averages)) if averages else 0.0,
         })
-    return pl.DataFrame(
+    result = pl.DataFrame(
         rows,
         schema={
             "day": pl.Int64,
@@ -368,3 +382,4 @@ def spend_curve_vs_average(
             "average_previous_months_cumulative": pl.Float64,
         },
     )
+    return result if was_eager else result.lazy()

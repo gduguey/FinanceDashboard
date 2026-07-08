@@ -149,6 +149,30 @@ def test_all_goal_balances_converts_every_goal_into_the_display_currency() -> No
     assert balances == {"emergency-fund": pytest.approx(250.0), "vacation": pytest.approx(100.0)}
 
 
+def test_goal_balance_accepts_a_lazyframe() -> None:
+    contributions = contributions_to_frame({"c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01")})
+    assert goal_balance(contributions.lazy(), "emergency-fund", date(2026, 6, 30)) == pytest.approx(500.0)
+
+
+def test_all_goal_balances_accepts_a_lazyframe() -> None:
+    contributions = contributions_to_frame({"c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01")})
+    balances = all_goal_balances(contributions.lazy(), ["emergency-fund", "vacation"], date(2026, 6, 30))
+    assert balances == {"emergency-fund": 500.0, "vacation": 0.0}
+
+
+def test_unallocated_balance_accepts_a_lazyframe_for_both_postings_and_contributions() -> None:
+    postings = pl.DataFrame(
+        [
+            _posting("p1", "t1", "chase:checking:9579", 3000.0, "2026-06-01"),
+            _posting("p2", "t1", "uncategorized:income", -3000.0, "2026-06-01"),
+        ],
+        schema=SCHEMA,
+    )
+    contributions = contributions_to_frame({"c1": _contribution("c1", "emergency-fund", 1000.0, "2026-06-10")})
+    result = unallocated_balance(postings.lazy(), ACCOUNTS, contributions.lazy(), date(2026, 6, 30))
+    assert result == pytest.approx(2000.0)
+
+
 def test_unallocated_balance_converts_contributions_into_the_display_currency() -> None:
     postings = pl.DataFrame(
         [

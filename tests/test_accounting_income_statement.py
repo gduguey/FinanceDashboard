@@ -242,3 +242,43 @@ def test_net_income_expense_total_excludes_transfers_between_two_real_accounts()
         _posting("p2", "t1", "sofi:savings:3680", 200.0, posted_at="2026-06-01"),
     )
     assert net_income_expense_total(postings, ACCOUNTS, date(2026, 6, 30)) == pytest.approx(0.0)
+
+
+def test_category_totals_preserves_lazy_type_and_matches_the_eager_result() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -50.0, category_id="expense:food"),
+        _posting("p2", "t1", "uncategorized:expense", 50.0),
+    )
+    eager = category_totals(postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30))
+    lazy_result = category_totals(postings.lazy(), ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30))
+    assert isinstance(lazy_result, pl.LazyFrame)
+    assert lazy_result.collect().equals(eager)
+
+
+def test_monthly_income_expense_preserves_lazy_type() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", 1500.0, posted_at="2026-06-01"),
+        _posting("p2", "t1", "uncategorized:income", -1500.0, posted_at="2026-06-01"),
+    )
+    result = monthly_income_expense(postings.lazy(), ACCOUNTS, date(2026, 6, 1), date(2026, 6, 30))
+    assert isinstance(result, pl.LazyFrame)
+    assert result.collect()["income"].to_list() == pytest.approx([1500.0])
+
+
+def test_net_income_expense_total_accepts_a_lazyframe() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", 1500.0, posted_at="2026-06-01"),
+        _posting("p2", "t1", "uncategorized:income", -1500.0, posted_at="2026-06-01"),
+    )
+    assert net_income_expense_total(postings.lazy(), ACCOUNTS, date(2026, 6, 30)) == pytest.approx(1500.0)
+
+
+def test_spend_curve_vs_average_preserves_lazy_type() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -10.0, posted_at="2026-06-01"),
+        _posting("p2", "t1", "uncategorized:expense", 10.0, posted_at="2026-06-01"),
+    )
+    result = spend_curve_vs_average(postings.lazy(), ACCOUNTS, date(2026, 6, 15), lookback_months=1)
+    assert isinstance(result, pl.LazyFrame)
+    by_day = {row["day"]: row["current_month_cumulative"] for row in result.collect().iter_rows(named=True)}
+    assert by_day[1] == pytest.approx(10.0)
