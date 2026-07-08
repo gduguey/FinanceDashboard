@@ -45,7 +45,7 @@ const queryClient = new QueryClient({
 // so it can't live in App itself — App is the component that creates that
 // provider, one level above where its own context becomes available.
 function AppShell() {
-  const { data: store, isError: storeIsError } = useAccountingStore()
+  const { data: store, isPending: storeIsPending, isError: storeIsError } = useAccountingStore()
   const hasAnyData = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
 
   // The whole Money side reads from the same underlying data layer (see
@@ -82,7 +82,7 @@ function AppShell() {
           <Route path="/guide" element={<GuidePage />} />
         </Routes>
       </ErrorBoundary>
-      <OnboardingModal hasAnyData={hasAnyData} />
+      <OnboardingModal hasAnyData={hasAnyData} isLoading={storeIsPending} />
       <Toaster position="bottom-right" richColors />
     </div>
   )
