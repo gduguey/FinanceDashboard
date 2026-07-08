@@ -23,10 +23,10 @@ from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_p
 from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.io_utils import write_csv_atomic
+from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
@@ -154,11 +154,12 @@ def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _raw_statement_path(institution: str, account_id: str, config: AccountingConfig, suffix: str = "csv") -> Path:
-    directory = config.raw_statement_dir / institution / account_id
-    directory.mkdir(parents=True, exist_ok=True)
+def _archive_raw_statement(
+    institution: str, account_id: str, data: bytes, config: AccountingConfig, suffix: str = "csv"
+) -> None:
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
-    return directory / f"{timestamp}.{suffix}"
+    archive.write(f"{institution}/{account_id}/{timestamp}.{suffix}", data)
 
 
 def _merge_discovered_accounts(discovered: dict[str, Account], config: AccountingConfig) -> None:
@@ -238,7 +239,7 @@ def ingest_csv(
         message = f"No importer for institution={institution!r}, account_kind={account_kind!r}."
         raise UnsupportedImportError(message)
 
-    _raw_statement_path(institution, account_id, config).write_text(csv_text, encoding="utf-8")
+    _archive_raw_statement(institution, account_id, csv_text.encode("utf-8"), config)
 
     skip_info: SkippedRowsInfo | None = None
     # Try the bank-specific standardizer first; if it fails, fall back to canonical CSV
@@ -329,7 +330,7 @@ def ingest_canonical_csv(
     store = load_store(config)
     account = store.accounts[account_id]
 
-    _raw_statement_path(account.institution, account_id, config).write_text(csv_text, encoding="utf-8")
+    _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config)
     outcome = standardize_canonical_csv(
         csv_text, account_id, account.currency, store.categories, separator, date_order, category_overrides
     )
@@ -370,7 +371,7 @@ def ingest_canonical_excel(
     store = load_store(config)
     account = store.accounts[account_id]
 
-    _raw_statement_path(account.institution, account_id, config, suffix="xlsx").write_bytes(file_bytes)
+    _archive_raw_statement(account.institution, account_id, file_bytes, config, suffix="xlsx")
     outcome = standardize_canonical_excel(
         file_bytes, account_id, account.currency, store.categories, date_order, category_overrides
     )
@@ -415,14 +416,17 @@ def last_import_at(config: AccountingConfig) -> datetime | None:
     datetime.datetime or None
         Timezone-aware (UTC), or `None` if nothing has ever been imported.
     """
-    paths = [
-        *config.raw_statement_dir.glob("*/*/*.csv"),
-        *config.raw_statement_dir.glob(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    relative_paths = [
+        *archive.list_relative_paths("*/*/*.csv"),
+        *archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
     ]
     timestamps: list[datetime] = []
-    for path in paths:
+    for relative_path in relative_paths:
+        filename = relative_path.rsplit("/", 1)[-1]
+        stem = filename.rsplit(".", 1)[0]
         try:
-            timestamps.append(datetime.strptime(path.stem, "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC))
+            timestamps.append(datetime.strptime(stem, "%Y%m%dT%H%M%S%f").replace(tzinfo=UTC))
         except ValueError:
             continue
     return max(timestamps) if timestamps else None
@@ -454,32 +458,32 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     UnsupportedImportError
         If an archived directory's institution/account-kind has no registered standardizer.
     """
-    csv_paths = sorted(config.raw_statement_dir.glob("*/*/*.csv"))
-    pdf_paths = sorted(config.raw_statement_dir.glob(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"))
-    if not csv_paths and not pdf_paths:
+    archive = StatementArchive(config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    csv_relative_paths = archive.list_relative_paths("*/*/*.csv")
+    pdf_relative_paths = archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf")
+    if not csv_relative_paths and not pdf_relative_paths:
         message = f"No archived raw statements under {config.raw_statement_dir}"
         raise FileNotFoundError(message)
 
     frames = [pl.DataFrame(schema=Posting.polars_schema)]
-    for path in csv_paths:
-        institution = path.parent.parent.name
-        account_id = path.parent.name
+    for relative_path in csv_relative_paths:
+        institution, account_id, _filename = relative_path.split("/")
         account_kind = account_id.split(":")[1]
         standardizer = _STANDARDIZERS.get((institution, account_kind))
         if standardizer is None:
             message = f"No importer for institution={institution!r}, account_kind={account_kind!r}."
             raise UnsupportedImportError(message)
-        frames.append(standardizer(path.read_text(encoding="utf-8"), account_id))
+        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id))
 
     # New statement-PDF imports are retired (SoFi CSV now covers checking,
     # savings, and vaults — see `importers.sofi.csv`) — there is no upload
-    # path left that writes into `pdf_paths` going forward. But any PDF
-    # archived by a past import still needs to be re-derived here, or a
+    # path left that writes into `pdf_relative_paths` going forward. But any
+    # PDF archived by a past import still needs to be re-derived here, or a
     # rebuild would silently drop those postings and orphan their
     # categorization (see `models.ManualOverride`, keyed by posting_id).
     discovered_accounts: dict[str, Account] = {}
-    for path in pdf_paths:
-        pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(path.read_bytes())
+    for relative_path in pdf_relative_paths:
+        pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(archive.read(relative_path))
         frames.append(pdf_postings)
         discovered_accounts.update(pdf_accounts)
     if discovered_accounts:

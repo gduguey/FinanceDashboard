@@ -49,6 +49,7 @@ from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
 from trades.market_data import symbol_search as symbol_search_module
+from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     import polars as pl
@@ -833,12 +834,10 @@ def get_statements_export() -> Response:
         nothing has ever been synced.
     """
     buffer = io.BytesIO()
-    root = _config().ibkr.raw_statement_dir
+    archive = StatementArchive(_config().ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        if root.exists():
-            for path in sorted(root.rglob("*")):
-                if path.is_file():
-                    zip_file.write(path, path.relative_to(root))
+        for relative_path, data in archive.read_all():
+            zip_file.writestr(relative_path, data)
     filename = f"trades-statements-{datetime.now(tz=UTC).date().isoformat()}.zip"
     return Response(
         content=buffer.getvalue(),

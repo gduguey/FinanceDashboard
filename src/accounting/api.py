@@ -116,6 +116,7 @@ from accounting.store import (
     save_overrides,
     save_store,
 )
+from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 
 class _State:
@@ -1223,12 +1224,10 @@ def get_statements_export() -> Response:
         nothing has been imported yet.
     """
     buffer = io.BytesIO()
-    root = state.config.raw_statement_dir
+    archive = StatementArchive(state.config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        if root.exists():
-            for path in sorted(root.rglob("*")):
-                if path.is_file():
-                    zip_file.write(path, path.relative_to(root))
+        for relative_path, data in archive.read_all():
+            zip_file.writestr(relative_path, data)
     filename = f"accounting-statements-{datetime.now(tz=UTC).date().isoformat()}.zip"
     return Response(
         content=buffer.getvalue(),
