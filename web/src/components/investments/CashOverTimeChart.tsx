@@ -7,7 +7,13 @@ import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
 import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
 import { formatDate, formatUsd } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useCashHistory, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
+import {
+  useBenchmarkSetting,
+  useCashHistory,
+  useHysaRates,
+  useHysaSettings,
+  useTaxSettings,
+} from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 import type { CashHistoryPoint } from '@/types/portfolio'
 
@@ -62,10 +68,7 @@ function ChartLegend({
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {items.map((item) => (
         <span key={item.label} className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-0.5 w-3"
-            style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }}
-          />
+          <span className="inline-block h-0.5 w-3" style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }} />
           {item.label}
           {item.term && <InfoTooltip term={item.term} />}
         </span>
@@ -96,7 +99,7 @@ export function CashOverTimeChart() {
         title={view === 'time' ? 'Cash over time' : 'Cash duration curve'}
         description={
           view === 'time'
-            ? "Uninvested cash balance, day by day — dashed lines show what currently-sitting cash would be worth had it been invested since it arrived"
+            ? 'Uninvested cash balance, day by day — dashed lines show what currently-sitting cash would be worth had it been invested since it arrived'
             : 'Cash amount vs. the percentage of days it stayed at or above that amount'
         }
         legend={
@@ -122,7 +125,13 @@ export function CashOverTimeChart() {
         {view === 'time' ? (
           <LineChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
             <CartesianGrid vertical={false} stroke="var(--border)" />
-            <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+            <XAxis
+              dataKey="date"
+              tickFormatter={formatDate}
+              tick={{ fontSize: 12 }}
+              axisLine={false}
+              tickLine={false}
+            />
             <YAxis
               tickFormatter={(v) => formatUsd(v, true)}
               tick={{ fontSize: 12 }}
@@ -191,8 +200,8 @@ export function CashOverTimeChart() {
         <p className="px-1 text-xs text-muted-foreground">
           Realized from past sitting episodes:{' '}
           <span className="font-medium text-foreground">{formatUsd(latest.benchmark_realized_usd)}</span> vs.{' '}
-          {benchmarkName},{' '}
-          <span className="font-medium text-foreground">{formatUsd(latest.hysa_realized_usd)}</span> vs. {hysaName}
+          {benchmarkName}, <span className="font-medium text-foreground">{formatUsd(latest.hysa_realized_usd)}</span>{' '}
+          vs. {hysaName}
           <InfoTooltip term="cashSittingCounterfactual" />
         </p>
       )}

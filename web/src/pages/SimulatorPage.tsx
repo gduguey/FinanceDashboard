@@ -20,7 +20,11 @@ import {
 } from '@/hooks/useAccountingData'
 import type { CompoundingFrequency, SimulatorScenario } from '@/types/accounting'
 
-const FREQUENCY_ITEMS: Record<CompoundingFrequency, string> = { annually: 'Annually', monthly: 'Monthly', daily: 'Daily' }
+const FREQUENCY_ITEMS: Record<CompoundingFrequency, string> = {
+  annually: 'Annually',
+  monthly: 'Monthly',
+  daily: 'Daily',
+}
 const NO_ACCOUNT = '__none__'
 
 interface Inputs {
@@ -250,7 +254,14 @@ export function SimulatorPage() {
                       ]}
                       labelFormatter={(label) => `Month ${label}`}
                     />
-                    <Line type="monotone" dataKey="balance" name="balance" stroke="#0f172a" strokeWidth={2} dot={false} />
+                    <Line
+                      type="monotone"
+                      dataKey="balance"
+                      name="balance"
+                      stroke="#0f172a"
+                      strokeWidth={2}
+                      dot={false}
+                    />
                     <Line
                       type="monotone"
                       dataKey="contributions_to_date"
@@ -286,7 +297,11 @@ export function SimulatorPage() {
             <CardContent className="flex flex-wrap gap-2">
               {store.simulator_scenarios.map((scenario) => (
                 <Badge key={scenario.scenario_id} variant="outline" className="gap-1.5 py-1.5">
-                  <button type="button" className="hover:underline" onClick={() => setInputs(scenarioToInputs(scenario))}>
+                  <button
+                    type="button"
+                    className="hover:underline"
+                    onClick={() => setInputs(scenarioToInputs(scenario))}
+                  >
                     {scenario.name}
                   </button>
                   <button

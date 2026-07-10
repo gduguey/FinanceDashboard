@@ -123,7 +123,9 @@ export function AccountsManagementTable({
   const parentAccountOptions = rows.filter((account) => account.kind !== 'vault')
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'name')
   const knownInstitutions = [...new Set(rows.map((account) => account.institution))].sort()
-  const supportedKinds = new Set((supportedImportKinds ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`))
+  const supportedKinds = new Set(
+    (supportedImportKinds ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`),
+  )
   const isCounterpartyKind = (kind: Account['kind']) => kind === 'income_source' || kind === 'expense_payee'
   // A counterparty (employer, payee) is never imported into, so it never
   // needs a CSV parsing rule — only real, importable accounts do.
@@ -221,12 +223,18 @@ export function AccountsManagementTable({
       <CardContent className="space-y-2">
         {error && <p className="text-xs text-destructive">{error}</p>}
         {sorted.length === 0 ? (
-          <p className="py-2 text-sm text-muted-foreground">No accounts yet — add one, or import a statement to auto-create it.</p>
+          <p className="py-2 text-sm text-muted-foreground">
+            No accounts yet — add one, or import a statement to auto-create it.
+          </p>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <SortableTableHead active={sort.key === 'institution'} desc={sort.desc} onClick={() => toggleSort('institution')}>
+                <SortableTableHead
+                  active={sort.key === 'institution'}
+                  desc={sort.desc}
+                  onClick={() => toggleSort('institution')}
+                >
                   Institution
                 </SortableTableHead>
                 <SortableTableHead active={sort.key === 'name'} desc={sort.desc} onClick={() => toggleSort('name')}>
@@ -235,7 +243,11 @@ export function AccountsManagementTable({
                 <SortableTableHead active={sort.key === 'kind'} desc={sort.desc} onClick={() => toggleSort('kind')}>
                   Kind
                 </SortableTableHead>
-                <SortableTableHead active={sort.key === 'currency'} desc={sort.desc} onClick={() => toggleSort('currency')}>
+                <SortableTableHead
+                  active={sort.key === 'currency'}
+                  desc={sort.desc}
+                  onClick={() => toggleSort('currency')}
+                >
                   Currency
                 </SortableTableHead>
                 <TableHead className="w-16" />
@@ -262,8 +274,9 @@ export function AccountsManagementTable({
                               <AlertTriangle className="size-3.5 text-amber-500" />
                             </TooltipTrigger>
                             <TooltipContent>
-                              No CSV parsing rule registered for {account.institution} {ACCOUNT_KIND_LABELS[account.kind]} — imports
-                              for this account must be added to the codebase first.
+                              No CSV parsing rule registered for {account.institution}{' '}
+                              {ACCOUNT_KIND_LABELS[account.kind]} — imports for this account must be added to the
+                              codebase first.
                             </TooltipContent>
                           </Tooltip>
                         )}
@@ -277,7 +290,12 @@ export function AccountsManagementTable({
                       </Button>
                       {closeable &&
                         (account.closed ? (
-                          <Button variant="ghost" size="icon" title="Reopen" onClick={() => handleReopen(account.account_id)}>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Reopen"
+                            onClick={() => handleReopen(account.account_id)}
+                          >
                             <Unlock className="size-3.5 text-muted-foreground" />
                           </Button>
                         ) : (
@@ -344,7 +362,8 @@ export function AccountsManagementTable({
           account={closing}
           balance={netWorth?.accounts.find((row) => row.account_id === closing.account_id)?.balance ?? 0}
           otherAccounts={rows.filter(
-            (account) => account.account_id !== closing.account_id && !account.closed && !isCounterpartyKind(account.kind),
+            (account) =>
+              account.account_id !== closing.account_id && !account.closed && !isCounterpartyKind(account.kind),
           )}
           onClose={() => setClosing(null)}
           onConfirm={handleConfirmClose}

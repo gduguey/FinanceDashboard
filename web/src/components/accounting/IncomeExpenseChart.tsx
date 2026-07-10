@@ -17,7 +17,12 @@ export function IncomeExpenseChart({ displayCurrency }: { displayCurrency: Curre
   const { data, isLoading } = useMonthlyIncomeExpense(twelveMonthsAgo(), TODAY, displayCurrency)
 
   return (
-    <ChartCard title="Income vs. expenses per month" description="Last 12 months" isLoading={isLoading} isEmpty={!data?.length}>
+    <ChartCard
+      title="Income vs. expenses per month"
+      description="Last 12 months"
+      isLoading={isLoading}
+      isEmpty={!data?.length}
+    >
       <BarChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} stroke="var(--border)" />
         <XAxis dataKey="month" tickFormatter={formatMonth} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
@@ -28,7 +33,10 @@ export function IncomeExpenseChart({ displayCurrency }: { displayCurrency: Curre
           tickLine={false}
           width={72}
         />
-        <Tooltip formatter={(value) => formatCurrency(Number(value), displayCurrency)} labelFormatter={(label) => formatMonth(String(label))} />
+        <Tooltip
+          formatter={(value) => formatCurrency(Number(value), displayCurrency)}
+          labelFormatter={(label) => formatMonth(String(label))}
+        />
         <Legend />
         <Bar dataKey="income" name="Income" fill="#059669" radius={[3, 3, 0, 0]} />
         <Bar dataKey="expense" name="Expense" fill="#dc2626" radius={[3, 3, 0, 0]} />

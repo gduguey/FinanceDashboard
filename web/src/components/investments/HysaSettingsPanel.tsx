@@ -99,7 +99,7 @@ export function HysaSettingsPanel() {
   function handleBankChange(value: string | null) {
     if (value === CUSTOM_RATE) {
       // When switching to custom, use the current rate or a sensible default
-      const parsed = rateDraft.trim() ? Number(rateDraft) : settings?.fixed_rate_pct ?? 4.0
+      const parsed = rateDraft.trim() ? Number(rateDraft) : (settings?.fixed_rate_pct ?? 4.0)
       setRateDraft(parsed.toString())
       setSettings.mutate({ bank_id: null, fixed_rate_pct: parsed })
     } else {

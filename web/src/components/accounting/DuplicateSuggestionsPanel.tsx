@@ -106,11 +106,15 @@ function MergeReviewDialog({
   onNext: () => void
   isSubmitting: boolean
 }) {
-  const sortedPostings = useMemo(() => [...group.postings].sort((a, b) => a.posted_at.localeCompare(b.posted_at)), [group.postings])
+  const sortedPostings = useMemo(
+    () => [...group.postings].sort((a, b) => a.posted_at.localeCompare(b.posted_at)),
+    [group.postings],
+  )
   const defaultKept = useMemo(() => pickDefaultKeptPosting(group), [group])
   const [keptTransactionId, setKeptTransactionId] = useState(defaultKept.transaction_id)
   const [description, setDescription] = useState(defaultKept.description)
-  const keptPosting = group.postings.find((posting) => posting.transaction_id === keptTransactionId) ?? group.postings[0]
+  const keptPosting =
+    group.postings.find((posting) => posting.transaction_id === keptTransactionId) ?? group.postings[0]
 
   // Arrow keys step through suggestions without closing the dialog — held
   // off the input though, so typing in the description field can't hijack
@@ -172,8 +176,8 @@ function MergeReviewDialog({
         </DialogHeader>
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            These {group.postings.length} transactions on {accountName} look like the same purchase, recorded more
-            than once. Pick which one to keep — the others are dropped entirely, both their legs.
+            These {group.postings.length} transactions on {accountName} look like the same purchase, recorded more than
+            once. Pick which one to keep — the others are dropped entirely, both their legs.
           </p>
           <Table>
             <TableHeader>
@@ -196,7 +200,9 @@ function MergeReviewDialog({
                       className="size-3.5 accent-current"
                     />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">
+                    {formatDate(posting.posted_at.slice(0, 10))}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{posting.description}</TableCell>
                   <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, currency)}</TableCell>
                 </TableRow>
@@ -206,7 +212,9 @@ function MergeReviewDialog({
           <div className="space-y-2 rounded-md border border-border p-3">
             <p className="text-xs text-muted-foreground">Resulting transaction:</p>
             <div className="flex items-center gap-3 text-sm">
-              <span className="whitespace-nowrap text-muted-foreground">{formatDate(keptPosting.posted_at.slice(0, 10))}</span>
+              <span className="whitespace-nowrap text-muted-foreground">
+                {formatDate(keptPosting.posted_at.slice(0, 10))}
+              </span>
               <Input value={description} onChange={(event) => setDescription(event.target.value)} className="flex-1" />
               <span className="tabular-nums font-medium">{formatCurrency(keptPosting.amount, currency)}</span>
             </div>
@@ -282,7 +290,9 @@ export function DuplicateSuggestionsPanel({
   }, [rows, accounts])
 
   const filtered = rows
-    .filter((row) => matchesFilter(row.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude))
+    .filter((row) =>
+      matchesFilter(row.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude),
+    )
     .filter((row) =>
       matchesFilter(
         row.postings.some((posting) => posting.posted_at.slice(0, 10) === filters.dateFilter),
@@ -323,13 +333,11 @@ export function DuplicateSuggestionsPanel({
   })
   const virtualRows = rowVirtualizer.getVirtualItems()
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
-  const paddingBottom = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
+  const paddingBottom =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
 
   function handleConfirmMerge(merge: PostingMerge) {
-    setMerges.mutate(
-      { ...existingMerges, [merge.merge_id]: merge },
-      { onSuccess: () => setReviewingIndex(null) },
-    )
+    setMerges.mutate({ ...existingMerges, [merge.merge_id]: merge }, { onSuccess: () => setReviewingIndex(null) })
   }
 
   // Skips the per-group review dialog entirely — each checked group is
@@ -351,10 +359,7 @@ export function DuplicateSuggestionsPanel({
         return [merge.merge_id, merge]
       }),
     )
-    setMerges.mutate(
-      { ...existingMerges, ...additions },
-      { onSuccess: () => setCheckedKeys(new Set()) },
-    )
+    setMerges.mutate({ ...existingMerges, ...additions }, { onSuccess: () => setCheckedKeys(new Set()) })
   }
 
   if (isLoading) return null
@@ -417,7 +422,11 @@ export function DuplicateSuggestionsPanel({
             onExcludeChange={(exclude) => setFilters({ ...filters, accountExclude: exclude })}
           />
           <div className="flex items-center gap-1">
-            <OptionalDateInput value={filters.dateFilter} onChange={(dateFilter) => setFilters({ ...filters, dateFilter })} className="w-36" />
+            <OptionalDateInput
+              value={filters.dateFilter}
+              onChange={(dateFilter) => setFilters({ ...filters, dateFilter })}
+              className="w-36"
+            />
             {filters.dateFilter && (
               <Button
                 type="button"
@@ -469,22 +478,49 @@ export function DuplicateSuggestionsPanel({
                       aria-label="Select all duplicate groups in view"
                     />
                   </TableHead>
-                  <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
+                  <SortableTableHead
+                    active={sort.key === 'account_id'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('account_id')}
+                  >
                     Account
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'earliestDate'} desc={sort.desc} onClick={() => toggleSort('earliestDate')}>
+                  <SortableTableHead
+                    active={sort.key === 'earliestDate'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('earliestDate')}
+                  >
                     Date
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'descriptionsPreview'} desc={sort.desc} onClick={() => toggleSort('descriptionsPreview')}>
+                  <SortableTableHead
+                    active={sort.key === 'descriptionsPreview'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('descriptionsPreview')}
+                  >
                     Description
                   </SortableTableHead>
-                  <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                  <SortableTableHead
+                    align="right"
+                    active={sort.key === 'amount'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('amount')}
+                  >
                     Amount
                   </SortableTableHead>
-                  <SortableTableHead align="right" active={sort.key === 'postingsCount'} desc={sort.desc} onClick={() => toggleSort('postingsCount')}>
+                  <SortableTableHead
+                    align="right"
+                    active={sort.key === 'postingsCount'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('postingsCount')}
+                  >
                     # found
                   </SortableTableHead>
-                  <SortableTableHead align="right" active={sort.key === 'urgency'} desc={sort.desc} onClick={() => toggleSort('urgency')}>
+                  <SortableTableHead
+                    align="right"
+                    active={sort.key === 'urgency'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('urgency')}
+                  >
                     Certainty
                   </SortableTableHead>
                   <TableHead className="w-8" />
@@ -514,14 +550,25 @@ export function DuplicateSuggestionsPanel({
                           onChange={(event) => toggleChecked(row.group_key, event.target.checked)}
                         />
                       </TableCell>
-                      <TableCell className="text-muted-foreground">{accounts[row.account_id]?.name ?? row.account_id}</TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(row.earliestDate)}</TableCell>
-                      <TableCell className="max-w-[220px] truncate text-muted-foreground" title={row.descriptionsPreview}>
+                      <TableCell className="text-muted-foreground">
+                        {accounts[row.account_id]?.name ?? row.account_id}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">
+                        {formatDate(row.earliestDate)}
+                      </TableCell>
+                      <TableCell
+                        className="max-w-[220px] truncate text-muted-foreground"
+                        title={row.descriptionsPreview}
+                      >
                         {row.descriptionsPreview}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{formatCurrency(row.amount, currency)}</TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">{row.postings.length}</TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">{Math.round(row.certainty * 100)}%</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {row.postings.length}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {Math.round(row.certainty * 100)}%
+                      </TableCell>
                       <TableCell onClick={(event) => event.stopPropagation()}>
                         <Button variant="ghost" size="icon" title="Not a duplicate" onClick={() => dismiss(row)}>
                           <Archive className="size-3.5 text-muted-foreground" />

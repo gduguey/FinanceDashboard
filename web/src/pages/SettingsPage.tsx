@@ -40,8 +40,9 @@ function IbkrFlexQueryHelp() {
         </DialogHeader>
         <div className="space-y-3 text-sm text-muted-foreground">
           <p>
-            In IBKR's Client Portal: <strong className="text-foreground">Performance &amp; Reports → Flex Queries</strong>{' '}
-            → create a new <strong className="text-foreground">Activity Flex Query</strong>.
+            In IBKR's Client Portal:{' '}
+            <strong className="text-foreground">Performance &amp; Reports → Flex Queries</strong> → create a new{' '}
+            <strong className="text-foreground">Activity Flex Query</strong>.
           </p>
           <p>Include these sections, with the maximum detail level for each:</p>
           <ul className="list-disc space-y-1 pl-5">
@@ -53,8 +54,8 @@ function IbkrFlexQueryHelp() {
           <p>
             Set <strong className="text-foreground">Date Period</strong> to the last{' '}
             <strong className="text-foreground">365 days</strong> — long enough to capture a full year of history
-            without the query becoming slow to generate, and safe to re-run indefinitely since every sync just
-            replays whatever the query returns.
+            without the query becoming slow to generate, and safe to re-run indefinitely since every sync just replays
+            whatever the query returns.
           </p>
           <p>
             Once saved, IBKR shows a <strong className="text-foreground">Query ID</strong> — that's the "Query ID"
@@ -103,8 +104,8 @@ function IbkrConnectionCard() {
           <IbkrFlexQueryHelp />
         </CardTitle>
         <CardDescription>
-          Only IBKR's Flex Web Service is supported right now. Without this connected, the Investments page has
-          nothing to show.
+          Only IBKR's Flex Web Service is supported right now. Without this connected, the Investments page has nothing
+          to show.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -134,11 +135,7 @@ function IbkrConnectionCard() {
               />
             </label>
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={handleSave}
-                disabled={(!token && !queryId) || setSettings.isPending}
-              >
+              <Button size="sm" onClick={handleSave} disabled={(!token && !queryId) || setSettings.isPending}>
                 Save
               </Button>
               {hasAnyOverride && (
@@ -202,8 +199,9 @@ function LlmCategorizationCard() {
       <CardHeader>
         <CardTitle>AI categorization</CardTitle>
         <CardDescription>
-          Powers the "AI suggest category" button on Transactions. Either key is optional, without one, that
-          provider just isn't offered. Mistral and Gemini both have a free tier, but you must create an account and generate an API key to use them.
+          Powers the "AI suggest category" button on Transactions. Either key is optional, without one, that provider
+          just isn't offered. Mistral and Gemini both have a free tier, but you must create an account and generate an
+          API key to use them.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -236,11 +234,7 @@ function LlmCategorizationCard() {
               />
             </label>
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={handleSave}
-                disabled={(!geminiKey && !mistralKey) || setSettings.isPending}
-              >
+              <Button size="sm" onClick={handleSave} disabled={(!geminiKey && !mistralKey) || setSettings.isPending}>
                 Save
               </Button>
               {hasAnyKey && (

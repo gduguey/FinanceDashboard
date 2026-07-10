@@ -18,7 +18,17 @@ function daysAgo(iso: string | null): number | null {
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
 }
 
-function SyncStatusItem({ label, iso, staleDays, href }: { label: string; iso: string | null; staleDays: number; href: string }) {
+function SyncStatusItem({
+  label,
+  iso,
+  staleDays,
+  href,
+}: {
+  label: string
+  iso: string | null
+  staleDays: number
+  href: string
+}) {
   const age = daysAgo(iso)
   const stale = age === null || age > staleDays
   return (
@@ -42,7 +52,12 @@ export function SyncStatusBar() {
 
   return (
     <div className="flex flex-wrap items-center gap-4 text-xs">
-      <SyncStatusItem label="IBKR" iso={overview?.last_synced_at ?? null} staleDays={IBKR_STALE_DAYS} href="/investments" />
+      <SyncStatusItem
+        label="IBKR"
+        iso={overview?.last_synced_at ?? null}
+        staleDays={IBKR_STALE_DAYS}
+        href="/investments"
+      />
       <span className="text-border">·</span>
       <SyncStatusItem
         label="Bank data"

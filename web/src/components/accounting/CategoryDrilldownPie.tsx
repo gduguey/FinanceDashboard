@@ -146,7 +146,8 @@ function SubcategoryTable({
   displayCurrency: CurrencyCode
 }) {
   const isUncategorized =
-    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID || selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
+    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID ||
+    selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
   const realIds = realIncomeExpensePostingIds(allPostings, accounts)
   const rows = postings.filter((posting) => {
     if (!realIds.has(posting.posting_id)) return false
@@ -167,19 +168,41 @@ function SubcategoryTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
+              <SortableTableHead
+                active={sort.key === 'posted_at'}
+                desc={sort.desc}
+                onClick={() => toggleSort('posted_at')}
+              >
                 Date
               </SortableTableHead>
-              <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
+              <SortableTableHead
+                active={sort.key === 'account_id'}
+                desc={sort.desc}
+                onClick={() => toggleSort('account_id')}
+              >
                 Account
               </SortableTableHead>
-              <SortableTableHead active={sort.key === 'description'} desc={sort.desc} onClick={() => toggleSort('description')}>
+              <SortableTableHead
+                active={sort.key === 'description'}
+                desc={sort.desc}
+                onClick={() => toggleSort('description')}
+              >
                 Description
               </SortableTableHead>
-              <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+              <SortableTableHead
+                align="right"
+                active={sort.key === 'amount'}
+                desc={sort.desc}
+                onClick={() => toggleSort('amount')}
+              >
                 Amount
               </SortableTableHead>
-              <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+              <SortableTableHead
+                align="right"
+                active={sort.key === 'amount'}
+                desc={sort.desc}
+                onClick={() => toggleSort('amount')}
+              >
                 % of subcategory
               </SortableTableHead>
             </TableRow>
@@ -187,10 +210,16 @@ function SubcategoryTable({
           <TableBody>
             {sorted.map((posting) => (
               <TableRow key={posting.posting_id}>
-                <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
-                <TableCell className="whitespace-nowrap text-muted-foreground">{accounts[posting.account_id]?.name ?? posting.account_id}</TableCell>
+                <TableCell className="whitespace-nowrap text-muted-foreground">
+                  {formatDate(posting.posted_at.slice(0, 10))}
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-muted-foreground">
+                  {accounts[posting.account_id]?.name ?? posting.account_id}
+                </TableCell>
                 <TableCell className="max-w-xs truncate">{posting.description}</TableCell>
-                <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, posting.currency)}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {formatCurrency(posting.amount, posting.currency)}
+                </TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">
                   {total ? `${((Math.abs(posting.amount) / total) * 100).toFixed(1)}%` : '—'}
                 </TableCell>
@@ -250,7 +279,8 @@ export function CategoryDrilldownPie({
     })
   }
   if (scope.categoryId) {
-    const categoryName = categoryTotals.find((row) => row.category_id === scope.categoryId)?.category_name ?? scope.categoryId
+    const categoryName =
+      categoryTotals.find((row) => row.category_id === scope.categoryId)?.category_name ?? scope.categoryId
     breadcrumb.push({ label: categoryName, onClick: () => setScope(scope) })
   }
 
@@ -271,7 +301,11 @@ export function CategoryDrilldownPie({
               {index > 0 && <ChevronRight className="size-3" />}
               <button
                 onClick={crumb.onClick}
-                className={index === breadcrumb.length - 1 ? 'font-medium text-foreground' : 'hover:text-foreground hover:underline'}
+                className={
+                  index === breadcrumb.length - 1
+                    ? 'font-medium text-foreground'
+                    : 'hover:text-foreground hover:underline'
+                }
               >
                 {crumb.label}
               </button>
@@ -283,7 +317,10 @@ export function CategoryDrilldownPie({
           <Skeleton className="h-80 w-full" />
         ) : selected ? (
           <div className="space-y-2">
-            <button onClick={() => setSelected(null)} className="text-xs text-muted-foreground hover:text-foreground hover:underline">
+            <button
+              onClick={() => setSelected(null)}
+              className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
               ← back to chart
             </button>
             <p className="text-sm font-medium">
@@ -298,7 +335,9 @@ export function CategoryDrilldownPie({
             />
           </div>
         ) : !grandTotal ? (
-          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">No transactions in this period</div>
+          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
+            No transactions in this period
+          </div>
         ) : (
           <div className="flex gap-4">
             <ResponsiveContainer width="100%" height={360} className="flex-1">
@@ -329,7 +368,9 @@ export function CategoryDrilldownPie({
                   formatter={(value, name) => {
                     const numeric = Number(value)
                     return [
-                      showPercent && grandTotal ? `${((numeric / grandTotal) * 100).toFixed(1)}%` : formatCurrency(numeric, displayCurrency),
+                      showPercent && grandTotal
+                        ? `${((numeric / grandTotal) * 100).toFixed(1)}%`
+                        : formatCurrency(numeric, displayCurrency),
                       name,
                     ]
                   }}

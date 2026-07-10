@@ -52,7 +52,15 @@ export function NetWorthAllocationPie({
           <div className="flex gap-4">
             <ResponsiveContainer width="100%" height={288} className="flex-1">
               <PieChart>
-                <Pie data={slices} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} paddingAngle={1} label={false}>
+                <Pie
+                  data={slices}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={50}
+                  outerRadius={90}
+                  paddingAngle={1}
+                  label={false}
+                >
                   {slices.map((slice) => (
                     <Cell key={slice.key} fill={slice.color} />
                   ))}

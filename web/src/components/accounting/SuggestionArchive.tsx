@@ -18,7 +18,9 @@ export function SuggestionArchive({ kind }: { kind: DismissedSuggestionKind }) {
 
   return (
     <div className="space-y-2 rounded-md border border-dashed border-border p-3">
-      <p className="text-xs font-medium text-muted-foreground">Dismissed — not shown as suggestions ({entries.length})</p>
+      <p className="text-xs font-medium text-muted-foreground">
+        Dismissed — not shown as suggestions ({entries.length})
+      </p>
       <ul className="space-y-1">
         {entries.map((entry) => (
           <li key={entry.suggestion_id} className="flex items-center justify-between gap-2 text-xs">

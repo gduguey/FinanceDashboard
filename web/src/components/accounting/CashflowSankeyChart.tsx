@@ -81,8 +81,11 @@ function buildSankeyData(rows: CategoryTotalRow[], goalFlows: GoalFlow[]) {
   const { categories: incomeCategories, subcategoryTotals: incomeSubcategoryTotals } = groupByCategory(
     rows.filter((row) => row.classification === 'income'),
   )
-  const { categories: expenseCategories, categoryColor: expenseCategoryColor, subcategoryTotals: expenseSubcategoryTotals } =
-    groupByCategory(rows.filter((row) => row.classification === 'expense'))
+  const {
+    categories: expenseCategories,
+    categoryColor: expenseCategoryColor,
+    subcategoryTotals: expenseSubcategoryTotals,
+  } = groupByCategory(rows.filter((row) => row.classification === 'expense'))
 
   const income = incomeCategories.reduce((sum, [, value]) => sum + value, 0)
   const totalExpense = expenseCategories.reduce((sum, [, value]) => sum + value, 0)
@@ -111,7 +114,9 @@ function buildSankeyData(rows: CategoryTotalRow[], goalFlows: GoalFlow[]) {
     const categoryIndex = addNode(categoryName, shade)
     addLink(categoryIndex, incomeIndex, categoryValue, shade)
 
-    const subEntries = [...(incomeSubcategoryTotals.get(categoryName) ?? new Map()).entries()].sort((a, b) => b[1] - a[1])
+    const subEntries = [...(incomeSubcategoryTotals.get(categoryName) ?? new Map()).entries()].sort(
+      (a, b) => b[1] - a[1],
+    )
     if (subEntries.length > 1) {
       subEntries.forEach(([label, amount]) => {
         // Exactly the parent's shade, per the user's own convention for
@@ -163,7 +168,9 @@ function buildSankeyData(rows: CategoryTotalRow[], goalFlows: GoalFlow[]) {
     const categoryIndex = addNode(categoryName, baseColor)
     if (spentIndex >= 0) addLink(spentIndex, categoryIndex, categoryValue, baseColor)
 
-    const subEntries = [...(expenseSubcategoryTotals.get(categoryName) ?? new Map()).entries()].sort((a, b) => b[1] - a[1])
+    const subEntries = [...(expenseSubcategoryTotals.get(categoryName) ?? new Map()).entries()].sort(
+      (a, b) => b[1] - a[1],
+    )
     if (subEntries.length > 1) {
       subEntries.forEach(([label, amount], subIndex) => {
         const shade = lighten(baseColor, 0.2 + subIndex * 0.12)
@@ -197,18 +204,38 @@ function makeSankeyLinkPath(patternId: string) {
     const d = `M${sourceX},${sourceY}C${sourceControlX},${sourceY} ${targetControlX},${targetY} ${targetX},${targetY}`
     if (!linkPayload.dashed) {
       return (
-        <path className="recharts-sankey-link" d={d} fill="none" stroke={linkPayload.color} strokeWidth={linkWidth} strokeOpacity={0.35} />
+        <path
+          className="recharts-sankey-link"
+          d={d}
+          fill="none"
+          stroke={linkPayload.color}
+          strokeWidth={linkWidth}
+          strokeOpacity={0.35}
+        />
       )
     }
     return (
       <g>
         <defs>
-          <pattern id={patternId} width={HATCH_TILE_PX} height={HATCH_TILE_PX} patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+          <pattern
+            id={patternId}
+            width={HATCH_TILE_PX}
+            height={HATCH_TILE_PX}
+            patternTransform="rotate(45)"
+            patternUnits="userSpaceOnUse"
+          >
             <rect width={HATCH_TILE_PX} height={HATCH_TILE_PX} fill={linkPayload.color} />
             <line x1={0} y1={0} x2={0} y2={HATCH_TILE_PX} stroke="#000000" strokeOpacity={0.5} strokeWidth={2.5} />
           </pattern>
         </defs>
-        <path className="recharts-sankey-link" d={d} fill="none" stroke={`url(#${patternId})`} strokeWidth={linkWidth} strokeOpacity={0.9} />
+        <path
+          className="recharts-sankey-link"
+          d={d}
+          fill="none"
+          stroke={`url(#${patternId})`}
+          strokeWidth={linkWidth}
+          strokeOpacity={0.9}
+        />
       </g>
     )
   }
@@ -286,7 +313,13 @@ function makeSankeyNodeLabel(displayCurrency: CurrencyCode, placedLabels: LabelB
     const boxWidth = textWidth + LABEL_BOX_PADDING_X * 2
     const centerY = y + height / 2
     const boxX = isInitial ? x + width + LABEL_GAP_PX : x - LABEL_GAP_PX - boxWidth
-    const shift = placeWithoutOverlap(placedLabels, boxX, boxX + boxWidth, centerY - LABEL_BOX_HEIGHT / 2, centerY + LABEL_BOX_HEIGHT / 2)
+    const shift = placeWithoutOverlap(
+      placedLabels,
+      boxX,
+      boxX + boxWidth,
+      centerY - LABEL_BOX_HEIGHT / 2,
+      centerY + LABEL_BOX_HEIGHT / 2,
+    )
     const boxCenterY = centerY + shift
 
     return (

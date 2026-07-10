@@ -45,7 +45,11 @@ export function DashboardTab({
       totals.set(contribution.goal_id, (totals.get(contribution.goal_id) ?? 0) + contribution.amount)
     }
     return [...totals.entries()]
-      .map(([goalId, value]) => ({ name: goals[goalId]?.name ?? goalId, value, color: goals[goalId]?.color ?? '#059669' }))
+      .map(([goalId, value]) => ({
+        name: goals[goalId]?.name ?? goalId,
+        value,
+        color: goals[goalId]?.color ?? '#059669',
+      }))
       .filter((flow) => flow.value > 0)
   }, [goalContributions, goals, filter.period])
 
@@ -77,7 +81,11 @@ export function DashboardTab({
         <IncomeExpenseChart displayCurrency={displayCurrency} />
         <SpendCurveChart displayCurrency={displayCurrency} postings={postings} />
       </div>
-      <CashflowSankeyChart categoryTotals={categoryTotals ?? []} goalFlows={goalFlows} displayCurrency={displayCurrency} />
+      <CashflowSankeyChart
+        categoryTotals={categoryTotals ?? []}
+        goalFlows={goalFlows}
+        displayCurrency={displayCurrency}
+      />
     </div>
   )
 }

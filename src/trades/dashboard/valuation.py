@@ -99,14 +99,9 @@ def daily_portfolio_values(
     ledger_df = ledger if was_eager else ledger.collect()
 
     # Extract unique event dates in [start, end] range using Polars
-    event_dates_result = (
-        ledger_df
-        .filter(
-            (pl.col("event_datetime").dt.date() >= start)
-            & (pl.col("event_datetime").dt.date() <= end)
-        )
-        .select(pl.col("event_datetime").dt.date().unique().sort())
-    )
+    event_dates_result = ledger_df.filter(
+        (pl.col("event_datetime").dt.date() >= start) & (pl.col("event_datetime").dt.date() <= end)
+    ).select(pl.col("event_datetime").dt.date().unique().sort())
     event_dates: list[date] = [] if event_dates_result.is_empty() else event_dates_result["event_datetime"].to_list()
 
     # Compute replayed position at each event date — positions are what's

@@ -39,7 +39,9 @@ function monthBounds(month: string): { start: string; end: string; dayBeforeStar
   const [year, monthNum] = month.split('-').map(Number)
   const start = `${month}-01`
   const end = new Date(year, monthNum, 0).toISOString().slice(0, 10)
-  const dayBeforeStart = new Date(year, monthNum - 2, new Date(year, monthNum - 1, 0).getDate()).toISOString().slice(0, 10)
+  const dayBeforeStart = new Date(year, monthNum - 2, new Date(year, monthNum - 1, 0).getDate())
+    .toISOString()
+    .slice(0, 10)
   return { start, end, dayBeforeStart }
 }
 
@@ -156,13 +158,18 @@ function GoalListSection({
                     {expanded && (
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
                         <TableCell colSpan={5}>
-                          <div className="flex flex-wrap items-end gap-3 py-1" onClick={(event) => event.stopPropagation()}>
+                          <div
+                            className="flex flex-wrap items-end gap-3 py-1"
+                            onClick={(event) => event.stopPropagation()}
+                          >
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                               Name
                               <Input
                                 className="h-7 w-40 text-sm"
                                 defaultValue={goal.name}
-                                onBlur={(event) => event.target.value !== goal.name && update(goal.goal_id, { name: event.target.value })}
+                                onBlur={(event) =>
+                                  event.target.value !== goal.name && update(goal.goal_id, { name: event.target.value })
+                                }
                               />
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -178,7 +185,9 @@ function GoalListSection({
                               Currency
                               <Select
                                 value={goal.target_currency}
-                                onValueChange={(value) => value && update(goal.goal_id, { target_currency: value as CurrencyCode })}
+                                onValueChange={(value) =>
+                                  value && update(goal.goal_id, { target_currency: value as CurrencyCode })
+                                }
                               >
                                 <SelectTrigger size="sm" className="h-7 w-20 text-xs">
                                   <SelectValue items={currencyItems} />
@@ -198,7 +207,9 @@ function GoalListSection({
                                 type="date"
                                 className="h-7 w-36 text-xs"
                                 defaultValue={goal.target_date.slice(0, 10)}
-                                onBlur={(event) => update(goal.goal_id, { target_date: new Date(event.target.value).toISOString() })}
+                                onBlur={(event) =>
+                                  update(goal.goal_id, { target_date: new Date(event.target.value).toISOString() })
+                                }
                               />
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -300,11 +311,13 @@ export function GoalsPage() {
           <>
             {unallocatedNow < 0 && (
               <span className="rounded-md bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive">
-                Unallocated is negative ({formatCurrency(unallocatedNow, displayCurrency)}) — goals couldn't fully cover a shortfall
+                Unallocated is negative ({formatCurrency(unallocatedNow, displayCurrency)}) — goals couldn't fully cover
+                a shortfall
               </span>
             )}
             <span className="text-sm text-muted-foreground">
-              Unallocated: <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
+              Unallocated:{' '}
+              <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
             </span>
             <DisplayCurrencyToggle />
             <ExchangeRateSyncButton />

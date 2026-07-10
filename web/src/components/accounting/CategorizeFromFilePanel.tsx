@@ -43,7 +43,9 @@ function FileDropZone({ onFile }: { onFile: (file: File) => void }) {
 
 function matchLabel(match: CategorizationMatch): string {
   if (!match.proposed_category_name) return '(no category in file)'
-  return match.proposed_subcategory_name ? `${match.proposed_category_name} / ${match.proposed_subcategory_name}` : match.proposed_category_name
+  return match.proposed_subcategory_name
+    ? `${match.proposed_category_name} / ${match.proposed_subcategory_name}`
+    : match.proposed_category_name
 }
 
 export function CategorizeFromFilePanel() {
@@ -132,7 +134,7 @@ export function CategorizeFromFilePanel() {
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
             {matchableRows.length} of {matches.length} row{matches.length === 1 ? '' : 's'} matched an existing
-            transaction. {matches.length - matchableRows.length > 0 && 'Unmatched rows are shown but can\'t be applied.'}
+            transaction. {matches.length - matchableRows.length > 0 && "Unmatched rows are shown but can't be applied."}
           </p>
 
           {preview.data.new_categories.length > 0 && (
@@ -177,13 +179,18 @@ export function CategorizeFromFilePanel() {
                           onChange={(event) => toggleRow(match.row_number, event.target.checked)}
                         />
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(match.posted_at.slice(0, 10))}</TableCell>
+                      <TableCell className="whitespace-nowrap text-muted-foreground">
+                        {formatDate(match.posted_at.slice(0, 10))}
+                      </TableCell>
                       <TableCell className="max-w-[200px] truncate text-muted-foreground" title={match.description}>
                         {match.description}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{formatCurrency(match.amount, 'USD')}</TableCell>
                       <TableCell>{matchLabel(match)}</TableCell>
-                      <TableCell className="max-w-[220px] truncate text-muted-foreground" title={match.matched_description ?? undefined}>
+                      <TableCell
+                        className="max-w-[220px] truncate text-muted-foreground"
+                        title={match.matched_description ?? undefined}
+                      >
                         {match.matched_description ?? "Couldn't find this transaction"}
                       </TableCell>
                     </TableRow>
@@ -207,7 +214,9 @@ export function CategorizeFromFilePanel() {
               </span>
             )}
             <Button onClick={handleApply} disabled={checkedRows.size === 0 || apply.isPending}>
-              {apply.isPending ? 'Applying…' : `Apply categories to ${checkedRows.size} transaction${checkedRows.size === 1 ? '' : 's'}`}
+              {apply.isPending
+                ? 'Applying…'
+                : `Apply categories to ${checkedRows.size} transaction${checkedRows.size === 1 ? '' : 's'}`}
             </Button>
           </div>
         </div>

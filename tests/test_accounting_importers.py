@@ -88,7 +88,8 @@ def test_standardize_chase_credit_card_keeps_payment_thank_you_rows() -> None:
     assert payment["amount"] == pytest.approx(70.00)
     # Not yet repointed at the paying checking account — that's a `TransferRule`'s job, not this importer's.
     counterparty = result.filter(
-        (pl.col("description") == "Payment Thank You-Mobile") & (pl.col("account_id") == UNCATEGORIZED_INCOME_ACCOUNT_ID)
+        (pl.col("description") == "Payment Thank You-Mobile")
+        & (pl.col("account_id") == UNCATEGORIZED_INCOME_ACCOUNT_ID)
     )
     assert len(counterparty) == 1
 

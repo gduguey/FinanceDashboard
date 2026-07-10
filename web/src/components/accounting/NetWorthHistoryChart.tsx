@@ -151,7 +151,14 @@ export function NetWorthHistoryChart({
                       />
                     ))
                 ) : (
-                  <Line type="monotone" dataKey="net_worth" name="Net worth" stroke="#0f172a" strokeWidth={2} dot={false} />
+                  <Line
+                    type="monotone"
+                    dataKey="net_worth"
+                    name="Net worth"
+                    stroke="#0f172a"
+                    strokeWidth={2}
+                    dot={false}
+                  />
                 )}
                 {/* Explicit start/end (rather than relying on Brush's own
                     default) so the initial zoom always spans the entire

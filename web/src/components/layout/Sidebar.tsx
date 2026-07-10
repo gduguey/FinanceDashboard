@@ -137,7 +137,9 @@ function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
           to="/investments"
           className={cn(
             'flex-1 rounded-md py-1 text-center text-xs font-semibold',
-            mode === 'investments' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+            mode === 'investments'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:text-foreground',
           )}
         >
           Investments
@@ -169,9 +171,7 @@ function MoneyInvestmentsSwitch({ mode }: { mode: 'money' | 'investments' }) {
 // mode-agnostic: visiting it must never flip the switch away from
 // whichever side the user was already on, since none of the money/
 // investments group is even shown on those pages.
-const MONEY_PATHS = new Set(
-  [...EVERYDAY_ITEMS, ...PLANNING_ITEMS, ...SETUP_ITEMS].map((item) => item.path),
-)
+const MONEY_PATHS = new Set([...EVERYDAY_ITEMS, ...PLANNING_ITEMS, ...SETUP_ITEMS].map((item) => item.path))
 
 function useSidebarMode(): 'money' | 'investments' {
   const location = useLocation()

@@ -414,9 +414,7 @@ def _symbol_cashflows(rows: pl.DataFrame, *, net_dividends: bool = False) -> tup
     types = ["BUY", "SELL", "DIVIDEND"]
     flows = rows.filter(pl.col("event_type").is_in(types)).select(
         "event_datetime",
-        amount=pl.when(pl.col("event_type") == "BUY")
-        .then(-pl.col("amount"))
-        .otherwise(pl.col("amount")),
+        amount=pl.when(pl.col("event_type") == "BUY").then(-pl.col("amount")).otherwise(pl.col("amount")),
     )
     return flows["event_datetime"].dt.date().to_list(), flows["amount"].to_list()
 

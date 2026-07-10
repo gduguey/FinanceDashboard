@@ -6,7 +6,15 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHeader, TableRow, TableHead } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -118,8 +126,8 @@ function TaxonomyIdeasSection() {
       <CardHeader>
         <CardTitle>Taxonomy ideas</CardTitle>
         <CardDescription>
-          The default categories a fresh install seeds itself with, kept here for reference. Nothing about it is
-          special or protected — rename, merge, split, or delete freely above; this list never changes on its own.
+          The default categories a fresh install seeds itself with, kept here for reference. Nothing about it is special
+          or protected — rename, merge, split, or delete freely above; this list never changes on its own.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-6 md:grid-cols-2">
@@ -238,7 +246,10 @@ function ClassificationSection({
                         />
                       )}
                       {!isOther && (
-                        <button onClick={() => removeCategory(child.category_id)} className="text-muted-foreground/60 hover:text-destructive">
+                        <button
+                          onClick={() => removeCategory(child.category_id)}
+                          className="text-muted-foreground/60 hover:text-destructive"
+                        >
                           <Trash2 className="size-2.5" />
                         </button>
                       )}
@@ -249,7 +260,9 @@ function ClassificationSection({
                   className="h-6 w-32 text-xs"
                   placeholder="+ subcategory"
                   value={subcategoryDrafts[category.category_id] ?? ''}
-                  onChange={(event) => setSubcategoryDrafts((prev) => ({ ...prev, [category.category_id]: event.target.value }))}
+                  onChange={(event) =>
+                    setSubcategoryDrafts((prev) => ({ ...prev, [category.category_id]: event.target.value }))
+                  }
                   onKeyDown={(event) => event.key === 'Enter' && addSubcategory(category)}
                 />
               </div>
@@ -300,8 +313,12 @@ function AnyClassificationCategorySelect({
   onChange: (categoryId: string) => void
 }) {
   const topLevel = Object.values(categories).filter((category) => category.parent_category_id === null)
-  const expense = topLevel.filter((category) => category.classification === 'expense').sort((a, b) => a.name.localeCompare(b.name))
-  const income = topLevel.filter((category) => category.classification === 'income').sort((a, b) => a.name.localeCompare(b.name))
+  const expense = topLevel
+    .filter((category) => category.classification === 'expense')
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const income = topLevel
+    .filter((category) => category.classification === 'income')
+    .sort((a, b) => a.name.localeCompare(b.name))
   const items = Object.fromEntries(topLevel.map((category) => [category.category_id, category.name]))
 
   return (
@@ -398,7 +415,9 @@ function PatternEditDialog({
             <AnyClassificationCategorySelect
               categories={categories}
               value={draft.category_id}
-              onChange={(categoryId) => setDraft((prev) => ({ ...prev, category_id: categoryId, subcategory_id: null }))}
+              onChange={(categoryId) =>
+                setDraft((prev) => ({ ...prev, category_id: categoryId, subcategory_id: null }))
+              }
             />
           </label>
           {needsSubcategory && (
@@ -445,10 +464,20 @@ function PatternEditDialog({
 // rule, which resolves a posting's counterparty automatically with no
 // confirmation step. A suggestion from here always needs the same
 // accept/reject pass in Transactions that an AI suggestion does.
-function CategoryPatternsSection({ patterns, categories }: { patterns: Record<string, CategoryPattern>; categories: Record<string, Category> }) {
+function CategoryPatternsSection({
+  patterns,
+  categories,
+}: {
+  patterns: Record<string, CategoryPattern>
+  categories: Record<string, Category>
+}) {
   const setPatterns = useSetCategoryPatterns()
   const [editing, setEditing] = useState<CategoryPattern | null>(null)
-  const [draft, setDraft] = useState<{ descriptionContains: string; categoryId: string | null; subcategoryId: string | null }>({
+  const [draft, setDraft] = useState<{
+    descriptionContains: string
+    categoryId: string | null
+    subcategoryId: string | null
+  }>({
     descriptionContains: '',
     categoryId: null,
     subcategoryId: null,
@@ -457,7 +486,10 @@ function CategoryPatternsSection({ patterns, categories }: { patterns: Record<st
   const { sorted, sort, toggleSort } = useSortableRows(patternList, 'priority')
   const withSubcategories = categoriesWithSubcategories(categories)
   const draftNeedsSubcategory = draft.categoryId !== null && withSubcategories.has(draft.categoryId)
-  const canAdd = draft.descriptionContains.trim().length > 0 && draft.categoryId !== null && (!draftNeedsSubcategory || draft.subcategoryId !== null)
+  const canAdd =
+    draft.descriptionContains.trim().length > 0 &&
+    draft.categoryId !== null &&
+    (!draftNeedsSubcategory || draft.subcategoryId !== null)
 
   function addPattern() {
     if (!canAdd || !draft.categoryId) return
@@ -495,8 +527,8 @@ function CategoryPatternsSection({ patterns, categories }: { patterns: Record<st
         <CardTitle>Category patterns</CardTitle>
         <CardDescription>
           A category pattern says: if a posting's description contains this text, suggest this category (and
-          subcategory). It doesn't categorize anything by itself — go to Transactions, click Apply on a matching row
-          (or run bulk suggestions), then Validate to actually apply the suggestion.
+          subcategory). It doesn't categorize anything by itself — go to Transactions, click Apply on a matching row (or
+          run bulk suggestions), then Validate to actually apply the suggestion.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -511,7 +543,11 @@ function CategoryPatternsSection({ patterns, categories }: { patterns: Record<st
                 If description contains
               </SortableTableHead>
               <TableHead>Suggests</TableHead>
-              <SortableTableHead active={sort.key === 'priority'} desc={sort.desc} onClick={() => toggleSort('priority')}>
+              <SortableTableHead
+                active={sort.key === 'priority'}
+                desc={sort.desc}
+                onClick={() => toggleSort('priority')}
+              >
                 Priority
               </SortableTableHead>
               <TableHead>Active</TableHead>

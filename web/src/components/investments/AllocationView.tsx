@@ -53,8 +53,21 @@ export function AllocationView() {
       >
         <BarChart data={liveRows} layout="vertical" margin={{ left: 8, right: 24, top: 8 }}>
           <CartesianGrid horizontal={false} stroke="var(--border)" />
-          <XAxis type="number" tickFormatter={(v) => `${v}%`} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-          <YAxis type="category" dataKey="symbol" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={56} />
+          <XAxis
+            type="number"
+            tickFormatter={(v) => `${v}%`}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            type="category"
+            dataKey="symbol"
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+            width={56}
+          />
           <Tooltip formatter={(value, name) => [formatPercent(Number(value), 1), name]} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           <Bar dataKey="current_pct" name="Current %" fill="#0f172a" radius={2} />

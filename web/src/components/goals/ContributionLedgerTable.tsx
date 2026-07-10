@@ -10,7 +10,12 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { convertCurrency } from '@/lib/currency'
 import { formatCurrency } from '@/lib/format'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useCurrencies, useRatesToBase, useSetGoalContributions, useSimulateContribution } from '@/hooks/useAccountingData'
+import {
+  useCurrencies,
+  useRatesToBase,
+  useSetGoalContributions,
+  useSimulateContribution,
+} from '@/hooks/useAccountingData'
 import type { Goal, GoalContribution } from '@/types/accounting'
 
 const ALL = '__all__'
@@ -34,7 +39,9 @@ export function ContributionLedgerTable({
   const setContributions = useSetGoalContributions()
   const simulate = useSimulateContribution()
   const { data: currencies } = useCurrencies()
-  const ratesToBase = useRatesToBase((currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD'))
+  const ratesToBase = useRatesToBase(
+    (currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD'),
+  )
   const [goalFilter, setGoalFilter] = useState(ALL)
   const [originFilter, setOriginFilter] = useState(ALL)
   const [goalExclude, setGoalExclude] = useState(false)
@@ -136,7 +143,13 @@ export function ContributionLedgerTable({
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <CardTitle>Contribution ledger</CardTitle>
-          <Button variant="ghost" size="icon" onClick={addRow} disabled={goalList.length === 0} title="Add a contribution">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={addRow}
+            disabled={goalList.length === 0}
+            title="Add a contribution"
+          >
             <Plus className="size-4" />
           </Button>
         </div>
@@ -155,7 +168,12 @@ export function ContributionLedgerTable({
               </SelectContent>
             </Select>
             {goalFilter !== ALL && (
-              <Button variant={goalExclude ? 'default' : 'outline'} size="sm" className="h-8 px-2 text-xs" onClick={() => setGoalExclude((v) => !v)}>
+              <Button
+                variant={goalExclude ? 'default' : 'outline'}
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => setGoalExclude((v) => !v)}
+              >
                 {goalExclude ? 'Not' : 'Is'}
               </Button>
             )}
@@ -174,7 +192,12 @@ export function ContributionLedgerTable({
               </SelectContent>
             </Select>
             {originFilter !== ALL && (
-              <Button variant={originExclude ? 'default' : 'outline'} size="sm" className="h-8 px-2 text-xs" onClick={() => setOriginExclude((v) => !v)}>
+              <Button
+                variant={originExclude ? 'default' : 'outline'}
+                size="sm"
+                className="h-8 px-2 text-xs"
+                onClick={() => setOriginExclude((v) => !v)}
+              >
                 {originExclude ? 'Not' : 'Is'}
               </Button>
             )}
@@ -191,10 +214,19 @@ export function ContributionLedgerTable({
                 <SortableTableHead active={sort.key === 'date'} desc={sort.desc} onClick={() => toggleSort('date')}>
                   Date
                 </SortableTableHead>
-                <SortableTableHead active={sort.key === 'goal_id'} desc={sort.desc} onClick={() => toggleSort('goal_id')}>
+                <SortableTableHead
+                  active={sort.key === 'goal_id'}
+                  desc={sort.desc}
+                  onClick={() => toggleSort('goal_id')}
+                >
                   Goal
                 </SortableTableHead>
-                <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                <SortableTableHead
+                  align="right"
+                  active={sort.key === 'amount'}
+                  desc={sort.desc}
+                  onClick={() => toggleSort('amount')}
+                >
                   Amount
                 </SortableTableHead>
                 <TableHead>Note</TableHead>
@@ -213,7 +245,9 @@ export function ContributionLedgerTable({
                       type="date"
                       className="h-7 w-32 text-xs"
                       value={contribution.date.slice(0, 10)}
-                      onChange={(event) => update(contribution.contribution_id, { date: new Date(event.target.value).toISOString() })}
+                      onChange={(event) =>
+                        update(contribution.contribution_id, { date: new Date(event.target.value).toISOString() })
+                      }
                       onBlur={() => checkContribution(contribution)}
                     />
                   </TableCell>
@@ -248,7 +282,9 @@ export function ContributionLedgerTable({
                         type="number"
                         className="h-7 w-24 text-right text-xs"
                         value={contribution.amount}
-                        onChange={(event) => update(contribution.contribution_id, { amount: Number(event.target.value) })}
+                        onChange={(event) =>
+                          update(contribution.contribution_id, { amount: Number(event.target.value) })
+                        }
                         onBlur={() => checkContribution(contribution)}
                       />
                       <span className="w-9 text-left text-xs text-muted-foreground">{contribution.currency}</span>
@@ -261,9 +297,15 @@ export function ContributionLedgerTable({
                       onChange={(event) => update(contribution.contribution_id, { note: event.target.value })}
                     />
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{contribution.source_posting_id ?? '—'}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {contribution.origin === 'automation' ? (contribution.edited ? 'Automation (edited)' : 'Automation') : 'Manual'}
+                    {contribution.source_posting_id ?? '—'}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {contribution.origin === 'automation'
+                      ? contribution.edited
+                        ? 'Automation (edited)'
+                        : 'Automation'
+                      : 'Manual'}
                   </TableCell>
                   <TableCell>
                     <Button variant="ghost" size="icon" onClick={() => remove(contribution.contribution_id)}>

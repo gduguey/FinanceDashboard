@@ -67,8 +67,8 @@ export function ExchangeRatePanel() {
       <CardHeader>
         <CardTitle>Exchange rates</CardTitle>
         <CardDescription>
-          Every rate over the last 2 years, pulled from the European Central Bank via Frankfurter — the same source
-          IAS 21 "average rate" translations are built on.
+          Every rate over the last 2 years, pulled from the European Central Bank via Frankfurter — the same source IAS
+          21 "average rate" translations are built on.
         </CardDescription>
         <CardAction>
           <ExchangeRateSyncButton />

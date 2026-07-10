@@ -140,7 +140,9 @@ function AccountsTable({
   const displayRows = sort.key === 'balance' && sort.desc ? orderedRows(rows) : sorted.map((row) => ({ row, depth: 0 }))
 
   if (!rows.length) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">No accounts yet — import a statement to start.</p>
+    return (
+      <p className="py-6 text-center text-sm text-muted-foreground">No accounts yet — import a statement to start.</p>
+    )
   }
   return (
     <Table>
@@ -155,7 +157,12 @@ function AccountsTable({
           <SortableTableHead active={sort.key === 'currency'} desc={sort.desc} onClick={() => toggleSort('currency')}>
             Currency
           </SortableTableHead>
-          <SortableTableHead align="right" active={sort.key === 'balance'} desc={sort.desc} onClick={() => toggleSort('balance')}>
+          <SortableTableHead
+            align="right"
+            active={sort.key === 'balance'}
+            desc={sort.desc}
+            onClick={() => toggleSort('balance')}
+          >
             Balance
           </SortableTableHead>
           <TableHead className="w-8" />
@@ -235,7 +242,10 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Currency
-            <Select value={draft.currency} onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}>
+            <Select
+              value={draft.currency}
+              onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}
+            >
               <SelectTrigger size="sm" className="w-20">
                 <SelectValue items={{ USD: 'USD', EUR: 'EUR' }} />
               </SelectTrigger>
@@ -326,7 +336,11 @@ export function NetWorthPage() {
                 colorClass={signColor(data.net_worth)}
                 subline={
                   past && (
-                    <NetWorthChangeSubline current={data.net_worth} past={past.net_worth} displayCurrency={displayCurrency} />
+                    <NetWorthChangeSubline
+                      current={data.net_worth}
+                      past={past.net_worth}
+                      displayCurrency={displayCurrency}
+                    />
                   )
                 }
               />
@@ -364,7 +378,11 @@ export function NetWorthPage() {
                     displayCurrency={displayCurrency}
                     ratesToBase={ratesToBase}
                   />
-                  <AccountsTable accounts={data.accounts} otherAssets={data.other_assets} onRemoveOtherAsset={removeOtherAsset} />
+                  <AccountsTable
+                    accounts={data.accounts}
+                    otherAssets={data.other_assets}
+                    onRemoveOtherAsset={removeOtherAsset}
+                  />
                 </CardContent>
               </Card>
             </section>

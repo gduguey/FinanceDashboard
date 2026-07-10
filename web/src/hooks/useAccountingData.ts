@@ -165,7 +165,10 @@ export type ConnectionState = 'none' | 'checking' | 'invalid' | 'connected'
 // alone doesn't catch a wrong/expired key. Saving or clearing a key
 // invalidates `keys.llmSettings`, which — via React Query's prefix
 // matching — invalidates this query too.
-export function useLlmConnectionStatus(provider: 'gemini' | 'mistral'): { state: ConnectionState; error: string | null } {
+export function useLlmConnectionStatus(provider: 'gemini' | 'mistral'): {
+  state: ConnectionState
+  error: string | null
+} {
   const { data: usage } = useLlmUsage()
   const configured = usage?.[provider]?.configured ?? false
   const verify = useQuery({
@@ -263,7 +266,10 @@ export function useSetPostingMerges() {
 }
 
 export const useNetWorth = (asOf?: string, displayCurrency?: string) =>
-  useQuery({ queryKey: keys.netWorth(asOf, displayCurrency), queryFn: () => accountingApi.netWorth(asOf, displayCurrency) })
+  useQuery({
+    queryKey: keys.netWorth(asOf, displayCurrency),
+    queryFn: () => accountingApi.netWorth(asOf, displayCurrency),
+  })
 
 export const useNetWorthHistory = (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
   useQuery({
@@ -323,7 +329,8 @@ export const useSuggestedBudgetAmount = (
 ) =>
   useQuery({
     queryKey: keys.suggestedBudgetAmount(categoryId, month, lookbackMonths, subcategoryId, displayCurrency),
-    queryFn: () => accountingApi.suggestedBudgetAmount(categoryId, month, lookbackMonths, subcategoryId, displayCurrency),
+    queryFn: () =>
+      accountingApi.suggestedBudgetAmount(categoryId, month, lookbackMonths, subcategoryId, displayCurrency),
   })
 
 export const useInterestSummary = (asOf?: string) =>
@@ -337,9 +344,21 @@ export const useSimulatorProjection = (
   compoundingFrequency: SimulatorScenario['compounding_frequency'],
 ) =>
   useQuery({
-    queryKey: keys.simulatorProject(initialCapital, monthlyContribution, horizonYears, annualRatePct, compoundingFrequency),
+    queryKey: keys.simulatorProject(
+      initialCapital,
+      monthlyContribution,
+      horizonYears,
+      annualRatePct,
+      compoundingFrequency,
+    ),
     queryFn: () =>
-      accountingApi.simulatorProject(initialCapital, monthlyContribution, horizonYears, annualRatePct, compoundingFrequency),
+      accountingApi.simulatorProject(
+        initialCapital,
+        monthlyContribution,
+        horizonYears,
+        annualRatePct,
+        compoundingFrequency,
+      ),
   })
 
 export function useSetSimulatorScenarios() {
@@ -666,12 +685,18 @@ export const useGoalsSummary = (asOf?: string, displayCurrency?: string) =>
 
 export function useRunRecurringAdditions() {
   const invalidate = useInvalidateAccounting()
-  return useMutation({ mutationFn: (asOf?: string) => accountingApi.runRecurringAdditions(asOf), onSuccess: invalidate })
+  return useMutation({
+    mutationFn: (asOf?: string) => accountingApi.runRecurringAdditions(asOf),
+    onSuccess: invalidate,
+  })
 }
 
 export function useRunWithdrawalAutomation() {
   const invalidate = useInvalidateAccounting()
-  return useMutation({ mutationFn: (asOf?: string) => accountingApi.runWithdrawalAutomation(asOf), onSuccess: invalidate })
+  return useMutation({
+    mutationFn: (asOf?: string) => accountingApi.runWithdrawalAutomation(asOf),
+    onSuccess: invalidate,
+  })
 }
 
 export function useSimulateContribution() {

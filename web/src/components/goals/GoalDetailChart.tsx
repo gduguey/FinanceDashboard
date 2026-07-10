@@ -20,11 +20,7 @@ interface CurvePoint {
 // into the *goal's* own currency before summing, since the evaluation
 // curve for a goal reads in its own currency regardless of whichever
 // currency the rest of the app happens to be displaying in right now.
-function buildCurve(
-  contributions: GoalContribution[],
-  goal: Goal,
-  ratesToBase: Record<string, number>,
-): CurvePoint[] {
+function buildCurve(contributions: GoalContribution[], goal: Goal, ratesToBase: Record<string, number>): CurvePoint[] {
   const sorted = contributions
     .filter((c) => c.goal_id === goal.goal_id)
     .slice()
@@ -97,7 +93,11 @@ export function GoalDetailChart({ goal, contributions }: { goal: Goal; contribut
   // A little headroom above the target amount — so its horizontal line
   // sits inside the plot rather than pinned to the very top edge — sized
   // off whichever is bigger, the target or a balance that's overshot it.
-  const maxBalance = Math.max(0, ...points.map((point) => point.balance ?? 0), ...points.map((point) => point.benchmark))
+  const maxBalance = Math.max(
+    0,
+    ...points.map((point) => point.balance ?? 0),
+    ...points.map((point) => point.benchmark),
+  )
   const yMax = Math.max(goal.target_amount, maxBalance) * 1.15
 
   return (
@@ -110,7 +110,9 @@ export function GoalDetailChart({ goal, contributions }: { goal: Goal; contribut
       </CardHeader>
       <CardContent>
         {points.length === 0 ? (
-          <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">No contributions yet</div>
+          <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
+            No contributions yet
+          </div>
         ) : (
           <div className="flex gap-4">
             <ResponsiveContainer width="100%" height={260} className="flex-1">
@@ -134,8 +136,22 @@ export function GoalDetailChart({ goal, contributions }: { goal: Goal; contribut
                   ]}
                   labelFormatter={(label) => formatDate(String(label))}
                 />
-                <Line type="monotone" dataKey="benchmark" stroke="#94a3b8" strokeDasharray="4 4" dot={false} strokeWidth={1.5} />
-                <Line type="stepAfter" dataKey="balance" stroke={goal.color} strokeWidth={2} dot={false} connectNulls={false} />
+                <Line
+                  type="monotone"
+                  dataKey="benchmark"
+                  stroke="#94a3b8"
+                  strokeDasharray="4 4"
+                  dot={false}
+                  strokeWidth={1.5}
+                />
+                <Line
+                  type="stepAfter"
+                  dataKey="balance"
+                  stroke={goal.color}
+                  strokeWidth={2}
+                  dot={false}
+                  connectNulls={false}
+                />
                 {/* Drawn after both `Line`s so it never occludes them, unlike before. */}
                 <ReferenceLine y={goal.target_amount} stroke={goal.color} strokeDasharray="4 4" strokeWidth={2} />
               </LineChart>
