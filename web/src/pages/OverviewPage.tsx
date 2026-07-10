@@ -129,7 +129,9 @@ export function OverviewPage() {
                 <GoalsBalanceBarChart
                   goals={Object.values(store.goals)}
                   balances={goalsSummary.data?.balances ?? {}}
-                  targets={Object.fromEntries(Object.values(store.goals).map((goal) => [goal.goal_id, goal.target_amount]))}
+                  targets={Object.fromEntries(
+                    Object.values(store.goals).map((goal) => [goal.goal_id, goal.target_amount]),
+                  )}
                   mode="all_time"
                   displayCurrency={displayCurrency}
                 />

@@ -12,7 +12,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { TermCard } from '@/components/shared/TermCard'
 import { formatUsd, signColor } from '@/lib/format'
 import { useSetTaxSettings, useTaxReport, useTaxSettings } from '@/hooks/usePortfolioData'
-import type { AnnualTaxRow, SalePreviewRow, TaxOwedRow, TaxRegime, TaxSettingsUpdate, WashSaleRow } from '@/types/portfolio'
+import type {
+  AnnualTaxRow,
+  SalePreviewRow,
+  TaxOwedRow,
+  TaxRegime,
+  TaxSettingsUpdate,
+  WashSaleRow,
+} from '@/types/portfolio'
 
 const REGIME_LABELS: Record<TaxRegime, string> = {
   NRA: 'NRA / F-1 (nonresident alien)',
@@ -45,7 +52,7 @@ function regimeRules(regime: TaxRegime, w8benClaimed: boolean): { label: string;
   return [
     {
       label: 'Dividends',
-      text: "Qualified dividends — from a U.S. or qualifying foreign company, held more than 60 days around the ex-dividend date — are taxed at the lower long-term capital-gains rate. Everything else (ordinary dividends, interest) is taxed at your regular income rate.",
+      text: 'Qualified dividends — from a U.S. or qualifying foreign company, held more than 60 days around the ex-dividend date — are taxed at the lower long-term capital-gains rate. Everything else (ordinary dividends, interest) is taxed at your regular income rate.',
     },
     {
       label: 'Capital gains',
@@ -57,7 +64,7 @@ function regimeRules(regime: TaxRegime, w8benClaimed: boolean): { label: string;
     },
     {
       label: 'The 30-day rule',
-      text: 'Sell at a loss, then buy the same — or a "substantially identical" — security within 30 days before or after that sale, and the loss is disallowed. It exists so a loss can\'t be claimed for tax purposes while functionally keeping the same position; the disallowed amount isn\'t lost, it\'s added to the cost basis of the repurchased shares instead.',
+      text: "Sell at a loss, then buy the same — or a \"substantially identical\" — security within 30 days before or after that sale, and the loss is disallowed. It exists so a loss can't be claimed for tax purposes while functionally keeping the same position; the disallowed amount isn't lost, it's added to the cost basis of the repurchased shares instead.",
     },
   ]
 }
@@ -216,7 +223,10 @@ export function TaxRegimeSelector() {
         <>
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             W-8BEN treaty benefits
-            <Switch checked={settings.w8ben_claimed} onCheckedChange={(checked) => update({ w8ben_claimed: checked })} />
+            <Switch
+              checked={settings.w8ben_claimed}
+              onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
+            />
           </label>
           {settings.w8ben_claimed && (
             <RateField

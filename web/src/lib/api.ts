@@ -56,16 +56,13 @@ function withRange(path: string, range?: DateRange): string {
 }
 
 export const api = {
-  overview: (asOf?: string) =>
-    request<Overview>(asOf ? `/api/overview?as_of=${asOf}` : '/api/overview'),
+  overview: (asOf?: string) => request<Overview>(asOf ? `/api/overview?as_of=${asOf}` : '/api/overview'),
   dollarChart: (range?: DateRange) => request<DollarChart>(withRange('/api/chart/dollar', range)),
-  growthOf100Chart: (range?: DateRange) =>
-    request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
+  growthOf100Chart: (range?: DateRange) => request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
   monthlyPnl: (range?: DateRange) => request<MonthlyPnl[]>(withRange('/api/chart/monthly-pnl', range)),
   monthlyPnlBySymbol: (range?: DateRange) =>
     request<MonthlyPnlBySymbol[]>(withRange('/api/chart/monthly-pnl/by-symbol', range)),
-  allocation: (asOf?: string) =>
-    request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
+  allocation: (asOf?: string) => request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
   targetAllocation: () => request<TargetAllocation>('/api/settings/target-allocation'),
   setTargetAllocation: (target: TargetAllocation) =>
     request<TargetAllocation>('/api/settings/target-allocation', {
@@ -96,8 +93,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(setting),
     }),
-  searchSymbols: (query: string) =>
-    request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
+  searchSymbols: (query: string) => request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
   ensureSymbolPriced: (symbol: string) =>
     request<SymbolPriceStatus>(`/api/symbols/${encodeURIComponent(symbol)}/ensure-priced`, { method: 'POST' }),
   taxSettings: () => request<TaxSettings>('/api/settings/tax'),

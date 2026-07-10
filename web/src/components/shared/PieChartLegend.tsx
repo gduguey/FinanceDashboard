@@ -45,7 +45,9 @@ export function PieChartLegend<T extends PieLegendSlice>({
               <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
               <span className="flex-1 truncate">{slice.name}</span>
               <span className="shrink-0 tabular-nums text-muted-foreground">
-                {showPercent && total ? `${((slice.value / total) * 100).toFixed(1)}%` : formatCurrency(slice.value, displayCurrency)}
+                {showPercent && total
+                  ? `${((slice.value / total) * 100).toFixed(1)}%`
+                  : formatCurrency(slice.value, displayCurrency)}
               </span>
             </button>
           </li>

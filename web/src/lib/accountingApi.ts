@@ -166,7 +166,13 @@ export const accountingApi = {
     if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
   },
-  previewCanonicalImport: (file: File, accountId: string, currency: CurrencyCode, separator?: string, dateOrder?: string) => {
+  previewCanonicalImport: (
+    file: File,
+    accountId: string,
+    currency: CurrencyCode,
+    separator?: string,
+    dateOrder?: string,
+  ) => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('account_id', accountId)
@@ -228,7 +234,10 @@ export const accountingApi = {
   postings: () => request<Posting[]>('/api/accounting/postings'),
   ledgerExport: () => request<Posting[]>('/api/accounting/ledger/export'),
   putPostingOverride: (postingId: string, override: ManualOverride) =>
-    request<ManualOverride>(`/api/accounting/postings/${encodeURIComponent(postingId)}/override`, jsonInit('PUT', override)),
+    request<ManualOverride>(
+      `/api/accounting/postings/${encodeURIComponent(postingId)}/override`,
+      jsonInit('PUT', override),
+    ),
   putPostingSplit: (postingId: string, legs: PostingSplitLeg[]) =>
     request<{ posting_id: string; legs: PostingSplitLeg[] }>(
       `/api/accounting/postings/${encodeURIComponent(postingId)}/split`,
@@ -274,7 +283,9 @@ export const accountingApi = {
   putPostingMerges: (merges: Record<string, PostingMerge>) =>
     request<Record<string, PostingMerge>>('/api/accounting/posting-merges', jsonInit('PUT', merges)),
   netWorth: (asOf?: string, displayCurrency?: string) =>
-    request<NetWorthSummary>(`/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
+    request<NetWorthSummary>(
+      `/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`,
+    ),
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
     request<NetWorthHistoryPoint[]>(
       `/api/accounting/net-worth/history${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
@@ -332,7 +343,8 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  putGoals: (goals: Record<string, Goal>) => request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
+  putGoals: (goals: Record<string, Goal>) =>
+    request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
   putGoalContributions: (contributions: Record<string, GoalContribution>) =>
     request<Record<string, GoalContribution>>('/api/accounting/goal-contributions', jsonInit('PUT', contributions)),
   putRecurringAdditions: (additions: RecurringAddition[]) =>
@@ -341,7 +353,9 @@ export const accountingApi = {
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
   goalsSummary: (asOf?: string, displayCurrency?: string) =>
-    request<GoalsSummary>(`/api/accounting/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
+    request<GoalsSummary>(
+      `/api/accounting/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`,
+    ),
   runRecurringAdditions: (asOf?: string) =>
     request<GoalContribution[]>(`/api/accounting/goals/run-recurring-additions${queryString({ as_of: asOf })}`, {
       method: 'POST',

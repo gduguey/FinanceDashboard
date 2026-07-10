@@ -15,8 +15,18 @@ const currencyFormatters: Record<string, Intl.NumberFormat> = {
 }
 
 const compactCurrencyFormatters: Record<string, Intl.NumberFormat> = {
-  USD: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 0 }),
-  EUR: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', notation: 'compact', maximumFractionDigits: 0 }),
+  USD: new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    notation: 'compact',
+    maximumFractionDigits: 0,
+  }),
+  EUR: new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'EUR',
+    notation: 'compact',
+    maximumFractionDigits: 0,
+  }),
 }
 
 // Every amount in this app is stored in one of two currencies (see

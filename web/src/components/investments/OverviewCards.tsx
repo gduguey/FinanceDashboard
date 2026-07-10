@@ -139,9 +139,7 @@ export function OverviewCards() {
                   {formatUsd(data.unrealized_gain_usd)}
                 </div>
                 {data.total_fees_usd > 0 && (
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    Fees: {formatUsd(data.total_fees_usd)}
-                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">Fees: {formatUsd(data.total_fees_usd)}</div>
                 )}
               </div>
             </div>

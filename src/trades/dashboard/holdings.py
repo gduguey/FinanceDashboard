@@ -91,7 +91,10 @@ def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTabl
     closed_lots = _closed_lots_with_hysa_alpha(result.closed_lots, config)
 
     symbols = sorted({*result.open_lots["symbol"].to_list(), *result.closed_lots["symbol"].to_list()})
-    rollup_rows = [asdict(symbol_metrics(ledger, result, symbol, price_lookup, as_of, config, net_dividends=net_dividends)) for symbol in symbols]
+    rollup_rows = [
+        asdict(symbol_metrics(ledger, result, symbol, price_lookup, as_of, config, net_dividends=net_dividends))
+        for symbol in symbols
+    ]
     symbol_rollup = pl.DataFrame(rollup_rows) if rollup_rows else pl.DataFrame()
 
     return LotsTable(open_lots=open_lots, closed_lots=closed_lots, symbol_rollup=symbol_rollup)

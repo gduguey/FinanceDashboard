@@ -36,6 +36,7 @@ llm = [
 dev = [
     "pytest>=8.2",
     "ruff>=0.6",
+    "mypy>=1.14",
     "jupyter>=1.0",
     "ipykernel>=6.29",
     "nbclient>=0.10",

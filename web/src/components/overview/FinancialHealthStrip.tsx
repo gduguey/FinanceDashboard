@@ -20,7 +20,17 @@ function monthProgress(): number {
   return now.getDate() / daysInMonth
 }
 
-function StatCard({ label, value, detail, detailColor }: { label: string; value: string; detail: string; detailColor: string }) {
+function StatCard({
+  label,
+  value,
+  detail,
+  detailColor,
+}: {
+  label: string
+  value: string
+  detail: string
+  detailColor: string
+}) {
   return (
     <Card>
       <CardHeader>
@@ -87,7 +97,9 @@ export function FinancialHealthStrip({ displayCurrency }: { displayCurrency: Cur
         <StatCard
           label="Unallocated goal money"
           value={formatCurrency(unallocated ?? 0, displayCurrency)}
-          detail={unallocatedNegative ? 'Negative — goals have claimed more than what exists' : 'Not yet assigned to any goal'}
+          detail={
+            unallocatedNegative ? 'Negative — goals have claimed more than what exists' : 'Not yet assigned to any goal'
+          }
           detailColor={unallocatedNegative ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'}
         />
       )}

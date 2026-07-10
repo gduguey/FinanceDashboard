@@ -76,7 +76,9 @@ export function CashSittingCard() {
 
         {data.warning_level !== 'none' && (
           <div className="flex items-start gap-1.5 text-sm">
-            <AlertTriangle className={`mt-0.5 size-4 shrink-0 ${data.warning_level === 'heavy' ? 'text-destructive' : 'text-amber-600'}`} />
+            <AlertTriangle
+              className={`mt-0.5 size-4 shrink-0 ${data.warning_level === 'heavy' ? 'text-destructive' : 'text-amber-600'}`}
+            />
             <span className={data.warning_level === 'heavy' ? 'text-destructive' : 'text-amber-700'}>
               {WARNING_COPY[data.warning_level]}
             </span>

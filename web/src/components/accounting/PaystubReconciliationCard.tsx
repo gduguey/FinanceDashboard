@@ -7,7 +7,12 @@ import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/format'
-import { useAccountingStore, useImportPaystub, useSetPostingOverride, useSetPostingSplit } from '@/hooks/useAccountingData'
+import {
+  useAccountingStore,
+  useImportPaystub,
+  useSetPostingOverride,
+  useSetPostingSplit,
+} from '@/hooks/useAccountingData'
 import type { PaystubReconciliationResult, ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
@@ -154,8 +159,8 @@ function ReconciliationResultView({ result }: { result: PaystubReconciliationRes
   return (
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
-        Gross {formatCurrency(result.statement.gross_pay, 'USD')} · Taxes {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net{' '}
-        {formatCurrency(result.statement.net_pay, 'USD')}
+        Gross {formatCurrency(result.statement.gross_pay, 'USD')} · Taxes{' '}
+        {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net {formatCurrency(result.statement.net_pay, 'USD')}
       </p>
       <ul className="space-y-1 text-sm">
         {result.matches.map((match, index) => (
@@ -168,7 +173,9 @@ function ReconciliationResultView({ result }: { result: PaystubReconciliationRes
             <span>
               {match.label} — {formatCurrency(match.amount, 'USD')}
             </span>
-            <span className="text-muted-foreground">{match.posting_id ? 'matched to a bank posting' : 'no matching bank posting found'}</span>
+            <span className="text-muted-foreground">
+              {match.posting_id ? 'matched to a bank posting' : 'no matching bank posting found'}
+            </span>
           </li>
         ))}
       </ul>
@@ -224,7 +231,11 @@ export function PaystubReconciliationCard() {
         setUploads((prev) =>
           prev.map((entry) =>
             entry.id === entryId
-              ? { ...entry, status: 'error', error: error instanceof Error ? error.message : 'Could not parse this paystub' }
+              ? {
+                  ...entry,
+                  status: 'error',
+                  error: error instanceof Error ? error.message : 'Could not parse this paystub',
+                }
               : entry,
           ),
         )
@@ -284,7 +295,9 @@ export function PaystubReconciliationCard() {
               {entry.status === 'error' && <XCircle className="size-3.5 shrink-0 text-destructive" />}
               <span className="truncate">{entry.fileName}</span>
             </div>
-            {entry.status === 'pending' && <LoadingProgressBar step="Extracting the paystub's text and matching it against the ledger…" />}
+            {entry.status === 'pending' && (
+              <LoadingProgressBar step="Extracting the paystub's text and matching it against the ledger…" />
+            )}
             {entry.status === 'error' && <p className="text-sm text-destructive">{entry.error}</p>}
             {entry.status === 'done' && entry.result && <ReconciliationResultView result={entry.result} />}
           </div>

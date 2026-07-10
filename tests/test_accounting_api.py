@@ -243,7 +243,12 @@ def _import_chase_checking(client, account_id: str = "chase:checking:9579") -> N
     response = client.post(
         "/api/accounting/import",
         files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={"institution": "Chase", "account_kind": "checking", "account_id": account_id, "account_name": "Chase Checking"},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": account_id,
+            "account_name": "Chase Checking",
+        },
     )
     assert response.status_code == 200
 

@@ -48,8 +48,7 @@ export const useMonthlyPnlBySymbol = (range?: DateRange) =>
 
 export const useAllocation = () => useQuery({ queryKey: keys.allocation, queryFn: () => api.allocation() })
 
-export const useTargetAllocation = () =>
-  useQuery({ queryKey: keys.targetAllocation, queryFn: api.targetAllocation })
+export const useTargetAllocation = () => useQuery({ queryKey: keys.targetAllocation, queryFn: api.targetAllocation })
 
 export function useSetTargetAllocation() {
   const queryClient = useQueryClient()
@@ -61,8 +60,7 @@ export function useSetTargetAllocation() {
 
 export const useLots = () => useQuery({ queryKey: keys.lots, queryFn: () => api.lots() })
 
-export const useRisk = (range?: DateRange) =>
-  useQuery({ queryKey: keys.risk(range), queryFn: () => api.risk(range) })
+export const useRisk = (range?: DateRange) => useQuery({ queryKey: keys.risk(range), queryFn: () => api.risk(range) })
 
 export const useDataQuality = () => useQuery({ queryKey: keys.dataQuality, queryFn: api.dataQuality })
 
@@ -86,8 +84,7 @@ export function useSetHysaSettings() {
   })
 }
 
-export const useBenchmarkSetting = () =>
-  useQuery({ queryKey: keys.benchmarkSetting, queryFn: api.benchmarkSetting })
+export const useBenchmarkSetting = () => useQuery({ queryKey: keys.benchmarkSetting, queryFn: api.benchmarkSetting })
 
 export function useSetBenchmarkSetting() {
   const queryClient = useQueryClient()

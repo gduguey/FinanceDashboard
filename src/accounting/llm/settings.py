@@ -70,6 +70,7 @@ def load_llm_credential_override(config: AccountingConfig) -> LLMCredentialOverr
     except ValueError:
         return LLMCredentialOverride()
 
+
 def save_llm_credential_override(override: LLMCredentialOverride, config: AccountingConfig) -> None:
     """Persist an LLM credential override, overwriting whatever was saved before.
 

@@ -57,7 +57,10 @@ export function AccountCompositionBar({
         {slices.map((slice) => (
           <div
             key={slice.group}
-            style={{ width: `${(slice.magnitude / totalMagnitude) * 100}%`, backgroundColor: GROUP_COLORS[slice.group] }}
+            style={{
+              width: `${(slice.magnitude / totalMagnitude) * 100}%`,
+              backgroundColor: GROUP_COLORS[slice.group],
+            }}
             title={`${slice.group}: ${formatCurrency(slice.signedValue, displayCurrency)} (${((slice.magnitude / totalMagnitude) * 100).toFixed(1)}%)`}
           />
         ))}

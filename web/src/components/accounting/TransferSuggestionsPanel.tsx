@@ -29,7 +29,9 @@ const ESTIMATED_DETAIL_HEIGHT = 260
 // always, plus a "detail" row only while expanded — so the virtualizer
 // sees a flat list matching what's actually in the DOM instead of the
 // nested/Fragment shape the data comes in as.
-type VirtualEntry = { kind: 'main'; suggestion: TransferSuggestion } | { kind: 'detail'; suggestion: TransferSuggestion }
+type VirtualEntry =
+  | { kind: 'main'; suggestion: TransferSuggestion }
+  | { kind: 'detail'; suggestion: TransferSuggestion }
 
 // One suggestion resolves into TWO independent one-directional transfer
 // rule drafts — a transfer is really two separate transactions (each
@@ -83,14 +85,17 @@ function DraftRuleCard({
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-xs text-muted-foreground">
-        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id)}</span>, if description contains…
+        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id)}</span>, if
+        description contains…
       </p>
       <Input
         value={draft.description_contains}
         disabled={alreadyAdded}
         onChange={(event) => onChange({ ...draft, description_contains: event.target.value })}
       />
-      <p className="text-xs text-muted-foreground">…repoint it to {accountName(accounts, draft.counterparty_account_id)}.</p>
+      <p className="text-xs text-muted-foreground">
+        …repoint it to {accountName(accounts, draft.counterparty_account_id)}.
+      </p>
       {alreadyAdded && <p className="text-xs text-emerald-600">Already added</p>}
     </div>
   )
@@ -161,7 +166,13 @@ function SuggestedRulePair({
 // placeholder counterparty, whose amounts are equal and opposite within
 // `windowDays` of each other. Clicking a row shows both sides plus both
 // proposed rules, editable before adding.
-export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record<string, Account>; rules: TransferRule[] }) {
+export function TransferSuggestionsPanel({
+  accounts,
+  rules,
+}: {
+  accounts: Record<string, Account>
+  rules: TransferRule[]
+}) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.transfer-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
   const { data, isLoading, isError, error } = useTransferSuggestions(windowDays)
@@ -221,12 +232,14 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
   const rowVirtualizer = useVirtualizer({
     count: virtualEntries.length,
     getScrollElement: () => scrollParentRef.current,
-    estimateSize: (index) => (virtualEntries[index]?.kind === 'detail' ? ESTIMATED_DETAIL_HEIGHT : ESTIMATED_ROW_HEIGHT),
+    estimateSize: (index) =>
+      virtualEntries[index]?.kind === 'detail' ? ESTIMATED_DETAIL_HEIGHT : ESTIMATED_ROW_HEIGHT,
     overscan: 12,
   })
   const virtualRows = rowVirtualizer.getVirtualItems()
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
-  const paddingBottom = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
+  const paddingBottom =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
 
   if (isLoading) return null
 
@@ -284,10 +297,18 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
+                    <SortableTableHead
+                      active={sort.key === 'account_id'}
+                      desc={sort.desc}
+                      onClick={() => toggleSort('account_id')}
+                    >
                       Account
                     </SortableTableHead>
-                    <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
+                    <SortableTableHead
+                      active={sort.key === 'posted_at'}
+                      desc={sort.desc}
+                      onClick={() => toggleSort('posted_at')}
+                    >
                       Date
                     </SortableTableHead>
                     <SortableTableHead
@@ -304,7 +325,12 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                     >
                       Date
                     </SortableTableHead>
-                    <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                    <SortableTableHead
+                      align="right"
+                      active={sort.key === 'amount'}
+                      desc={sort.desc}
+                      onClick={() => toggleSort('amount')}
+                    >
                       Amount
                     </SortableTableHead>
                   </TableRow>
@@ -329,9 +355,13 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                           onClick={() => setExpandedKey(expandedKey === key ? null : key)}
                         >
                           <TableCell>{accountName(accounts, suggestion.account_id)}</TableCell>
-                          <TableCell className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {formatDate(suggestion.posted_at.slice(0, 10))}
+                          </TableCell>
                           <TableCell>{accountName(accounts, suggestion.other_account_id)}</TableCell>
-                          <TableCell className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {formatDate(suggestion.other_posted_at.slice(0, 10))}
+                          </TableCell>
                           <TableCell className={`text-right tabular-nums ${signColor(suggestion.amount)}`}>
                             {formatCurrency(suggestion.amount, 'USD')}
                           </TableCell>
@@ -346,11 +376,15 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
                               <p className="font-medium">{accountName(accounts, suggestion.account_id)}</p>
                               <p className="text-muted-foreground">{formatDate(suggestion.posted_at.slice(0, 10))}</p>
                               <p className="break-words">{suggestion.description}</p>
-                              <p className={`tabular-nums ${signColor(suggestion.amount)}`}>{formatCurrency(suggestion.amount, 'USD')}</p>
+                              <p className={`tabular-nums ${signColor(suggestion.amount)}`}>
+                                {formatCurrency(suggestion.amount, 'USD')}
+                              </p>
                             </div>
                             <div className="min-w-0 space-y-1 text-sm">
                               <p className="font-medium">{accountName(accounts, suggestion.other_account_id)}</p>
-                              <p className="text-muted-foreground">{formatDate(suggestion.other_posted_at.slice(0, 10))}</p>
+                              <p className="text-muted-foreground">
+                                {formatDate(suggestion.other_posted_at.slice(0, 10))}
+                              </p>
                               <p className="break-words">{suggestion.other_description}</p>
                               <p className={`tabular-nums ${signColor(-suggestion.amount)}`}>
                                 {formatCurrency(-suggestion.amount, 'USD')}
@@ -379,8 +413,8 @@ export function TransferSuggestionsPanel({ accounts, rules }: { accounts: Record
               </Table>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Click a row to see both sides and add both rules needed to resolve it — each pair looks like one
-              transfer a rule hasn't resolved yet.
+              Click a row to see both sides and add both rules needed to resolve it — each pair looks like one transfer
+              a rule hasn't resolved yet.
             </p>
           </>
         )}

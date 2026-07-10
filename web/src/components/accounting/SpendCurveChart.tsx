@@ -30,8 +30,18 @@ export function SpendCurveChart({ displayCurrency, postings }: { displayCurrency
           tickLine={false}
           width={72}
         />
-        <Tooltip formatter={(value) => formatCurrency(Number(value), displayCurrency)} labelFormatter={(label) => `Day ${label}`} />
-        <Line type="monotone" dataKey="current_month_cumulative" name="This month" stroke="#0f172a" strokeWidth={2} dot={false} />
+        <Tooltip
+          formatter={(value) => formatCurrency(Number(value), displayCurrency)}
+          labelFormatter={(label) => `Day ${label}`}
+        />
+        <Line
+          type="monotone"
+          dataKey="current_month_cumulative"
+          name="This month"
+          stroke="#0f172a"
+          strokeWidth={2}
+          dot={false}
+        />
         <Line
           type="monotone"
           dataKey="average_previous_months_cumulative"

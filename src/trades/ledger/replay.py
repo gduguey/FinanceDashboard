@@ -45,7 +45,9 @@ class ReplayResult:
     cash_balance: float
 
 
-def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig, *, net_dividends: bool = False) -> ReplayResult:
+def replay_ledger(
+    ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig, *, net_dividends: bool = False
+) -> ReplayResult:
     """Replay a ledger into open/closed lots and a cash balance.
 
     `config.ledger.cash_symbol` is a plain running total, not a lot: every

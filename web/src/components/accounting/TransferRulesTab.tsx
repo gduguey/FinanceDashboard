@@ -2,13 +2,7 @@ import { useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -197,7 +191,11 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
               </SortableTableHead>
               <TableHead>Counterparty</TableHead>
               <TableHead>Notes</TableHead>
-              <SortableTableHead active={sort.key === 'priority'} desc={sort.desc} onClick={() => toggleSort('priority')}>
+              <SortableTableHead
+                active={sort.key === 'priority'}
+                desc={sort.desc}
+                onClick={() => toggleSort('priority')}
+              >
                 Priority
               </SortableTableHead>
               <TableHead>Active</TableHead>

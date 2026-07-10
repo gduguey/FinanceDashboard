@@ -27,7 +27,9 @@ export function hasAnyRealAccount(accounts: Iterable<{ kind: string }>): boolean
 // virtual/non-virtual incorrectly.
 export function realIncomeExpensePostingIds(allPostings: Posting[], accounts: Record<string, Account>): Set<string> {
   const virtualAccountIds = new Set(
-    Object.values(accounts).filter((account) => VIRTUAL_ACCOUNT_KINDS.has(account.kind)).map((account) => account.account_id),
+    Object.values(accounts)
+      .filter((account) => VIRTUAL_ACCOUNT_KINDS.has(account.kind))
+      .map((account) => account.account_id),
   )
   const transactionHasVirtualLeg = new Map<string, boolean>()
   for (const posting of allPostings) {

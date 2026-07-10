@@ -31,7 +31,12 @@ export function PostingSplitDialog({
   onClose: () => void
 }) {
   const [legs, setLegs] = useState<DraftLeg[]>([
-    { amount: String(posting.amount), categoryId: posting.category_id, subcategoryId: posting.subcategory_id, description: posting.description },
+    {
+      amount: String(posting.amount),
+      categoryId: posting.category_id,
+      subcategoryId: posting.subcategory_id,
+      description: posting.description,
+    },
     { amount: '0', categoryId: null, subcategoryId: null, description: '' },
   ])
   const setSplit = useSetPostingSplit()

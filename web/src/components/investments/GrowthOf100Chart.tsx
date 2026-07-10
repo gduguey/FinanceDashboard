@@ -3,7 +3,13 @@ import { ChartCard } from '@/components/shared/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useGrowthOf100Chart, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
+import {
+  useBenchmarkSetting,
+  useGrowthOf100Chart,
+  useHysaRates,
+  useHysaSettings,
+  useTaxSettings,
+} from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 import type { GrowthOf100Point } from '@/types/portfolio'
 
@@ -35,10 +41,7 @@ function ChartLegend({
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {items.map((item) => (
         <span key={item.label} className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-0.5 w-3"
-            style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }}
-          />
+          <span className="inline-block h-0.5 w-3" style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }} />
           {item.label}
           <InfoTooltip term={item.term} />
         </span>

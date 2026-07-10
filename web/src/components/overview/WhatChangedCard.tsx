@@ -99,8 +99,10 @@ export function WhatChangedCard({ displayCurrency }: { displayCurrency: Currency
                 )}
                 <span>
                   <strong>{swing.name}</strong> {swing.delta > 0 ? 'up' : 'down'}{' '}
-                  <span className={signColor(-swing.delta)}>{formatCurrency(Math.abs(swing.delta), displayCurrency)}</span> vs.
-                  last month ({formatCurrency(swing.thisAmount, displayCurrency)} vs.{' '}
+                  <span className={signColor(-swing.delta)}>
+                    {formatCurrency(Math.abs(swing.delta), displayCurrency)}
+                  </span>{' '}
+                  vs. last month ({formatCurrency(swing.thisAmount, displayCurrency)} vs.{' '}
                   {formatCurrency(swing.lastAmount, displayCurrency)})
                 </span>
               </div>
@@ -109,8 +111,8 @@ export function WhatChangedCard({ displayCurrency }: { displayCurrency: Currency
               <div key={goal.goal_id} className="flex items-center gap-2 text-sm">
                 <Target className="size-4 shrink-0 text-emerald-500" />
                 <span>
-                  <strong>{goal.name}</strong> reached its target ({formatCurrency(goal.target_amount, goal.target_currency)})
-                  this month
+                  <strong>{goal.name}</strong> reached its target (
+                  {formatCurrency(goal.target_amount, goal.target_currency)}) this month
                 </span>
               </div>
             ))}

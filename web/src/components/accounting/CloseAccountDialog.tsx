@@ -43,7 +43,9 @@ export function CloseAccountDialog({
   const movingOut = balance > 0
   const ratesToBase = useRatesToBase([account.currency, ...otherAccounts.map((other) => other.currency)])
   const [rows, setRows] = useState<SplitRow[]>(
-    hasBalance ? [{ key: 'row-0', otherAccountId: '', ownAmount: magnitude.toFixed(2), otherAmount: magnitude.toFixed(2) }] : [],
+    hasBalance
+      ? [{ key: 'row-0', otherAccountId: '', ownAmount: magnitude.toFixed(2), otherAmount: magnitude.toFixed(2) }]
+      : [],
   )
   const [skipTransfer, setSkipTransfer] = useState(false)
   // `Account` has no `closed_at` of its own (see `models.Account.closed`) —
@@ -51,7 +53,9 @@ export function CloseAccountDialog({
   // artifact a close actually produces, defaulting to today.
   const [closingDate, setClosingDate] = useState(() => new Date().toISOString().slice(0, 10))
 
-  const accountItems = Object.fromEntries(otherAccounts.map((other) => [other.account_id, `${other.name} (${other.currency})`]))
+  const accountItems = Object.fromEntries(
+    otherAccounts.map((other) => [other.account_id, `${other.name} (${other.currency})`]),
+  )
 
   function otherAmountFor(otherAccountId: string, ownAmount: string): string {
     const other = otherAccounts.find((candidate) => candidate.account_id === otherAccountId)
@@ -75,7 +79,10 @@ export function CloseAccountDialog({
   }
 
   function addRow() {
-    setRows((prev) => [...prev, { key: `row-${prev.length}-${prev.length}x`, otherAccountId: '', ownAmount: '', otherAmount: '' }])
+    setRows((prev) => [
+      ...prev,
+      { key: `row-${prev.length}-${prev.length}x`, otherAccountId: '', ownAmount: '', otherAmount: '' },
+    ])
   }
 
   function removeRow(key: string) {
@@ -134,7 +141,7 @@ export function CloseAccountDialog({
               This account still has a balance of {formatCurrency(balance, account.currency)}.{' '}
               {movingOut
                 ? "Record where it's moving to before closing:"
-                : "Record where the payoff is coming from before closing:"}
+                : 'Record where the payoff is coming from before closing:'}
             </p>
             <div className="space-y-2">
               {rows.map((row) => {
@@ -181,7 +188,9 @@ export function CloseAccountDialog({
                           onChange={(event) =>
                             setRows((prev) =>
                               prev.map((candidate) =>
-                                candidate.key === row.key ? { ...candidate, otherAmount: event.target.value } : candidate,
+                                candidate.key === row.key
+                                  ? { ...candidate, otherAmount: event.target.value }
+                                  : candidate,
                               ),
                             )
                           }

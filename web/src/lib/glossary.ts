@@ -18,15 +18,15 @@ export const GLOSSARY = {
   },
   timingGap: {
     title: 'Timing gap (XIRR − TWR)',
-    body: "The difference between the money-weighted return (XIRR) and the investment return (TWR). A positive value means deposit and withdrawal timing helped. A negative value means timing hurt, such as adding money before a market drop.",
+    body: 'The difference between the money-weighted return (XIRR) and the investment return (TWR). A positive value means deposit and withdrawal timing helped. A negative value means timing hurt, such as adding money before a market drop.',
   },
   growthOf100: {
     title: 'Growth of $100',
-    body: "Shows what $100 invested on day one would be worth today with no later deposits or withdrawals. Every line starts at 100 so investment performance can be compared directly. Unlike the dollar chart, contribution timing is ignored.",
+    body: 'Shows what $100 invested on day one would be worth today with no later deposits or withdrawals. Every line starts at 100 so investment performance can be compared directly. Unlike the dollar chart, contribution timing is ignored.',
   },
   nav: {
     title: 'NAV — Net Asset Value (per unit)',
-    body: "The value of one portfolio unit. Deposits buy more units and withdrawals sell units, so the unit price changes only because the investments gained or lost value. This separates investment performance from money moving in or out. Formula: NAV(t) = portfolio value(t) ÷ units outstanding(t).",
+    body: 'The value of one portfolio unit. Deposits buy more units and withdrawals sell units, so the unit price changes only because the investments gained or lost value. This separates investment performance from money moving in or out. Formula: NAV(t) = portfolio value(t) ÷ units outstanding(t).',
   },
   cpi: {
     title: 'CPI',
@@ -38,11 +38,11 @@ export const GLOSSARY = {
   },
   hysaCounterfactual: {
     title: 'HYSA counterfactual',
-    body: "Shows what the same deposits and withdrawals would be worth today if they had gone into a high-yield savings account instead. Interest compounds daily using the configured rate. This compares investing with simply keeping the money in cash.",
+    body: 'Shows what the same deposits and withdrawals would be worth today if they had gone into a high-yield savings account instead. Interest compounds daily using the configured rate. This compares investing with simply keeping the money in cash.',
   },
   benchmarkCounterfactual: {
     title: 'Benchmark counterfactual',
-    body: "Shows what the same deposits and withdrawals would be worth if every deposit bought the benchmark fund (VOO by default) and every withdrawal sold shares on that day. Dividends are reinvested. This compares the portfolio with buying the benchmark using the exact same cash-flow schedule. Formula: shares(t) = Σ(deposit ÷ benchmark price) − shares sold; value(t) = shares(t) × benchmark price(t).",
+    body: 'Shows what the same deposits and withdrawals would be worth if every deposit bought the benchmark fund (VOO by default) and every withdrawal sold shares on that day. Dividends are reinvested. This compares the portfolio with buying the benchmark using the exact same cash-flow schedule. Formula: shares(t) = Σ(deposit ÷ benchmark price) − shares sold; value(t) = shares(t) × benchmark price(t).',
   },
   cashSittingCounterfactual: {
     title: 'Sitting-cash counterfactual',
@@ -58,19 +58,19 @@ export const GLOSSARY = {
   },
   portfolioValue: {
     title: 'Portfolio value',
-    body: "The total value of the account today. It includes every holding at its current market price plus any cash in the account, including uninvested deposits and cash dividends.",
+    body: 'The total value of the account today. It includes every holding at its current market price plus any cash in the account, including uninvested deposits and cash dividends.',
   },
   contributions: {
     title: 'Contributions',
-    body: "Cumulative deposits minus withdrawals. Only money entering or leaving the account counts. Dividends and trades between holdings are excluded because no money entered from outside the account.",
+    body: 'Cumulative deposits minus withdrawals. Only money entering or leaving the account counts. Dividends and trades between holdings are excluded because no money entered from outside the account.',
   },
   marketGain: {
     title: 'Market gain',
-    body: "The change in value that came from investment performance rather than deposits or withdrawals. Formula: ending value − starting value − net deposits. Includes both price changes and dividends.",
+    body: 'The change in value that came from investment performance rather than deposits or withdrawals. Formula: ending value − starting value − net deposits. Includes both price changes and dividends.',
   },
   lotReturn: {
     title: 'Return',
-    body: "The total return for this lot. Formula: (current value + dividends received) ÷ purchase amount − 1. It is not adjusted for how long the lot has been held.",
+    body: 'The total return for this lot. Formula: (current value + dividends received) ÷ purchase amount − 1. It is not adjusted for how long the lot has been held.',
   },
   annualizedReturn: {
     title: 'Annualized return',
@@ -78,11 +78,11 @@ export const GLOSSARY = {
   },
   realizedGain: {
     title: 'Realized gain',
-    body: "Gain or loss that became final when shares were sold. It does not change after the sale, regardless of future market prices.",
+    body: 'Gain or loss that became final when shares were sold. It does not change after the sale, regardless of future market prices.',
   },
   unrealizedGain: {
     title: 'Unrealized gain',
-    body: "Gain or loss on shares that are still held. It changes as the market price changes until the shares are sold.",
+    body: 'Gain or loss on shares that are still held. It changes as the market price changes until the shares are sold.',
   },
   lotTerm: {
     title: 'Term',
@@ -98,27 +98,27 @@ export const GLOSSARY = {
   },
   maxDrawdown: {
     title: 'Largest peak-to-trough so far',
-    body: "The largest drop in NAV from its highest value up to that point. It measures the worst decline experienced before reaching a new high. Formula: min over time of NAV(t) ÷ (highest NAV seen so far) − 1.",
+    body: 'The largest drop in NAV from its highest value up to that point. It measures the worst decline experienced before reaching a new high. Formula: min over time of NAV(t) ÷ (highest NAV seen so far) − 1.',
   },
   dripReinvestment: {
     title: 'DRIP (dividend reinvestment)',
-    body: "Shares bought automatically using a cash dividend. They are not counted as new contributions because no new money entered the account. The additional shares and their future gains are still included in portfolio performance.",
+    body: 'Shares bought automatically using a cash dividend. They are not counted as new contributions because no new money entered the account. The additional shares and their future gains are still included in portfolio performance.',
   },
   ledger: {
     title: 'Ledger',
-    body: "The complete history of every deposit, withdrawal, buy, sell, and dividend, stored in one common format. Every calculation on this dashboard is rebuilt from this history, so nothing is stored as pre-computed results.",
+    body: 'The complete history of every deposit, withdrawal, buy, sell, and dividend, stored in one common format. Every calculation on this dashboard is rebuilt from this history, so nothing is stored as pre-computed results.',
   },
   lot: {
     title: 'Lot',
-    body: "One purchase of shares. Each purchase is tracked separately because purchase date, purchase price, holding period, and gains can all be different. When shares are sold, the oldest lots are used first (FIFO).",
+    body: 'One purchase of shares. Each purchase is tracked separately because purchase date, purchase price, holding period, and gains can all be different. When shares are sold, the oldest lots are used first (FIFO).',
   },
   openLot: {
     title: 'Open lot',
-    body: "A purchase that still has shares remaining. Its gain or loss is unrealized and changes with the current market price.",
+    body: 'A purchase that still has shares remaining. Its gain or loss is unrealized and changes with the current market price.',
   },
   closedLot: {
     title: 'Closed lot',
-    body: "The part of a purchase that has been sold. It has its own sale price, holding period, and realized gain. A single sale may close multiple lots or only part of one lot.",
+    body: 'The part of a purchase that has been sold. It has its own sale price, holding period, and realized gain. A single sale may close multiple lots or only part of one lot.',
   },
   taxRegime: {
     title: 'Tax regime',

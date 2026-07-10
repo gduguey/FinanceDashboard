@@ -42,7 +42,9 @@ def matching_pattern(patterns: dict[str, CategoryPattern], description: str) -> 
 _MATCH_SCHEMA = {"posting_id": pl.Utf8, "category_id": pl.Utf8, "subcategory_id": pl.Utf8}
 
 
-def match_patterns_bulk(patterns: dict[str, CategoryPattern], descriptions: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
+def match_patterns_bulk(
+    patterns: dict[str, CategoryPattern], descriptions: pl.DataFrame | pl.LazyFrame
+) -> pl.DataFrame | pl.LazyFrame:
     """Match many postings' descriptions against every pattern at once, in a single polars pass.
 
     The vectorized counterpart to calling `matching_pattern` once per

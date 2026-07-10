@@ -78,10 +78,7 @@ export function OnboardingPage() {
                 </div>
                 <p className="mt-0.5 text-sm text-muted-foreground">{step.description}</p>
                 {!step.done && (
-                  <Link
-                    to={step.to}
-                    className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'mt-2')}
-                  >
+                  <Link to={step.to} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'mt-2')}>
                     {step.cta} <ArrowRight className="size-3.5" />
                   </Link>
                 )}

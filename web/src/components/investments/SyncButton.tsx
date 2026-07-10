@@ -10,11 +10,7 @@ import type { SyncStep } from '@/types/portfolio'
 // no longer hides whether the rest actually refreshed. Failed legs get
 // their own error on hover, not a generic "sync failed".
 function StepResult({ step }: { step: SyncStep }) {
-  const icon = step.ok ? (
-    <Check className="size-3 text-emerald-600" />
-  ) : (
-    <X className="size-3 text-destructive" />
-  )
+  const icon = step.ok ? <Check className="size-3 text-emerald-600" /> : <X className="size-3 text-destructive" />
   if (step.ok || !step.error) {
     return (
       <span className="flex items-center gap-1">
@@ -46,11 +42,11 @@ export function SyncButton({ lastSyncedAt }: { lastSyncedAt: string | null }) {
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-3">
-        <span className={`text-xs ${sync.isError || progress.data?.error ? 'text-destructive' : 'text-muted-foreground'}`}>
+        <span
+          className={`text-xs ${sync.isError || progress.data?.error ? 'text-destructive' : 'text-muted-foreground'}`}
+        >
           {progress.data?.error ||
-            (sync.isError
-              ? 'Sync failed'
-              : `Last synced ${formatRelativeTime(sync.data?.synced_at ?? lastSyncedAt)}`)}
+            (sync.isError ? 'Sync failed' : `Last synced ${formatRelativeTime(sync.data?.synced_at ?? lastSyncedAt)}`)}
         </span>
         <Button variant="outline" size="sm" disabled={sync.isPending} onClick={() => sync.mutate()}>
           <RefreshCw className={sync.isPending ? 'animate-spin' : ''} />

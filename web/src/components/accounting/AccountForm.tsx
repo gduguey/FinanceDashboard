@@ -13,7 +13,15 @@ import type { Account, AccountKind, CurrencyCode } from '@/types/accounting'
 // below). Excludes the virtual `income_source`/`expense_payee` placeholders
 // and `other_asset` (that's a manually-entered net-worth line, not an
 // importable account).
-const ACCOUNT_KINDS: AccountKind[] = ['checking', 'savings', 'credit_card', 'vault', 'cash', 'loan', 'external_investment']
+const ACCOUNT_KINDS: AccountKind[] = [
+  'checking',
+  'savings',
+  'credit_card',
+  'vault',
+  'cash',
+  'loan',
+  'external_investment',
+]
 const ACCOUNT_KIND_ITEMS: Record<string, string> = Object.fromEntries(
   ACCOUNT_KINDS.map((kind) => [kind, ACCOUNT_KIND_LABELS[kind]]),
 )
@@ -107,7 +115,11 @@ export function AccountForm({
       </label>
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Account kind
-        <Select value={value.kind} onValueChange={(next) => next && updateIdentity({ kind: next as AccountKind })} disabled={locked}>
+        <Select
+          value={value.kind}
+          onValueChange={(next) => next && updateIdentity({ kind: next as AccountKind })}
+          disabled={locked}
+        >
           <SelectTrigger size="sm" className="w-32">
             <SelectValue items={ACCOUNT_KIND_ITEMS} />
           </SelectTrigger>
@@ -122,7 +134,11 @@ export function AccountForm({
       </label>
       <label className="flex flex-col gap-1 text-xs text-muted-foreground">
         Currency
-        <Select value={value.currency} onValueChange={(next) => next && onChange({ ...value, currency: next as CurrencyCode })} disabled={locked}>
+        <Select
+          value={value.currency}
+          onValueChange={(next) => next && onChange({ ...value, currency: next as CurrencyCode })}
+          disabled={locked}
+        >
           <SelectTrigger size="sm" className="w-20">
             <SelectValue items={currencyItems} />
           </SelectTrigger>

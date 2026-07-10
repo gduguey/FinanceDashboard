@@ -37,7 +37,12 @@ const UNCATEGORIZED = '__uncategorized__'
 const NO_SUBCATEGORY = '__no_subcategory__'
 const CONFIRMED = '__confirmed__'
 const SPLIT_LEG_PATTERN = /^(.+):split:\d+$/
-const PENDING_ITEMS: Record<string, string> = { [ALL]: 'All', ai: 'AI pending', pattern: 'Pattern pending', [CONFIRMED]: 'Confirmed' }
+const PENDING_ITEMS: Record<string, string> = {
+  [ALL]: 'All',
+  ai: 'AI pending',
+  pattern: 'Pattern pending',
+  [CONFIRMED]: 'Confirmed',
+}
 
 // A split leg's own id encodes the original posting it came from — used to
 // offer "undo split" on a leg row instead of "split" (splitting a leg
@@ -176,7 +181,9 @@ const TransactionRow = memo(function TransactionRow({
           />
         )}
       </TableCell>
-      <TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(posting.posted_at.slice(0, 10))}</TableCell>
+      <TableCell className="whitespace-nowrap text-muted-foreground">
+        {formatDate(posting.posted_at.slice(0, 10))}
+      </TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">
         {accountName}
         {resolvedByRuleLabel && (
@@ -206,7 +213,10 @@ const TransactionRow = memo(function TransactionRow({
             }
           />
         ) : (
-          <span className="text-xs text-muted-foreground" title="A transfer between two of your own accounts is never categorized">
+          <span
+            className="text-xs text-muted-foreground"
+            title="A transfer between two of your own accounts is never categorized"
+          >
             Transfer
           </span>
         )}
@@ -224,7 +234,11 @@ const TransactionRow = memo(function TransactionRow({
         )}
       </TableCell>
       <TableCell>
-        <TagsCell tagIds={posting.tag_ids} tags={tags} onChange={(tagIds) => onOverride(posting.posting_id, { tag_ids: tagIds })} />
+        <TagsCell
+          tagIds={posting.tag_ids}
+          tags={tags}
+          onChange={(tagIds) => onOverride(posting.posting_id, { tag_ids: tagIds })}
+        />
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-0.5">
@@ -337,9 +351,13 @@ function TransactionsTable({
     (postingId: string, override: ManualOverride) => setOverride.mutate({ postingId, override }),
     [setOverride],
   )
-  const handleUndoSplit = useCallback((originalPostingId: string) => deleteSplit.mutate(originalPostingId), [deleteSplit])
+  const handleUndoSplit = useCallback(
+    (originalPostingId: string) => deleteSplit.mutate(originalPostingId),
+    [deleteSplit],
+  )
   const handleToggleSelected = useCallback(
-    (postingId: string, selected: boolean) => setOverride.mutate({ postingId, override: { pending_selected: selected } }),
+    (postingId: string, selected: boolean) =>
+      setOverride.mutate({ postingId, override: { pending_selected: selected } }),
     [setOverride],
   )
 
@@ -405,12 +423,19 @@ function TransactionsTable({
   const filtered = useMemo(() => {
     return postings
       .filter((posting) => !PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id))
-      .filter((posting) => !onlyUncategorized || needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id)))
+      .filter(
+        (posting) =>
+          !onlyUncategorized || needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id)),
+      )
       .filter((posting) => posting.description.toLowerCase().includes(filters.search.toLowerCase()))
-      .filter((posting) => matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude))
+      .filter((posting) =>
+        matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude),
+      )
       .filter((posting) => {
         const actual =
-          filters.categoryFilter === UNCATEGORIZED ? posting.category_id === null : posting.category_id === filters.categoryFilter
+          filters.categoryFilter === UNCATEGORIZED
+            ? posting.category_id === null
+            : posting.category_id === filters.categoryFilter
         return matchesFilter(actual, filters.categoryFilter, filters.categoryExclude)
       })
       .filter((posting) => {
@@ -420,12 +445,16 @@ function TransactionsTable({
             : posting.subcategory_id === filters.subcategoryFilter
         return matchesFilter(actual, filters.subcategoryFilter, filters.subcategoryExclude)
       })
-      .filter((posting) => matchesFilter(posting.tag_ids.includes(filters.tagFilter), filters.tagFilter, filters.tagExclude))
+      .filter((posting) =>
+        matchesFilter(posting.tag_ids.includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
+      )
       .filter((posting) => !filters.startDate || posting.posted_at.slice(0, 10) >= filters.startDate)
       .filter((posting) => !filters.endDate || posting.posted_at.slice(0, 10) <= filters.endDate)
       .filter((posting) => {
         const actual =
-          filters.pendingFilter === CONFIRMED ? posting.pending_source === null : posting.pending_source === filters.pendingFilter
+          filters.pendingFilter === CONFIRMED
+            ? posting.pending_source === null
+            : posting.pending_source === filters.pendingFilter
         return matchesFilter(actual, filters.pendingFilter, filters.pendingExclude)
       })
   }, [postings, filters, onlyUncategorized, withSubcategories, realIds])
@@ -438,7 +467,10 @@ function TransactionsTable({
   const pendingInView = useMemo(() => sorted.filter((posting) => posting.pending_source !== null), [sorted])
   const allPendingSelected = pendingInView.length > 0 && pendingInView.every((posting) => posting.pending_selected)
   const somePendingSelected = pendingInView.some((posting) => posting.pending_selected)
-  const checkedPendingCount = useMemo(() => pendingInView.filter((posting) => posting.pending_selected).length, [pendingInView])
+  const checkedPendingCount = useMemo(
+    () => pendingInView.filter((posting) => posting.pending_selected).length,
+    [pendingInView],
+  )
 
   function handleValidateSelection() {
     validatePending.mutate(pendingInView.map((posting) => posting.posting_id))
@@ -463,7 +495,8 @@ function TransactionsTable({
   })
   const virtualRows = rowVirtualizer.getVirtualItems()
   const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
-  const paddingBottom = virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
+  const paddingBottom =
+    virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
 
   const selectAllRef = useRef<HTMLInputElement>(null)
   useEffect(() => {
@@ -484,11 +517,18 @@ function TransactionsTable({
               onClick={() => runBulkAiSuggest(bulkTargets)}
             >
               <Sparkles className="size-3.5" />
-              {bulkProgress ? `Suggesting ${bulkProgress.done}/${bulkProgress.total}…` : `AI suggest all (${bulkTargets.length})`}
+              {bulkProgress
+                ? `Suggesting ${bulkProgress.done}/${bulkProgress.total}…`
+                : `AI suggest all (${bulkTargets.length})`}
             </Button>
           )}
           {bulkTargets.length > 0 && (
-            <Button variant="outline" size="sm" disabled={bulkPatternSuggesting} onClick={() => runBulkPatternSuggest(bulkTargets)}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkPatternSuggesting}
+              onClick={() => runBulkPatternSuggest(bulkTargets)}
+            >
               <Sparkles className="size-3.5" />
               {bulkPatternSuggesting ? 'Matching patterns…' : `Run pattern suggestions (${bulkTargets.length})`}
             </Button>
@@ -584,25 +624,54 @@ function TransactionsTable({
                       />
                     )}
                   </TableHead>
-                  <SortableTableHead active={sort.key === 'posted_at'} desc={sort.desc} onClick={() => toggleSort('posted_at')}>
+                  <SortableTableHead
+                    active={sort.key === 'posted_at'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('posted_at')}
+                  >
                     Date
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'account_id'} desc={sort.desc} onClick={() => toggleSort('account_id')}>
+                  <SortableTableHead
+                    active={sort.key === 'account_id'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('account_id')}
+                  >
                     Account
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'description'} desc={sort.desc} onClick={() => toggleSort('description')}>
+                  <SortableTableHead
+                    active={sort.key === 'description'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('description')}
+                  >
                     Description
                   </SortableTableHead>
-                  <SortableTableHead align="right" active={sort.key === 'amount'} desc={sort.desc} onClick={() => toggleSort('amount')}>
+                  <SortableTableHead
+                    align="right"
+                    active={sort.key === 'amount'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('amount')}
+                  >
                     Amount
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'category_id'} desc={sort.desc} onClick={() => toggleSort('category_id')}>
+                  <SortableTableHead
+                    active={sort.key === 'category_id'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('category_id')}
+                  >
                     Category
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'subcategory_id'} desc={sort.desc} onClick={() => toggleSort('subcategory_id')}>
+                  <SortableTableHead
+                    active={sort.key === 'subcategory_id'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('subcategory_id')}
+                  >
                     Subcategory
                   </SortableTableHead>
-                  <SortableTableHead active={sort.key === 'tag_ids'} desc={sort.desc} onClick={() => toggleSort('tag_ids')}>
+                  <SortableTableHead
+                    active={sort.key === 'tag_ids'}
+                    desc={sort.desc}
+                    onClick={() => toggleSort('tag_ids')}
+                  >
                     Tags
                   </SortableTableHead>
                   <TableHead className="w-10" />
@@ -624,14 +693,19 @@ function TransactionsTable({
                       posting={posting}
                       accountName={accounts[posting.account_id]?.name ?? posting.account_id}
                       resolvedByRuleLabel={
-                        posting.resolved_by_transfer_rule_id ? (ruleLabelById.get(posting.resolved_by_transfer_rule_id) ?? posting.resolved_by_transfer_rule_id) : null
+                        posting.resolved_by_transfer_rule_id
+                          ? (ruleLabelById.get(posting.resolved_by_transfer_rule_id) ??
+                            posting.resolved_by_transfer_rule_id)
+                          : null
                       }
                       isRealIncomeExpense={realIds.has(posting.posting_id)}
                       categories={categories}
                       tags={tags}
                       withSubcategories={withSubcategories}
                       aiMessage={suggestMessages[posting.posting_id]}
-                      aiPending={aiSuggest.isPending || bulkSuggesting || patternSuggest.isPending || bulkPatternSuggesting}
+                      aiPending={
+                        aiSuggest.isPending || bulkSuggesting || patternSuggest.isPending || bulkPatternSuggesting
+                      }
                       aiAvailable={aiAvailable}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
@@ -651,7 +725,9 @@ function TransactionsTable({
           </div>
         )}
       </CardContent>
-      {splitting && <PostingSplitDialog posting={splitting} categories={categories} onClose={() => setSplitting(null)} />}
+      {splitting && (
+        <PostingSplitDialog posting={splitting} categories={categories} onClose={() => setSplitting(null)} />
+      )}
     </Card>
   )
 }

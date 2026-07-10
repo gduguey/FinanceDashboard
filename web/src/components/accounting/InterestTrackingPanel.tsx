@@ -49,21 +49,35 @@ export function InterestTrackingPanel() {
       <CardHeader>
         <CardTitle>Interest-bearing accounts</CardTitle>
         <CardDescription>
-          Realized interest this year, current APY vs. the HYSA benchmark, and a one-year projection at today's rate
-          — APY is entered by hand below and persists per account.
+          Realized interest this year, current APY vs. the HYSA benchmark, and a one-year projection at today's rate —
+          APY is entered by hand below and persists per account.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <Table>
           <TableHeader>
             <TableRow>
-              <SortableTableHead active={sort.key === 'account_name'} desc={sort.desc} onClick={() => toggleSort('account_name')}>
+              <SortableTableHead
+                active={sort.key === 'account_name'}
+                desc={sort.desc}
+                onClick={() => toggleSort('account_name')}
+              >
                 Account
               </SortableTableHead>
-              <SortableTableHead align="right" active={sort.key === 'current_balance'} desc={sort.desc} onClick={() => toggleSort('current_balance')}>
+              <SortableTableHead
+                align="right"
+                active={sort.key === 'current_balance'}
+                desc={sort.desc}
+                onClick={() => toggleSort('current_balance')}
+              >
                 Balance
               </SortableTableHead>
-              <SortableTableHead align="right" active={sort.key === 'apy_pct'} desc={sort.desc} onClick={() => toggleSort('apy_pct')}>
+              <SortableTableHead
+                align="right"
+                active={sort.key === 'apy_pct'}
+                desc={sort.desc}
+                onClick={() => toggleSort('apy_pct')}
+              >
                 APY
               </SortableTableHead>
               <TableHead className="text-right">vs. benchmark</TableHead>
@@ -91,7 +105,9 @@ export function InterestTrackingPanel() {
               return (
                 <TableRow key={row.account_id}>
                   <TableCell className="font-medium">{row.account_name}</TableCell>
-                  <TableCell className="text-right tabular-nums">{formatCurrency(row.current_balance, row.currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatCurrency(row.current_balance, row.currency)}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">
                     <div className="flex items-center justify-end gap-1">
                       <Input
@@ -104,7 +120,9 @@ export function InterestTrackingPanel() {
                       <span className="text-muted-foreground">%</span>
                     </div>
                   </TableCell>
-                  <TableCell className={`text-right tabular-nums ${delta === null ? 'text-muted-foreground' : signColor(delta)}`}>
+                  <TableCell
+                    className={`text-right tabular-nums ${delta === null ? 'text-muted-foreground' : signColor(delta)}`}
+                  >
                     {delta === null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} pts`}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">

@@ -99,8 +99,8 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
       <CardHeader>
         <CardTitle>Recurring additions</CardTitle>
         <CardDescription>
-          Run in this order whenever each one's schedule is due — a fixed-amount row funded first can leave less for
-          a lower one. Drag to reorder; only the bottom row may be "Remainder".
+          Run in this order whenever each one's schedule is due — a fixed-amount row funded first can leave less for a
+          lower one. Drag to reorder; only the bottom row may be "Remainder".
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -116,7 +116,10 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
               className="flex flex-wrap items-center gap-2 rounded-md border p-2"
             >
               <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
-              <Select value={addition.goal_id} onValueChange={(value) => value && update(addition.addition_id, { goal_id: value })}>
+              <Select
+                value={addition.goal_id}
+                onValueChange={(value) => value && update(addition.addition_id, { goal_id: value })}
+              >
                 <SelectTrigger size="sm" className="min-w-36">
                   <SelectValue items={Object.fromEntries(goalList.map((g) => [g.goal_id, g.name]))} />
                 </SelectTrigger>
@@ -139,17 +142,21 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
               </label>
               <Select
                 value={addition.frequency}
-                onValueChange={(value) => value && update(addition.addition_id, { frequency: value as RecurringAdditionFrequency })}
+                onValueChange={(value) =>
+                  value && update(addition.addition_id, { frequency: value as RecurringAdditionFrequency })
+                }
               >
                 <SelectTrigger size="sm" className="min-w-28">
                   <SelectValue items={FREQUENCY_LABELS} />
                 </SelectTrigger>
                 <SelectContent>
-                  {(Object.entries(FREQUENCY_LABELS) as [RecurringAdditionFrequency, string][]).map(([frequency, label]) => (
-                    <SelectItem key={frequency} value={frequency}>
-                      {label}
-                    </SelectItem>
-                  ))}
+                  {(Object.entries(FREQUENCY_LABELS) as [RecurringAdditionFrequency, string][]).map(
+                    ([frequency, label]) => (
+                      <SelectItem key={frequency} value={frequency}>
+                        {label}
+                      </SelectItem>
+                    ),
+                  )}
                 </SelectContent>
               </Select>
               <label className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -197,7 +204,13 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
   )
 }
 
-function WithdrawalPrioritiesList({ priorities, goals }: { priorities: WithdrawalPriorityEntry[]; goals: Record<string, Goal> }) {
+function WithdrawalPrioritiesList({
+  priorities,
+  goals,
+}: {
+  priorities: WithdrawalPriorityEntry[]
+  goals: Record<string, Goal>
+}) {
   const setPriorities = useSetWithdrawalPriorities()
   const ordered = [...priorities].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
@@ -221,8 +234,8 @@ function WithdrawalPrioritiesList({ priorities, goals }: { priorities: Withdrawa
       <CardHeader>
         <CardTitle>Withdrawal priority</CardTitle>
         <CardDescription>
-          If unallocated money ever goes negative, goals are drawn down in this order until it's back to zero (or
-          every listed goal is exhausted). Drag to reorder.
+          If unallocated money ever goes negative, goals are drawn down in this order until it's back to zero (or every
+          listed goal is exhausted). Drag to reorder.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">

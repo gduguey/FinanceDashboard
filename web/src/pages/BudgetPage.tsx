@@ -246,7 +246,10 @@ export function BudgetPage() {
       return general ? String(general.amount) : ''
     }
     const perMonth = (store?.budgets ?? []).find(
-      (budget) => budget.month === month && budget.category_id === categoryId && (budget.subcategory_id ?? null) === subcategoryId,
+      (budget) =>
+        budget.month === month &&
+        budget.category_id === categoryId &&
+        (budget.subcategory_id ?? null) === subcategoryId,
     )
     return perMonth ? String(perMonth.amount) : ''
   }
@@ -257,17 +260,32 @@ export function BudgetPage() {
     if (mode === 'general') {
       const key = subcategoryId ?? categoryId
       const next = { ...(store?.general_budgets ?? {}) }
-      if (isValid) next[key] = { category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }
+      if (isValid)
+        next[key] = { category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }
       else delete next[key]
       setGeneralBudgets.mutate(next)
       return
     }
     const otherEntries = (store?.budgets ?? []).filter(
-      (budget) => !(budget.month === month && budget.category_id === categoryId && (budget.subcategory_id ?? null) === subcategoryId),
+      (budget) =>
+        !(
+          budget.month === month &&
+          budget.category_id === categoryId &&
+          (budget.subcategory_id ?? null) === subcategoryId
+        ),
     )
     const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
     const thisEntry = isValid
-      ? [{ budget_id: budgetId, month, category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }]
+      ? [
+          {
+            budget_id: budgetId,
+            month,
+            category_id: categoryId,
+            subcategory_id: subcategoryId,
+            amount,
+            currency: displayCurrency,
+          },
+        ]
       : []
     setBudgets.mutate([...otherEntries, ...thisEntry])
   }
@@ -338,7 +356,9 @@ export function BudgetPage() {
                   variant="outline"
                   size="sm"
                   onClick={() =>
-                    setExpandedIds(expandedIds.size < expandableCategoryIds.length ? new Set(expandableCategoryIds) : new Set())
+                    setExpandedIds(
+                      expandedIds.size < expandableCategoryIds.length ? new Set(expandableCategoryIds) : new Set(),
+                    )
                   }
                   title={expandedIds.size < expandableCategoryIds.length ? 'Expand all' : 'Collapse all'}
                 >
@@ -400,7 +420,11 @@ export function BudgetPage() {
                           initialAmount={budgetedAmountFor(category.category_id, null)}
                           actual={actualByCategory.get(category.category_id) ?? 0}
                           displayCurrency={displayCurrency}
-                          expandable={subcategories.length > 0 ? { expanded, onToggle: () => toggleExpanded(category.category_id) } : undefined}
+                          expandable={
+                            subcategories.length > 0
+                              ? { expanded, onToggle: () => toggleExpanded(category.category_id) }
+                              : undefined
+                          }
                           onCommit={(value) => commitAmount(category.category_id, null, value)}
                         />
                         {expanded &&
@@ -432,15 +456,24 @@ export function BudgetPage() {
           // horizontal room for its flows to stay readable, which a
           // half-width grid column doesn't leave it.
           <div className="space-y-4">
-            <CashflowSankeyChart categoryTotals={actualCategoryTotals ?? []} displayCurrency={displayCurrency} title="Actual cash flow" />
-            <CashflowSankeyChart categoryTotals={budgetedSankeyRows} displayCurrency={displayCurrency} title="Budgeted cash flow" />
+            <CashflowSankeyChart
+              categoryTotals={actualCategoryTotals ?? []}
+              displayCurrency={displayCurrency}
+              title="Actual cash flow"
+            />
+            <CashflowSankeyChart
+              categoryTotals={budgetedSankeyRows}
+              displayCurrency={displayCurrency}
+              title="Budgeted cash flow"
+            />
           </div>
         )}
 
         {comparison.length > 0 && (
           <p className="text-center text-xs text-muted-foreground">
-            Budgeted {formatCurrency(budgetedTotal, displayCurrency)} vs. actual {formatCurrency(actualTotal, displayCurrency)} across{' '}
-            {comparison.length} budgeted categor{comparison.length === 1 ? 'y' : 'ies'} this month.
+            Budgeted {formatCurrency(budgetedTotal, displayCurrency)} vs. actual{' '}
+            {formatCurrency(actualTotal, displayCurrency)} across {comparison.length} budgeted categor
+            {comparison.length === 1 ? 'y' : 'ies'} this month.
           </p>
         )}
       </div>

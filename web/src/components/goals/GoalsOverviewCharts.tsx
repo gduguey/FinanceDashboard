@@ -27,7 +27,9 @@ export function GoalsBalancePieChart({
     ...goals
       .filter((goal) => (balances[goal.goal_id] ?? 0) > 0)
       .map((goal) => ({ key: goal.goal_id, name: goal.name, value: balances[goal.goal_id] ?? 0, color: goal.color })),
-    ...(unallocated > 0 ? [{ key: 'unallocated', name: 'Unallocated', value: unallocated, color: UNALLOCATED_COLOR }] : []),
+    ...(unallocated > 0
+      ? [{ key: 'unallocated', name: 'Unallocated', value: unallocated, color: UNALLOCATED_COLOR }]
+      : []),
   ]
   const total = pieSlices.reduce((sum, slice) => sum + slice.value, 0)
 
@@ -35,7 +37,9 @@ export function GoalsBalancePieChart({
     <Card className="gap-3">
       <CardHeader>
         <CardTitle>{mode === 'all_time' ? 'Where goal money sits' : 'This month’s allocations'}</CardTitle>
-        <CardDescription>{mode === 'all_time' ? 'Balances to date, including unallocated' : 'Contributions made this month'}</CardDescription>
+        <CardDescription>
+          {mode === 'all_time' ? 'Balances to date, including unallocated' : 'Contributions made this month'}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {pieSlices.length === 0 ? (
@@ -44,7 +48,15 @@ export function GoalsBalancePieChart({
           <div className="flex gap-4">
             <ResponsiveContainer width="100%" height={260} className="flex-1">
               <PieChart>
-                <Pie data={pieSlices} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} paddingAngle={1} label={false}>
+                <Pie
+                  data={pieSlices}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={50}
+                  outerRadius={90}
+                  paddingAngle={1}
+                  label={false}
+                >
                   {pieSlices.map((slice) => (
                     <Cell key={slice.key} fill={slice.color} />
                   ))}
@@ -109,10 +121,17 @@ export function GoalsBalanceBarChart({
           <ResponsiveContainer width="100%" height={Math.max(260, barData.length * 56)}>
             <BarChart data={barData} layout="vertical" margin={{ left: 24, right: 16, top: 4, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-              <XAxis type="number" domain={[0, 'auto']} tickFormatter={(value: number) => formatCurrencyCompact(value, displayCurrency)} />
+              <XAxis
+                type="number"
+                domain={[0, 'auto']}
+                tickFormatter={(value: number) => formatCurrencyCompact(value, displayCurrency)}
+              />
               <YAxis type="category" dataKey="name" width={100} />
               <Tooltip
-                formatter={(value, name) => [formatCurrency(Number(value), displayCurrency), name === 'balance' ? 'Balance' : 'Target']}
+                formatter={(value, name) => [
+                  formatCurrency(Number(value), displayCurrency),
+                  name === 'balance' ? 'Balance' : 'Target',
+                ]}
               />
               <Bar dataKey="balance" radius={[0, 4, 4, 0]}>
                 {barData.map((row) => (
@@ -151,8 +170,20 @@ export function GoalsOverviewCharts({
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <GoalsBalancePieChart goals={goals} balances={balances} unallocated={unallocated} mode={mode} displayCurrency={displayCurrency} />
-      <GoalsBalanceBarChart goals={goals} balances={balances} targets={targets} mode={mode} displayCurrency={displayCurrency} />
+      <GoalsBalancePieChart
+        goals={goals}
+        balances={balances}
+        unallocated={unallocated}
+        mode={mode}
+        displayCurrency={displayCurrency}
+      />
+      <GoalsBalanceBarChart
+        goals={goals}
+        balances={balances}
+        targets={targets}
+        mode={mode}
+        displayCurrency={displayCurrency}
+      />
     </div>
   )
 }

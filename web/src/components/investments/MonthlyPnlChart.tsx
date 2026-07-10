@@ -137,7 +137,13 @@ export function MonthlyPnlChart() {
       {bySymbol ? (
         <BarChart data={pivoted} margin={{ left: 8, right: 8, top: 20 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="month" tickFormatter={formatMonth} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="month"
+            tickFormatter={formatMonth}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis
             tickFormatter={(v) => formatUsd(v, true)}
             tick={{ fontSize: 12 }}
@@ -180,7 +186,13 @@ export function MonthlyPnlChart() {
       ) : (
         <BarChart data={aggregate.data} margin={{ left: 8, right: 8, top: 8 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="month" tickFormatter={formatMonth} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="month"
+            tickFormatter={formatMonth}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis
             tickFormatter={(v) => formatUsd(v, true)}
             tick={{ fontSize: 12 }}
