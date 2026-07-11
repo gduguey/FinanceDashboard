@@ -58,14 +58,16 @@ def _withholding_by_symbol_date(rows: pl.DataFrame) -> dict[tuple[str, date], fl
     dict[tuple[str, datetime.date], float]
         Total withheld amount per symbol per day.
     """
-    withholding: dict[tuple[str, date], float] = {}
     wh_rows = rows.filter(pl.col("event_type") == "WITHHOLDING")
     if wh_rows.is_empty():
-        return withholding
-    for r in wh_rows.with_columns(dt=pl.col("event_datetime").dt.date()).iter_rows(named=True):
-        key = (r["symbol"], r["dt"])
-        withholding[key] = withholding.get(key, 0.0) + r["amount"]
-    return withholding
+        return {}
+    grouped = (
+        wh_rows
+        .with_columns(dt=pl.col("event_datetime").dt.date())
+        .group_by(["symbol", "dt"])
+        .agg(pl.col("amount").sum())
+    )
+    return {(row["symbol"], row["dt"]): row["amount"] for row in grouped.iter_rows(named=True)}
 
 
 def replay_ledger(

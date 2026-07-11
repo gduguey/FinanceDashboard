@@ -94,6 +94,7 @@ export function GoalsBalanceBarChart({
   displayCurrency: CurrencyCode
 }) {
   const barData = goals.map((goal) => ({
+    id: goal.goal_id,
     name: goal.name,
     balance: balances[goal.goal_id] ?? 0,
     target: targets[goal.goal_id] ?? 0,
@@ -135,7 +136,7 @@ export function GoalsBalanceBarChart({
               />
               <Bar dataKey="balance" radius={[0, 4, 4, 0]}>
                 {barData.map((row) => (
-                  <Cell key={row.name} fill={row.color} />
+                  <Cell key={row.id} fill={row.color} />
                 ))}
               </Bar>
               <Bar dataKey="target" fill="#93c5fd" radius={[0, 4, 4, 0]} />
