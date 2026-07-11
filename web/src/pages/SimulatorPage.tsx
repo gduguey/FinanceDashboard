@@ -3,7 +3,6 @@ import { useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -126,7 +125,6 @@ export function SimulatorPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />

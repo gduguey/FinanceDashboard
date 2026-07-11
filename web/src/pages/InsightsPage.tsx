@@ -1,7 +1,6 @@
 import { DashboardTab } from '@/components/accounting/DashboardTab'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
@@ -21,7 +20,6 @@ export function InsightsPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />

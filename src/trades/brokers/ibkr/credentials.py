@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 BROKER_NAME = "ibkr"
+BROKER_DISPLAY_NAME = "IBKR"
 _REQUIRED_FIELDS = ("token", "query_id")
 
 

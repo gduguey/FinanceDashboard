@@ -11,9 +11,9 @@ wires price lookups; `dashboard/charts.py` pulls CPI and HYSA series.
 
 | Module | Source | Cached? | Update strategy |
 |--------|--------|---------|-----------------|
-| `prices.py` | Yahoo Finance chart API | Yes — per symbol | Incremental (missing ranges only) |
-| `cpi.py` | FRED CSV export | Yes — one file | Full re-fetch each sync |
-| `hysa_rates.py` | apyarchives.com (scraped) | Yes — one file | Full re-fetch each sync |
+| `prices.py` | Yahoo Finance chart API | Yes — per symbol | Incremental (missing ranges only), hourly |
+| `cpi.py` | FRED CSV export | Yes — one file | Full re-fetch, daily |
+| `hysa_rates.py` | apyarchives.com (scraped) | Yes — one file | Full re-fetch, daily |
 | `symbol_search.py` | Yahoo Finance search API | No | Live on each request |
 
 All cached data lives under `data/` (gitignored). See
@@ -61,8 +61,8 @@ We use the `query2` host; `query1` returned `429` consistently in testing.
 
 - `update_price_cache` / `update_adjusted_price_cache` fetch only the
   date range missing from the on-disk cache (`_missing_ranges`).
-- After the first backfill, a daily sync typically costs one small request
-  per symbol.
+- After the first backfill, an hourly cron run typically costs one small
+  request per symbol (see "Syncing market data" below).
 - Rows are validated through `PriceObservation` before writing.
 - Writes are atomic (temp file + rename).
 - `price_as_of(df, date)` returns the most recent close on or before the
@@ -77,9 +77,10 @@ One row per **trading day**, not calendar day.
 The Consumer Price Index from FRED's public CSV export — no API key needed.
 
 Unlike prices, the **whole series is re-fetched** on every
-`update_cpi_cache` call. FRED revises seasonal adjustments on
+`update_cpi_cache` call — run once a day by `trades.market_data.daily_sync`,
+not on every price refresh. FRED revises seasonal adjustments on
 already-published months, so an incremental fetch could miss a revision.
-The full series is small (a few hundred KB), so re-fetching is cheap.
+The full series is small (a few hundred KB), so re-fetching daily is cheap.
 
 ### Cache
 
@@ -114,8 +115,9 @@ A rate only gets a new row on the date it **changed**, not one row per day.
 Looking up "the rate on day X" means rolling back to the most recent row on
 or before X — same pattern as `price_as_of`.
 
-The whole file is re-fetched and overwritten on each sync (a bank's
-published history could be corrected upstream).
+The whole file is re-fetched and overwritten once a day, alongside CPI, by
+`trades.market_data.daily_sync` (a bank's published history could be
+corrected upstream).
 
 ### Dashboard usage
 
@@ -141,13 +143,36 @@ used by `GET /api/symbols/search` in `api.py`.
 
 ## Syncing market data
 
-The web dashboard's **Sync** button (`POST /sync` in `api.py`) refreshes
-everything in one action:
+There is no longer a single "Sync everything" action. The web dashboard's
+**Sync** button (`POST /api/sync` in `trades/api/routers/sync.py`) now only
+pulls the latest IBKR Flex Query statement into `ledger.csv` — it's a
+manual, on-demand action because that's the one leg worth watching a
+progress bar for.
 
-1. IBKR Flex Query pull → `ledger.csv`
-2. Price caches for all held symbols (+ benchmark)
-3. CPI cache (full re-fetch)
-4. HYSA rates cache (full re-fetch)
+Market data refreshes automatically instead, on cron, with no button:
+
+- **`trades.market_data.price_sync.run_price_sync`** — price caches for
+  every held symbol plus the benchmark (raw + adjusted). Run a few times a
+  day in a short window around US markets' 4pm ET close, not continuously
+  — see `docs/server-setup/maintenance.md` for exactly why (checking more
+  often than the data actually changes is wasted, and checking *during*
+  market hours risks caching a still-moving, not-yet-final price — see
+  `_SETTLEMENT_BUFFER_DAYS` in `prices.py`). The raw-close cache is
+  incremental (only the missing gap gets fetched, plus a trailing
+  buffer window that's always re-checked); the adjusted-close cache is
+  fully re-fetched every run instead, since Yahoo retroactively
+  recalculates historical adjusted values whenever a symbol pays a new
+  dividend or splits, and an incremental fetch would never notice.
+- **`trades.market_data.daily_sync.run_daily_market_data_sync`** — the
+  CPI cache and every bank's HYSA rate history (both full re-fetches,
+  cheap enough daily, no precise publication time worth chasing for
+  either).
+
+Every one of these also backs up its cache file to R2 (or local disk)
+after each successful write, and transparently restores from that backup
+if the file's ever found corrupted on disk (see `trades.utils.cache_backup`).
+
+See `docs/server-setup/maintenance.md` for the actual cron entries.
 
 Individual symbol pricing can also be refreshed on demand via
 `POST /api/symbols/{symbol}/ensure-priced` (e.g. after picking a new

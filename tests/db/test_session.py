@@ -1,6 +1,8 @@
-"""Tests for `db.session.get_db`: the Postgres session-variable wiring every RLS policy checks."""
+"""Tests for `db.session.get_db`/`session_scope`: the Postgres session-variable wiring every RLS policy checks."""
 
 from __future__ import annotations
+
+import uuid
 
 from sqlalchemy import Engine, text
 
@@ -25,3 +27,13 @@ def test_get_db_sets_the_current_user_id_session_variable(monkeypatch, _db_engin
     finally:
         session.rollback()
         session.close()
+
+
+def test_session_scope_sets_the_current_user_id_session_variable(monkeypatch, _db_engine: Engine) -> None:  # noqa: PT019 — needs the fixture's returned Engine, not just its setup side effect
+    monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+    user_id = uuid.uuid4()
+
+    with session_module.session_scope(user_id) as session:
+        current = session.execute(text("SELECT current_setting('app.current_user_id', true)")).scalar()
+        assert current == str(user_id)
+        session.rollback()

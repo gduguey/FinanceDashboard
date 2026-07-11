@@ -16,13 +16,17 @@ either package's copy without inverting that dependency direction (see
 
 from __future__ import annotations
 
-import subprocess  # noqa: S404 — used only via the fixed, non-shell argv in run_pg_dump below
+import subprocess  # noqa: S404 — used only via the fixed, non-shell argv in run_pg_dump/verify_backup_restorable below
+import tempfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 from db.settings import DatabaseSettings
 
@@ -72,6 +76,35 @@ def get_backup_r2_credentials() -> BackupR2Credentials:
     return BackupR2Credentials()
 
 
+def _libpq_url(database_url: str) -> str:
+    """Strip a SQLAlchemy driver suffix (e.g. `postgresql+psycopg://`) down to a plain `postgresql://` URL.
+
+    `pg_dump`/`pg_restore` link against libpq directly, not SQLAlchemy —
+    libpq's own URI parser only recognizes the bare `postgresql://`/
+    `postgres://` schemes. Handed a `+driver` suffix instead, it doesn't
+    raise a clear "invalid URL" error; it silently fails to parse the
+    string as a URI at all and treats the *entire string* as a literal
+    database name, attempting a default local-socket connection with that
+    as the dbname — a confusing, silent misbehavior, not a clean rejection
+    (confirmed directly: `pg_dump --dbname "postgresql+psycopg://..."`
+    tries to connect to the local socket and complains that a database
+    named `postgresql+psycopg://...` doesn't exist). This only matters for
+    local, non-Docker use of this module — `.env.docker` already uses the
+    plain scheme.
+
+    Parameters
+    ----------
+    database_url
+        Any `postgresql[+driver]://` connection string.
+
+    Returns
+    -------
+    str
+        The same URL with its scheme normalized to plain `postgresql://`.
+    """
+    return make_url(database_url).set(drivername="postgresql").render_as_string(hide_password=False)
+
+
 def run_pg_dump(database_url: str) -> bytes:
     """Run `pg_dump` against `database_url`, returning the dump's bytes (custom format).
 
@@ -82,8 +115,8 @@ def run_pg_dump(database_url: str) -> bytes:
     Parameters
     ----------
     database_url
-        A `postgresql://`/`postgresql+psycopg://` connection string —
-        `pg_dump` accepts either scheme's connection string form directly.
+        A `postgresql://`/`postgresql+psycopg://` connection string — either
+        form works, `_libpq_url` normalizes it before it ever reaches `pg_dump`.
 
     Returns
     -------
@@ -92,7 +125,7 @@ def run_pg_dump(database_url: str) -> bytes:
         with `pg_restore`, and far smaller than plain SQL text.
     """
     result = subprocess.run(  # noqa: S603 — fixed argv, no shell, database_url is our own config, not user input
-        ["pg_dump", "--format=custom", "--dbname", database_url],  # noqa: S607 — resolved via PATH, standard practice
+        ["pg_dump", "--format=custom", "--dbname", _libpq_url(database_url)],  # noqa: S607 — resolved via PATH
         capture_output=True,
         check=True,
     )
@@ -152,8 +185,114 @@ def upload_backup(data: bytes, relative_path: str, credentials: BackupR2Credenti
     return key
 
 
-def run_backup() -> str:
-    """Dump the whole database and upload it, end to end — the one function the cron entry calls.
+def verify_backup_restorable(dump: bytes) -> None:
+    """Prove a dump is actually restorable by restoring it into a disposable scratch database.
+
+    Connects to the Postgres *server* (not a specific app database) as
+    `DatabaseSettings`'s role — a cluster superuser in this project's
+    Docker setup, so it has the `CREATEDB`/`DROP DATABASE` privileges this
+    needs — via a maintenance connection pointed at the `postgres` system
+    database. `CREATE DATABASE` can't run inside a transaction block, so
+    the maintenance engine uses `AUTOCOMMIT`.
+
+    A failed `pg_restore` (`subprocess.CalledProcessError`) propagates
+    uncaught — a broken dump must surface loudly, never be swallowed. The
+    scratch database and temp file are always cleaned up in a `finally`
+    block, regardless of whether the restore succeeded.
+
+    Parameters
+    ----------
+    dump
+        The dump's bytes, in `pg_dump --format=custom` form (see `run_pg_dump`).
+    """
+    maintenance_url = make_url(DatabaseSettings().database_url).set(database="postgres")  # type: ignore[call-arg]
+    engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    scratch_db_name = f"backup_verify_{uuid.uuid4().hex}"
+    scratch_url = maintenance_url.set(database=scratch_db_name)
+
+    with engine.connect() as connection:
+        connection.execute(text(f'CREATE DATABASE "{scratch_db_name}"'))
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False)  # noqa: SIM115 — needs a stable path for pg_restore's argv
+    temp_path = Path(temp_file.name)
+    try:
+        temp_path.write_bytes(dump)
+        subprocess.run(  # noqa: S603 — fixed argv, no shell, every value is our own config, not user input
+            [  # noqa: S607 — resolved via PATH, standard practice
+                "pg_restore",
+                "--clean",
+                "--if-exists",
+                "--dbname",
+                _libpq_url(scratch_url.render_as_string(hide_password=False)),
+                str(temp_path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+    finally:
+        with engine.connect() as connection:
+            connection.execute(text(f'DROP DATABASE IF EXISTS "{scratch_db_name}" WITH (FORCE)'))
+        engine.dispose()
+        temp_path.unlink(missing_ok=True)
+
+
+def prune_old_backups(retention_count: int = 14, credentials: BackupR2Credentials | None = None) -> list[str]:
+    """Delete every backup beyond the newest `retention_count`, wherever they're stored.
+
+    Backups are named `{UTC timestamp}.dump` (see `backup_relative_path`),
+    which already sorts lexicographically the same as chronologically —
+    no separate timestamp parsing needed to find the newest ones.
+
+    Parameters
+    ----------
+    retention_count
+        How many of the newest backups to keep.
+    credentials
+        Defaults to `get_backup_r2_credentials()`; falls back to pruning
+        `_LOCAL_BACKUP_DIR` if R2 isn't configured, the same fallback
+        `upload_backup` uses.
+
+    Returns
+    -------
+    list[str]
+        Every backup that was deleted: local paths, or R2 keys.
+    """
+    resolved = credentials if credentials is not None else get_backup_r2_credentials()
+    if not resolved.configured():
+        backups = sorted(_LOCAL_BACKUP_DIR.glob("*.dump"), key=lambda path: path.name, reverse=True)
+        to_delete = backups[retention_count:]
+        for path in to_delete:
+            path.unlink()
+        return [str(path) for path in to_delete]
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=resolved.endpoint_url,
+        aws_access_key_id=resolved.access_key_id.get_secret_value() if resolved.access_key_id else None,
+        aws_secret_access_key=resolved.secret_access_key.get_secret_value() if resolved.secret_access_key else None,
+        region_name="auto",
+    )
+    response = client.list_objects_v2(Bucket=resolved.bucket_name, Prefix=f"{_R2_PREFIX}/")
+    keys = sorted((entry["Key"] for entry in response.get("Contents", [])), reverse=True)
+    to_delete_keys = keys[retention_count:]
+    for key in to_delete_keys:
+        client.delete_object(Bucket=resolved.bucket_name, Key=key)
+    return to_delete_keys
+
+
+def run_backup(retention_count: int = 14) -> str:
+    """Dump the whole database, verify it, upload it, then prune old backups — the one function the cron entry calls.
+
+    Order matters: the dump is verified restorable *before* it's uploaded
+    or anything is pruned. If verification raises, this stops immediately
+    — nothing is uploaded and no existing backup is touched, so a broken
+    dump can never replace or sit alongside a good one.
+
+    Parameters
+    ----------
+    retention_count
+        How many of the newest backups to keep after this one uploads;
+        passed straight through to `prune_old_backups`.
 
     Returns
     -------
@@ -161,10 +300,17 @@ def run_backup() -> str:
         Wherever the dump ended up (see `upload_backup`).
     """
     dump = run_pg_dump(DatabaseSettings().database_url)  # type: ignore[call-arg]  # see db.session.get_engine's own note
+    verify_backup_restorable(dump)
     relative_path = backup_relative_path(datetime.now(tz=UTC))
-    return upload_backup(dump, relative_path)
+    destination = upload_backup(dump, relative_path)
+    prune_old_backups(retention_count)
+    return destination
 
 
 if __name__ == "__main__":
-    destination = run_backup()
+    dump_bytes = run_pg_dump(DatabaseSettings().database_url)  # type: ignore[call-arg]
+    verify_backup_restorable(dump_bytes)
+    destination = upload_backup(dump_bytes, backup_relative_path(datetime.now(tz=UTC)))
+    pruned = prune_old_backups()
     print(f"Backed up to {destination}")  # noqa: T201 — this is a CLI entrypoint, not library code
+    print(f"Pruned {len(pruned)} old backup(s)")  # noqa: T201 — this is a CLI entrypoint, not library code

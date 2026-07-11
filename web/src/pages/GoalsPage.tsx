@@ -7,7 +7,6 @@ import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
 import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -320,7 +319,6 @@ export function GoalsPage() {
               <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
             </span>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />

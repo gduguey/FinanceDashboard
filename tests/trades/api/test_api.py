@@ -455,9 +455,7 @@ def test_ledger_export_returns_every_row(client) -> None:
     assert len(body) == len(LEDGER_ROWS)
 
 
-def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_network(
-    client, db_session, monkeypatch
-) -> None:
+def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_session, monkeypatch) -> None:
     save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
 
     def fake_sync(credentials, config, session, on_progress=None):
@@ -475,33 +473,23 @@ def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_netw
 
     sync_calls = []
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
-    raw_price_calls = []
-    monkeypatch.setattr(
-        trades_api.prices,
-        "update_price_caches",
-        lambda symbols, since, as_of, config: raw_price_calls.append(symbols) or {},
-    )
-    adjusted_price_calls = []
-    monkeypatch.setattr(
-        trades_api.prices,
-        "update_price_cache",
-        lambda symbol, since, as_of, config, adjusted=False: adjusted_price_calls.append((symbol, adjusted)),
-    )
-    cpi_calls = []
-    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", cpi_calls.append)
-    hysa_rates_calls = []
-    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", hysa_rates_calls.append)
+
+    def _must_not_be_called(*args, **kwargs):
+        message = "these caches now refresh via a standalone cron job, not /api/sync"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(trades_api.prices, "update_price_caches", _must_not_be_called)
+    monkeypatch.setattr(trades_api.prices, "update_price_cache", _must_not_be_called)
+    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", _must_not_be_called)
+    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", _must_not_be_called)
 
     response = client.post("/api/sync")
 
     assert response.status_code == 200
     assert len(sync_calls) == 1
-    assert raw_price_calls == [["VOO"]]
-    assert adjusted_price_calls == [("VOO", True)]
-    assert len(cpi_calls) == 1
-    assert len(hysa_rates_calls) == 1
     body = response.json()
-    assert body["symbols_refreshed"] == ["VOO"]
+    assert "symbols_refreshed" not in body
+    assert body["steps"] == [{"label": "IBKR data", "ok": True, "error": None}]
 
 
 def test_sync_progress_defaults_to_idle_and_done(client) -> None:
@@ -526,14 +514,6 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
         )
 
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
-    monkeypatch.setattr(trades_api.prices, "update_price_caches", lambda symbols, since, as_of, config: {})
-    monkeypatch.setattr(
-        trades_api.prices,
-        "update_price_cache",
-        lambda symbol, since, as_of, config, adjusted=False: None,
-    )
-    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", lambda config: None)
-    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", lambda config: None)
 
     client.post("/api/sync")
 
@@ -541,12 +521,11 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
     assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
 
 
-def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, db_session, monkeypatch) -> None:
-    """A bad IBKR token shouldn't hide whether prices/CPI/HYSA rates still refreshed.
+def test_sync_reports_a_failed_step_when_ibkr_fails(client, db_session, monkeypatch) -> None:
+    """A bad IBKR token still returns 200 — it's the one step's `ok` that reports it, not the HTTP status.
 
-    Each leg is independent now — the overall request still succeeds
-    (200), `steps` reports IBKR as the one failure, and the other legs
-    ran and reported success regardless.
+    `total_event_count` falls back to whatever's already in the ledger,
+    since IBKR itself never produced a fresh count.
     """
     save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
 
@@ -555,34 +534,16 @@ def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, 
         raise ValueError(message)
 
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", failing_sync)
-    price_calls = []
-    monkeypatch.setattr(
-        trades_api.prices, "update_price_caches", lambda symbols, since, as_of, config: price_calls.append(symbols)
-    )
-    monkeypatch.setattr(
-        trades_api.prices, "update_price_cache", lambda symbol, since, as_of, config, adjusted=False: None
-    )
-    cpi_calls = []
-    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", cpi_calls.append)
-    hysa_rates_calls = []
-    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", hysa_rates_calls.append)
 
     response = client.post("/api/sync")
 
     assert response.status_code == 200
-    steps = {step["label"]: step for step in response.json()["steps"]}
-    assert steps["Portfolio data"] == {
-        "label": "Portfolio data",
-        "ok": False,
-        "error": "IBKR Flex API error 1018: too many requests",
-    }
-    assert steps["Market prices"]["ok"] is True
-    assert steps["Benchmark prices"]["ok"] is True
-    assert steps["Inflation data"]["ok"] is True
-    assert steps["Savings rates"]["ok"] is True
-    assert len(price_calls) == 1
-    assert len(cpi_calls) == 1
-    assert len(hysa_rates_calls) == 1
+    body = response.json()
+    assert body["steps"] == [
+        {"label": "IBKR data", "ok": False, "error": "IBKR Flex API error 1018: too many requests"}
+    ]
+    assert body["total_event_count"] == len(LEDGER_ROWS)
+    assert body["new_event_count"] == 0
 
     # The sync as a *whole* still finished normally — only the individual
     # leg is what failed.

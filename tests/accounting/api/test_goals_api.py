@@ -115,7 +115,7 @@ def test_goals_summary_converts_into_the_requested_display_currency(client, monk
     monkeypatch.setattr(
         exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _fake_rate_history()
     )
-    client.post("/api/accounting/sync-exchange-rates")
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
     _import_checking(client)
     _create_goal(client)
     client.put(
