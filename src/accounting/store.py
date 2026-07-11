@@ -41,6 +41,7 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
+from db.base import derive_id, natural_keys_by_id
 from db.current_user import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
@@ -502,37 +503,61 @@ class AccountingStore(BaseModel):
     dismissed_suggestions: dict[str, DismissedSuggestion] = Field(default_factory=dict)
 
 
-def _account_from_row(row: adb.Account) -> Account:
+def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
+    return derive_id(user_id, "accounts", account_id)
+
+
+def _category_id(user_id: uuid.UUID, category_id: str | None) -> uuid.UUID | None:
+    return derive_id(user_id, "categories", category_id) if category_id is not None else None
+
+
+def _tag_id(user_id: uuid.UUID, tag_id: str) -> uuid.UUID:
+    return derive_id(user_id, "tags", tag_id)
+
+
+def _transaction_id(user_id: uuid.UUID, transaction_id: str) -> uuid.UUID:
+    return derive_id(user_id, "transactions", transaction_id)
+
+
+def _posting_id(user_id: uuid.UUID, posting_id: str) -> uuid.UUID:
+    return derive_id(user_id, "postings", posting_id)
+
+
+def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUID, str]) -> Account:
     return Account(
-        account_id=row.account_id,
+        account_id=row.natural_key,
         name=row.name,
         kind=row.kind,  # type: ignore[arg-type]
         institution=row.institution,
         currency=row.currency,  # type: ignore[arg-type]
-        parent_account_id=row.parent_account_id,
+        parent_account_id=account_natural_key_by_id.get(row.parent_account_id)
+        if row.parent_account_id is not None
+        else None,
         external_ref=row.external_ref,
         meta=row.meta,
         closed=row.closed,
     )
 
 
-def _category_from_row(row: adb.Category) -> Category:
+def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.UUID, str]) -> Category:
     return Category(
-        category_id=row.category_id,
+        category_id=row.natural_key,
         name=row.name,
         classification=row.classification,  # type: ignore[arg-type]
-        parent_category_id=row.parent_category_id,
+        parent_category_id=category_natural_key_by_id.get(row.parent_category_id)
+        if row.parent_category_id is not None
+        else None,
         color=row.color,
     )
 
 
-def _rule_from_row(row: adb.TransferRule) -> TransferRule:
+def _rule_from_row(row: adb.TransferRule, category_natural_key_by_id: dict[uuid.UUID, str]) -> TransferRule:
     return TransferRule(
-        rule_id=row.rule_id,
+        rule_id=row.natural_key,
         description_contains=row.description_contains,
         account_id=row.account_id,
-        category_id=row.category_id,
-        subcategory_id=row.subcategory_id,
+        category_id=category_natural_key_by_id.get(row.category_id) if row.category_id is not None else None,
+        subcategory_id=category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None,
         counterparty_account_id=row.counterparty_account_id,
         priority=row.priority,
         description=row.description,
@@ -540,26 +565,32 @@ def _rule_from_row(row: adb.TransferRule) -> TransferRule:
     )
 
 
-def _pattern_from_row(row: adb.CategoryPattern) -> CategoryPattern:
+def _pattern_from_row(row: adb.CategoryPattern, category_natural_key_by_id: dict[uuid.UUID, str]) -> CategoryPattern:
     return CategoryPattern(
-        pattern_id=row.pattern_id,
+        pattern_id=row.natural_key,
         description_contains=row.description_contains,
-        category_id=row.category_id,
-        subcategory_id=row.subcategory_id,
+        category_id=category_natural_key_by_id[row.category_id],
+        subcategory_id=category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None,
         priority=row.priority,
         active=row.active,
     )
 
 
-def _split_from_rows(posting_id: str, legs: Iterable[adb.PostingSplitLeg]) -> PostingSplit:
+def _split_from_rows(
+    posting_natural_key: str,
+    legs: Iterable[adb.PostingSplitLeg],
+    category_natural_key_by_id: dict[uuid.UUID, str],
+) -> PostingSplit:
     ordered = sorted(legs, key=lambda leg: leg.ordinal)
     return PostingSplit(
-        posting_id=posting_id,
+        posting_id=posting_natural_key,
         legs=[
             PostingSplitLeg(
                 amount=leg.amount,
-                category_id=leg.category_id,
-                subcategory_id=leg.subcategory_id,
+                category_id=category_natural_key_by_id.get(leg.category_id) if leg.category_id is not None else None,
+                subcategory_id=category_natural_key_by_id.get(leg.subcategory_id)
+                if leg.subcategory_id is not None
+                else None,
                 description=leg.description,
             )
             for leg in ordered
@@ -567,11 +598,13 @@ def _split_from_rows(posting_id: str, legs: Iterable[adb.PostingSplitLeg]) -> Po
     )
 
 
-def _merge_from_rows(row: adb.PostingMerge, duplicate_transaction_ids: list[str]) -> PostingMerge:
+def _merge_from_rows(
+    row: adb.PostingMerge, duplicate_ids: list[uuid.UUID], transaction_natural_key_by_id: dict[uuid.UUID, str]
+) -> PostingMerge:
     return PostingMerge(
-        merge_id=row.merge_id,
-        kept_transaction_id=row.kept_transaction_id,
-        duplicate_transaction_ids=duplicate_transaction_ids,
+        merge_id=row.natural_key,
+        kept_transaction_id=transaction_natural_key_by_id[row.kept_transaction_id],
+        duplicate_transaction_ids=[transaction_natural_key_by_id[duplicate_id] for duplicate_id in duplicate_ids],
         description=row.description,
     )
 
@@ -602,36 +635,46 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
     AccountingStore
         The persisted store, with default accounts/categories backfilled if missing.
     """
-    accounts = {row.account_id: _account_from_row(row) for row in session.query(adb.Account).filter_by(user_id=user_id)}
-    categories = {
-        row.category_id: _category_from_row(row) for row in session.query(adb.Category).filter_by(user_id=user_id)
-    }
-    if not accounts and not categories:
+    account_rows = list(session.query(adb.Account).filter_by(user_id=user_id))
+    category_rows = list(session.query(adb.Category).filter_by(user_id=user_id))
+    if not account_rows and not category_rows:
         store = AccountingStore(categories=default_categories(), accounts=default_accounts())
         save_store(store, session, user_id=user_id)
         return store
 
+    account_natural_key_by_id = {row.id: row.natural_key for row in account_rows}
+    category_natural_key_by_id = {row.id: row.natural_key for row in category_rows}
+    accounts = {row.natural_key: _account_from_row(row, account_natural_key_by_id) for row in account_rows}
+    categories = {row.natural_key: _category_from_row(row, category_natural_key_by_id) for row in category_rows}
+
     tags = {
-        row.tag_id: Tag(tag_id=row.tag_id, name=row.name) for row in session.query(adb.Tag).filter_by(user_id=user_id)
+        row.natural_key: Tag(tag_id=row.natural_key, name=row.name)
+        for row in session.query(adb.Tag).filter_by(user_id=user_id)
     }
-    rules = [_rule_from_row(row) for row in session.query(adb.TransferRule).filter_by(user_id=user_id)]
+    rules = [
+        _rule_from_row(row, category_natural_key_by_id)
+        for row in session.query(adb.TransferRule).filter_by(user_id=user_id)
+    ]
     category_patterns = {
-        row.pattern_id: _pattern_from_row(row) for row in session.query(adb.CategoryPattern).filter_by(user_id=user_id)
+        row.natural_key: _pattern_from_row(row, category_natural_key_by_id)
+        for row in session.query(adb.CategoryPattern).filter_by(user_id=user_id)
     }
     other_assets = [
-        OtherAsset(asset_id=row.asset_id, name=row.name, value=row.value, currency=row.currency, note=row.note)  # type: ignore[arg-type]
+        OtherAsset(asset_id=row.natural_key, name=row.name, value=row.value, currency=row.currency, note=row.note)  # type: ignore[arg-type]
         for row in session.query(adb.OtherAsset).filter_by(user_id=user_id)
     ]
     opening_balances = {
-        row.account_id: OpeningBalance(account_id=row.account_id, amount=row.amount, as_of_date=row.as_of_date)
+        account_natural_key_by_id[row.account_id]: OpeningBalance(
+            account_id=account_natural_key_by_id[row.account_id], amount=row.amount, as_of_date=row.as_of_date
+        )
         for row in session.query(adb.OpeningBalance).filter_by(user_id=user_id)
     }
     manual_transfers = [
         ManualTransfer(
-            transfer_id=row.transfer_id,
+            transfer_id=row.natural_key,
             date=row.date,
-            from_account_id=row.from_account_id,
-            to_account_id=row.to_account_id,
+            from_account_id=account_natural_key_by_id[row.from_account_id],
+            to_account_id=account_natural_key_by_id[row.to_account_id],
             from_amount=row.from_amount,
             to_amount=row.to_amount,
             description=row.description,
@@ -640,27 +683,34 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
     ]
     budgets = [
         Budget(
-            budget_id=row.budget_id,
+            budget_id=row.natural_key,
             month=row.month,
-            category_id=row.category_id,
-            subcategory_id=row.subcategory_id,
+            category_id=category_natural_key_by_id[row.category_id],
+            subcategory_id=category_natural_key_by_id.get(row.subcategory_id)
+            if row.subcategory_id is not None
+            else None,
             amount=row.amount,
             currency=row.currency,  # type: ignore[arg-type]
         )
         for row in session.query(adb.Budget).filter_by(user_id=user_id)
     ]
+    general_budget_rows = list(session.query(adb.GeneralBudget).filter_by(user_id=user_id))
     general_budgets = {
-        row.category_id if row.subcategory_id is None else row.subcategory_id: GeneralBudget(
-            category_id=row.category_id,
-            subcategory_id=row.subcategory_id,
+        category_natural_key_by_id[row.category_id]
+        if row.subcategory_id is None
+        else category_natural_key_by_id[row.subcategory_id]: GeneralBudget(
+            category_id=category_natural_key_by_id[row.category_id],
+            subcategory_id=category_natural_key_by_id.get(row.subcategory_id)
+            if row.subcategory_id is not None
+            else None,
             amount=row.amount,
             currency=row.currency,  # type: ignore[arg-type]
         )
-        for row in session.query(adb.GeneralBudget).filter_by(user_id=user_id)
+        for row in general_budget_rows
     }
     simulator_scenarios = [
         SimulatorScenario(
-            scenario_id=row.scenario_id,
+            scenario_id=row.natural_key,
             name=row.name,
             initial_capital=row.initial_capital,
             monthly_contribution=row.monthly_contribution,
@@ -671,24 +721,51 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
         )
         for row in session.query(adb.SimulatorScenario).filter_by(user_id=user_id)
     ]
-    posting_splits = {
-        posting_id: _split_from_rows(posting_id, legs)
-        for posting_id, legs in _group_by(
-            session.query(adb.PostingSplitLeg).filter_by(user_id=user_id), key=lambda leg: leg.posting_id
-        ).items()
+
+    split_leg_rows = list(session.query(adb.PostingSplitLeg).filter_by(user_id=user_id))
+    posting_split_rows = list(session.query(adb.PostingSplit).filter_by(user_id=user_id))
+    merge_rows = list(session.query(adb.PostingMerge).filter_by(user_id=user_id))
+    duplicate_rows = list(session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id))
+    goal_contribution_rows = list(session.query(adb.GoalContribution).filter_by(user_id=user_id))
+
+    posting_natural_key_by_id = natural_keys_by_id(
+        session,
+        adb.Posting,
+        user_id,
+        [split.posting_id for split in posting_split_rows]
+        + [contribution.source_posting_id for contribution in goal_contribution_rows],
+    )
+    transaction_natural_key_by_id = natural_keys_by_id(
+        session,
+        adb.Transaction,
+        user_id,
+        [merge.kept_transaction_id for merge in merge_rows]
+        + [duplicate.duplicate_transaction_id for duplicate in duplicate_rows],
+    )
+
+    posting_split_natural_key_by_id = {
+        split.id: posting_natural_key_by_id[split.posting_id] for split in posting_split_rows
     }
-    duplicates_by_merge: dict[str, list[adb.PostingMergeDuplicate]] = _group_by(
-        session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id), key=lambda row: row.merge_id
+    posting_splits = {
+        posting_split_natural_key_by_id[posting_split_id]: _split_from_rows(
+            posting_split_natural_key_by_id[posting_split_id], legs, category_natural_key_by_id
+        )
+        for posting_split_id, legs in _group_by(split_leg_rows, key=lambda leg: leg.posting_split_id).items()
+    }
+    duplicates_by_merge: dict[uuid.UUID, list[adb.PostingMergeDuplicate]] = _group_by(
+        duplicate_rows, key=lambda row: row.merge_id
     )
     posting_merges = {
-        row.merge_id: _merge_from_rows(
-            row, [dup.duplicate_transaction_id for dup in duplicates_by_merge.get(row.merge_id, [])]
+        row.natural_key: _merge_from_rows(
+            row,
+            [dup.duplicate_transaction_id for dup in duplicates_by_merge.get(row.id, [])],
+            transaction_natural_key_by_id,
         )
-        for row in session.query(adb.PostingMerge).filter_by(user_id=user_id)
+        for row in merge_rows
     }
     goals = {
-        row.goal_id: Goal(
-            goal_id=row.goal_id,
+        row.natural_key: Goal(
+            goal_id=row.natural_key,
             name=row.name,
             target_amount=row.target_amount,
             target_currency=row.target_currency,  # type: ignore[arg-type]
@@ -699,22 +776,24 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
         for row in session.query(adb.Goal).filter_by(user_id=user_id)
     }
     goal_contributions = {
-        row.contribution_id: GoalContribution(
-            contribution_id=row.contribution_id,
+        row.natural_key: GoalContribution(
+            contribution_id=row.natural_key,
             goal_id=row.goal_id,
             date=row.date,
             amount=row.amount,
             currency=row.currency,  # type: ignore[arg-type]
             note=row.note,
-            source_posting_id=row.source_posting_id,
+            source_posting_id=posting_natural_key_by_id.get(row.source_posting_id)
+            if row.source_posting_id is not None
+            else None,
             origin=row.origin,  # type: ignore[arg-type]
             edited=row.edited,
         )
-        for row in session.query(adb.GoalContribution).filter_by(user_id=user_id)
+        for row in goal_contribution_rows
     }
     recurring_additions = [
         RecurringAddition(
-            addition_id=row.addition_id,
+            addition_id=row.natural_key,
             goal_id=row.goal_id,
             start_date=row.start_date,
             frequency=row.frequency,  # type: ignore[arg-type]
@@ -731,8 +810,8 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
         for row in session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id)
     ]
     dismissed_suggestions = {
-        row.suggestion_id: DismissedSuggestion(
-            suggestion_id=row.suggestion_id,
+        row.natural_key: DismissedSuggestion(
+            suggestion_id=row.natural_key,
             kind=row.kind,  # type: ignore[arg-type]
             description=row.description,
             dismissed_at=row.dismissed_at,
@@ -767,17 +846,17 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
     return store
 
 
-def _group_by[T](rows: Iterable[T], key: Callable[[T], str]) -> dict[str, list[T]]:
-    grouped: dict[str, list[T]] = {}
+def _group_by[T, K](rows: Iterable[T], key: Callable[[T], K]) -> dict[K, list[T]]:
+    grouped: dict[K, list[T]] = {}
     for row in rows:
         grouped.setdefault(key(row), []).append(row)
     return grouped
 
 
 def _upsert_and_prune(
-    session: Session, model: type[Base], user_id: uuid.UUID, id_column: str, rows: Iterable[Base], keep_ids: set[str]
+    session: Session, model: type[Base], user_id: uuid.UUID, rows: Iterable[Base], keep_natural_keys: set[str]
 ) -> None:
-    """Insert-or-update every one of `rows`, then delete this user's rows of `model` not in `keep_ids`.
+    """Insert-or-update every one of `rows`, then delete this user's rows of `model` not in `keep_natural_keys`.
 
     Used only for `Account`/`Category`/`Tag` — every other entity in the
     store is safe to delete-all-then-reinsert (see `save_store`), but these
@@ -786,17 +865,23 @@ def _upsert_and_prune(
     still referenced by a real posting must fail loudly with a foreign key
     error instead of silently dropping ledger history's own referential
     integrity. `session.merge()` (not `add()`) is what makes this an
-    upsert rather than a duplicate-key error on a row that already exists.
+    upsert rather than a duplicate-key error on a row that already exists
+    — matching on `id`, which `db.base.derive_id` makes stable across calls
+    for the same natural key, so this still finds the same existing row
+    `account_id`/`category_id`/`tag_id` used to match on directly.
     """
     for row in rows:
         session.merge(row)
     session.flush()
-    existing_ids = {getattr(existing, id_column) for existing in session.query(model).filter_by(user_id=user_id)}
-    removed_ids = existing_ids - keep_ids
-    if removed_ids:
-        session.query(model).filter_by(user_id=user_id).filter(getattr(model, id_column).in_(removed_ids)).delete(
-            synchronize_session=False
-        )
+    existing_natural_keys = {
+        existing.natural_key  # type: ignore[attr-defined]
+        for existing in session.query(model).filter_by(user_id=user_id)
+    }
+    removed_natural_keys = existing_natural_keys - keep_natural_keys
+    if removed_natural_keys:
+        session.query(model).filter_by(user_id=user_id).filter(
+            model.natural_key.in_(removed_natural_keys)  # type: ignore[attr-defined]
+        ).delete(synchronize_session=False)
 
 
 def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> None:
@@ -847,11 +932,11 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         session,
         adb.Account,
         user_id,
-        "account_id",
         (
             adb.Account(
+                id=_account_id(user_id, account.account_id),
                 user_id=user_id,
-                account_id=account.account_id,
+                natural_key=account.account_id,
                 name=account.name,
                 kind=account.kind,
                 institution=account.institution,
@@ -870,16 +955,18 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         session,
         adb.Account,
         user_id,
-        "account_id",
         (
             adb.Account(
+                id=_account_id(user_id, account.account_id),
                 user_id=user_id,
-                account_id=account.account_id,
+                natural_key=account.account_id,
                 name=account.name,
                 kind=account.kind,
                 institution=account.institution,
                 currency=account.currency,
-                parent_account_id=account.parent_account_id,
+                parent_account_id=_account_id(user_id, account.parent_account_id)
+                if account.parent_account_id is not None
+                else None,
                 external_ref=account.external_ref,
                 meta=account.meta,
                 closed=account.closed,
@@ -894,11 +981,11 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         session,
         adb.Category,
         user_id,
-        "category_id",
         (
             adb.Category(
+                id=_category_id(user_id, category.category_id),
                 user_id=user_id,
-                category_id=category.category_id,
+                natural_key=category.category_id,
                 name=category.name,
                 classification=category.classification,
                 parent_category_id=None,
@@ -913,14 +1000,14 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         session,
         adb.Category,
         user_id,
-        "category_id",
         (
             adb.Category(
+                id=_category_id(user_id, category.category_id),
                 user_id=user_id,
-                category_id=category.category_id,
+                natural_key=category.category_id,
                 name=category.name,
                 classification=category.classification,
-                parent_category_id=category.parent_category_id,
+                parent_category_id=_category_id(user_id, category.parent_category_id),
                 color=category.color,
             )
             for category in store.categories.values()
@@ -933,15 +1020,18 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         session,
         adb.Tag,
         user_id,
-        "tag_id",
-        (adb.Tag(user_id=user_id, tag_id=tag.tag_id, name=tag.name) for tag in store.tags.values()),
+        (
+            adb.Tag(id=_tag_id(user_id, tag.tag_id), user_id=user_id, natural_key=tag.tag_id, name=tag.name)
+            for tag in store.tags.values()
+        ),
         set(store.tags.keys()),
     )
 
     session.add_all(
         adb.OtherAsset(
+            id=derive_id(user_id, "other_assets", asset.asset_id),
             user_id=user_id,
-            asset_id=asset.asset_id,
+            natural_key=asset.asset_id,
             name=asset.name,
             value=asset.value,
             currency=asset.currency,
@@ -951,8 +1041,9 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     )
     session.add_all(
         adb.SimulatorScenario(
+            id=derive_id(user_id, "simulator_scenarios", scenario.scenario_id),
             user_id=user_id,
-            scenario_id=scenario.scenario_id,
+            natural_key=scenario.scenario_id,
             name=scenario.name,
             initial_capital=scenario.initial_capital,
             monthly_contribution=scenario.monthly_contribution,
@@ -965,11 +1056,12 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     )
     session.add_all(
         adb.CategoryPattern(
+            id=derive_id(user_id, "category_patterns", pattern.pattern_id),
             user_id=user_id,
-            pattern_id=pattern.pattern_id,
+            natural_key=pattern.pattern_id,
             description_contains=pattern.description_contains,
-            category_id=pattern.category_id,
-            subcategory_id=pattern.subcategory_id,
+            category_id=_category_id(user_id, pattern.category_id),
+            subcategory_id=_category_id(user_id, pattern.subcategory_id),
             priority=pattern.priority,
             active=pattern.active,
         )
@@ -979,12 +1071,13 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
 
     session.add_all(
         adb.TransferRule(
+            id=derive_id(user_id, "transfer_rules", rule.rule_id),
             user_id=user_id,
-            rule_id=rule.rule_id,
+            natural_key=rule.rule_id,
             description_contains=rule.description_contains,
             account_id=rule.account_id,
-            category_id=rule.category_id,
-            subcategory_id=rule.subcategory_id,
+            category_id=_category_id(user_id, rule.category_id),
+            subcategory_id=_category_id(user_id, rule.subcategory_id),
             counterparty_account_id=rule.counterparty_account_id,
             priority=rule.priority,
             description=rule.description,
@@ -993,16 +1086,23 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         for rule in store.rules
     )
     session.add_all(
-        adb.OpeningBalance(user_id=user_id, account_id=ob.account_id, amount=ob.amount, as_of_date=ob.as_of_date)
+        adb.OpeningBalance(
+            id=derive_id(user_id, "opening_balances", ob.account_id),
+            user_id=user_id,
+            account_id=_account_id(user_id, ob.account_id),
+            amount=ob.amount,
+            as_of_date=ob.as_of_date,
+        )
         for ob in store.opening_balances.values()
     )
     session.add_all(
         adb.ManualTransfer(
+            id=derive_id(user_id, "manual_transfers", mt.transfer_id),
             user_id=user_id,
-            transfer_id=mt.transfer_id,
+            natural_key=mt.transfer_id,
             date=mt.date,
-            from_account_id=mt.from_account_id,
-            to_account_id=mt.to_account_id,
+            from_account_id=_account_id(user_id, mt.from_account_id),
+            to_account_id=_account_id(user_id, mt.to_account_id),
             from_amount=mt.from_amount,
             to_amount=mt.to_amount,
             description=mt.description,
@@ -1011,9 +1111,10 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     )
     session.add_all(
         adb.GeneralBudget(
+            id=derive_id(user_id, "general_budgets", f"{gb.category_id}:{gb.subcategory_id or ''}"),
             user_id=user_id,
-            category_id=gb.category_id,
-            subcategory_id=gb.subcategory_id,
+            category_id=_category_id(user_id, gb.category_id),
+            subcategory_id=_category_id(user_id, gb.subcategory_id),
             amount=gb.amount,
             currency=gb.currency,
         )
@@ -1023,11 +1124,12 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
 
     session.add_all(
         adb.Budget(
+            id=derive_id(user_id, "budgets", budget.budget_id),
             user_id=user_id,
-            budget_id=budget.budget_id,
+            natural_key=budget.budget_id,
             month=budget.month,
-            category_id=budget.category_id,
-            subcategory_id=budget.subcategory_id,
+            category_id=_category_id(user_id, budget.category_id),
+            subcategory_id=_category_id(user_id, budget.subcategory_id),
             amount=budget.amount,
             currency=budget.currency,
         )
@@ -1035,8 +1137,9 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     )
     session.add_all(
         adb.Goal(
+            id=derive_id(user_id, "goals", goal.goal_id),
             user_id=user_id,
-            goal_id=goal.goal_id,
+            natural_key=goal.goal_id,
             name=goal.name,
             target_amount=goal.target_amount,
             target_currency=goal.target_currency,
@@ -1049,13 +1152,19 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     session.flush()
 
     session.add_all(
-        adb.WithdrawalPriorityEntry(user_id=user_id, goal_id=entry.goal_id, priority=entry.priority)
+        adb.WithdrawalPriorityEntry(
+            id=derive_id(user_id, "withdrawal_priority_entries", entry.goal_id),
+            user_id=user_id,
+            goal_id=entry.goal_id,
+            priority=entry.priority,
+        )
         for entry in store.withdrawal_priorities
     )
     session.add_all(
         adb.RecurringAddition(
+            id=derive_id(user_id, "recurring_additions", addition.addition_id),
             user_id=user_id,
-            addition_id=addition.addition_id,
+            natural_key=addition.addition_id,
             goal_id=addition.goal_id,
             start_date=addition.start_date,
             frequency=addition.frequency,
@@ -1069,14 +1178,17 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     )
     session.add_all(
         adb.GoalContribution(
+            id=derive_id(user_id, "goal_contributions", contribution.contribution_id),
             user_id=user_id,
-            contribution_id=contribution.contribution_id,
+            natural_key=contribution.contribution_id,
             goal_id=contribution.goal_id,
             date=contribution.date,
             amount=contribution.amount,
             currency=contribution.currency,
             note=contribution.note,
-            source_posting_id=contribution.source_posting_id,
+            source_posting_id=_posting_id(user_id, contribution.source_posting_id)
+            if contribution.source_posting_id is not None
+            else None,
             origin=contribution.origin,
             edited=contribution.edited,
         )
@@ -1084,27 +1196,38 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     )
     session.add_all(
         adb.PostingMerge(
+            id=derive_id(user_id, "posting_merges", merge.merge_id),
             user_id=user_id,
-            merge_id=merge.merge_id,
-            kept_transaction_id=merge.kept_transaction_id,
+            natural_key=merge.merge_id,
+            kept_transaction_id=_transaction_id(user_id, merge.kept_transaction_id),
             description=merge.description,
         )
         for merge in store.posting_merges.values()
     )
+    session.add_all(
+        adb.PostingSplit(
+            id=derive_id(user_id, "posting_splits", split.posting_id),
+            user_id=user_id,
+            posting_id=_posting_id(user_id, split.posting_id),
+        )
+        for split in store.posting_splits.values()
+    )
     session.flush()
 
     session.add_all(
-        adb.PostingMergeDuplicate(user_id=user_id, merge_id=merge.merge_id, duplicate_transaction_id=duplicate_id)
+        adb.PostingMergeDuplicate(
+            user_id=user_id,
+            merge_id=derive_id(user_id, "posting_merges", merge.merge_id),
+            duplicate_transaction_id=_transaction_id(user_id, duplicate_id),
+        )
         for merge in store.posting_merges.values()
         for duplicate_id in merge.duplicate_transaction_ids
     )
     session.add_all(
-        adb.PostingSplit(user_id=user_id, posting_id=split.posting_id) for split in store.posting_splits.values()
-    )
-    session.add_all(
         adb.DismissedSuggestion(
+            id=derive_id(user_id, "dismissed_suggestions", s.suggestion_id),
             user_id=user_id,
-            suggestion_id=s.suggestion_id,
+            natural_key=s.suggestion_id,
             kind=s.kind,
             description=s.description,
             dismissed_at=s.dismissed_at,
@@ -1116,11 +1239,11 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     session.add_all(
         adb.PostingSplitLeg(
             user_id=user_id,
-            posting_id=split.posting_id,
+            posting_split_id=derive_id(user_id, "posting_splits", split.posting_id),
             ordinal=ordinal,
             amount=leg.amount,
-            category_id=leg.category_id,
-            subcategory_id=leg.subcategory_id,
+            category_id=_category_id(user_id, leg.category_id),
+            subcategory_id=_category_id(user_id, leg.subcategory_id),
             description=leg.description,
         )
         for split in store.posting_splits.values()
@@ -1131,6 +1254,12 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
 
 def load_overrides(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> dict[str, ManualOverride]:
     """Read every persisted manual per-posting override.
+
+    Merges `PostingOverride` (persistent corrections) and
+    `PostingPendingSuggestion` (transient, not-yet-confirmed automation
+    state) back into one `ManualOverride` per posting — the split only
+    exists at the storage layer (see `accounting.db.corrections`), never
+    in the pydantic shape every caller of this function already expects.
 
     Parameters
     ----------
@@ -1144,25 +1273,69 @@ def load_overrides(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> di
     dict[str, ManualOverride]
         Keyed by `posting_id`; empty if nothing has been overridden yet.
     """
-    return {
-        row.posting_id: ManualOverride(
-            account_id=row.account_id,
-            category_id=row.category_id,
-            subcategory_id=row.subcategory_id,
-            tag_ids=row.tag_ids_override,
-            pending_source=row.pending_source,  # type: ignore[arg-type]
-            pending_selected=row.pending_selected,
-            pending_previous_category_id=row.pending_previous_category_id,
-            pending_previous_subcategory_id=row.pending_previous_subcategory_id,
+    override_rows = list(session.query(adb.PostingOverride).filter_by(user_id=user_id))
+    pending_rows = list(session.query(adb.PostingPendingSuggestion).filter_by(user_id=user_id))
+
+    posting_natural_key_by_id = natural_keys_by_id(
+        session,
+        adb.Posting,
+        user_id,
+        [row.posting_id for row in override_rows] + [row.posting_id for row in pending_rows],
+    )
+    account_natural_key_by_id = natural_keys_by_id(
+        session, adb.Account, user_id, [row.account_id for row in override_rows]
+    )
+    category_natural_key_by_id = natural_keys_by_id(
+        session,
+        adb.Category,
+        user_id,
+        [row.category_id for row in override_rows]
+        + [row.subcategory_id for row in override_rows]
+        + [row.previous_category_id for row in pending_rows]
+        + [row.previous_subcategory_id for row in pending_rows],
+    )
+
+    overrides: dict[str, ManualOverride] = {}
+    for override_row in override_rows:
+        overrides[posting_natural_key_by_id[override_row.posting_id]] = ManualOverride(
+            account_id=account_natural_key_by_id.get(override_row.account_id)
+            if override_row.account_id is not None
+            else None,
+            category_id=category_natural_key_by_id.get(override_row.category_id)
+            if override_row.category_id is not None
+            else None,
+            subcategory_id=category_natural_key_by_id.get(override_row.subcategory_id)
+            if override_row.subcategory_id is not None
+            else None,
+            tag_ids=override_row.tag_ids_override,
         )
-        for row in session.query(adb.ManualOverride).filter_by(user_id=user_id)
-    }
+    for pending_row in pending_rows:
+        posting_key = posting_natural_key_by_id[pending_row.posting_id]
+        overrides[posting_key] = overrides.get(posting_key, ManualOverride()).model_copy(
+            update={
+                "pending_source": pending_row.source,
+                "pending_selected": pending_row.selected,
+                "pending_previous_category_id": category_natural_key_by_id.get(pending_row.previous_category_id)
+                if pending_row.previous_category_id is not None
+                else None,
+                "pending_previous_subcategory_id": category_natural_key_by_id.get(pending_row.previous_subcategory_id)
+                if pending_row.previous_subcategory_id is not None
+                else None,
+            }
+        )
+    return overrides
 
 
 def save_overrides(
     overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
 ) -> None:
     """Persist every manual per-posting override, overwriting whatever was saved before.
+
+    Writes a `PostingOverride` row only when at least one actual
+    correction field is set, and a `PostingPendingSuggestion` row only
+    when `pending_source` is set (that table's `source` column is
+    `NOT NULL` — a pending suggestion that isn't actually pending isn't a
+    row at all, not a row with `source=None`).
 
     Parameters
     ----------
@@ -1173,20 +1346,35 @@ def save_overrides(
     user_id
         Whose overrides these are. See `load_store` for why it defaults.
     """
-    session.query(adb.ManualOverride).filter_by(user_id=user_id).delete()
+    session.query(adb.PostingOverride).filter_by(user_id=user_id).delete()
+    session.query(adb.PostingPendingSuggestion).filter_by(user_id=user_id).delete()
+
     session.add_all(
-        adb.ManualOverride(
+        adb.PostingOverride(
             user_id=user_id,
-            posting_id=posting_id,
-            account_id=override.account_id,
-            category_id=override.category_id,
-            subcategory_id=override.subcategory_id,
+            posting_id=_posting_id(user_id, posting_id),
+            account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
+            category_id=_category_id(user_id, override.category_id),
+            subcategory_id=_category_id(user_id, override.subcategory_id),
             tag_ids_override=override.tag_ids,
-            pending_source=override.pending_source,
-            pending_selected=override.pending_selected,
-            pending_previous_category_id=override.pending_previous_category_id,
-            pending_previous_subcategory_id=override.pending_previous_subcategory_id,
         )
         for posting_id, override in overrides.items()
+        if override.account_id is not None
+        or override.category_id is not None
+        or override.subcategory_id is not None
+        or override.tag_ids is not None
     )
+    session.add_all(
+        adb.PostingPendingSuggestion(
+            user_id=user_id,
+            posting_id=_posting_id(user_id, posting_id),
+            source=override.pending_source,
+            selected=override.pending_selected,
+            previous_category_id=_category_id(user_id, override.pending_previous_category_id),
+            previous_subcategory_id=_category_id(user_id, override.pending_previous_subcategory_id),
+        )
+        for posting_id, override in overrides.items()
+        if override.pending_source is not None
+    )
+    session.commit()
     session.commit()

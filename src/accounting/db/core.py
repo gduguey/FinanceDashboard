@@ -1,9 +1,12 @@
 """The core ledger: accounts, categories, tags, transactions, and their postings.
 
-Mirrors `accounting.models`' `Account`/`Category`/`Tag`/`Posting` one for
-one — see `DATABASE_SCHEMA.md` for the full design rationale (composite
-`(user_id, ..._id)` primary keys, `transactions` reified as a real table,
-`tag_ids` normalized into a join table instead of an array).
+Every table's primary key is a surrogate `id`, never `(user_id, ..._id)` —
+see `db.base.derive_id`'s docstring for why a deterministic hash of the old
+human-chosen string, not a random default, is what makes that safe for
+tables `accounting.store` rewrites wholesale on every save. `natural_key`
+is that human-chosen string (what used to be `account_id`, `category_id`,
+...), kept as a plain column with a `UNIQUE(user_id, natural_key)`
+constraint instead of being the primary key itself.
 """
 
 from __future__ import annotations
@@ -12,10 +15,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql.elements import conv
 
 from accounting.models import AccountKind, CategoryClassification, CurrencyCode
 from db.base import MONEY, Base, check_in_sql
@@ -28,23 +30,22 @@ class Account(Base):
 
     __tablename__ = "accounts"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "parent_account_id"], [f"{SCHEMA}.accounts.user_id", f"{SCHEMA}.accounts.account_id"]
-        ),
         CheckConstraint(check_in_sql("kind", get_args(AccountKind)), name="kind"),
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        UniqueConstraint("user_id", "natural_key", name="uq_accounts_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    account_id: Mapped[str] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     name: Mapped[str]
     kind: Mapped[str]
     institution: Mapped[str]
     currency: Mapped[str]
-    parent_account_id: Mapped[str | None] = mapped_column(default=None)
+    parent_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"), default=None
+    )
     external_ref: Mapped[str | None] = mapped_column(default=None)
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     closed: Mapped[bool] = mapped_column(default=False)
@@ -55,20 +56,19 @@ class Category(Base):
 
     __tablename__ = "categories"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "parent_category_id"], [f"{SCHEMA}.categories.user_id", f"{SCHEMA}.categories.category_id"]
-        ),
         CheckConstraint(check_in_sql("classification", get_args(CategoryClassification)), name="classification"),
+        UniqueConstraint("user_id", "natural_key", name="uq_categories_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    category_id: Mapped[str] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     name: Mapped[str]
     classification: Mapped[str]
-    parent_category_id: Mapped[str | None] = mapped_column(default=None)
+    parent_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
+    )
     color: Mapped[str]
 
 
@@ -76,12 +76,14 @@ class Tag(Base):
     """A cross-cutting label — a trip, a move, an event — independent of the category tree."""
 
     __tablename__ = "tags"
-    __table_args__ = {"schema": SCHEMA}
-
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    __table_args__ = (
+        UniqueConstraint("user_id", "natural_key", name="uq_tags_user_natural_key"),
+        {"schema": SCHEMA},
     )
-    tag_id: Mapped[str] = mapped_column(primary_key=True)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     name: Mapped[str]
 
 
@@ -90,56 +92,53 @@ class Transaction(Base):
 
     Doesn't exist as a pydantic model today — `transaction_id` is just a
     string `Posting`s happen to share. Reified here so it's a real
-    foreign-key target instead of an unenforced convention (see
-    `DATABASE_SCHEMA.md`).
+    foreign-key target instead of an unenforced convention.
     """
 
     __tablename__ = "transactions"
-    __table_args__ = {"schema": SCHEMA}
-
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    __table_args__ = (
+        UniqueConstraint("user_id", "natural_key", name="uq_transactions_user_natural_key"),
+        {"schema": SCHEMA},
     )
-    transaction_id: Mapped[str] = mapped_column(primary_key=True)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(UTC))
 
 
 class Posting(Base):
-    """One leg of one economic event — one row, like `trades.db.LedgerEvent`."""
+    """One leg of one economic event — one row, like `trades.db.LedgerEvent`.
+
+    `budget_id` deliberately has no foreign key to `budgets` — same
+    "forward reference, no existence check" reasoning as
+    `TransferRule.account_id` — so it stays a bare nullable string (a
+    budget's own `natural_key`), not a derived FK column.
+    """
 
     __tablename__ = "postings"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "transaction_id"], [f"{SCHEMA}.transactions.user_id", f"{SCHEMA}.transactions.transaction_id"]
-        ),
-        ForeignKeyConstraint(
-            ["user_id", "account_id"], [f"{SCHEMA}.accounts.user_id", f"{SCHEMA}.accounts.account_id"]
-        ),
-        ForeignKeyConstraint(
-            ["user_id", "category_id"],
-            [f"{SCHEMA}.categories.user_id", f"{SCHEMA}.categories.category_id"],
-            name=conv("fk_postings_category_id"),
-        ),
-        ForeignKeyConstraint(
-            ["user_id", "subcategory_id"],
-            [f"{SCHEMA}.categories.user_id", f"{SCHEMA}.categories.category_id"],
-            name=conv("fk_postings_subcategory_id"),
-        ),
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        UniqueConstraint("user_id", "natural_key", name="uq_postings_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
+    transaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
     )
-    posting_id: Mapped[str] = mapped_column(primary_key=True)
-    transaction_id: Mapped[str]
-    account_id: Mapped[str]
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
     posted_at: Mapped[datetime]
     amount: Mapped[float] = mapped_column(MONEY)
     currency: Mapped[str]
-    category_id: Mapped[str | None] = mapped_column(default=None)
-    subcategory_id: Mapped[str | None] = mapped_column(default=None)
+    category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
+    )
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
+    )
     budget_id: Mapped[str | None] = mapped_column(default=None)
     description: Mapped[str] = mapped_column(default="")
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
@@ -150,18 +149,16 @@ class PostingTag(Base):
 
     __tablename__ = "posting_tags"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "posting_id"], [f"{SCHEMA}.postings.user_id", f"{SCHEMA}.postings.posting_id"]
-        ),
-        ForeignKeyConstraint(["user_id", "tag_id"], [f"{SCHEMA}.tags.user_id", f"{SCHEMA}.tags.tag_id"]),
+        UniqueConstraint("user_id", "posting_id", "tag_id", name="uq_posting_tags_user_posting_tag"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    posting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE")
     )
-    posting_id: Mapped[str] = mapped_column(primary_key=True)
-    tag_id: Mapped[str] = mapped_column(primary_key=True)
+    tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
 
 
 class OpeningBalance(Base):
@@ -169,16 +166,15 @@ class OpeningBalance(Base):
 
     __tablename__ = "opening_balances"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "account_id"], [f"{SCHEMA}.accounts.user_id", f"{SCHEMA}.accounts.account_id"]
-        ),
+        UniqueConstraint("user_id", "account_id", name="uq_opening_balances_user_account"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id", ondelete="CASCADE")
     )
-    account_id: Mapped[str] = mapped_column(primary_key=True)
     amount: Mapped[float] = mapped_column(MONEY)
     as_of_date: Mapped[datetime]
 
@@ -188,26 +184,16 @@ class ManualTransfer(Base):
 
     __tablename__ = "manual_transfers"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["user_id", "from_account_id"],
-            [f"{SCHEMA}.accounts.user_id", f"{SCHEMA}.accounts.account_id"],
-            name=conv("fk_manual_transfers_from_account_id"),
-        ),
-        ForeignKeyConstraint(
-            ["user_id", "to_account_id"],
-            [f"{SCHEMA}.accounts.user_id", f"{SCHEMA}.accounts.account_id"],
-            name=conv("fk_manual_transfers_to_account_id"),
-        ),
+        UniqueConstraint("user_id", "natural_key", name="uq_manual_transfers_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    transfer_id: Mapped[str] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     date: Mapped[datetime]
-    from_account_id: Mapped[str]
-    to_account_id: Mapped[str]
+    from_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
+    to_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
     from_amount: Mapped[float] = mapped_column(MONEY)
     to_amount: Mapped[float] = mapped_column(MONEY)
     description: Mapped[str] = mapped_column(default="")
@@ -219,13 +205,13 @@ class OtherAsset(Base):
     __tablename__ = "other_assets"
     __table_args__ = (
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        UniqueConstraint("user_id", "natural_key", name="uq_other_assets_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    asset_id: Mapped[str] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     name: Mapped[str]
     value: Mapped[float] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")

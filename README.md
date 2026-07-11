@@ -124,6 +124,31 @@ from the web dashboard's Settings page — see
 [docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) for exactly
 where to find IBKR's token/query ID.
 
+### Archiving raw statements to S3-compatible storage (optional)
+
+Every raw broker/bank statement ever imported gets archived verbatim
+(never overwritten) before anything derives data from it. By default —
+with no further setup — this is written to local disk, under `data/`.
+
+Optionally, set these five in `.env`/`.env.docker` to archive to an
+S3-compatible bucket instead:
+
+```
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET_NAME=...
+R2_ENDPOINT_URL=...
+```
+
+These are named `R2_*` because this project's own deployment uses
+Cloudflare R2, but the code underneath just talks plain S3 — point
+`R2_ENDPOINT_URL` at any S3-compatible provider (AWS S3 itself, MinIO,
+Backblaze B2, ...) with that provider's own access key/secret, and it
+works the same way; nothing about the code is Cloudflare-specific. If any
+of the five are left unset, archiving falls back to local disk under
+`data/` automatically — no error, no extra step required.
+
 ## Keeping the data fresh
 
 - **Trade/cash ledger** — lives in Postgres, refreshed by clicking

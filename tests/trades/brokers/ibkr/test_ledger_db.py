@@ -122,3 +122,26 @@ def test_write_ledger_reuses_the_same_default_broker_connection_across_calls(
 
     connections = db_session.query(tdb.BrokerConnection).filter_by(user_id=test_user_id).all()
     assert len(connections) == 1
+
+
+def test_a_buy_event_gets_a_trade_details_row_but_a_deposit_does_not(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _write_ledger(
+        _frame(
+            _event("ibkr:9001", event_type="BUY", shares=2.0, price=500.0, amount=1000.0),
+            _event("ibkr:9002", event_type="DEPOSIT", shares=None, price=None, amount=2000.0),
+        ),
+        db_session,
+        user_id=test_user_id,
+    )
+
+    buy_event = db_session.query(tdb.LedgerEvent).filter_by(user_id=test_user_id, natural_key="ibkr:9001").one()
+    deposit_event = db_session.query(tdb.LedgerEvent).filter_by(user_id=test_user_id, natural_key="ibkr:9002").one()
+
+    buy_details = db_session.get(tdb.LedgerEventTradeDetails, buy_event.id)
+    assert buy_details is not None
+    assert buy_details.shares == pytest.approx(2.0)
+    assert buy_details.price == pytest.approx(500.0)
+
+    assert db_session.get(tdb.LedgerEventTradeDetails, deposit_event.id) is None

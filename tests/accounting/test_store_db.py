@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import accounting.db as adb
 import db.models
+from db.base import derive_id
 from accounting.models import (
     Account,
     Budget,
@@ -75,14 +76,16 @@ def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, pos
             }
         )
         save_store(store, session, user_id=user_id)
-    session.add(adb.Transaction(user_id=user_id, transaction_id=transaction_id))
+    transaction_uuid = derive_id(user_id, "transactions", transaction_id)
+    session.add(adb.Transaction(id=transaction_uuid, user_id=user_id, natural_key=transaction_id))
     session.flush()
     session.add(
         adb.Posting(
+            id=derive_id(user_id, "postings", posting_id),
             user_id=user_id,
-            posting_id=posting_id,
-            transaction_id=transaction_id,
-            account_id="checking:test",
+            natural_key=posting_id,
+            transaction_id=transaction_uuid,
+            account_id=derive_id(user_id, "accounts", "checking:test"),
             posted_at=datetime(2026, 1, 1, tzinfo=UTC),
             amount=10,
             currency="USD",
@@ -102,7 +105,7 @@ def test_load_store_with_no_data_yet_seeds_defaults(db_session: Session, test_us
 def test_load_store_seeds_only_once_and_persists(db_session: Session, test_user_id: uuid.UUID) -> None:
     load_store(db_session, user_id=test_user_id)
     persisted = db_session.query(adb.Account).filter_by(user_id=test_user_id).all()
-    assert {a.account_id for a in persisted} >= {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID}
+    assert {a.natural_key for a in persisted} >= {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID}
 
 
 def test_save_then_load_store_round_trips_a_custom_category(db_session: Session, test_user_id: uuid.UUID) -> None:

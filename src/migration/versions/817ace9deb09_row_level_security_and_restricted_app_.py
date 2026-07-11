@@ -19,17 +19,56 @@ migration, so it owns every table, and the `postgres:16-alpine` image's
 `POSTGRES_USER` becomes a cluster superuser on top of that. So this
 migration also creates `app_runtime`, an ordinary non-superuser,
 non-owner role with only `SELECT`/`INSERT`/`UPDATE`/`DELETE` granted — RLS
-applies to it unconditionally, no `FORCE` needed. Its generated password
-is printed once, to this migration's own output, for the operator to copy
-into `.env`'s `DATABASE_URL_APP` (see `db.settings.DatabaseSettings`) —
-until that's done, the app keeps connecting as the superuser role exactly
-as before, and these policies exist but have no practical effect yet.
+applies to it unconditionally, no `FORCE` needed.
+
+Its password is *not* generated here — it's read straight out of
+`DATABASE_URL_APP` (the operator picks it themselves, in `.env`/`.env.docker`,
+the same way `POSTGRES_PASSWORD` already works), and this migration creates
+or updates the role to match. Migrations run automatically on every
+deploy now (see the Dockerfile entrypoint), so there is no human watching
+this migration's output to catch a one-time generated password — reading
+a value the operator already committed to `.env.docker` is the only version
+of this that survives an unattended deploy. Refuses to run at all
+(`RuntimeError`) if `DATABASE_URL_APP` isn't set — RLS existing but quietly
+not applying to the running app is exactly the failure mode this whole
+migration exists to prevent, so it fails the deploy loudly instead.
 """
-import secrets
+from pathlib import Path
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class _AppRuntimePasswordSettings(BaseSettings):
+    """Reads `DATABASE_URL_APP` the same way `db.settings` does — real env var first, `.env` file second.
+
+    Inside the Docker container, `DATABASE_URL_APP` is already a real
+    process environment variable (`env_file: .env.docker` in
+    `docker-compose.yml` sets it directly) — a plain `os.environ.get`
+    would actually work there. Locally, `.env` is only ever a *file*
+    `uv run alembic` never exports into its own process environment, so a
+    plain `os.environ.get` silently sees nothing. `BaseSettings` handles
+    both the same way pydantic-settings always does: real environment
+    variables first, the `.env` file as a fallback — so this migration
+    behaves identically in both places without special-casing either one.
+
+    Deliberately has no fallback to `DATABASE_URL` — same reasoning as
+    `db.settings.AppRuntimeDatabaseSettings` refusing that fallback too:
+    silently reusing the superuser's password for `app_runtime` would be
+    worse than this migration just refusing to proceed.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=str(_REPO_ROOT / ".env"), env_file_encoding="utf-8", extra="ignore"
+    )
+
+    database_url_app: str | None = Field(default=None, validation_alias="DATABASE_URL_APP")
 
 
 # revision identifiers, used by Alembic.
@@ -74,6 +113,34 @@ _USER_SCOPED_TABLES: list[tuple[str, str, str]] = [
 ]
 
 
+def _app_runtime_password() -> str:
+    """Read `app_runtime`'s intended password straight out of `DATABASE_URL_APP`.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    RuntimeError
+        If `DATABASE_URL_APP` isn't set, or has no password component.
+    """
+    raw_url = _AppRuntimePasswordSettings().database_url_app
+    if not raw_url:
+        message = (
+            "DATABASE_URL_APP is not set. Pick a password for the 'app_runtime' role "
+            "(same as POSTGRES_PASSWORD/DATABASE_URL) and set DATABASE_URL_APP to the full "
+            "connection string using it, in .env (dev) or .env.docker (deploy), before running "
+            "this migration — RLS cannot actually apply to the running app without it."
+        )
+        raise RuntimeError(message)
+    password = make_url(raw_url).password
+    if not password:
+        message = "DATABASE_URL_APP has no password component — expected postgresql://app_runtime:<password>@..."
+        raise RuntimeError(message)
+    return password
+
+
 def upgrade() -> None:
     """Upgrade schema."""
     connection = op.get_bind()
@@ -87,22 +154,21 @@ def upgrade() -> None:
             f"WITH CHECK ({column} = current_setting('app.current_user_id', true)::uuid)"
         )
 
+    # The password itself is a literal, not a bound parameter — CREATE/ALTER ROLE
+    # ... PASSWORD doesn't accept one, only a string literal — so it's quoted by
+    # doubling any single quotes, the standard SQL escape (Postgres has no other
+    # placeholder syntax for this position).
+    password = _app_runtime_password().replace("'", "''")
     role_exists = connection.execute(
         sa.text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": _APP_RUNTIME_ROLE}
     ).first()
     if role_exists is None:
-        # token_urlsafe's alphabet ([A-Za-z0-9_-]) has no quote/escape characters,
-        # so it's safe to inline directly — CREATE ROLE ... PASSWORD doesn't accept
-        # a bound query parameter here, only a literal.
-        password = secrets.token_urlsafe(32)
         op.execute(f"CREATE ROLE \"{_APP_RUNTIME_ROLE}\" LOGIN PASSWORD '{password}'")
-        print(  # noqa: T201 — this is the one, intentional place this password is ever surfaced
-            f"\nCreated Postgres role '{_APP_RUNTIME_ROLE}' with a generated password.\n"
-            "Copy it into DATABASE_URL_APP in .env (see db.settings.DatabaseSettings) to make RLS "
-            "actually take effect for the running app — it is not printed anywhere else and cannot "
-            "be recovered later, only reset via ALTER ROLE.\n"
-            f"Generated password: {password}\n"
-        )
+    else:
+        # Idempotent sync: if the operator changes DATABASE_URL_APP's password and
+        # redeploys, the role's actual password follows it rather than drifting out
+        # of sync with what the app is now trying to connect with.
+        op.execute(f"ALTER ROLE \"{_APP_RUNTIME_ROLE}\" WITH PASSWORD '{password}'")
 
     for schema in ("public", "accounting", "trades"):
         op.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO "{_APP_RUNTIME_ROLE}"')
@@ -118,13 +184,41 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
+    """Downgrade schema.
+
+    Checks each table actually exists before touching it — a later
+    migration (`8e280c1518e8`) drops and recreates the `accounting`/`trades`
+    schemas wholesale, which already removes the RLS this migration set up
+    on the tables that existed at the time. Downgrading *that* migration
+    first (as any normal `alembic downgrade` to before this revision does)
+    leaves nothing here for those tables — only `public.users`/
+    `public.user_secrets` (never touched by that later migration) still
+    need cleaning up by the time this runs.
+    """
+    connection = op.get_bind()
     for schema, table, _column in _USER_SCOPED_TABLES:
+        exists = connection.execute(
+            sa.text(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema = :schema AND table_name = :table"
+            ),
+            {"schema": schema, "table": table},
+        ).first()
+        if exists is None:
+            continue
         op.execute(f'DROP POLICY IF EXISTS user_isolation ON "{schema}"."{table}"')
         op.execute(f'ALTER TABLE "{schema}"."{table}" NO FORCE ROW LEVEL SECURITY')
         op.execute(f'ALTER TABLE "{schema}"."{table}" DISABLE ROW LEVEL SECURITY')
 
     for schema in ("public", "accounting", "trades"):
+        # ALTER DEFAULT PRIVILEGES grants are a separate kind of object from the
+        # privileges they hand out on existing tables — revoking "on all tables"
+        # above doesn't touch these, and DROP ROLE fails until they're gone too.
+        op.execute(
+            f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" '
+            f'REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM "{_APP_RUNTIME_ROLE}"'
+        )
+        op.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" REVOKE USAGE ON SEQUENCES FROM "{_APP_RUNTIME_ROLE}"')
         op.execute(f'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA "{schema}" FROM "{_APP_RUNTIME_ROLE}"')
+        op.execute(f'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA "{schema}" FROM "{_APP_RUNTIME_ROLE}"')
         op.execute(f'REVOKE USAGE ON SCHEMA "{schema}" FROM "{_APP_RUNTIME_ROLE}"')
     op.execute(f'DROP ROLE IF EXISTS "{_APP_RUNTIME_ROLE}"')
