@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Route, Routes } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
@@ -9,25 +9,32 @@ import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import { AccountsPage } from '@/pages/AccountsPage'
-import { AllocationPage } from '@/pages/AllocationPage'
-import { BudgetPage } from '@/pages/BudgetPage'
-import { CategoriesPage } from '@/pages/CategoriesPage'
-import { GlossaryPage } from '@/pages/GlossaryPage'
-import { GoalsPage } from '@/pages/GoalsPage'
-import { GuidePage } from '@/pages/GuidePage'
-import { ImportPage } from '@/pages/ImportPage'
-import { InsightsPage } from '@/pages/InsightsPage'
-import { NetWorthPage } from '@/pages/NetWorthPage'
-import { OnboardingPage } from '@/pages/OnboardingPage'
-import { OverviewPage } from '@/pages/OverviewPage'
-import { PerformancePage } from '@/pages/PerformancePage'
-import { RulesPage } from '@/pages/RulesPage'
-import { SettingsPage } from '@/pages/SettingsPage'
-import { SimulatorPage } from '@/pages/SimulatorPage'
-import { TagsPage } from '@/pages/TagsPage'
-import { TaxesPage } from '@/pages/TaxesPage'
-import { TransactionsPage } from '@/pages/TransactionsPage'
+
+interface RouteModule {
+  default: ComponentType
+  requiresStore: boolean
+}
+
+// One file under src/routes/ = one page: its path in the folder mirrors
+// the URL it serves (src/routes/investments/allocation.tsx ->
+// /investments/allocation), an `index.tsx` serves its parent directory's
+// own path, and `requiresStore` says whether that page depends on the
+// accounting store (and should fall back to PageErrorFallback if it
+// failed to load) — see AppShell below.
+const routeModules = import.meta.glob<RouteModule>('./routes/**/*.tsx', { eager: true })
+
+function routePathFromFile(file: string): string {
+  const withoutExtension = file.replace(/^\.\/routes/, '').replace(/\.tsx$/, '')
+  return withoutExtension.replace(/\/index$/, '') || '/'
+}
+
+const routes = Object.entries(routeModules)
+  .map(([file, mod]) => ({
+    path: routePathFromFile(file),
+    Component: mod.default,
+    requiresStore: mod.requiresStore,
+  }))
+  .sort((a, b) => a.path.localeCompare(b.path))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: false } },
@@ -61,25 +68,9 @@ function AppShell() {
       <Sidebar />
       <ErrorBoundary>
         <Routes>
-          <Route path="/onboarding" element={<OnboardingPage />} />
-          <Route path="/" element={moneyPage(<OverviewPage />)} />
-          <Route path="/net-worth" element={moneyPage(<NetWorthPage />)} />
-          <Route path="/insights" element={moneyPage(<InsightsPage />)} />
-          <Route path="/transactions" element={moneyPage(<TransactionsPage />)} />
-          <Route path="/accounts" element={moneyPage(<AccountsPage />)} />
-          <Route path="/import" element={moneyPage(<ImportPage />)} />
-          <Route path="/budget" element={moneyPage(<BudgetPage />)} />
-          <Route path="/goals" element={moneyPage(<GoalsPage />)} />
-          <Route path="/simulator" element={moneyPage(<SimulatorPage />)} />
-          <Route path="/categories" element={moneyPage(<CategoriesPage />)} />
-          <Route path="/tags" element={moneyPage(<TagsPage />)} />
-          <Route path="/rules" element={moneyPage(<RulesPage />)} />
-          <Route path="/investments" element={<PerformancePage />} />
-          <Route path="/investments/allocation" element={<AllocationPage />} />
-          <Route path="/investments/taxes" element={<TaxesPage />} />
-          <Route path="/investments/glossary" element={<GlossaryPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/guide" element={<GuidePage />} />
+          {routes.map(({ path, Component, requiresStore }) => (
+            <Route key={path} path={path} element={requiresStore ? moneyPage(<Component />) : <Component />} />
+          ))}
         </Routes>
       </ErrorBoundary>
       <OnboardingModal hasAnyData={hasAnyData} isLoading={storeIsPending} />

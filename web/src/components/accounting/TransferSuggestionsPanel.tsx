@@ -85,7 +85,7 @@ function DraftRuleCard({
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-xs text-muted-foreground">
-        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id)}</span>, if
+        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id ?? null)}</span>, if
         description contains…
       </p>
       <Input
@@ -94,7 +94,7 @@ function DraftRuleCard({
         onChange={(event) => onChange({ ...draft, description_contains: event.target.value })}
       />
       <p className="text-xs text-muted-foreground">
-        …repoint it to {accountName(accounts, draft.counterparty_account_id)}.
+        …repoint it to {accountName(accounts, draft.counterparty_account_id ?? null)}.
       </p>
       {alreadyAdded && <p className="text-xs text-emerald-600">Already added</p>}
     </div>

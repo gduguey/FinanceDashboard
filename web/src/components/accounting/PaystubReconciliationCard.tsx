@@ -27,8 +27,8 @@ interface DraftLeg {
 function toDraftLegs(legs: ProposedSplitLeg[]): DraftLeg[] {
   return legs.map((leg) => ({
     amount: String(leg.amount),
-    categoryId: leg.category_id,
-    subcategoryId: leg.subcategory_id,
+    categoryId: leg.category_id ?? null,
+    subcategoryId: leg.subcategory_id ?? null,
     description: leg.description,
   }))
 }

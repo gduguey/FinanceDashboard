@@ -54,7 +54,7 @@ function splitOriginalId(postingId: string): string | null {
 function categoriesWithSubcategories(categories: Record<string, Category>): Set<string> {
   const withSubcategories = new Set<string>()
   for (const category of Object.values(categories)) {
-    if (category.parent_category_id !== null) withSubcategories.add(category.parent_category_id)
+    if (category.parent_category_id != null) withSubcategories.add(category.parent_category_id)
   }
   return withSubcategories
 }
@@ -72,9 +72,9 @@ function categoriesWithSubcategories(categories: Record<string, Category>): Set<
 // filled in — it isn't truly categorized until the suggestion is validated.
 function needsCategorizing(posting: Posting, withSubcategories: Set<string>, isRealIncomeExpense: boolean): boolean {
   if (!isRealIncomeExpense) return false
-  if (posting.pending_source !== null) return true
-  if (posting.category_id === null) return true
-  return withSubcategories.has(posting.category_id) && posting.subcategory_id === null
+  if (posting.pending_source != null) return true
+  if (posting.category_id == null) return true
+  return withSubcategories.has(posting.category_id) && posting.subcategory_id == null
 }
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
@@ -134,7 +134,7 @@ interface TransactionRowProps {
   aiMessage: string | undefined
   aiPending: boolean
   aiAvailable: boolean
-  onOverride: (postingId: string, override: ManualOverride) => void
+  onOverride: (postingId: string, override: Partial<ManualOverride>) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
   onUndoSplit: (originalPostingId: string) => void
@@ -202,7 +202,7 @@ const TransactionRow = memo(function TransactionRow({
           <CategorySelect
             categories={categories}
             classification={posting.amount >= 0 ? 'income' : 'expense'}
-            value={posting.category_id}
+            value={posting.category_id ?? null}
             onChange={(categoryId) =>
               // Changing category always clears subcategory — it's a child
               // of the OLD category, never carried over. A category with
@@ -225,8 +225,8 @@ const TransactionRow = memo(function TransactionRow({
         {isRealIncomeExpense ? (
           <SubcategorySelect
             categories={categories}
-            categoryId={posting.category_id}
-            value={posting.subcategory_id}
+            categoryId={posting.category_id ?? null}
+            value={posting.subcategory_id ?? null}
             onChange={(subcategoryId) => onOverride(posting.posting_id, { subcategory_id: subcategoryId })}
           />
         ) : (
@@ -235,7 +235,7 @@ const TransactionRow = memo(function TransactionRow({
       </TableCell>
       <TableCell>
         <TagsCell
-          tagIds={posting.tag_ids}
+          tagIds={posting.tag_ids ?? []}
           tags={tags}
           onChange={(tagIds) => onOverride(posting.posting_id, { tag_ids: tagIds })}
         />
@@ -348,7 +348,7 @@ function TransactionsTable({
   }
 
   const handleOverride = useCallback(
-    (postingId: string, override: ManualOverride) => setOverride.mutate({ postingId, override }),
+    (postingId: string, override: Partial<ManualOverride>) => setOverride.mutate({ postingId, override }),
     [setOverride],
   )
   const handleUndoSplit = useCallback(
@@ -446,7 +446,7 @@ function TransactionsTable({
         return matchesFilter(actual, filters.subcategoryFilter, filters.subcategoryExclude)
       })
       .filter((posting) =>
-        matchesFilter(posting.tag_ids.includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
+        matchesFilter((posting.tag_ids ?? []).includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
       )
       .filter((posting) => !filters.startDate || posting.posted_at.slice(0, 10) >= filters.startDate)
       .filter((posting) => !filters.endDate || posting.posted_at.slice(0, 10) <= filters.endDate)

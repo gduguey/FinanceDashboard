@@ -233,7 +233,11 @@ export const accountingApi = {
   rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
   postings: () => request<Posting[]>('/api/accounting/postings'),
   ledgerExport: () => request<Posting[]>('/api/accounting/ledger/export'),
-  putPostingOverride: (postingId: string, override: ManualOverride) =>
+  // A request only ever carries the fields the caller means to change —
+  // `put_posting_override` merges into whatever's already stored for
+  // fields left out, so the request body is a genuine partial, unlike
+  // the full `ManualOverride` this endpoint returns once merged.
+  putPostingOverride: (postingId: string, override: Partial<ManualOverride>) =>
     request<ManualOverride>(
       `/api/accounting/postings/${encodeURIComponent(postingId)}/override`,
       jsonInit('PUT', override),
