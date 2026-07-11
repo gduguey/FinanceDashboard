@@ -1,6 +1,12 @@
-import { useCallback, useState, type ReactNode } from 'react'
 import { ArrowRight, CheckCircle2, Info, Landmark, Upload, X, XCircle } from 'lucide-react'
+import { type ReactNode, useCallback, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { TaxonomyTable } from '@/components/accounting/CategoriesTab'
+import { CategorizeFromFilePanel } from '@/components/accounting/CategorizeFromFilePanel'
+import { DuplicateSuggestionsPanel } from '@/components/accounting/DuplicateSuggestionsPanel'
+import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -13,13 +19,6 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { TaxonomyTable } from '@/components/accounting/CategoriesTab'
-import { CategorizeFromFilePanel } from '@/components/accounting/CategorizeFromFilePanel'
-import { DuplicateSuggestionsPanel } from '@/components/accounting/DuplicateSuggestionsPanel'
-import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
-import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
 import {
   useAccountingStore,
   useCanonicalImportPreview,
@@ -28,6 +27,7 @@ import {
   useRebuildLedger,
   useSupportedImportKinds,
 } from '@/hooks/useAccountingData'
+import { accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
 import type { Account, CanonicalCategoryOverrides, Category, CurrencyCode } from '@/types/accounting'
 
 const MAX_FILES_PER_DROP = 8

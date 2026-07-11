@@ -1,15 +1,13 @@
-import { useState } from 'react'
 import { AlertTriangle, Lock, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
+import { useState } from 'react'
+import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
+import { CloseAccountDialog } from '@/components/accounting/CloseAccountDialog'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
-import { CloseAccountDialog } from '@/components/accounting/CloseAccountDialog'
-import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
-import { useSortableRows } from '@/hooks/useSortableRows'
 import {
   useCloseAccount,
   useCreateAccount,
@@ -20,6 +18,8 @@ import {
   useSupportedImportKinds,
   useUpdateAccount,
 } from '@/hooks/useAccountingData'
+import { useSortableRows } from '@/hooks/useSortableRows'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, ManualTransfer } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see

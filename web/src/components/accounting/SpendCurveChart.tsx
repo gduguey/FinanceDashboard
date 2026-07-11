@@ -1,9 +1,9 @@
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
+import { availableMonths, MonthSelect } from '@/components/accounting/MonthSelect'
 import { ChartCard } from '@/components/shared/ChartCard'
-import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
-import { formatCurrency } from '@/lib/format'
-import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSpendCurve } from '@/hooks/useAccountingData'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { formatCurrency } from '@/lib/format'
 import type { CurrencyCode, Posting } from '@/types/accounting'
 
 const CURRENT_MONTH = new Date().toISOString().slice(0, 7)

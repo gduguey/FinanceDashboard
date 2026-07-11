@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Account, Posting } from '@/types/accounting'
 import { hasAnyRealAccount, realIncomeExpensePostingIds } from '@/lib/postingClassification'
+import type { Account, Posting } from '@/types/accounting'
 
 function makeAccount(overrides: Partial<Account> & Pick<Account, 'account_id' | 'kind'>): Account {
   return { name: overrides.account_id, institution: 'Test Bank', currency: 'USD', closed: false, ...overrides }

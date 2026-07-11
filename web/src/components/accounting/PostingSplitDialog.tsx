@@ -1,11 +1,11 @@
-import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
-import { formatCurrency } from '@/lib/format'
 import { useSetPostingSplit } from '@/hooks/useAccountingData'
+import { formatCurrency } from '@/lib/format'
 import type { Category, Posting } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005

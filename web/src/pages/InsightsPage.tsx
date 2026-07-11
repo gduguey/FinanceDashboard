@@ -1,10 +1,10 @@
-import { Skeleton } from '@/components/ui/skeleton'
+import { DashboardTab } from '@/components/accounting/DashboardTab'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { DashboardTab } from '@/components/accounting/DashboardTab'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 
 // Spending/income breakdown, filterable by period/account/tag — was the
 // "Dashboard" tab inside the old combined Accounting page; promoted to its

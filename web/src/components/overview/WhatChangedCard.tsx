@@ -1,8 +1,8 @@
 import { Target, TrendingDown, TrendingUp } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatCurrency, signColor } from '@/lib/format'
 import { useAccountingStore, useCategoryTotals, useGoalsSummary } from '@/hooks/useAccountingData'
+import { formatCurrency, signColor } from '@/lib/format'
 import type { CategoryTotalRow, CurrencyCode } from '@/types/accounting'
 
 function monthBounds(offsetMonths: number): { start: string; end: string } {

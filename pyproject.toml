@@ -195,4 +195,5 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
 ]
 
 [tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config"
 testpaths = ["tests"]

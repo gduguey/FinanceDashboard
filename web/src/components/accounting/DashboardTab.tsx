@@ -1,12 +1,12 @@
 import { useMemo } from 'react'
-import { PeriodFilterBar, usePeriodFilter } from '@/components/accounting/PeriodFilter'
+import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { CategoryDrilldownPie } from '@/components/accounting/CategoryDrilldownPie'
 import { IncomeExpenseChart } from '@/components/accounting/IncomeExpenseChart'
+import { PeriodFilterBar, usePeriodFilter } from '@/components/accounting/PeriodFilter'
 import { SpendCurveChart } from '@/components/accounting/SpendCurveChart'
-import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Account, CurrencyCode, Goal, GoalContribution, Posting, Tag } from '@/types/accounting'
 
 export function DashboardTab({
