@@ -63,14 +63,17 @@ function NetWorthChangeSubline({
   displayCurrency: CurrencyCode
 }) {
   const delta = current - past
-  const pct = past !== 0 ? (delta / Math.abs(past)) * 100 : 0
+  // A percent-of-zero is undefined, not "0.0%" — going from nothing to
+  // something (a brand-new account's first 30 days) isn't a "no change"
+  // move, so the percent is omitted entirely rather than shown as 0%.
+  const pct = past !== 0 ? (delta / Math.abs(past)) * 100 : null
   const isUp = delta >= 0
   const Icon = isUp ? TrendingUp : TrendingDown
   return (
     <div className={`mt-1 flex items-center gap-1 text-xs ${isUp ? 'text-emerald-600' : 'text-destructive'}`}>
       <Icon className="size-3.5" />
-      {formatCurrency(Math.abs(delta), displayCurrency)} ({isUp ? '+' : '-'}
-      {Math.abs(pct).toFixed(1)}%) past 30 days
+      {formatCurrency(Math.abs(delta), displayCurrency)}
+      {pct !== null && ` (${isUp ? '+' : '-'}${Math.abs(pct).toFixed(1)}%)`} past 30 days
     </div>
   )
 }
@@ -137,7 +140,8 @@ function AccountsTable({
     })),
   ]
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'balance')
-  const displayRows = sort.key === 'balance' && sort.desc ? orderedRows(rows) : sorted.map((row) => ({ row, depth: 0 }))
+  const displayRows =
+    sort.key === 'balance' && sort.desc ? orderedRows(sorted) : sorted.map((row) => ({ row, depth: 0 }))
 
   if (!rows.length) {
     return (

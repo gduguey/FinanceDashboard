@@ -1,5 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type AccountUpdate, accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
+import { BASE_CURRENCY } from '@/lib/currency'
 import type {
   Account,
   Budget,
@@ -24,8 +25,6 @@ import type {
   TransferRule,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
-
-const BASE_CURRENCY: CurrencyCode = 'USD'
 
 const keys = {
   store: ['accounting', 'store'],

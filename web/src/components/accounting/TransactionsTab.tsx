@@ -314,6 +314,11 @@ function TransactionsTable({
     setBulkPatternSuggesting(true)
     try {
       await patternSuggestBulk.mutateAsync(targets.map((posting) => posting.posting_id))
+    } catch (error) {
+      // Already surfaced via the global mutation-error toast (see App.tsx) —
+      // logged here too so a failure is distinguishable from "nothing needed
+      // suggesting" when debugging.
+      console.error('Bulk pattern suggestion failed', error)
     } finally {
       setBulkPatternSuggesting(false)
     }

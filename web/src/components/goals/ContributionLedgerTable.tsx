@@ -14,7 +14,7 @@ import {
   useSimulateContribution,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { convertCurrency } from '@/lib/currency'
+import { BASE_CURRENCY, convertCurrency } from '@/lib/currency'
 import { formatCurrency } from '@/lib/format'
 import type { Goal, GoalContribution } from '@/types/accounting'
 
@@ -40,7 +40,7 @@ export function ContributionLedgerTable({
   const simulate = useSimulateContribution()
   const { data: currencies } = useCurrencies()
   const ratesToBase = useRatesToBase(
-    (currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD'),
+    (currencies ?? []).map((currency) => currency.code).filter((code) => code !== BASE_CURRENCY),
   )
   const [goalFilter, setGoalFilter] = useState(ALL)
   const [originFilter, setOriginFilter] = useState(ALL)
