@@ -78,6 +78,58 @@ unnoticed. `tests/db/test_base.py` pins the exact expected output of
 `derive_id` for a fixed input, so a change to `_ID_NAMESPACE` fails a test
 immediately instead of silently shipping.
 
+## Primary key patterns across every table
+
+Every table in this database falls into exactly one of three key shapes.
+Which one a new table should use isn't a free choice — it follows directly
+from two questions: *does this table get bulk-rewritten or re-imported?*
+and *does anything else foreign-key against its `id`?*
+
+**1. `derive_id`-derived `id`, plus a `natural_key` column** — for tables
+that get fully rewritten on every save, or re-imported from an external
+source (so "insert, or recognize this already exists" has to work without
+a lookup). This is the majority of user-owned tables:
+`accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
+`manual_transfers`, `other_assets`, `posting_merges`,
+`dismissed_suggestions`, `goals`, `goal_contributions`,
+`recurring_additions`, `transfer_rules`, `category_patterns`, `budgets`,
+`simulator_scenarios`; `trades.broker_connections`, `ledger_events`.
+
+**2. A plain random `uuid.uuid4()` surrogate `id`** — for tables that are
+never bulk-rewritten and have no re-import/dedup concept, just an ordinary
+"create one row, maybe delete it later" lifecycle. Uniqueness (where it
+matters) comes from a separate `UniqueConstraint`, not the id itself:
+`public.users`; `accounting.posting_tags`, `posting_splits`,
+`posting_split_legs`, `posting_merge_duplicates`, `posting_overrides`,
+`posting_pending_suggestions`, `general_budgets`,
+`withdrawal_priority_entries`.
+
+**3. No surrogate `id` at all — the real key(s) are the primary key,
+directly.** This is the right choice specifically when nothing else ever
+foreign-keys against this table's id (so there's no need for a stable,
+opaque handle a rewrite could invalidate) and the table's natural
+uniqueness is already exactly what a caller looks it up by:
+
+- `public.user_secrets` → composite `(user_id, key)`.
+- `trades.ledger_event_trade_details` → single-column `ledger_event_id`
+  (itself a foreign key — a 1:1 extension of `ledger_events`, one row
+  exists only if the parent event is a `BUY`/`SELL`).
+- `trades.dashboard_settings` → single-column `user_id`. A genuine
+  singleton: at most one row per user, looked up only ever by that user's
+  own id, nothing else references it.
+- `accounting.llm_usage` → composite `(user_id, provider)`. Looked up only
+  ever by that exact pair, nothing else references it.
+
+The last two are new tables (added to move `trades`'s dashboard
+preferences and `accounting`'s LLM call counters out of flat JSON files —
+see each package's own docstrings on `trades.db.models.DashboardSettings`
+and `accounting.db.llm.LLMUsage`), and deliberately follow this third
+pattern rather than `derive_id`: neither is ever bulk-rewritten or
+re-imported, and nothing else in the schema foreign-keys against either
+one's identity — so a surrogate id would just be one more column with no
+job to do. Using `derive_id` here would be following the majority
+pattern out of habit rather than for a reason that actually applies.
+
 ## The two tables here: `users` and `user_secrets`
 
 - **`users`** — one row per person using the app. Right now there's

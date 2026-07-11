@@ -85,7 +85,6 @@ def isolated_config(tmp_path, monkeypatch, db_session):
         prices={"cache_dir": tmp_path / "prices"},
         cpi={"cache_dir": tmp_path / "cpi"},
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
-        dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
     )
     monkeypatch.setattr(trades_api.app.state, "config", config)
     monkeypatch.setattr(

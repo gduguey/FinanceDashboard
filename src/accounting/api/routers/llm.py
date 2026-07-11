@@ -47,7 +47,7 @@ def _llm_providers(session: Session, user_id: uuid.UUID) -> list[LLMProvider]:
     """Build the default-Gemini-then-Mistral fallback chain from whichever API keys this user has saved.
 
     Every provider is wrapped in `TrackedProvider` so each call's outcome
-    is recorded to `llm_usage.json` regardless of which provider in the
+    is recorded to the `llm_usage` table regardless of which provider in the
     chain ends up being tried (see `get_llm_usage`).
 
     Returns
@@ -59,16 +59,12 @@ def _llm_providers(session: Session, user_id: uuid.UUID) -> list[LLMProvider]:
     providers: list[LLMProvider] = []
     if credentials.gemini_api_key is not None:
         providers.append(
-            TrackedProvider(
-                GeminiProvider(credentials.gemini_api_key.get_secret_value()), "gemini", state.config.llm_usage_path
-            )
+            TrackedProvider(GeminiProvider(credentials.gemini_api_key.get_secret_value()), "gemini", session, user_id)
         )
     if credentials.mistral_api_key is not None:
         providers.append(
             TrackedProvider(
-                MistralProvider(credentials.mistral_api_key.get_secret_value()),
-                "mistral",
-                state.config.llm_usage_path,
+                MistralProvider(credentials.mistral_api_key.get_secret_value()), "mistral", session, user_id
             )
         )
     return providers
@@ -93,7 +89,7 @@ def get_llm_usage(
         "gemini": credentials.gemini_api_key is not None,
         "mistral": credentials.mistral_api_key is not None,
     }
-    usage = load_usage(state.config.llm_usage_path)
+    usage = load_usage(session, user_id)
     return {
         provider: LlmProviderUsage(
             configured=configured[provider],

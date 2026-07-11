@@ -1,11 +1,8 @@
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
 from trades.config import (
     AppConfig,
-    DashboardConfig,
     IbkrFlexApiConfig,
     IbkrFlexCredentials,
     LedgerConfig,
@@ -24,7 +21,6 @@ def test_app_config_composes_every_sub_config() -> None:
     assert config.cpi.series_id == "CPIAUCSL"
     assert config.returns.hysa_annual_rate == pytest.approx(0.04)
     assert config.ibkr.max_poll_attempts == 10
-    assert config.dashboard.settings_path.name == "dashboard_settings.json"
 
 
 def test_app_config_is_frozen() -> None:
@@ -40,12 +36,6 @@ def test_returns_config_default_benchmark_symbol() -> None:
 def test_returns_config_rejects_negative_hysa_rate() -> None:
     with pytest.raises(ValidationError):
         ReturnsConfig(hysa_annual_rate=-0.01)
-
-
-def test_dashboard_config_is_frozen() -> None:
-    config = DashboardConfig()
-    with pytest.raises(ValidationError):
-        config.settings_path = Path("x.json")
 
 
 def test_config_objects_are_frozen() -> None:

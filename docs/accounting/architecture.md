@@ -202,8 +202,11 @@ data/accounting/         (gitignored)
   ledger.csv                                                    disposable cache, rebuildable
   store.json                accounts, categories, tags, rules, patterns, goals, budgets, ...
   manual_overrides.json     per-posting user edits, always applied after rules
-  llm_usage.json            per-provider call-count / rate-limit state
 ```
+
+Each LLM provider's self-tracked call count and rate-limit state lives in
+Postgres, in `accounting.llm_usage` (one row per `(user, provider)` — see
+`accounting.llm.usage.load_usage`/`save_usage`), not under `data/`.
 
 ## Categorization, planning, and everything past the ledger
 

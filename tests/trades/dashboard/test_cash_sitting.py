@@ -16,7 +16,6 @@ from trades.dashboard.cash_sitting import (
 
 def _config(tmp_path) -> AppConfig:
     return AppConfig(
-        dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
         prices={"cache_dir": tmp_path},
         cpi={"cache_dir": tmp_path},
         hysa_rates={"cache_dir": tmp_path},

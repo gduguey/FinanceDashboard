@@ -169,8 +169,12 @@ data/
   brokers/ibkr/
     raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
     ledger.csv                       rebuildable cache from raw_statements/
-  dashboard_settings.json     user preferences (allocation, tax, benchmark)
 ```
+
+User-editable dashboard preferences (target allocation, HYSA/benchmark
+overrides, tax settings) live in Postgres, in `trades.dashboard_settings`
+(one row per user — see `trades.dashboard.settings.load_settings`/
+`save_settings`), not under `data/`.
 
 `.env` (IBKR credentials) and everything under `data/` are gitignored.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated, cast
 
@@ -35,6 +36,7 @@ from accounting.ledger.currency import convert
 from accounting.ledger.replay import account_balances_over_time
 from accounting.models import CurrencyCode
 from accounting.utils.io_utils import collect_if_lazy
+from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
@@ -112,11 +114,14 @@ def _external_investment_values_usd(dates: list[date], session: Session) -> dict
     return dict(zip(daily["date"].to_list(), daily["value"].to_list(), strict=True))
 
 
-def _benchmark_apy_pct(as_of: date) -> float | None:
+def _benchmark_apy_pct(as_of: date, session: Session, user_id: uuid.UUID) -> float | None:
     """Look up `trades`'s published HYSA rate as of a date, as a percent, to compare vault/savings APYs against.
 
     Imported lazily, reading the *running* `trades.api` app's own
     `app.state.config` — the same reasoning as `_external_investment_values_usd`.
+    `session` is the same session this request's own route already holds —
+    `accounting.*` and `trades.*` are separate Postgres schemas in one
+    database, so one session can query both.
 
     Returns
     -------
@@ -125,10 +130,12 @@ def _benchmark_apy_pct(as_of: date) -> float | None:
     """
     from trades import api as trades_api  # noqa: PLC0415
     from trades.dashboard.settings import hysa_rate_lookup  # noqa: PLC0415
+    from trades.dashboard.settings import load_settings as load_trades_dashboard_settings  # noqa: PLC0415
 
     trades_config = trades_api.app.state.config
     try:
-        rate = hysa_rate_lookup(trades_config)(as_of)
+        trades_settings = load_trades_dashboard_settings(session, user_id)
+        rate = hysa_rate_lookup(trades_config, trades_settings)(as_of)
     except Exception:  # noqa: BLE001 - a missing/misconfigured HYSA rate shouldn't block the rest of the view
         return None
     return rate * 100
@@ -136,7 +143,10 @@ def _benchmark_apy_pct(as_of: date) -> float | None:
 
 @router.get("/interest-summary")
 def get_interest_summary(
-    *, as_of: date | None = None, session: Annotated[Session, Depends(get_db)]
+    *,
+    as_of: date | None = None,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[InterestAccountRow]:
     """Every savings/vault account's year-to-date interest, current APY, balance, and a one-year projection.
 
@@ -146,7 +156,9 @@ def get_interest_summary(
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
-    rows = interest.interest_summary(postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of))
+    rows = interest.interest_summary(
+        postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of, session, user_id)
+    )
     return [InterestAccountRow(**vars(row)) for row in rows]
 
 
