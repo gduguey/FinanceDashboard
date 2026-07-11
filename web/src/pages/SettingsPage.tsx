@@ -81,6 +81,7 @@ function IbkrConnectionCard() {
   const connection = useIbkrConnectionStatus()
   const [token, setToken] = useState('')
   const [queryId, setQueryId] = useState('')
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   function handleSave() {
     setSettings.mutate(
@@ -89,7 +90,9 @@ function IbkrConnectionCard() {
         onSuccess: () => {
           setToken('')
           setQueryId('')
+          setSaveError(null)
         },
+        onError: (error) => setSaveError(error instanceof Error ? error.message : 'Failed to save'),
       },
     )
   }
@@ -134,6 +137,7 @@ function IbkrConnectionCard() {
                 onChange={(event) => setQueryId(event.target.value)}
               />
             </label>
+            {saveError && <p className="text-xs text-destructive">{saveError}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={(!token && !queryId) || setSettings.isPending}>
                 Save
@@ -179,6 +183,7 @@ function LlmCategorizationCard() {
   const mistralConnection = useLlmConnectionStatus('mistral')
   const [geminiKey, setGeminiKey] = useState('')
   const [mistralKey, setMistralKey] = useState('')
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   function handleSave() {
     setSettings.mutate(
@@ -187,7 +192,9 @@ function LlmCategorizationCard() {
         onSuccess: () => {
           setGeminiKey('')
           setMistralKey('')
+          setSaveError(null)
         },
+        onError: (error) => setSaveError(error instanceof Error ? error.message : 'Failed to save'),
       },
     )
   }
@@ -233,6 +240,7 @@ function LlmCategorizationCard() {
                 onChange={(event) => setMistralKey(event.target.value)}
               />
             </label>
+            {saveError && <p className="text-xs text-destructive">{saveError}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={(!geminiKey && !mistralKey) || setSettings.isPending}>
                 Save

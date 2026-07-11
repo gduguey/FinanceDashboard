@@ -59,16 +59,22 @@ export function PostingSplitDialog({
   }
 
   async function handleSave() {
-    await setSplit.mutateAsync({
-      postingId: posting.posting_id,
-      legs: legs.map((leg) => ({
-        amount: Number.parseFloat(leg.amount) || 0,
-        category_id: leg.categoryId,
-        subcategory_id: leg.subcategoryId,
-        description: leg.description,
-      })),
-    })
-    onClose()
+    try {
+      await setSplit.mutateAsync({
+        postingId: posting.posting_id,
+        legs: legs.map((leg) => ({
+          amount: Number.parseFloat(leg.amount) || 0,
+          category_id: leg.categoryId,
+          subcategory_id: leg.subcategoryId,
+          description: leg.description,
+        })),
+      })
+      onClose()
+    } catch {
+      // Already surfaced via the global mutation-error toast (see App.tsx) —
+      // caught here only so a failed save doesn't also close the dialog or
+      // throw as an unhandled promise rejection.
+    }
   }
 
   return (

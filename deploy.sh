@@ -15,12 +15,20 @@ REMOTE_DIR='$HOME/FinanceDashboard'
 
 echo "==> Deploying to $HOST"
 ssh "$HOST" "
-    set -e
+    set -euo pipefail
     cd $REMOTE_DIR
-    git pull
+    git checkout main
+    git pull --ff-only origin main
     VERSION=\$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = \"(.*)\"/\1/')
+    if [ -z \"\$VERSION\" ]; then
+        echo \"::error:: could not read version from pyproject.toml — aborting rather than deploying the docker-compose.yml 'dev' fallback tag\"
+        exit 1
+    fi
     echo \"==> Building image tagged \$VERSION\"
     APP_VERSION=\"\$VERSION\" docker compose up -d --build
+    # Host-wide prune: this VM only ever runs this one app's stack, so
+    # cleaning up every dangling image on the host is safe here — not a
+    # shared/multi-tenant machine where that would risk another stack's cache.
     docker image prune -f
 "
 echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose logs -f'"
