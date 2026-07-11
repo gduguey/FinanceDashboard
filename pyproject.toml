@@ -160,7 +160,7 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "DTZ",     # Naive datetimes are often intentional in deterministic tests
     "E501",    # Test readability can outweigh strict line length
     "I001",    # Import auto-formatting is lower-value for test snippets
-    "INP001",  # Tests can live without package __init__.py files
+    "INP001",  # tests/ is a package (see __init__.py files) but this ignore is harmless if that ever changes
     "S101",    # asserts allowed in tests...
     "ARG",     # Unused function args -> fixtures nevertheless are functionally relevant...
     "FBT",     # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
@@ -181,7 +181,7 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "DTZ",     # Naive datetimes are often intentional in deterministic fixtures
     "E501",    # Fixture readability can outweigh strict line length
     "I001",    # Import auto-formatting is lower-value for fixture files
-    "INP001",  # tests folder can be an implicit namespace package
+    "INP001",  # tests/ is a package (see __init__.py files) but this ignore is harmless if that ever changes
     "S101",    # asserts allowed in tests...
     "ARG",     # Unused function args -> fixtures nevertheless are functionally relevant...
     "FBT",     # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
