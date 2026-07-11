@@ -112,7 +112,8 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
         steps.append(SyncStep(label="Portfolio data", ok=False, error=str(error)))
 
     raw_ledger = main.load_ledger(session)
-    benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
+    settings = dashboard.load_settings(session, user_id)
+    benchmark_symbol = dashboard.resolved_benchmark_symbol(config, settings)
     today = datetime.now(tz=UTC).date()
     if raw_ledger.is_empty():
         # Nothing's ever been synced successfully — nothing to backfill

@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from datetime import date
 
     from trades.config import AppConfig
+    from trades.dashboard.settings import DashboardSettings
     from trades.ledger.nav import PeriodReturn
 
 
@@ -99,7 +100,7 @@ def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, f
     return total_deposited, total_withdrawn, total_dividends, total_withholding, total_fees
 
 
-def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> OverviewCards:
+def overview_cards(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, as_of: date) -> OverviewCards:
     """Assemble the overview card row: value, gain split, XIRR, dollar alpha, TWR.
 
     Parameters
@@ -108,6 +109,8 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
         The full ledger, in chronological order.
     config
         Application configuration.
+    settings
+        This user's persisted dashboard settings.
     as_of
         The date to value the portfolio as of.
 
@@ -134,7 +137,7 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> Over
         xirr_pct, is_provisional, twr = _xirr_and_twr(ledger, flows, price_lookup, value, as_of, config)
 
     hysa_value = (
-        hysa_counterfactual_value(flows, as_of, hysa_rate_lookup(config), config.returns.days_per_year)
+        hysa_counterfactual_value(flows, as_of, hysa_rate_lookup(config, settings), config.returns.days_per_year)
         if not flows.is_empty()
         else 0.0
     )

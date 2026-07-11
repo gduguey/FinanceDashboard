@@ -17,7 +17,7 @@ keyed on directly.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
@@ -25,7 +25,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import MONEY, SHARES, Base, check_in_sql
-from trades.config import LedgerEventType
+from trades.config import LedgerEventType, TaxRegime
 
 SCHEMA = "trades"
 
@@ -103,3 +103,33 @@ class LedgerEventTradeDetails(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     shares: Mapped[float] = mapped_column(SHARES)
     price: Mapped[float] = mapped_column(MONEY)
+
+
+class DashboardSettings(Base):
+    """One user's dashboard preferences — target allocation, HYSA/benchmark overrides, tax settings.
+
+    Exactly zero or one row per user (a singleton preferences record) —
+    `user_id` is the primary key directly; there's no natural-key/import
+    concept here the way there is for `accounts`/`categories`.
+    """
+
+    __tablename__ = "dashboard_settings"
+    __table_args__ = (
+        CheckConstraint(check_in_sql("tax_regime", get_args(TaxRegime)), name="tax_regime"),
+        {"schema": SCHEMA},
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    target_allocation_pct: Mapped[dict[str, float]] = mapped_column(JSONB, default=dict)
+    hysa_bank_id: Mapped[str | None] = mapped_column(default=None)
+    hysa_fixed_rate_pct: Mapped[float | None] = mapped_column(default=None)
+    benchmark_symbol_override: Mapped[str | None] = mapped_column(default=None)
+    tax_enabled: Mapped[bool] = mapped_column(default=False)
+    tax_regime: Mapped[str | None] = mapped_column(default=None)
+    residency_status_change_date: Mapped[date | None] = mapped_column(default=None)
+    w8ben_claimed: Mapped[bool] = mapped_column(default=False)
+    w8ben_treaty_rate_pct: Mapped[float | None] = mapped_column(default=None)
+    marginal_ordinary_rate_pct: Mapped[float | None] = mapped_column(default=None)
+    qualified_ltcg_rate_pct: Mapped[float | None] = mapped_column(default=None)

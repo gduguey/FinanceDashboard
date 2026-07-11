@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
-from trades.dashboard.settings import load_settings
 from trades.dashboard.valuation import make_price_lookup
 from trades.ledger.metrics import lot_returns, symbol_metrics
 from trades.ledger.replay import replay_ledger
@@ -18,6 +17,7 @@ if TYPE_CHECKING:
     from datetime import date
 
     from trades.config import AppConfig
+    from trades.dashboard.settings import DashboardSettings
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,7 @@ def _closed_lots_with_hysa_alpha(closed_lots: pl.DataFrame, config: AppConfig) -
     )
 
 
-def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTable:
+def lots_table(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, as_of: date) -> LotsTable:
     """Assemble the trade-level table: open lots, closed lots, per-symbol rollup.
 
     Parameters
@@ -71,6 +71,8 @@ def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTabl
         The full ledger, in chronological order.
     config
         Application configuration.
+    settings
+        This user's persisted dashboard settings.
     as_of
         The date to price open lots as of.
 
@@ -80,7 +82,7 @@ def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTabl
         Open lots, closed lots, and the per-symbol rollup.
     """
     price_lookup = make_price_lookup(config)
-    net_dividends = load_settings(config).tax_enabled
+    net_dividends = settings.tax_enabled
     result = replay_ledger(ledger, config, net_dividends=net_dividends)
 
     open_lots = (
@@ -100,7 +102,7 @@ def lots_table(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> LotsTabl
     return LotsTable(open_lots=open_lots, closed_lots=closed_lots, symbol_rollup=symbol_rollup)
 
 
-def allocation_view(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> pl.DataFrame:
+def allocation_view(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, as_of: date) -> pl.DataFrame:
     """Current-value allocation by symbol (including cash), against a user-set target.
 
     Sliced by current value, not invested dollars — invested-dollar slices
@@ -112,6 +114,8 @@ def allocation_view(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> pl.
         The full ledger, in chronological order.
     config
         Application configuration.
+    settings
+        This user's persisted dashboard settings.
     as_of
         The date to value holdings as of.
 
@@ -127,7 +131,6 @@ def allocation_view(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> pl.
     """
     price_lookup = make_price_lookup(config)
     result = replay_ledger(ledger, config)
-    settings = load_settings(config)
 
     if result.open_lots.is_empty():
         holdings = pl.DataFrame(schema={"symbol": pl.Utf8, "value_usd": pl.Float64})
