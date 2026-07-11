@@ -9,24 +9,18 @@ import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
+import { routePathFromFile } from '@/lib/routing'
 
 interface RouteModule {
   default: ComponentType
   requiresStore: boolean
 }
 
-// One file under src/routes/ = one page: its path in the folder mirrors
-// the URL it serves (src/routes/investments/allocation.tsx ->
-// /investments/allocation), an `index.tsx` serves its parent directory's
-// own path, and `requiresStore` says whether that page depends on the
-// accounting store (and should fall back to PageErrorFallback if it
-// failed to load) — see AppShell below.
+// One file under src/routes/ = one page — see routePathFromFile for how
+// its path maps to a URL. `requiresStore` says whether that page depends
+// on the accounting store (and should fall back to PageErrorFallback if
+// it failed to load) — see AppShell below.
 const routeModules = import.meta.glob<RouteModule>('./routes/**/*.tsx', { eager: true })
-
-function routePathFromFile(file: string): string {
-  const withoutExtension = file.replace(/^\.\/routes/, '').replace(/\.tsx$/, '')
-  return withoutExtension.replace(/\/index$/, '') || '/'
-}
 
 const routes = Object.entries(routeModules)
   .map(([file, mod]) => ({

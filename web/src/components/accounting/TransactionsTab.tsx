@@ -12,6 +12,11 @@ import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/sha
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
+import {
+  categoriesWithSubcategories,
+  needsCategorizing,
+  splitOriginalId,
+} from '@/components/accounting/transactionCategorization'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
@@ -36,7 +41,6 @@ const TABLE_COLUMN_COUNT = 9
 const UNCATEGORIZED = '__uncategorized__'
 const NO_SUBCATEGORY = '__no_subcategory__'
 const CONFIRMED = '__confirmed__'
-const SPLIT_LEG_PATTERN = /^(.+):split:\d+$/
 const PENDING_ITEMS: Record<string, string> = {
   [ALL]: 'All',
   ai: 'AI pending',
@@ -44,38 +48,6 @@ const PENDING_ITEMS: Record<string, string> = {
   [CONFIRMED]: 'Confirmed',
 }
 
-// A split leg's own id encodes the original posting it came from — used to
-// offer "undo split" on a leg row instead of "split" (splitting a leg
-// further isn't supported; undo and re-split from scratch instead).
-function splitOriginalId(postingId: string): string | null {
-  return SPLIT_LEG_PATTERN.exec(postingId)?.[1] ?? null
-}
-
-function categoriesWithSubcategories(categories: Record<string, Category>): Set<string> {
-  const withSubcategories = new Set<string>()
-  for (const category of Object.values(categories)) {
-    if (category.parent_category_id != null) withSubcategories.add(category.parent_category_id)
-  }
-  return withSubcategories
-}
-
-// A category with subcategories isn't "categorized" until one of them is
-// picked too — otherwise a row would leave "Needs categorizing" the
-// instant a category is chosen, before there's ever a chance to also pick
-// a subcategory for it.
-//
-// A posting that isn't a real income/expense leg (i.e. an internal
-// transfer between two of your own accounts) is never categorizable at
-// all, so it never needs categorizing. And a posting still carrying an
-// unconfirmed AI/pattern suggestion (`pending_source !== null`) stays in
-// "Needs categorizing" even though it already has a category/subcategory
-// filled in — it isn't truly categorized until the suggestion is validated.
-function needsCategorizing(posting: Posting, withSubcategories: Set<string>, isRealIncomeExpense: boolean): boolean {
-  if (!isRealIncomeExpense) return false
-  if (posting.pending_source != null) return true
-  if (posting.category_id == null) return true
-  return withSubcategories.has(posting.category_id) && posting.subcategory_id == null
-}
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 interface FilterState {
