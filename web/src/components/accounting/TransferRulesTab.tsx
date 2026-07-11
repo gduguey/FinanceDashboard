@@ -93,7 +93,7 @@ function TransferRuleEditDialog({
             Counterparty
             <CounterpartySelect
               accounts={accounts}
-              value={draft.counterparty_account_id}
+              value={draft.counterparty_account_id ?? null}
               onChange={(accountId) => setDraft((prev) => ({ ...prev, counterparty_account_id: accountId }))}
             />
           </label>

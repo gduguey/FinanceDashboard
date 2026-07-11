@@ -291,7 +291,7 @@ function ClassificationSection({
 function categoriesWithSubcategories(categories: Record<string, Category>): Set<string> {
   const withSubcategories = new Set<string>()
   for (const category of Object.values(categories)) {
-    if (category.parent_category_id !== null) withSubcategories.add(category.parent_category_id)
+    if (category.parent_category_id != null) withSubcategories.add(category.parent_category_id)
   }
   return withSubcategories
 }
@@ -426,7 +426,7 @@ function PatternEditDialog({
               <PatternSubcategorySelect
                 categories={categories}
                 categoryId={draft.category_id}
-                value={draft.subcategory_id}
+                value={draft.subcategory_id ?? null}
                 onChange={(subcategoryId) => setDraft((prev) => ({ ...prev, subcategory_id: subcategoryId }))}
               />
             </label>

@@ -37,7 +37,9 @@ from accounting.importers.canonical.csv import (
     standardize_canonical_excel,
 )
 from accounting.importers.categorize_from_file import (
-    CategorizationMatch,
+    CategorizationMatch as CategorizationMatchData,
+)
+from accounting.importers.categorize_from_file import (
     ConfirmedCategorization,
     apply_categorize_from_file,
     preview_categorize_from_file,
@@ -63,7 +65,8 @@ from accounting.ledger.categorization import (
     resolved_transfer_rule_ids_by_transaction,
 )
 from accounting.ledger.currency import DisplayCurrency, convert
-from accounting.ledger.duplicates import DuplicateGroup, find_duplicate_candidates
+from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
+from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
     run_recurring_additions,
@@ -95,8 +98,10 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CategoryPattern,
+    Currency,
     CurrencyCode,
     DismissedSuggestion,
+    EarningsStatement,
     GeneralBudget,
     Goal,
     GoalContribution,
@@ -105,6 +110,7 @@ from accounting.models import (
     OpeningBalance,
     OtherAsset,
     PendingSuggestionSource,
+    Posting,
     PostingMerge,
     PostingSplit,
     PostingSplitLeg,
@@ -214,55 +220,76 @@ def _account_has_postings(account_id: str, config: AccountingConfig, session: Se
     return bool(ledger.filter(pl.col("account_id") == account_id).height > 0)
 
 
+class AccountingStoreResponse(BaseModel):
+    """Every persisted accounting entity: accounts, categories, tags, rules, other assets.
+
+    Mirrors `store.AccountingStore` field-for-field, except `rules` is
+    exposed as `transfer_rules` (the name every other endpoint and the
+    frontend already use for it) and `dismissed_suggestions` is omitted —
+    nothing in the frontend reads the whole store for those.
+    """
+
+    accounts: dict[str, Account]
+    categories: dict[str, Category]
+    tags: dict[str, Tag]
+    transfer_rules: list[TransferRule]
+    other_assets: list[OtherAsset]
+    opening_balances: dict[str, OpeningBalance]
+    manual_transfers: list[ManualTransfer]
+    budgets: list[Budget]
+    simulator_scenarios: list[SimulatorScenario]
+    posting_splits: dict[str, PostingSplit]
+    posting_merges: dict[str, PostingMerge]
+    general_budgets: dict[str, GeneralBudget]
+    category_patterns: dict[str, CategoryPattern]
+    goals: dict[str, Goal]
+    goal_contributions: dict[str, GoalContribution]
+    recurring_additions: list[RecurringAddition]
+    withdrawal_priorities: list[WithdrawalPriorityEntry]
+
+
 @router.get("/store")
-def get_store(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def get_store(session: Annotated[Session, Depends(get_db)]) -> AccountingStoreResponse:
     """Return every persisted accounting entity: accounts, categories, tags, rules, other assets.
 
     Returns
     -------
-    dict[str, Any]
+    AccountingStoreResponse
         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
-        keyed by id), `rules`, `other_assets`, `budgets` (each a list).
+        keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a list).
     """
     _postings, store = _resolved_postings_and_store(state.config, session)
-    return {
-        "accounts": {account_id: account.model_dump(mode="json") for account_id, account in store.accounts.items()},
-        "categories": {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()},
-        "tags": {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()},
-        "transfer_rules": [rule.model_dump(mode="json") for rule in store.rules],
-        "other_assets": [asset.model_dump(mode="json") for asset in store.other_assets],
-        "opening_balances": {
-            account_id: balance.model_dump(mode="json") for account_id, balance in store.opening_balances.items()
-        },
-        "manual_transfers": [transfer.model_dump(mode="json") for transfer in store.manual_transfers],
-        "budgets": [budget.model_dump(mode="json") for budget in store.budgets],
-        "simulator_scenarios": [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios],
-        "posting_splits": {pid: split.model_dump(mode="json") for pid, split in store.posting_splits.items()},
-        "posting_merges": {mid: merge.model_dump(mode="json") for mid, merge in store.posting_merges.items()},
-        "general_budgets": {cat_id: budget.model_dump(mode="json") for cat_id, budget in store.general_budgets.items()},
-        "category_patterns": {
-            pattern_id: pattern.model_dump(mode="json") for pattern_id, pattern in store.category_patterns.items()
-        },
-        "goals": {goal_id: goal.model_dump(mode="json") for goal_id, goal in store.goals.items()},
-        "goal_contributions": {
-            contribution_id: contribution.model_dump(mode="json")
-            for contribution_id, contribution in store.goal_contributions.items()
-        },
-        "recurring_additions": [addition.model_dump(mode="json") for addition in store.recurring_additions],
-        "withdrawal_priorities": [entry.model_dump(mode="json") for entry in store.withdrawal_priorities],
-    }
+    return AccountingStoreResponse(
+        accounts=store.accounts,
+        categories=store.categories,
+        tags=store.tags,
+        transfer_rules=store.rules,
+        other_assets=store.other_assets,
+        opening_balances=store.opening_balances,
+        manual_transfers=store.manual_transfers,
+        budgets=store.budgets,
+        simulator_scenarios=store.simulator_scenarios,
+        posting_splits=store.posting_splits,
+        posting_merges=store.posting_merges,
+        general_budgets=store.general_budgets,
+        category_patterns=store.category_patterns,
+        goals=store.goals,
+        goal_contributions=store.goal_contributions,
+        recurring_additions=store.recurring_additions,
+        withdrawal_priorities=store.withdrawal_priorities,
+    )
 
 
 @router.get("/currencies")
-def get_currencies() -> list[dict[str, Any]]:
+def get_currencies() -> list[Currency]:
     """List every currency this app knows how to hold money in.
 
     Returns
     -------
-    list[dict[str, Any]]
-        One entry per supported currency, `{"code", "symbol", "decimal_places"}`.
+    list[Currency]
+        One entry per supported currency.
     """
-    return [currency.model_dump(mode="json") for currency in SUPPORTED_CURRENCIES.values()]
+    return list(SUPPORTED_CURRENCIES.values())
 
 
 def _display_currency(
@@ -310,49 +337,74 @@ def _display_currency(
     return DisplayCurrency(code, rates)
 
 
+class ExchangeRateSyncResult(BaseModel):
+    """Response body for `POST /sync-exchange-rates`."""
+
+    as_of: date
+    base_currency: CurrencyCode
+    rates_to_base: dict[CurrencyCode, float]
+
+
 @router.post("/sync-exchange-rates")
-def post_sync_exchange_rates() -> dict[str, Any]:
+def post_sync_exchange_rates() -> ExchangeRateSyncResult:
     """Re-fetch exchange-rate history from Frankfurter and overwrite the cache.
 
     Returns
     -------
-    dict[str, Any]
+    ExchangeRateSyncResult
         `as_of`, and every non-base currency's freshly smoothed rate into `accounting.models.BASE_CURRENCY`.
     """
     history = exchange_rates.update_rate_history_cache(state.config)
     as_of = datetime.now(tz=UTC).date()
     rates = exchange_rates.current_rates_to_base(history, as_of)
-    return {"as_of": as_of.isoformat(), "base_currency": BASE_CURRENCY, "rates_to_base": rates}
+    return ExchangeRateSyncResult(as_of=as_of, base_currency=BASE_CURRENCY, rates_to_base=rates)
+
+
+class CurrentExchangeRate(BaseModel):
+    """Response body for `GET /exchange-rates/current`."""
+
+    currency: CurrencyCode
+    base_currency: CurrencyCode
+    rate_to_base: float
+    as_of: date
+    window_days: int
 
 
 @router.get("/exchange-rates/current")
-def get_current_exchange_rate(currency: CurrencyCode) -> dict[str, Any]:
+def get_current_exchange_rate(currency: CurrencyCode) -> CurrentExchangeRate:
     """Return the smoothed rate this app currently uses for one currency, and how it's computed.
 
     Returns
     -------
-    dict[str, Any]
-        `currency`, `base_currency`, `rate_to_base`, `as_of`, `window_days`.
+    CurrentExchangeRate
     """
     as_of = datetime.now(tz=UTC).date()
     display = _display_currency(currency, as_of=as_of)
-    return {
-        "currency": currency,
-        "base_currency": BASE_CURRENCY,
-        "rate_to_base": display.rates_to_base[currency],
-        "as_of": as_of.isoformat(),
-        "window_days": exchange_rates.DEFAULT_SMOOTHING_WINDOW_DAYS,
-    }
+    return CurrentExchangeRate(
+        currency=currency,
+        base_currency=BASE_CURRENCY,
+        rate_to_base=display.rates_to_base[currency],
+        as_of=as_of,
+        window_days=exchange_rates.DEFAULT_SMOOTHING_WINDOW_DAYS,
+    )
+
+
+class ExchangeRateHistoryPoint(BaseModel):
+    """One cached day's raw and smoothed exchange rate, for `GET /exchange-rates/history`."""
+
+    date: date
+    rate: float
+    smoothed_rate: float
 
 
 @router.get("/exchange-rates/history")
-def get_exchange_rate_history(currency: CurrencyCode) -> list[dict[str, Any]]:
+def get_exchange_rate_history(currency: CurrencyCode) -> list[ExchangeRateHistoryPoint]:
     """Return the cached daily rate history for one currency, alongside the smoothed value at each point.
 
     Returns
     -------
-    list[dict[str, Any]]
-        One `{"date", "rate", "smoothed_rate"}` per cached day, oldest first.
+    list[ExchangeRateHistoryPoint]
+        One point per cached day, oldest first.
 
     Raises
     ------
@@ -366,22 +418,27 @@ def get_exchange_rate_history(currency: CurrencyCode) -> list[dict[str, Any]]:
             status_code=400, detail=f"No exchange-rate history for {currency!r} — sync exchange rates first."
         )
     return [
-        {
-            "date": row["date"].isoformat(),
-            "rate": row["rate_to_base"],
-            "smoothed_rate": exchange_rates.smoothed_rate_as_of(history, currency, row["date"]),
-        }
+        ExchangeRateHistoryPoint(
+            date=row["date"],
+            rate=row["rate_to_base"],
+            # Never `None` here: `row["date"]` is itself a cached history day
+            # for `currency`, so the trailing window ending on it always has
+            # at least that one point to average.
+            smoothed_rate=cast("float", exchange_rates.smoothed_rate_as_of(history, currency, row["date"])),
+        )
         for row in series.iter_rows(named=True)
     ]
 
 
 @router.put("/categories")
-def put_categories(categories: dict[str, Category], session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def put_categories(
+    categories: dict[str, Category], session: Annotated[Session, Depends(get_db)]
+) -> dict[str, Category]:
     """Replace the whole category tree, enforcing the "Other" catch-all subcategory invariant.
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, Category]
         The categories just persisted, keyed by `category_id` — may
         include an "Other" subcategory the caller didn't submit, or omit
         one it did (see `store.normalize_categories`).
@@ -389,7 +446,7 @@ def put_categories(categories: dict[str, Category], session: Annotated[Session, 
     store = load_store(session)
     store = store.model_copy(update={"categories": normalize_categories(categories)})
     save_store(store, session)
-    return {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()}
+    return store.categories
 
 
 class CategoryRenameRequest(BaseModel):
@@ -398,10 +455,17 @@ class CategoryRenameRequest(BaseModel):
     name: str
 
 
+class CategoryRenameResponse(BaseModel):
+    """Response body for `POST /categories/{category_id}/rename`."""
+
+    categories: dict[str, Category]
+    merged: bool
+
+
 @router.post("/categories/{category_id}/rename")
 def post_category_rename(
     category_id: str, request: CategoryRenameRequest, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> CategoryRenameResponse:
     """Rename a category or subcategory, merging it into an existing same-named one if there is one.
 
     A merge repoints every reference to the merged-away id — postings
@@ -415,10 +479,10 @@ def post_category_rename(
 
     Returns
     -------
-    dict[str, Any]
-        `{"categories": {...}, "merged": bool}` — `categories` is the full
-        tree after the change; `merged` is true if this rename actually
-        folded into an existing category rather than just changing a name.
+    CategoryRenameResponse
+        `categories` is the full tree after the change; `merged` is true
+        if this rename actually folded into an existing category rather
+        than just changing a name.
 
     Raises
     ------
@@ -455,95 +519,90 @@ def post_category_rename(
 
     save_store(store, session)
 
-    return {
-        "categories": {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()},
-        "merged": bool(id_remap),
-    }
+    return CategoryRenameResponse(categories=store.categories, merged=bool(id_remap))
 
 
 @router.put("/tags")
-def put_tags(tags: dict[str, Tag], session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def put_tags(tags: dict[str, Tag], session: Annotated[Session, Depends(get_db)]) -> dict[str, Tag]:
     """Replace the whole tag list.
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, Tag]
         The tags just persisted, keyed by `tag_id`.
     """
     store = load_store(session)
     store = store.model_copy(update={"tags": tags})
     save_store(store, session)
-    return {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()}
+    return store.tags
 
 
 @router.put("/transfer-rules")
-def put_transfer_rules(rules: list[TransferRule], session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def put_transfer_rules(rules: list[TransferRule], session: Annotated[Session, Depends(get_db)]) -> list[TransferRule]:
     """Replace the whole transfer-rule list.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[TransferRule]
         The transfer rules just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"rules": rules})
     save_store(store, session)
-    return [rule.model_dump(mode="json") for rule in store.rules]
+    return store.rules
 
 
 @router.put("/category-patterns")
 def put_category_patterns(
     category_patterns: dict[str, CategoryPattern], session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> dict[str, CategoryPattern]:
     """Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, CategoryPattern]
         The patterns just persisted, keyed by `pattern_id`.
     """
     store = load_store(session)
     store = store.model_copy(update={"category_patterns": category_patterns})
     save_store(store, session)
-    return {pattern_id: pattern.model_dump(mode="json") for pattern_id, pattern in store.category_patterns.items()}
+    return store.category_patterns
 
 
 @router.put("/other-assets")
-def put_other_assets(
-    other_assets: list[OtherAsset], session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+def put_other_assets(other_assets: list[OtherAsset], session: Annotated[Session, Depends(get_db)]) -> list[OtherAsset]:
     """Replace the whole manually-entered-asset list.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[OtherAsset]
         The assets just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"other_assets": other_assets})
     save_store(store, session)
-    return [asset.model_dump(mode="json") for asset in store.other_assets]
+    return store.other_assets
 
 
 @router.put("/budgets")
-def put_budgets(budgets: list[Budget], session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def put_budgets(budgets: list[Budget], session: Annotated[Session, Depends(get_db)]) -> list[Budget]:
     """Replace the whole budget list, across every month.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[Budget]
         The budgets just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"budgets": budgets})
     save_store(store, session)
-    return [budget.model_dump(mode="json") for budget in store.budgets]
+    return store.budgets
 
 
 @router.put("/general-budgets")
 def put_general_budgets(
     general_budgets: dict[str, GeneralBudget], session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> dict[str, GeneralBudget]:
     """Replace the whole general-budget map, keyed by `category_id` — the same amount applies to every month.
 
     Stored, edited, and displayed completely separately from `Budget`'s
@@ -552,30 +611,38 @@ def put_general_budgets(
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, GeneralBudget]
         The general budgets just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"general_budgets": general_budgets})
     save_store(store, session)
-    return {cat_id: budget.model_dump(mode="json") for cat_id, budget in store.general_budgets.items()}
+    return store.general_budgets
 
 
 @router.put("/simulator/scenarios")
 def put_simulator_scenarios(
     scenarios: list[SimulatorScenario], session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[SimulatorScenario]:
     """Replace the whole saved-scenario list.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[SimulatorScenario]
         The scenarios just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"simulator_scenarios": scenarios})
     save_store(store, session)
-    return [scenario.model_dump(mode="json") for scenario in store.simulator_scenarios]
+    return store.simulator_scenarios
+
+
+class ProjectionPoint(BaseModel):
+    """One projected month's balance, for `GET /simulator/project` — see `dashboard.simulator.ProjectionPoint`."""
+
+    month: int
+    balance: float
+    contributions_to_date: float
 
 
 @router.get("/simulator/project")
@@ -585,27 +652,26 @@ def get_simulator_projection(
     horizon_years: float,
     annual_rate_pct: float,
     compounding_frequency: simulator.CompoundingFrequency = "monthly",
-) -> list[dict[str, Any]]:
+) -> list[ProjectionPoint]:
     """Project a compound-interest scenario forward, month by month.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `dashboard.simulator.ProjectionPoint`.
+    list[ProjectionPoint]
     """
     points = simulator.project(
         initial_capital, monthly_contribution, horizon_years, annual_rate_pct, compounding_frequency
     )
-    return [vars(point) for point in points]
+    return [ProjectionPoint(**vars(point)) for point in points]
 
 
 @router.post("/accounts")
-def post_account(account: Account, session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def post_account(account: Account, session: Annotated[Session, Depends(get_db)]) -> Account:
     """Register a new account.
 
     Returns
     -------
-    dict[str, Any]
+    Account
         The account just persisted.
 
     Raises
@@ -618,7 +684,7 @@ def post_account(account: Account, session: Annotated[Session, Depends(get_db)])
         raise HTTPException(status_code=409, detail=f"Account {account.account_id!r} already exists")
     store = store.model_copy(update={"accounts": {**store.accounts, account.account_id: account}})
     save_store(store, session)
-    return account.model_dump(mode="json")
+    return account
 
 
 class AccountUpdate(BaseModel):
@@ -643,12 +709,12 @@ class AccountUpdate(BaseModel):
 
 
 @router.put("/accounts/{account_id}")
-def put_account(account_id: str, update: AccountUpdate, session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def put_account(account_id: str, update: AccountUpdate, session: Annotated[Session, Depends(get_db)]) -> Account:
     """Update an account — full edit if it has no postings yet, name/meta-only afterward.
 
     Returns
     -------
-    dict[str, Any]
+    Account
         The account after the update.
 
     Raises
@@ -685,17 +751,23 @@ def put_account(account_id: str, update: AccountUpdate, session: Annotated[Sessi
     )
     store = store.model_copy(update={"accounts": {**store.accounts, account_id: updated}})
     save_store(store, session)
-    return updated.model_dump(mode="json")
+    return updated
+
+
+class AccountIdResponse(BaseModel):
+    """Response body naming one account, for endpoints whose only real effect is removing something."""
+
+    account_id: str
 
 
 @router.delete("/accounts/{account_id}")
-def delete_account(account_id: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+def delete_account(account_id: str, session: Annotated[Session, Depends(get_db)]) -> AccountIdResponse:
     """Delete an account, as long as it has no postings yet.
 
     Returns
     -------
-    dict[str, str]
-        `{"account_id": ...}` of the account just deleted.
+    AccountIdResponse
+        The account just deleted.
 
     Raises
     ------
@@ -710,7 +782,7 @@ def delete_account(account_id: str, session: Annotated[Session, Depends(get_db)]
     remaining = {aid: account for aid, account in store.accounts.items() if aid != account_id}
     store = store.model_copy(update={"accounts": remaining})
     save_store(store, session)
-    return {"account_id": account_id}
+    return AccountIdResponse(account_id=account_id)
 
 
 class AccountCloseRequest(BaseModel):
@@ -719,10 +791,17 @@ class AccountCloseRequest(BaseModel):
     transfers: list[ManualTransfer] = Field(default_factory=list)
 
 
+class AccountCloseResponse(BaseModel):
+    """Response body for `POST /api/accounting/accounts/{account_id}/close`."""
+
+    account: Account
+    manual_transfers: list[ManualTransfer]
+
+
 @router.post("/accounts/{account_id}/close")
 def close_account(
     account_id: str, request: AccountCloseRequest, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> AccountCloseResponse:
     """Mark an account closed, recording any transfers that moved its remaining balance out first.
 
     An account no longer open at its institution still keeps its full
@@ -734,8 +813,8 @@ def close_account(
 
     Returns
     -------
-    dict[str, Any]
-        `{"account": ..., "manual_transfers": [...]}` after the update.
+    AccountCloseResponse
+        The account and every manual transfer after the update.
 
     Raises
     ------
@@ -761,19 +840,16 @@ def close_account(
         }
     )
     save_store(store, session)
-    return {
-        "account": updated_account.model_dump(mode="json"),
-        "manual_transfers": [transfer.model_dump(mode="json") for transfer in store.manual_transfers],
-    }
+    return AccountCloseResponse(account=updated_account, manual_transfers=store.manual_transfers)
 
 
 @router.post("/accounts/{account_id}/reopen")
-def reopen_account(account_id: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def reopen_account(account_id: str, session: Annotated[Session, Depends(get_db)]) -> Account:
     """Clear an account's `closed` flag, without touching any transfers recorded when it was closed.
 
     Returns
     -------
-    dict[str, Any]
+    Account
         The account after the update.
 
     Raises
@@ -788,18 +864,18 @@ def reopen_account(account_id: str, session: Annotated[Session, Depends(get_db)]
     updated_account = account.model_copy(update={"closed": False})
     store = store.model_copy(update={"accounts": {**store.accounts, account_id: updated_account}})
     save_store(store, session)
-    return updated_account.model_dump(mode="json")
+    return updated_account
 
 
 @router.put("/accounts/{account_id}/opening-balance")
 def put_opening_balance(
     account_id: str, opening_balance: OpeningBalance, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> OpeningBalance:
     """Set the balance an account already held the day before its first posting.
 
     Returns
     -------
-    dict[str, Any]
+    OpeningBalance
         The opening balance just persisted.
 
     Raises
@@ -814,23 +890,23 @@ def put_opening_balance(
         raise HTTPException(status_code=400, detail="account_id in the body must match the URL")
     store = store.model_copy(update={"opening_balances": {**store.opening_balances, account_id: opening_balance}})
     save_store(store, session)
-    return opening_balance.model_dump(mode="json")
+    return opening_balance
 
 
 @router.delete("/accounts/{account_id}/opening-balance")
-def delete_opening_balance(account_id: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+def delete_opening_balance(account_id: str, session: Annotated[Session, Depends(get_db)]) -> AccountIdResponse:
     """Remove an account's opening balance, if it has one.
 
     Returns
     -------
-    dict[str, str]
-        `{"account_id": ...}` of the account whose opening balance was cleared.
+    AccountIdResponse
+        The account whose opening balance was cleared.
     """
     store = load_store(session)
     remaining = {aid: value for aid, value in store.opening_balances.items() if aid != account_id}
     store = store.model_copy(update={"opening_balances": remaining})
     save_store(store, session)
-    return {"account_id": account_id}
+    return AccountIdResponse(account_id=account_id)
 
 
 class DetectRequest(BaseModel):
@@ -841,46 +917,92 @@ class DetectRequest(BaseModel):
     first_data_row: dict[str, str] | None = None
 
 
+class DetectedAccount(BaseModel):
+    """A best-guess bank, account kind, and stable account id for one uploaded CSV — see `importers.detect`."""
+
+    institution: str
+    account_kind: AccountKind
+    account_id: str
+    account_name: str
+    parent_account_id: str | None = None
+
+
 @router.post("/detect")
-def post_detect(request: DetectRequest) -> dict[str, Any] | None:
+def post_detect(request: DetectRequest) -> DetectedAccount | None:
     """Guess the institution, account kind, and account id a CSV's header, filename, and first row describe.
 
     Returns
     -------
-    dict[str, Any] or None
+    DetectedAccount or None
         The best guess, or `None` if nothing matched.
     """
     detected = detect_bank_account(request.header, request.filename, request.first_data_row)
-    return None if detected is None else vars(detected)
+    return None if detected is None else DetectedAccount(**vars(detected))
+
+
+class SupportedImportKind(BaseModel):
+    """One `(institution, account_kind)` pair with a registered CSV standardizer."""
+
+    institution: str
+    account_kind: str
 
 
 @router.get("/supported-import-kinds")
-def get_supported_import_kinds() -> list[dict[str, str]]:
+def get_supported_import_kinds() -> list[SupportedImportKind]:
     """List every `(institution, account_kind)` pair with a registered CSV standardizer.
 
     Returns
     -------
-    list[dict[str, str]]
-        One `{"institution": ..., "account_kind": ...}` dict per supported pair — lets the UI flag any
-        registered account that has no importer able to actually parse a statement for it.
+    list[SupportedImportKind]
+        Lets the UI flag any registered account that has no importer able
+        to actually parse a statement for it.
     """
     return [
-        {"institution": institution, "account_kind": account_kind}
+        SupportedImportKind(institution=institution, account_kind=account_kind)
         for institution, account_kind in sorted(supported_import_kinds())
     ]
 
 
+class SyncStatus(BaseModel):
+    """When a bank statement was most recently imported, across every institution and account."""
+
+    last_import_at: datetime | None
+
+
 @router.get("/sync-status")
-def get_sync_status() -> dict[str, str | None]:
+def get_sync_status() -> SyncStatus:
     """When a bank statement was most recently imported, across every institution and account.
 
     Returns
     -------
-    dict[str, str | None]
-        `{"last_import_at": ...}`, an ISO 8601 UTC timestamp, or `None` if nothing has ever been imported.
+    SyncStatus
+        `last_import_at` is `None` if nothing has ever been imported.
     """
-    imported_at = last_import_at(state.config)
-    return {"last_import_at": imported_at.isoformat() if imported_at else None}
+    return SyncStatus(last_import_at=last_import_at(state.config))
+
+
+class SkippedRowsInfo(BaseModel):
+    """Rows an import couldn't parse — see `importers.canonical.csv.SkippedRowsInfo`."""
+
+    total_rows: int
+    skipped_count: int
+    bad_dates: int
+    bad_amounts: int
+    skipped_row_numbers: list[int]
+
+
+class ImportResult(BaseModel):
+    """Response body for `POST /import` — what one CSV import produced.
+
+    `skipped_rows` is only ever present (non-`None`) when at least one row
+    couldn't be parsed; omitted from the hand-written TS `ImportResult`
+    type, but real, present-when-relevant behavior of this endpoint.
+    """
+
+    account_id: str
+    new_posting_count: int
+    total_posting_count: int
+    skipped_rows: SkippedRowsInfo | None = None
 
 
 @router.post("/import")
@@ -894,13 +1016,12 @@ async def post_import(  # noqa: PLR0913
     parent_account_id: Annotated[str | None, Form()] = None,
     *,
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
+) -> ImportResult:
     """Register the account if it's new, then archive and import the uploaded CSV.
 
     Returns
     -------
-    dict[str, Any]
-        `account_id`, `new_posting_count`, `total_posting_count`.
+    ImportResult
 
     Raises
     ------
@@ -950,23 +1071,12 @@ async def post_import(  # noqa: PLR0913
     except UnsupportedImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    response_data: dict[str, Any] = {
-        "account_id": result.account_id,
-        "new_posting_count": result.new_posting_count,
-        "total_posting_count": result.total_posting_count,
-    }
-
-    # Include skip info if any rows were skipped
-    if result.skipped_rows:
-        response_data["skipped_rows"] = {
-            "total_rows": result.skipped_rows.total_rows,
-            "skipped_count": result.skipped_rows.skipped_count,
-            "bad_dates": result.skipped_rows.bad_dates,
-            "bad_amounts": result.skipped_rows.bad_amounts,
-            "skipped_row_numbers": result.skipped_rows.skipped_row_numbers,
-        }
-
-    return response_data
+    return ImportResult(
+        account_id=result.account_id,
+        new_posting_count=result.new_posting_count,
+        total_posting_count=result.total_posting_count,
+        skipped_rows=SkippedRowsInfo(**vars(result.skipped_rows)) if result.skipped_rows else None,
+    )
 
 
 class CanonicalCategoryOverridesRequest(BaseModel):
@@ -983,6 +1093,12 @@ def _read_category_overrides(raw: str | None) -> CategoryOverrides | None:
     return CategoryOverrides(categories=parsed.categories, subcategories=parsed.subcategories)
 
 
+class CanonicalImportPreview(BaseModel):
+    """Response body for `POST /import/canonical/preview`."""
+
+    new_categories: list[Category]
+
+
 @router.post("/import/canonical/preview")
 async def post_canonical_import_preview(
     file: UploadFile,
@@ -992,7 +1108,7 @@ async def post_canonical_import_preview(
     date_order: Annotated[str, Form()] = "MDY",
     *,
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
+) -> CanonicalImportPreview:
     """Parse a canonical CSV/Excel file without persisting anything, to preview which categories it would create.
 
     Meant to run before `post_canonical_import`: the caller shows the
@@ -1003,7 +1119,7 @@ async def post_canonical_import_preview(
 
     Returns
     -------
-    dict[str, Any]
+    CanonicalImportPreview
         `new_categories` — every category/subcategory this file would
         create, for the caller to render as an editable list.
 
@@ -1027,7 +1143,13 @@ async def post_canonical_import_preview(
             )
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {"new_categories": [category.model_dump(mode="json") for category in outcome.new_categories.values()]}
+    return CanonicalImportPreview(new_categories=list(outcome.new_categories.values()))
+
+
+class CanonicalImportResult(ImportResult):
+    """Response body for `POST /import/canonical` — an `ImportResult` plus any categories the file created."""
+
+    new_categories: list[Category]
 
 
 @router.post("/import/canonical")
@@ -1044,7 +1166,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     category_overrides: Annotated[str | None, Form()] = None,
     *,
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
+) -> CanonicalImportResult:
     """Register the account if it's new, then import the file through the canonical fallback parser.
 
     Used when no dedicated standardizer exists for `institution`/`account_kind`
@@ -1060,8 +1182,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
 
     Returns
     -------
-    dict[str, Any]
-        `account_id`, `new_posting_count`, `total_posting_count`, and
+    CanonicalImportResult
         `new_categories` (each a full category, for a summary table).
 
     Raises
@@ -1117,42 +1238,43 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
-    response_data: dict[str, Any] = {
-        "account_id": result.account_id,
-        "new_posting_count": result.new_posting_count,
-        "total_posting_count": result.total_posting_count,
-        "new_categories": [category.model_dump(mode="json") for category in result.new_categories.values()],
-    }
-
-    # Include skip info if any rows were skipped
-    if result.skipped_rows:
-        response_data["skipped_rows"] = {
-            "total_rows": result.skipped_rows.total_rows,
-            "skipped_count": result.skipped_rows.skipped_count,
-            "bad_dates": result.skipped_rows.bad_dates,
-            "bad_amounts": result.skipped_rows.bad_amounts,
-            "skipped_row_numbers": result.skipped_rows.skipped_row_numbers,
-        }
-
-    return response_data
+    return CanonicalImportResult(
+        account_id=result.account_id,
+        new_posting_count=result.new_posting_count,
+        total_posting_count=result.total_posting_count,
+        new_categories=list(result.new_categories.values()),
+        skipped_rows=SkippedRowsInfo(**vars(result.skipped_rows)) if result.skipped_rows else None,
+    )
 
 
-def _match_response(match: CategorizationMatch) -> dict[str, Any]:
-    return {
-        "row_number": match.row_number,
-        "posted_at": match.posted_at.isoformat(),
-        "description": match.description,
-        "amount": match.amount,
-        "proposed_category_id": match.proposed_category_id,
-        "proposed_category_name": match.proposed_category_name,
-        "proposed_subcategory_id": match.proposed_subcategory_id,
-        "proposed_subcategory_name": match.proposed_subcategory_name,
-        "posting_id": match.posting_id,
-        "transaction_id": match.transaction_id,
-        "matched_description": match.matched_description,
-        "existing_category_id": match.existing_category_id,
-        "confidence": match.confidence,
-    }
+class CategorizationMatch(BaseModel):
+    """One file row's proposed match against the ledger — see `importers.categorize_from_file.CategorizationMatch`."""
+
+    row_number: int
+    posted_at: datetime
+    description: str
+    amount: float
+    proposed_category_id: str | None
+    proposed_category_name: str | None
+    proposed_subcategory_id: str | None
+    proposed_subcategory_name: str | None
+    posting_id: str | None
+    transaction_id: str | None
+    matched_description: str | None
+    existing_category_id: str | None
+    confidence: float | None
+
+
+def _match_response(match: CategorizationMatchData) -> CategorizationMatch:
+    return CategorizationMatch(**vars(match))
+
+
+class CategorizeFromFilePreview(BaseModel):
+    """Response body for `POST /import/categorize-from-file/preview`."""
+
+    matches: list[CategorizationMatch]
+    new_categories: list[Category]
+    skipped_rows: SkippedRowsInfo | None = None
 
 
 @router.post("/import/categorize-from-file/preview")
@@ -1164,7 +1286,7 @@ async def post_categorize_from_file_preview(
     window_days: Annotated[int, Form()] = 5,
     *,
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
+) -> CategorizeFromFilePreview:
     """Match a categorized personal file against the ledger without persisting anything.
 
     Unlike `post_canonical_import_preview`, this never creates postings —
@@ -1188,7 +1310,7 @@ async def post_categorize_from_file_preview(
 
     Returns
     -------
-    dict[str, Any]
+    CategorizeFromFilePreview
         `matches` (one entry per file row; `posting_id` is `None` when nothing matched),
         `new_categories`, and `skipped_rows` (same shape as `post_canonical_import_preview`).
 
@@ -1216,19 +1338,18 @@ async def post_categorize_from_file_preview(
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
-    response_data: dict[str, Any] = {
-        "matches": [_match_response(match) for match in preview.matches],
-        "new_categories": [category.model_dump(mode="json") for category in preview.new_categories.values()],
-    }
-    if preview.skipped_rows:
-        response_data["skipped_rows"] = {
-            "total_rows": preview.skipped_rows.total_rows,
-            "skipped_count": preview.skipped_rows.skipped_count,
-            "bad_dates": preview.skipped_rows.bad_dates,
-            "bad_amounts": preview.skipped_rows.bad_amounts,
-            "skipped_row_numbers": preview.skipped_rows.skipped_row_numbers,
-        }
-    return response_data
+    return CategorizeFromFilePreview(
+        matches=[_match_response(match) for match in preview.matches],
+        new_categories=list(preview.new_categories.values()),
+        skipped_rows=SkippedRowsInfo(**vars(preview.skipped_rows)) if preview.skipped_rows else None,
+    )
+
+
+class CategorizeFromFileApplyResult(BaseModel):
+    """Response body for `POST /import/categorize-from-file/apply`."""
+
+    updated_posting_count: int
+    new_categories: list[Category]
 
 
 @router.post("/import/categorize-from-file/apply")
@@ -1242,7 +1363,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     category_overrides: Annotated[str | None, Form()] = None,
     *,
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
+) -> CategorizeFromFileApplyResult:
     """Re-match the file (stateless, same as `post_canonical_import`'s preview/confirm split) and apply confirmed rows.
 
     Nothing from the preview call is cached server-side — the file is
@@ -1269,7 +1390,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
 
     Returns
     -------
-    dict[str, Any]
+    CategorizeFromFileApplyResult
         `updated_posting_count` and `new_categories` (each newly-created category, if the file's own
         Category/Subcategory columns introduced any not already in the store).
 
@@ -1315,14 +1436,42 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     ]
     updated_count = apply_categorize_from_file(session, to_apply)
 
-    return {
-        "updated_posting_count": updated_count,
-        "new_categories": [category.model_dump(mode="json") for category in preview.new_categories.values()],
-    }
+    return CategorizeFromFileApplyResult(
+        updated_posting_count=updated_count, new_categories=list(preview.new_categories.values())
+    )
+
+
+class DepositMatch(BaseModel):
+    """One paystub deposit, matched (or not) against a real bank posting — see `dashboard.paystub.DepositMatch`."""
+
+    label: str
+    amount: float
+    account_last4: str | None
+    posting_id: str | None
+    account_id: str | None
+
+
+class ProposedSplit(BaseModel):
+    """A proposed way to split one matched deposit into categorized legs — see `dashboard.paystub.ProposedSplit`."""
+
+    posting_id: str
+    account_id: str
+    legs: list[PostingSplitLeg]
+
+
+class PaystubReconciliationResult(BaseModel):
+    """Response body for `POST /import/paystub`."""
+
+    statement: EarningsStatement
+    matches: list[DepositMatch]
+    is_fully_matched: bool
+    proposed_splits: list[ProposedSplit]
 
 
 @router.post("/import/paystub")
-async def post_paystub_reconciliation(file: UploadFile, session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+async def post_paystub_reconciliation(
+    file: UploadFile, session: Annotated[Session, Depends(get_db)]
+) -> PaystubReconciliationResult:
     """Parse a paystub PDF and reconcile its deposits against real bank postings near pay day.
 
     Read-only — never applies anything automatically. `proposed_splits`
@@ -1333,12 +1482,10 @@ async def post_paystub_reconciliation(file: UploadFile, session: Annotated[Sessi
 
     Returns
     -------
-    dict[str, Any]
-        `statement` (the parsed `EarningsStatement`), `matches` (one
-        `{label, amount, account_last4, posting_id, account_id}` per
-        deposit — `posting_id`/`account_id` `None` if unmatched),
-        `is_fully_matched`, and `proposed_splits` (one per matched
-        deposit — see `dashboard.paystub.ProposedSplit`).
+    PaystubReconciliationResult
+        `matches` — one entry per deposit, `posting_id`/`account_id`
+        `None` if unmatched; `proposed_splits` — one per matched deposit
+        (see `dashboard.paystub.ProposedSplit`).
 
     Raises
     ------
@@ -1356,38 +1503,43 @@ async def post_paystub_reconciliation(file: UploadFile, session: Annotated[Sessi
     postings, store = _resolved_postings_and_store(state.config, session)
     result = reconcile_earnings_statement(statement, postings, store.accounts)
     proposed_splits = propose_posting_splits(statement, result.matches)
-    return {
-        "statement": statement.model_dump(mode="json"),
-        "matches": [
-            {
-                "label": match.deposit.label,
-                "amount": match.deposit.amount,
-                "account_last4": match.deposit.account_last4,
-                "posting_id": match.posting_id,
-                "account_id": match.account_id,
-            }
+    return PaystubReconciliationResult(
+        statement=statement,
+        matches=[
+            DepositMatch(
+                label=match.deposit.label,
+                amount=match.deposit.amount,
+                account_last4=match.deposit.account_last4,
+                posting_id=match.posting_id,
+                account_id=match.account_id,
+            )
             for match in result.matches
         ],
-        "is_fully_matched": result.is_fully_matched,
-        "proposed_splits": [
-            {
-                "posting_id": proposal.posting_id,
-                "account_id": proposal.account_id,
-                "legs": [vars(leg) for leg in proposal.legs],
-            }
+        is_fully_matched=result.is_fully_matched,
+        proposed_splits=[
+            ProposedSplit(
+                posting_id=proposal.posting_id,
+                account_id=proposal.account_id,
+                legs=[PostingSplitLeg(**vars(leg)) for leg in proposal.legs],
+            )
             for proposal in proposed_splits
         ],
-    }
+    )
+
+
+class RebuildResult(BaseModel):
+    """Response body for `POST /rebuild`."""
+
+    total_posting_count: int
 
 
 @router.post("/rebuild")
-def post_rebuild(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def post_rebuild(session: Annotated[Session, Depends(get_db)]) -> RebuildResult:
     """Recompute the whole posting ledger from every archived raw CSV.
 
     Returns
     -------
-    dict[str, Any]
-        `total_posting_count`.
+    RebuildResult
 
     Raises
     ------
@@ -1398,11 +1550,24 @@ def post_rebuild(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]
         ledger = rebuild_from_raw_statements(state.config, session)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    return {"total_posting_count": len(ledger)}
+    return RebuildResult(total_posting_count=len(ledger))
+
+
+class PostingRow(Posting):
+    """One posting as displayed on the Transactions page — a `Posting` plus its current resolution state.
+
+    The three extra fields are display-only, bolted onto the resolved
+    ledger by `get_postings` itself rather than stored on the posting —
+    see `ledger.pending`/`ledger.categorization.resolved_transfer_rule_ids_by_transaction`.
+    """
+
+    pending_source: PendingSuggestionSource | None = None
+    pending_selected: bool = True
+    resolved_by_transfer_rule_id: str | None = None
 
 
 @router.get("/postings")
-def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[PostingRow]:
     """Return every posting, resolved against the current rules and manual overrides.
 
     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
@@ -1415,8 +1580,8 @@ def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[dict[str,
 
     Returns
     -------
-    list[dict[str, Any]]
-        One dict per posting.
+    list[PostingRow]
+        One row per posting.
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     overrides = load_overrides(session)
@@ -1432,21 +1597,21 @@ def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[dict[str,
         row["pending_source"] = override.pending_source if override is not None else None
         row["pending_selected"] = override.pending_selected if override is not None else True
         row["resolved_by_transfer_rule_id"] = resolved_by_rule.get(row["transaction_id"])
-    return rows
+    return [PostingRow(**row) for row in rows]
 
 
 @router.get("/ledger/export")
-def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[Posting]:
     """Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[Posting]
         Every posting for the user's own backup. See `GET /postings` for
         the same data after every rule/override/split/merge is applied on
         top — what the Transactions page actually shows.
     """
-    return load_ledger(session).to_dicts()
+    return [Posting(**row) for row in load_ledger(session).to_dicts()]
 
 
 @router.get("/statements/export")
@@ -1475,7 +1640,7 @@ def get_statements_export() -> Response:
 @router.put("/postings/{posting_id}/override")
 def put_posting_override(
     posting_id: str, override: ManualOverride, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> ManualOverride:
     """Upsert one posting's manual override, merging into any override already stored for it.
 
     A request only ever carries the fields the caller actually means to
@@ -1489,7 +1654,7 @@ def put_posting_override(
 
     Returns
     -------
-    dict[str, Any]
+    ManualOverride
         The override just persisted, merged with any prior one.
     """
     overrides = load_overrides(session)
@@ -1500,7 +1665,7 @@ def put_posting_override(
         override = ManualOverride(**merged)
     overrides[posting_id] = override
     save_overrides(overrides, session)
-    return override.model_dump(mode="json")
+    return override
 
 
 _SPLIT_ZERO_SUM_TOLERANCE = 1e-6
@@ -1526,7 +1691,7 @@ def _current_amount_for_split(postings: pl.DataFrame, posting_id: str) -> float 
 @router.put("/postings/{posting_id}/split")
 def put_posting_split(
     posting_id: str, legs: list[PostingSplitLeg], session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> PostingSplit:
     """Split one posting into several independently-categorized legs, e.g. a paycheck into wage + reimbursement.
 
     Overwrites any split already stored for this posting — unlike
@@ -1536,7 +1701,7 @@ def put_posting_split(
 
     Returns
     -------
-    dict[str, Any]
+    PostingSplit
         The split just persisted.
 
     Raises
@@ -1556,38 +1721,45 @@ def put_posting_split(
     split = PostingSplit(posting_id=posting_id, legs=legs)
     store = store.model_copy(update={"posting_splits": {**store.posting_splits, posting_id: split}})
     save_store(store, session)
-    return split.model_dump(mode="json")
+    return split
+
+
+class PostingIdResponse(BaseModel):
+    """Response body naming one posting, for endpoints whose only real effect is removing something."""
+
+    posting_id: str
 
 
 @router.delete("/postings/{posting_id}/split")
-def delete_posting_split(posting_id: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+def delete_posting_split(posting_id: str, session: Annotated[Session, Depends(get_db)]) -> PostingIdResponse:
     """Undo a posting split, restoring the single original posting.
 
     Returns
     -------
-    dict[str, str]
-        `{"posting_id": ...}`.
+    PostingIdResponse
     """
     store = load_store(session)
     remaining = {pid: split for pid, split in store.posting_splits.items() if pid != posting_id}
     store = store.model_copy(update={"posting_splits": remaining})
     save_store(store, session)
-    return {"posting_id": posting_id}
+    return PostingIdResponse(posting_id=posting_id)
 
 
 @router.put("/posting-merges")
-def put_posting_merges(merges: dict[str, PostingMerge], session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def put_posting_merges(
+    merges: dict[str, PostingMerge], session: Annotated[Session, Depends(get_db)]
+) -> dict[str, PostingMerge]:
     """Replace the whole posting-merge map, keyed by `merge_id`.
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, PostingMerge]
         The merges just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"posting_merges": merges})
     save_store(store, session)
-    return {merge_id: merge.model_dump(mode="json") for merge_id, merge in store.posting_merges.items()}
+    return store.posting_merges
 
 
 _MAX_FEW_SHOT_EXAMPLES = 20
@@ -1624,19 +1796,26 @@ def _llm_providers() -> list[LLMProvider]:
     return providers
 
 
+class LlmProviderUsage(BaseModel):
+    """One LLM provider's self-tracked call count this period, and whether it's currently rate-limited."""
+
+    configured: bool
+    used_count: int
+    period: Literal["daily", "monthly"]
+    is_limited: bool
+    last_error: str | None
+
+
 @router.get("/llm-usage")
-def get_llm_usage() -> dict[str, Any]:
+def get_llm_usage() -> dict[str, LlmProviderUsage]:
     """Return each LLM provider's self-tracked call count this period, and whether it's currently rate-limited.
 
     Returns
     -------
-    dict[str, Any]
-        Keyed by provider name (`"gemini"`, `"mistral"`). Each entry has
-        `configured` (whether an API key is set for it at all),
-        `used_count`, `period` (`"daily"` or `"monthly"` — see
-        `llm.usage.RESET_PERIOD`), `is_limited`, and `last_error` (the
-        provider's own error text from the last refused call, `None` if
-        it hasn't been refused since its count last reset).
+    dict[str, LlmProviderUsage]
+        Keyed by provider name (`"gemini"`, `"mistral"`). `last_error` is
+        the provider's own error text from the last refused call, `None`
+        if it hasn't been refused since its count last reset.
     """
     credentials = resolve_llm_credentials(state.config)
     configured = {
@@ -1645,19 +1824,26 @@ def get_llm_usage() -> dict[str, Any]:
     }
     usage = load_usage(state.config.llm_usage_path)
     return {
-        provider: {
-            "configured": configured[provider],
-            "used_count": entry.used_count,
-            "period": RESET_PERIOD[provider],
-            "is_limited": entry.is_limited,
-            "last_error": entry.last_error,
-        }
+        provider: LlmProviderUsage(
+            configured=configured[provider],
+            used_count=entry.used_count,
+            period=RESET_PERIOD[provider],
+            is_limited=entry.is_limited,
+            last_error=entry.last_error,
+        )
         for provider, entry in usage.items()
     }
 
 
+class VerifyResult(BaseModel):
+    """Response body for `POST /settings/llm/verify`."""
+
+    ok: bool
+    error: str | None
+
+
 @router.post("/settings/llm/verify")
-def verify_llm_settings(provider: str) -> dict[str, Any]:
+def verify_llm_settings(provider: str) -> VerifyResult:
     """Actually attempt to authenticate with a provider, not just check that a key is typed in.
 
     `verify_gemini_key`/`verify_mistral_key` make a single free, read-only
@@ -1671,9 +1857,8 @@ def verify_llm_settings(provider: str) -> dict[str, Any]:
 
     Returns
     -------
-    dict[str, Any]
-        `ok` (whether the provider accepted the key) and `error` (its own
-        message, or a generic one, only when `ok` is false).
+    VerifyResult
+        `error` is only ever set when `ok` is false.
 
     Raises
     ------
@@ -1691,12 +1876,12 @@ def verify_llm_settings(provider: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="provider must be 'gemini' or 'mistral'")
 
     if key is None:
-        return {"ok": False, "error": "No key configured"}
+        return VerifyResult(ok=False, error="No key configured")
     try:
         verify(key.get_secret_value())
     except LLMProviderError as error:
-        return {"ok": False, "error": str(error)}
-    return {"ok": True, "error": None}
+        return VerifyResult(ok=False, error=str(error))
+    return VerifyResult(ok=True, error=None)
 
 
 class LLMSettingsUpdate(BaseModel):
@@ -1710,32 +1895,35 @@ class LLMSettingsUpdate(BaseModel):
     mistral_api_key: str | None = None
 
 
-def _llm_settings_response(*, gemini_set: bool, mistral_set: bool) -> dict[str, bool]:
-    return {"gemini_key_set": gemini_set, "mistral_key_set": mistral_set}
+class LlmSettings(BaseModel):
+    """Response body for `GET`/`PUT`/`DELETE /settings/llm` — whether each provider's key override is set."""
+
+    gemini_key_set: bool
+    mistral_key_set: bool
 
 
 @router.get("/settings/llm")
-def get_llm_settings() -> dict[str, bool]:
+def get_llm_settings() -> LlmSettings:
     """Report whether each LLM provider's Settings-page key override is set, without exposing its value.
 
     Returns
     -------
-    dict[str, bool]
-        `gemini_key_set`, `mistral_key_set` — whether the Settings-page
-        override itself has each key, regardless of `.env` (see `GET
-        /llm-usage`'s own `configured`, which reflects both sources).
+    LlmSettings
+        Whether the Settings-page override itself has each key, regardless
+        of `.env` (see `GET /llm-usage`'s own `configured`, which reflects
+        both sources).
     """
     override = load_llm_credential_override(state.config)
-    return _llm_settings_response(gemini_set=bool(override.gemini_api_key), mistral_set=bool(override.mistral_api_key))
+    return LlmSettings(gemini_key_set=bool(override.gemini_api_key), mistral_key_set=bool(override.mistral_api_key))
 
 
 @router.put("/settings/llm")
-def put_llm_settings(update: LLMSettingsUpdate) -> dict[str, bool]:
+def put_llm_settings(update: LLMSettingsUpdate) -> LlmSettings:
     """Persist an LLM API key override (merges into the existing one).
 
     Returns
     -------
-    dict[str, bool]
+    LlmSettings
         Same shape as `GET /settings/llm`, reflecting what was just persisted.
     """
     existing = load_llm_credential_override(state.config)
@@ -1748,20 +1936,20 @@ def put_llm_settings(update: LLMSettingsUpdate) -> dict[str, bool]:
         }
     )
     save_llm_credential_override(updated, state.config)
-    return _llm_settings_response(gemini_set=bool(updated.gemini_api_key), mistral_set=bool(updated.mistral_api_key))
+    return LlmSettings(gemini_key_set=bool(updated.gemini_api_key), mistral_key_set=bool(updated.mistral_api_key))
 
 
 @router.delete("/settings/llm")
-def delete_llm_settings() -> dict[str, bool]:
+def delete_llm_settings() -> LlmSettings:
     """Clear the Settings-page LLM key override, falling back to `.env` (if any) again.
 
     Returns
     -------
-    dict[str, bool]
+    LlmSettings
         Same shape as `GET /settings/llm`.
     """
     save_llm_credential_override(LLMCredentialOverride(), state.config)
-    return _llm_settings_response(gemini_set=False, mistral_set=False)
+    return LlmSettings(gemini_key_set=False, mistral_key_set=False)
 
 
 Example = tuple[str, str, str | None]
@@ -1785,6 +1973,14 @@ def _few_shot_examples(postings: pl.DataFrame, classification: CategoryClassific
     ][:_MAX_FEW_SHOT_EXAMPLES]
 
 
+class CategorySuggestionResult(BaseModel):
+    """Response body for `POST .../ai-suggest-category` and `.../pattern-suggest-category`."""
+
+    category_id: str | None
+    subcategory_id: str | None
+    applied: bool
+
+
 def _stage_and_save_pending_suggestion(
     posting_id: str,
     target_row: dict[str, Any],
@@ -1792,7 +1988,7 @@ def _stage_and_save_pending_suggestion(
     subcategory_id: str | None,
     source: PendingSuggestionSource,
     session: Session,
-) -> dict[str, Any]:
+) -> CategorySuggestionResult:
     """Stage a not-yet-confirmed suggestion as a pending override, snapshotting the posting's current category.
 
     Shared by `post_ai_suggest_category` and `post_pattern_suggest_category`
@@ -1801,8 +1997,8 @@ def _stage_and_save_pending_suggestion(
 
     Returns
     -------
-    dict[str, Any]
-        `{"category_id", "subcategory_id", "applied": True}`.
+    CategorySuggestionResult
+        `applied` is always `True`.
     """
     overrides = load_overrides(session)
     staged = stage_pending_suggestion(
@@ -1815,13 +2011,13 @@ def _stage_and_save_pending_suggestion(
     )
     overrides[posting_id] = staged
     save_overrides(overrides, session)
-    return {"category_id": category_id, "subcategory_id": subcategory_id, "applied": True}
+    return CategorySuggestionResult(category_id=category_id, subcategory_id=subcategory_id, applied=True)
 
 
 @router.post("/postings/{posting_id}/ai-suggest-category")
 def post_ai_suggest_category(
     posting_id: str, *, lock_category_id: str | None = None, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> CategorySuggestionResult:
     """Ask an LLM to suggest a category for one posting, from already-categorized examples — never automatic.
 
     Only ever called when the user clicks the "AI suggestion" button, or
@@ -1845,9 +2041,9 @@ def post_ai_suggest_category(
 
     Returns
     -------
-    dict[str, Any]
-        `{"category_id", "subcategory_id", "applied"}` — `applied` is `False` if no provider returned a
-        usable suggestion, in which case nothing about the posting is changed.
+    CategorySuggestionResult
+        `applied` is `False` if no provider returned a usable suggestion,
+        in which case nothing about the posting is changed.
 
     Raises
     ------
@@ -1873,9 +2069,9 @@ def post_ai_suggest_category(
         raw_response, store.categories, classification
     )
     if category_id is None:
-        return {"category_id": None, "subcategory_id": None, "applied": False}
+        return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
     if lock_category_id is not None and category_id != lock_category_id:
-        return {"category_id": None, "subcategory_id": None, "applied": False}
+        return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
 
     return _stage_and_save_pending_suggestion(posting_id, target_row, category_id, subcategory_id, "ai", session)
 
@@ -1883,7 +2079,7 @@ def post_ai_suggest_category(
 @router.post("/postings/{posting_id}/pattern-suggest-category")
 def post_pattern_suggest_category(
     posting_id: str, *, lock_category_id: str | None = None, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> CategorySuggestionResult:
     """Suggest a category for one posting from a user-maintained `CategoryPattern` description match.
 
     The description-match/suggest-don't-apply counterpart to
@@ -1903,8 +2099,8 @@ def post_pattern_suggest_category(
 
     Returns
     -------
-    dict[str, Any]
-        `{"category_id", "subcategory_id", "applied"}` — `applied` is `False` if no pattern matched.
+    CategorySuggestionResult
+        `applied` is `False` if no pattern matched.
 
     Raises
     ------
@@ -1919,9 +2115,9 @@ def post_pattern_suggest_category(
 
     pattern = matching_pattern(store.category_patterns, str(target_row["description"]))
     if pattern is None:
-        return {"category_id": None, "subcategory_id": None, "applied": False}
+        return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
     if lock_category_id is not None and pattern.category_id != lock_category_id:
-        return {"category_id": None, "subcategory_id": None, "applied": False}
+        return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
 
     return _stage_and_save_pending_suggestion(
         posting_id, target_row, pattern.category_id, pattern.subcategory_id, "pattern", session
@@ -1934,10 +2130,16 @@ class PatternSuggestBulkRequest(BaseModel):
     posting_ids: list[str]
 
 
+class BulkSuggestResult(BaseModel):
+    """Response body for `POST /postings/pattern-suggest-category/bulk`."""
+
+    applied: int
+
+
 @router.post("/postings/pattern-suggest-category/bulk")
 def post_pattern_suggest_category_bulk(
     payload: PatternSuggestBulkRequest, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> BulkSuggestResult:
     """Suggest categories for many postings at once from category-pattern matches, in one ledger load.
 
     The bulk counterpart to `post_pattern_suggest_category` — that
@@ -1961,17 +2163,17 @@ def post_pattern_suggest_category_bulk(
 
     Returns
     -------
-    dict[str, Any]
-        `{"applied": int}` — how many postings got a staged suggestion.
+    BulkSuggestResult
+        How many postings got a staged suggestion.
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
     if targets.is_empty():
-        return {"applied": 0}
+        return BulkSuggestResult(applied=0)
 
     matches = collect_if_lazy(match_patterns_bulk(store.category_patterns, targets.select("posting_id", "description")))
     if matches.is_empty():
-        return {"applied": 0}
+        return BulkSuggestResult(applied=0)
 
     target_rows = {row["posting_id"]: row for row in targets.to_dicts()}
     overrides = load_overrides(session)
@@ -1991,7 +2193,7 @@ def post_pattern_suggest_category_bulk(
         overrides[match["posting_id"]] = staged
         applied += 1
     save_overrides(overrides, session)
-    return {"applied": applied}
+    return BulkSuggestResult(applied=applied)
 
 
 class ValidatePendingRequest(BaseModel):
@@ -2000,10 +2202,17 @@ class ValidatePendingRequest(BaseModel):
     posting_ids: list[str]
 
 
+class ValidatePendingResult(BaseModel):
+    """Response body for `POST /postings/validate-pending`."""
+
+    accepted: int
+    reverted: int
+
+
 @router.post("/postings/validate-pending")
 def post_validate_pending(
     payload: ValidatePendingRequest, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> ValidatePendingResult:
     """Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
 
     Only ever touches postings named in `payload.posting_ids` — the
@@ -2014,8 +2223,7 @@ def post_validate_pending(
 
     Returns
     -------
-    dict[str, Any]
-        `{"accepted", "reverted"}` counts.
+    ValidatePendingResult
     """
     overrides = load_overrides(session)
     accepted = reverted = 0
@@ -2033,7 +2241,7 @@ def post_validate_pending(
         else:
             overrides[posting_id] = resolved
     save_overrides(overrides, session)
-    return {"accepted": accepted, "reverted": reverted}
+    return ValidatePendingResult(accepted=accepted, reverted=reverted)
 
 
 def _transfer_suggestion_id(row: dict[str, Any]) -> str:
@@ -2051,7 +2259,7 @@ def _transfer_suggestion_id(row: dict[str, Any]) -> str:
     return "transfer:" + ":".join(sorted([row["posting_id"], row["other_posting_id"]]))
 
 
-def _duplicate_suggestion_id(group: DuplicateGroup) -> str:
+def _duplicate_suggestion_id(group: DuplicateGroupData) -> str:
     """Build a stable key for a duplicate group, from its own already-stable `group_key`.
 
     Returns
@@ -2062,10 +2270,28 @@ def _duplicate_suggestion_id(group: DuplicateGroup) -> str:
     return f"duplicate:{group.group_key}"
 
 
+class TransferSuggestion(BaseModel):
+    """One likely internal transfer no rule has resolved yet.
+
+    See `ledger.transfers.find_unmatched_transfer_candidates`.
+    """
+
+    account_id: str
+    posting_id: str
+    posted_at: datetime
+    description: str
+    other_account_id: str
+    other_posted_at: datetime
+    other_posting_id: str
+    other_description: str
+    amount: float
+    suggestion_id: str
+
+
 @router.get("/transfer-suggestions")
 def get_transfer_suggestions(
     *, window_days: int = 3, session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[TransferSuggestion]:
     """Suggest likely internal transfers no rule has already resolved.
 
     Parameters
@@ -2077,8 +2303,7 @@ def get_transfer_suggestions(
 
     Returns
     -------
-    list[dict[str, Any]]
-        One dict per candidate pair — see `ledger.transfers.find_unmatched_transfer_candidates`.
+    list[TransferSuggestion]
         Each carries both sides' own `description` and a `suggestion_id`,
         for the caller to propose a `TransferRule` from or dismiss —
         never applied automatically. Excludes any pair already dismissed
@@ -2087,16 +2312,36 @@ def get_transfer_suggestions(
     postings, store = _resolved_postings_and_store(state.config, session)
     rows = find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
     return [
-        {**row, "suggestion_id": _transfer_suggestion_id(row)}
+        TransferSuggestion(**row, suggestion_id=_transfer_suggestion_id(row))
         for row in rows
         if _transfer_suggestion_id(row) not in store.dismissed_suggestions
     ]
 
 
+class DuplicatePosting(BaseModel):
+    """One posting belonging to a likely-duplicate group — see `ledger.duplicates.DuplicatePosting`."""
+
+    posting_id: str
+    transaction_id: str
+    posted_at: datetime
+    description: str
+    amount: float
+
+
+class DuplicateGroup(BaseModel):
+    """A likely-duplicate group of transactions — see `ledger.duplicates.DuplicateGroup`."""
+
+    group_key: str
+    account_id: str
+    certainty: float
+    postings: list[DuplicatePosting]
+    suggestion_id: str
+
+
 @router.get("/duplicate-suggestions")
 def get_duplicate_suggestions(
     *, window_days: int = 3, session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[DuplicateGroup]:
     """Suggest likely duplicate transactions no merge decision has already resolved.
 
     Parameters
@@ -2106,8 +2351,7 @@ def get_duplicate_suggestions(
 
     Returns
     -------
-    list[dict[str, Any]]
-        One dict per candidate group — see `ledger.duplicates.find_duplicate_candidates`.
+    list[DuplicateGroup]
         Sorted least-certain first, since those need the closest review.
         Each carries a `suggestion_id` for dismissing it. Excludes any
         group already dismissed (see `POST /dismissed-suggestions`).
@@ -2115,7 +2359,7 @@ def get_duplicate_suggestions(
     postings, store = _resolved_postings_and_store(state.config, session)
     groups = find_duplicate_candidates(postings, window_days=window_days)
     return [
-        {**asdict(group), "suggestion_id": _duplicate_suggestion_id(group)}
+        DuplicateGroup(**asdict(group), suggestion_id=_duplicate_suggestion_id(group))
         for group in groups
         if _duplicate_suggestion_id(group) not in store.dismissed_suggestions
     ]
@@ -2130,28 +2374,26 @@ class DismissSuggestionRequest(BaseModel):
 
 
 @router.get("/dismissed-suggestions")
-def get_dismissed_suggestions(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def get_dismissed_suggestions(session: Annotated[Session, Depends(get_db)]) -> list[DismissedSuggestion]:
     """List every archived (dismissed) suggestion, most recently dismissed first.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `models.DismissedSuggestion`.
+    list[DismissedSuggestion]
     """
     store = load_store(session)
-    dismissed = sorted(store.dismissed_suggestions.values(), key=lambda entry: entry.dismissed_at, reverse=True)
-    return [entry.model_dump(mode="json") for entry in dismissed]
+    return sorted(store.dismissed_suggestions.values(), key=lambda entry: entry.dismissed_at, reverse=True)
 
 
 @router.post("/dismissed-suggestions")
 def post_dismissed_suggestion(
     request: DismissSuggestionRequest, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> DismissedSuggestion:
     """Archive a suggestion so it stops being proposed, without discarding it.
 
     Returns
     -------
-    dict[str, Any]
+    DismissedSuggestion
         The archived entry just persisted.
     """
     store = load_store(session)
@@ -2165,17 +2407,25 @@ def post_dismissed_suggestion(
         update={"dismissed_suggestions": {**store.dismissed_suggestions, entry.suggestion_id: entry}}
     )
     save_store(store, session)
-    return entry.model_dump(mode="json")
+    return entry
+
+
+class SuggestionIdResponse(BaseModel):
+    """Response body naming one dismissed suggestion, for endpoints whose only real effect is removing something."""
+
+    suggestion_id: str
 
 
 @router.delete("/dismissed-suggestions/{suggestion_id}")
-def delete_dismissed_suggestion(suggestion_id: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+def delete_dismissed_suggestion(
+    suggestion_id: str, session: Annotated[Session, Depends(get_db)]
+) -> SuggestionIdResponse:
     """Restore a dismissed suggestion so it can be proposed again.
 
     Returns
     -------
-    dict[str, str]
-        `{"suggestion_id": ...}` of the entry just restored.
+    SuggestionIdResponse
+        The entry just restored.
 
     Raises
     ------
@@ -2188,7 +2438,7 @@ def delete_dismissed_suggestion(suggestion_id: str, session: Annotated[Session, 
     remaining = {key: value for key, value in store.dismissed_suggestions.items() if key != suggestion_id}
     store = store.model_copy(update={"dismissed_suggestions": remaining})
     save_store(store, session)
-    return {"suggestion_id": suggestion_id}
+    return SuggestionIdResponse(suggestion_id=suggestion_id)
 
 
 def _external_investment_values_usd(dates: list[date], session: Session) -> dict[date, float] | None:
@@ -2263,33 +2513,71 @@ def _benchmark_apy_pct(as_of: date) -> float | None:
     return rate * 100
 
 
+class InterestAccountRow(BaseModel):
+    """One savings/vault account's year-to-date interest, current APY, balance, and a one-year projection.
+
+    See `dashboard.interest.InterestAccountRow`.
+    """
+
+    account_id: str
+    account_name: str
+    currency: CurrencyCode
+    apy_pct: float
+    interest_earned_this_year: float
+    current_balance: float
+    projected_next_12_months: float
+    benchmark_apy_pct: float | None
+
+
 @router.get("/interest-summary")
 def get_interest_summary(
     *, as_of: date | None = None, session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[InterestAccountRow]:
     """Every savings/vault account's year-to-date interest, current APY, balance, and a one-year projection.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `dashboard.interest.InterestAccountRow`.
+    list[InterestAccountRow]
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     rows = interest.interest_summary(postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of))
-    return [vars(row) for row in rows]
+    return [InterestAccountRow(**vars(row)) for row in rows]
+
+
+class NetWorthAccountRow(BaseModel):
+    """One real account's current balance, in its own currency — see `dashboard.net_worth.AccountBalanceRow`."""
+
+    account_id: str
+    name: str
+    kind: AccountKind
+    parent_account_id: str | None
+    balance: float
+    currency: CurrencyCode
+
+
+class NetWorthSummary(BaseModel):
+    """Assets, liabilities, and net worth as of one date — see `dashboard.net_worth.NetWorthSummary`."""
+
+    as_of: date
+    display_currency: CurrencyCode
+    assets: float
+    liabilities: float
+    other_assets_total: float
+    net_worth: float
+    accounts: list[NetWorthAccountRow]
+    other_assets: list[OtherAsset]
 
 
 @router.get("/net-worth")
 def get_net_worth(
     *, as_of: date | None = None, display_currency: CurrencyCode = "USD", session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> NetWorthSummary:
     """Return the full net-worth view: every account's balance, grouped, plus manually-added assets.
 
     Returns
     -------
-    dict[str, Any]
-        See `dashboard.net_worth.NetWorthSummary`.
+    NetWorthSummary
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     has_external_investment = any(
@@ -2307,16 +2595,23 @@ def get_net_worth(
         external_investment_value_usd=(external_values or {}).get(resolved_as_of) if external_values else None,
         opening_balances=store.opening_balances,
     )
-    return {
-        "as_of": summary.as_of.isoformat(),
-        "display_currency": summary.display_currency,
-        "assets": summary.assets,
-        "liabilities": summary.liabilities,
-        "other_assets_total": summary.other_assets_total,
-        "net_worth": summary.net_worth,
-        "accounts": [vars(row) for row in summary.accounts],
-        "other_assets": [asset.model_dump(mode="json") for asset in summary.other_assets],
-    }
+    return NetWorthSummary(
+        as_of=summary.as_of,
+        display_currency=summary.display_currency,
+        assets=summary.assets,
+        liabilities=summary.liabilities,
+        other_assets_total=summary.other_assets_total,
+        net_worth=summary.net_worth,
+        accounts=[NetWorthAccountRow(**vars(row)) for row in summary.accounts],
+        other_assets=summary.other_assets,
+    )
+
+
+class NetWorthHistoryPoint(BaseModel):
+    """One date's aggregate net worth, for `GET /net-worth/history`."""
+
+    date: date
+    net_worth: float
 
 
 @router.get("/net-worth/history")
@@ -2327,7 +2622,7 @@ def get_net_worth_history(
     interval_days: int = 1,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
+) -> list[NetWorthHistoryPoint]:
     """Return net worth as of a regularly-spaced series of dates, for a history chart.
 
     Each point uses that date's own smoothed exchange rate (see
@@ -2337,8 +2632,8 @@ def get_net_worth_history(
 
     Returns
     -------
-    list[dict[str, Any]]
-        One `{"date": ..., "net_worth": ...}` per point, oldest first.
+    list[NetWorthHistoryPoint]
+        Oldest first.
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     has_external_investment = any(
@@ -2348,9 +2643,9 @@ def get_net_worth_history(
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     external_values = _external_investment_values_usd(dates, session) if has_external_investment else None
     return [
-        {
-            "date": day.isoformat(),
-            "net_worth": net_worth_summary(
+        NetWorthHistoryPoint(
+            date=day,
+            net_worth=net_worth_summary(
                 postings,
                 store.accounts,
                 store.other_assets,
@@ -2359,12 +2654,21 @@ def get_net_worth_history(
                 external_investment_value_usd=(external_values or {}).get(day, 0.0) if external_values else None,
                 opening_balances=store.opening_balances,
             ).net_worth,
-        }
+        )
         for day in dates
     ]
 
 
 _VIRTUAL_ACCOUNT_KINDS = {"income_source", "expense_payee"}
+
+
+class NetWorthHistoryByAccountPoint(BaseModel):
+    """One (date, account) balance, for `GET /net-worth/history/by-account`."""
+
+    date: date
+    account_id: str
+    account_name: str
+    balance: float
 
 
 @router.get("/net-worth/history/by-account")
@@ -2375,7 +2679,7 @@ def get_net_worth_history_by_account(
     interval_days: int = 1,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
+) -> list[NetWorthHistoryByAccountPoint]:
     """Return every real account's own balance as of a regularly-spaced series of dates.
 
     The per-account counterpart to `get_net_worth_history` — same dates,
@@ -2385,9 +2689,8 @@ def get_net_worth_history_by_account(
 
     Returns
     -------
-    list[dict[str, Any]]
-        One `{"date", "account_id", "account_name", "balance"}` per point
-        per account, `balance` already converted into `display_currency`.
+    list[NetWorthHistoryByAccountPoint]
+        `balance` already converted into `display_currency`.
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
@@ -2404,7 +2707,7 @@ def get_net_worth_history_by_account(
     balances = cast("pl.DataFrame", account_balances_over_time(postings, dates))
     balance_lookup = {(row["account_id"], row["date"]): row["balance"] for row in balances.to_dicts()}
 
-    rows: list[dict[str, Any]] = []
+    rows: list[NetWorthHistoryByAccountPoint] = []
     for day in dates:
         display = _display_currency(display_currency, store, day)
         for account_id, account in real_accounts.items():
@@ -2415,13 +2718,28 @@ def get_net_worth_history_by_account(
                 opening = store.opening_balances.get(account_id)
                 if opening is not None and day >= opening.as_of_date.date():
                     native += opening.amount
-            rows.append({
-                "date": day.isoformat(),
-                "account_id": account_id,
-                "account_name": account.name,
-                "balance": convert(native, account.currency, display.code, display.rates_to_base),
-            })
+            rows.append(
+                NetWorthHistoryByAccountPoint(
+                    date=day,
+                    account_id=account_id,
+                    account_name=account.name,
+                    balance=convert(native, account.currency, display.code, display.rates_to_base),
+                )
+            )
     return rows
+
+
+class CategoryTotalRow(BaseModel):
+    """One classification/category/subcategory's summed amount — see `dashboard.income_statement.category_totals`."""
+
+    classification: CategoryClassification
+    category_id: str
+    category_name: str
+    subcategory_id: str | None
+    subcategory_name: str | None
+    color: str
+    category_color: str
+    amount: float
 
 
 @router.get("/income-statement/category-totals")
@@ -2433,13 +2751,12 @@ def get_category_totals(
     tag_id: str | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
+) -> list[CategoryTotalRow]:
     """Sum real income/expense postings by classification, category, and subcategory.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `dashboard.income_statement.category_totals`.
+    list[CategoryTotalRow]
     """
     postings, store = _resolved_postings_for_aggregation(state.config, session)
     parsed_account_ids = account_ids.split(",") if account_ids else None
@@ -2454,7 +2771,15 @@ def get_category_totals(
             _display_currency(display_currency, store),
         )
     )
-    return totals.to_dicts()
+    return [CategoryTotalRow(**row) for row in totals.to_dicts()]
+
+
+class MonthlyIncomeExpenseRow(BaseModel):
+    """One calendar month's real income and real expense — see `dashboard.income_statement.monthly_income_expense`."""
+
+    month: str
+    income: float
+    expense: float
 
 
 @router.get("/income-statement/monthly")
@@ -2464,20 +2789,31 @@ def get_monthly_income_expense(
     *,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
+) -> list[MonthlyIncomeExpenseRow]:
     """Sum real income and real expense per calendar month.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `dashboard.income_statement.monthly_income_expense`.
+    list[MonthlyIncomeExpenseRow]
     """
     postings, store = _resolved_postings_for_aggregation(state.config, session)
-    return collect_if_lazy(
+    rows = collect_if_lazy(
         income_statement.monthly_income_expense(
             postings, store.accounts, start, end, _display_currency(display_currency, store)
         )
-    ).to_dicts()
+    )
+    return [MonthlyIncomeExpenseRow(**row) for row in rows.to_dicts()]
+
+
+class SpendCurvePoint(BaseModel):
+    """One day's cumulative spend, next to the same day-of-month average over prior months.
+
+    See `dashboard.income_statement.spend_curve_vs_average`.
+    """
+
+    day: int
+    current_month_cumulative: float
+    average_previous_months_cumulative: float
 
 
 @router.get("/income-statement/spend-curve")
@@ -2487,20 +2823,36 @@ def get_spend_curve(
     lookback_months: int = 3,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
+) -> list[SpendCurvePoint]:
     """Cumulative daily spend through one month, next to the average of the prior months.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `dashboard.income_statement.spend_curve_vs_average`.
+    list[SpendCurvePoint]
     """
     postings, store = _resolved_postings_for_aggregation(state.config, session)
-    return collect_if_lazy(
+    rows = collect_if_lazy(
         income_statement.spend_curve_vs_average(
             postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
         )
-    ).to_dicts()
+    )
+    return [SpendCurvePoint(**row) for row in rows.to_dicts()]
+
+
+class BudgetComparisonRow(BaseModel):
+    """One category (or subcategory)'s budget target next to its actual spend.
+
+    See `dashboard.budgets.BudgetComparisonRow`.
+    """
+
+    category_id: str
+    category_name: str
+    subcategory_id: str | None
+    subcategory_name: str | None
+    color: str
+    budgeted: float
+    actual: float
+    currency: CurrencyCode
 
 
 @router.get("/budgets/comparison")
@@ -2509,13 +2861,12 @@ def get_budget_comparison(
     *,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> list[dict[str, Any]]:
+) -> list[BudgetComparisonRow]:
     """Every category budgeted for one month, actual spend next to the target.
 
     Returns
     -------
-    list[dict[str, Any]]
-        See `dashboard.budgets.BudgetComparisonRow`.
+    list[BudgetComparisonRow]
 
     Raises
     ------
@@ -2528,7 +2879,13 @@ def get_budget_comparison(
     rows = budgets.budget_comparison(
         postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
     )
-    return [vars(row) for row in rows]
+    return [BudgetComparisonRow(**vars(row)) for row in rows]
+
+
+class SuggestedBudgetAmount(BaseModel):
+    """Response body for `GET /budgets/suggested-amount`."""
+
+    suggested_amount: float
 
 
 @router.get("/budgets/suggested-amount")
@@ -2540,13 +2897,12 @@ def get_suggested_budget_amount(
     subcategory_id: str | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, float]:
+) -> SuggestedBudgetAmount:
     """Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
 
     Returns
     -------
-    dict[str, float]
-        `{"suggested_amount": ...}`.
+    SuggestedBudgetAmount
 
     Raises
     ------
@@ -2565,56 +2921,53 @@ def get_suggested_budget_amount(
         subcategory_id,
         _display_currency(display_currency, store),
     )
-    return {"suggested_amount": amount}
+    return SuggestedBudgetAmount(suggested_amount=amount)
 
 
 # --- Goals -------------------------------------------------------------
 
 
 @router.put("/goals")
-def put_goals(goals: dict[str, Goal], session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def put_goals(goals: dict[str, Goal], session: Annotated[Session, Depends(get_db)]) -> dict[str, Goal]:
     """Replace the whole goal list.
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, Goal]
         The goals just persisted, keyed by `goal_id`.
     """
     store = load_store(session)
     store = store.model_copy(update={"goals": goals})
     save_store(store, session)
-    return {goal_id: goal.model_dump(mode="json") for goal_id, goal in store.goals.items()}
+    return store.goals
 
 
 @router.put("/goal-contributions")
 def put_goal_contributions(
     contributions: dict[str, GoalContribution], session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> dict[str, GoalContribution]:
     """Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
 
     Returns
     -------
-    dict[str, Any]
+    dict[str, GoalContribution]
         The contributions just persisted, keyed by `contribution_id`.
     """
     store = load_store(session)
     store = store.model_copy(update={"goal_contributions": contributions})
     save_store(store, session)
-    return {
-        contribution_id: contribution.model_dump(mode="json")
-        for contribution_id, contribution in store.goal_contributions.items()
-    }
+    return store.goal_contributions
 
 
 @router.put("/recurring-additions")
 def put_recurring_additions(
     additions: list[RecurringAddition], session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[RecurringAddition]:
     """Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[RecurringAddition]
         The additions just persisted.
 
     Raises
@@ -2630,24 +2983,31 @@ def put_recurring_additions(
     store = load_store(session)
     store = store.model_copy(update={"recurring_additions": additions})
     save_store(store, session)
-    return [addition.model_dump(mode="json") for addition in store.recurring_additions]
+    return store.recurring_additions
 
 
 @router.put("/withdrawal-priorities")
 def put_withdrawal_priorities(
     priorities: list[WithdrawalPriorityEntry], session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[WithdrawalPriorityEntry]:
     """Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[WithdrawalPriorityEntry]
         The priorities just persisted.
     """
     store = load_store(session)
     store = store.model_copy(update={"withdrawal_priorities": priorities})
     save_store(store, session)
-    return [entry.model_dump(mode="json") for entry in store.withdrawal_priorities]
+    return store.withdrawal_priorities
+
+
+class GoalsSummary(BaseModel):
+    """Response body for `GET /goals/summary`."""
+
+    balances: dict[str, float]
+    unallocated: float
 
 
 @router.get("/goals/summary")
@@ -2656,7 +3016,7 @@ def get_goals_summary(
     as_of: date | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
-) -> dict[str, Any]:
+) -> GoalsSummary:
     """Every goal's balance, plus unallocated money, as of `as_of` (today if omitted).
 
     Both are always recomputed fresh from postings and contributions —
@@ -2664,8 +3024,7 @@ def get_goals_summary(
 
     Returns
     -------
-    dict[str, Any]
-        `{"balances": {goal_id: float}, "unallocated": float}`.
+    GoalsSummary
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     as_of_date = as_of or datetime.now(UTC).date()
@@ -2673,7 +3032,7 @@ def get_goals_summary(
     contributions = contributions_to_frame(store.goal_contributions)
     balances = all_goal_balances(contributions, list(store.goals.keys()), as_of_date, display)
     unallocated = unallocated_balance(postings, store.accounts, contributions, as_of_date, display)
-    return {"balances": balances, "unallocated": unallocated}
+    return GoalsSummary(balances=balances, unallocated=unallocated)
 
 
 def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
@@ -2694,7 +3053,7 @@ def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
 @router.post("/goals/run-recurring-additions")
 def post_run_recurring_additions(
     *, as_of: date | None = None, session: Annotated[Session, Depends(get_db)]
-) -> list[dict[str, Any]]:
+) -> list[GoalContribution]:
     """Run every recurring addition whose most recent scheduled occurrence hasn't already run.
 
     Idempotent by construction: each addition's occurrence writes a
@@ -2708,7 +3067,7 @@ def post_run_recurring_additions(
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[GoalContribution]
         The new contributions just written (empty if nothing was due).
     """
     postings, store = _resolved_postings_and_store(state.config, session)
@@ -2750,13 +3109,20 @@ def post_run_recurring_additions(
 
     store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
     save_store(store, session)
-    return [contribution.model_dump(mode="json") for contribution in new_contributions.values()]
+    return list(new_contributions.values())
+
+
+class WithdrawalAutomationResult(BaseModel):
+    """Response body for `POST /goals/run-withdrawal-automation`."""
+
+    withdrawals: list[GoalContribution]
+    remaining_shortfall: float
 
 
 @router.post("/goals/run-withdrawal-automation")
 def post_run_withdrawal_automation(
     *, as_of: date | None = None, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> WithdrawalAutomationResult:
     """If unallocated money is negative as of today, draw down goals (by withdrawal priority) to cover it.
 
     Idempotent in effect (not by a stored id, unlike the recurring-addition
@@ -2768,9 +3134,8 @@ def post_run_withdrawal_automation(
 
     Returns
     -------
-    dict[str, Any]
-        `{"withdrawals": [...], "remaining_shortfall": float}` — the
-        contributions just written, and however much of the shortfall
+    WithdrawalAutomationResult
+        The contributions just written, and however much of the shortfall
         (if any) no goal had enough left to cover.
     """
     postings, store = _resolved_postings_and_store(state.config, session)
@@ -2778,7 +3143,7 @@ def post_run_withdrawal_automation(
     contributions_frame = contributions_to_frame(store.goal_contributions)
     unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
     if unallocated >= 0:
-        return {"withdrawals": [], "remaining_shortfall": 0.0}
+        return WithdrawalAutomationResult(withdrawals=[], remaining_shortfall=0.0)
 
     shortfall = -unallocated
     balances = all_goal_balances(contributions_frame, list(store.goals.keys()), as_of_date)
@@ -2801,10 +3166,9 @@ def post_run_withdrawal_automation(
     store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
     save_store(store, session)
     remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
-    return {
-        "withdrawals": [contribution.model_dump(mode="json") for contribution in new_contributions.values()],
-        "remaining_shortfall": remaining_shortfall,
-    }
+    return WithdrawalAutomationResult(
+        withdrawals=list(new_contributions.values()), remaining_shortfall=remaining_shortfall
+    )
 
 
 class SimulateContributionRequest(BaseModel):
@@ -2815,10 +3179,19 @@ class SimulateContributionRequest(BaseModel):
     amount: float
 
 
+class SimulateContributionResult(BaseModel):
+    """Response body for `POST /goals/simulate-contribution`."""
+
+    unallocated_as_of_date: float
+    exceeds_unallocated: bool
+    projected_next_run_unallocated: float
+    would_go_negative: bool
+
+
 @router.post("/goals/simulate-contribution")
 def post_simulate_contribution(
     payload: SimulateContributionRequest, session: Annotated[Session, Depends(get_db)]
-) -> dict[str, Any]:
+) -> SimulateContributionResult:
     """Check a proposed manual contribution against unallocated money, and project the next automation run.
 
     Validates against the *running total as of `payload.date`* — since
@@ -2828,11 +3201,10 @@ def post_simulate_contribution(
 
     Returns
     -------
-    dict[str, Any]
-        `{"unallocated_as_of_date", "exceeds_unallocated", "projected_next_run_unallocated", "would_go_negative"}`
-        — the last two simulate every configured recurring addition running
-        once more, with this contribution already applied, so the user
-        can see if it sets up a shortfall soon after (non-blocking).
+    SimulateContributionResult
+        The last two fields simulate every configured recurring addition
+        running once more, with this contribution already applied, so the
+        user can see if it sets up a shortfall soon after (non-blocking).
     """
     postings, store = _resolved_postings_and_store(state.config, session)
     contributions_frame = contributions_to_frame(store.goal_contributions)
@@ -2845,9 +3217,9 @@ def post_simulate_contribution(
     funded_next_run = run_recurring_additions(store.recurring_additions, max(projected_before_run, 0.0))
     projected_next_run_unallocated = projected_before_run - sum(amount for _, amount in funded_next_run)
 
-    return {
-        "unallocated_as_of_date": unallocated_as_of_date,
-        "exceeds_unallocated": exceeds_unallocated,
-        "projected_next_run_unallocated": projected_next_run_unallocated,
-        "would_go_negative": projected_next_run_unallocated < 0,
-    }
+    return SimulateContributionResult(
+        unallocated_as_of_date=unallocated_as_of_date,
+        exceeds_unallocated=exceeds_unallocated,
+        projected_next_run_unallocated=projected_next_run_unallocated,
+        would_go_negative=projected_next_run_unallocated < 0,
+    )
