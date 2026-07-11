@@ -31,6 +31,7 @@ from accounting.db.corrections import (
     PostingSplitLeg,
 )
 from accounting.db.goals import Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
+from accounting.db.llm import LLMUsage
 from accounting.db.simulator import SimulatorScenario
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "GeneralBudget",
     "Goal",
     "GoalContribution",
+    "LLMUsage",
     "ManualTransfer",
     "OpeningBalance",
     "OtherAsset",

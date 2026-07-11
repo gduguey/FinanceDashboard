@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 
 from trades.dashboard.settings import (
-    load_settings,
     raw_hysa_rate_lookup,
     resolved_marginal_ordinary_rate,
     resolved_nra_dividend_tax_rate,
@@ -33,6 +32,7 @@ if TYPE_CHECKING:
     from datetime import date
 
     from trades.config import AppConfig, TaxRegime
+    from trades.dashboard.settings import DashboardSettings
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,7 @@ class TaxSummary:
 def _after_tax_dollar_alpha_vs_hysa(
     ledger: pl.DataFrame,
     config: AppConfig,
+    settings: DashboardSettings,
     as_of: date,
     regime: TaxRegime,
     status_change_date: date | None,
@@ -83,6 +84,23 @@ def _after_tax_dollar_alpha_vs_hysa(
     `after_tax_rate_lookup`-wrapped rate for the plain one — everything
     else about the comparison (replaying the same deposit/withdrawal
     history against a virtual savings account) is unchanged.
+
+    Parameters
+    ----------
+    ledger
+        The full ledger, in chronological order.
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
+    as_of
+        The date to value the portfolio and its HYSA counterfactual as of.
+    regime
+        The tax regime to apply.
+    status_change_date
+        See `DashboardSettings.residency_status_change_date`.
+    marginal_ordinary_rate
+        The ordinary-income tax rate to apply to the HYSA leg.
 
     Returns
     -------
@@ -97,7 +115,7 @@ def _after_tax_dollar_alpha_vs_hysa(
         return value
 
     after_tax_lookup = after_tax_rate_lookup(
-        raw_hysa_rate_lookup(config), marginal_ordinary_rate, regime, status_change_date
+        raw_hysa_rate_lookup(config, settings), marginal_ordinary_rate, regime, status_change_date
     )
     hysa_value = hysa_counterfactual_value(flows, as_of, after_tax_lookup, config.returns.days_per_year)
     return value - hysa_value
@@ -136,7 +154,7 @@ def _liquidation_estimate(
     return LiquidationEstimate(value, long_term_gain, short_term_gain, tax, value - tax)
 
 
-def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSummary:
+def tax_summary(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, as_of: date) -> TaxSummary:
     """Assemble the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
 
     Parameters
@@ -145,6 +163,8 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSumm
         The full ledger, in chronological order.
     config
         Application configuration.
+    settings
+        This user's persisted dashboard settings.
     as_of
         The date to preview open-lot sales, and value the after-tax comparisons, as of.
 
@@ -153,23 +173,22 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSumm
     TaxSummary
         The full tax view, ready to serialize.
     """
-    settings = load_settings(config)
-    regime = resolved_tax_regime(config)
+    regime = resolved_tax_regime(settings)
     status_change_date = settings.residency_status_change_date
-    marginal_ordinary_rate = resolved_marginal_ordinary_rate(config)
-    qualified_ltcg_rate = resolved_qualified_ltcg_rate(config)
+    marginal_ordinary_rate = resolved_marginal_ordinary_rate(config, settings)
+    qualified_ltcg_rate = resolved_qualified_ltcg_rate(config, settings)
     result = replay_ledger(ledger, config)
 
     annual = collect_if_lazy(annual_tax_report(result.closed_lots, ledger, config, regime, status_change_date))
     owed = tax_owed_by_year_and_regime(
-        annual, marginal_ordinary_rate, qualified_ltcg_rate, resolved_nra_dividend_tax_rate(config)
+        annual, marginal_ordinary_rate, qualified_ltcg_rate, resolved_nra_dividend_tax_rate(config, settings)
     )
     wash_sales = cast("pl.DataFrame", flag_wash_sales(result.closed_lots, ledger, config)).filter(
         pl.col("wash_sale_flag")
     )
     previews = collect_if_lazy(preview_sale(result.open_lots, ledger, make_price_lookup(config), as_of, config))
     after_tax_alpha = _after_tax_dollar_alpha_vs_hysa(
-        ledger, config, as_of, regime, status_change_date, marginal_ordinary_rate
+        ledger, config, settings, as_of, regime, status_change_date, marginal_ordinary_rate
     )
     liquidation = _liquidation_estimate(ledger, config, as_of, regime, marginal_ordinary_rate, qualified_ltcg_rate)
 

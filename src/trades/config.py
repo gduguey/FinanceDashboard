@@ -260,20 +260,6 @@ class IbkrFlexApiConfig(BaseModel):
         return self.cache_dir / "raw_statements"
 
 
-class DashboardConfig(BaseModel):
-    """Where dashboard-only, user-editable settings (e.g. a target allocation) are persisted.
-
-    These aren't fetched data (see `docs/trades/architecture.md`'s caching rule)
-    and aren't a code-level tunable either — they're settings a user
-    changes from the frontend, so `dashboard.py` reads/writes a small JSON
-    file here instead of holding them as a hardcoded default.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    settings_path: Path = _REPO_ROOT / "data" / "trades" / "dashboard_settings.json"
-
-
 class CashSittingConfig(BaseModel):
     """Tunables for the uninvested-cash warning shown on the card.
 
@@ -304,5 +290,4 @@ class AppConfig(BaseModel):
     tax: TaxConfig = Field(default_factory=TaxConfig)
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
-    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     cash_sitting: CashSittingConfig = Field(default_factory=CashSittingConfig)

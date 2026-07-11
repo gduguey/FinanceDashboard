@@ -38,7 +38,10 @@ router = APIRouter()
 
 
 @router.get("/api/settings/target-allocation")
-def get_target_allocation() -> dict[str, float]:
+def get_target_allocation(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, float]:
     """Return the persisted target allocation.
 
     Returns
@@ -46,15 +49,19 @@ def get_target_allocation() -> dict[str, float]:
     dict[str, float]
         Symbol -> target percentage.
     """
-    return dashboard.load_settings(_config()).target_allocation_pct
+    return dashboard.load_settings(session, user_id).target_allocation_pct
 
 
 @router.put("/api/settings/target-allocation")
-def put_target_allocation(target_allocation_pct: dict[str, float]) -> dict[str, float]:
+def put_target_allocation(
+    target_allocation_pct: dict[str, float],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, float]:
     """Persist a new target allocation, set from the frontend.
 
-    Merges into the existing settings — a settings file is one JSON blob,
-    so writing this field naively from a fresh `DashboardSettings()` would
+    Merges into the existing settings — a settings row is one record, so
+    writing this field naively from a fresh `DashboardSettings()` would
     silently wipe out the HYSA/benchmark settings saved separately.
 
     Returns
@@ -62,14 +69,18 @@ def put_target_allocation(target_allocation_pct: dict[str, float]) -> dict[str, 
     dict[str, float]
         The persisted target allocation.
     """
-    config = _config()
-    updated = dashboard.load_settings(config).model_copy(update={"target_allocation_pct": target_allocation_pct})
-    dashboard.save_settings(updated, config)
+    updated = dashboard.load_settings(session, user_id).model_copy(
+        update={"target_allocation_pct": target_allocation_pct}
+    )
+    dashboard.save_settings(updated, session, user_id)
     return updated.target_allocation_pct
 
 
 @router.get("/api/settings/hysa")
-def get_hysa_settings() -> HysaSettings:
+def get_hysa_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> HysaSettings:
     """Return the persisted HYSA bank selection / fixed-rate override.
 
     Returns
@@ -77,12 +88,16 @@ def get_hysa_settings() -> HysaSettings:
     HysaSettings
         `bank_id`, `fixed_rate_pct` — both None if never set.
     """
-    settings = dashboard.load_settings(_config())
+    settings = dashboard.load_settings(session, user_id)
     return HysaSettings(bank_id=settings.hysa_bank_id, fixed_rate_pct=settings.hysa_fixed_rate_pct)
 
 
 @router.put("/api/settings/hysa")
-def put_hysa_settings(update: HysaSettingsUpdate) -> HysaSettings:
+def put_hysa_settings(
+    update: HysaSettingsUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> HysaSettings:
     """Persist a HYSA bank selection and/or fixed-rate override (merges into existing settings).
 
     Returns
@@ -90,16 +105,18 @@ def put_hysa_settings(update: HysaSettingsUpdate) -> HysaSettings:
     HysaSettings
         `bank_id`, `fixed_rate_pct` as persisted.
     """
-    config = _config()
-    updated = dashboard.load_settings(config).model_copy(
+    updated = dashboard.load_settings(session, user_id).model_copy(
         update={"hysa_bank_id": update.bank_id, "hysa_fixed_rate_pct": update.fixed_rate_pct}
     )
-    dashboard.save_settings(updated, config)
+    dashboard.save_settings(updated, session, user_id)
     return HysaSettings(bank_id=updated.hysa_bank_id, fixed_rate_pct=updated.hysa_fixed_rate_pct)
 
 
 @router.get("/api/settings/benchmark")
-def get_benchmark_setting() -> BenchmarkSetting:
+def get_benchmark_setting(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> BenchmarkSetting:
     """Return the persisted benchmark symbol override, plus the default it falls back to.
 
     Returns
@@ -111,13 +128,17 @@ def get_benchmark_setting() -> BenchmarkSetting:
     """
     config = _config()
     return BenchmarkSetting(
-        symbol_override=dashboard.load_settings(config).benchmark_symbol_override,
+        symbol_override=dashboard.load_settings(session, user_id).benchmark_symbol_override,
         default_symbol=config.returns.benchmark_symbol,
     )
 
 
 @router.put("/api/settings/benchmark")
-def put_benchmark_setting(update: BenchmarkSettingUpdate) -> BenchmarkSetting:
+def put_benchmark_setting(
+    update: BenchmarkSettingUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> BenchmarkSetting:
     """Persist a benchmark symbol override (merges into existing settings).
 
     Returns
@@ -126,31 +147,35 @@ def put_benchmark_setting(update: BenchmarkSettingUpdate) -> BenchmarkSetting:
         `symbol_override` as persisted, plus `default_symbol`.
     """
     config = _config()
-    updated = dashboard.load_settings(config).model_copy(update={"benchmark_symbol_override": update.symbol_override})
-    dashboard.save_settings(updated, config)
+    updated = dashboard.load_settings(session, user_id).model_copy(
+        update={"benchmark_symbol_override": update.symbol_override}
+    )
+    dashboard.save_settings(updated, session, user_id)
     return BenchmarkSetting(
         symbol_override=updated.benchmark_symbol_override, default_symbol=config.returns.benchmark_symbol
     )
 
 
-def _tax_settings_response(config: AppConfig) -> TaxSettings:
-    settings = dashboard.load_settings(config)
+def _tax_settings_response(config: AppConfig, settings: dashboard.DashboardSettings) -> TaxSettings:
     return TaxSettings(
         tax_enabled=settings.tax_enabled,
         tax_regime=settings.tax_regime,
-        resolved_tax_regime=dashboard.resolved_tax_regime(config),
+        resolved_tax_regime=dashboard.resolved_tax_regime(settings),
         residency_status_change_date=settings.residency_status_change_date,
         w8ben_claimed=settings.w8ben_claimed,
         w8ben_treaty_rate_pct=settings.w8ben_treaty_rate_pct,
         marginal_ordinary_rate_pct=settings.marginal_ordinary_rate_pct,
-        resolved_marginal_ordinary_rate_pct=dashboard.resolved_marginal_ordinary_rate(config) * 100,
+        resolved_marginal_ordinary_rate_pct=dashboard.resolved_marginal_ordinary_rate(config, settings) * 100,
         qualified_ltcg_rate_pct=settings.qualified_ltcg_rate_pct,
-        resolved_qualified_ltcg_rate_pct=dashboard.resolved_qualified_ltcg_rate(config) * 100,
+        resolved_qualified_ltcg_rate_pct=dashboard.resolved_qualified_ltcg_rate(config, settings) * 100,
     )
 
 
 @router.get("/api/settings/tax")
-def get_tax_settings() -> TaxSettings:
+def get_tax_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TaxSettings:
     """Return the persisted tax-reporting settings.
 
     Returns
@@ -164,11 +189,16 @@ def get_tax_settings() -> TaxSettings:
         alongside their `resolved_*_pct` counterparts (what the tax report
         actually uses — the code default when no override was made).
     """
-    return _tax_settings_response(_config())
+    settings = dashboard.load_settings(session, user_id)
+    return _tax_settings_response(_config(), settings)
 
 
 @router.put("/api/settings/tax")
-def put_tax_settings(update: TaxSettingsUpdate) -> TaxSettings:
+def put_tax_settings(
+    update: TaxSettingsUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TaxSettings:
     """Persist tax-reporting settings (merges into existing settings).
 
     Returns
@@ -177,7 +207,7 @@ def put_tax_settings(update: TaxSettingsUpdate) -> TaxSettings:
         Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
     """
     config = _config()
-    updated = dashboard.load_settings(config).model_copy(
+    updated = dashboard.load_settings(session, user_id).model_copy(
         update={
             "tax_enabled": update.tax_enabled,
             "tax_regime": update.tax_regime,
@@ -188,8 +218,8 @@ def put_tax_settings(update: TaxSettingsUpdate) -> TaxSettings:
             "qualified_ltcg_rate_pct": update.qualified_ltcg_rate_pct,
         }
     )
-    dashboard.save_settings(updated, config)
-    return _tax_settings_response(config)
+    dashboard.save_settings(updated, session, user_id)
+    return _tax_settings_response(config, updated)
 
 
 @router.get("/api/settings/ibkr")

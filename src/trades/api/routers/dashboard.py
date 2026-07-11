@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Annotated, cast
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from db.current_user import get_current_user_id
 from db.session import get_db
 from trades import dashboard
 from trades.api.api_models import (
@@ -59,7 +61,11 @@ def _chart_range(ledger: pl.DataFrame, start: date | None, end: date | None) -> 
 
 
 @router.get("/api/overview")
-def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> Overview:
+def get_overview(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+) -> Overview:
     """Return the overview card row: value, gain split, XIRR, dollar alpha, TWR.
 
     Returns
@@ -73,8 +79,9 @@ def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | Non
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session)
+    settings = dashboard.load_settings(session, user_id)
     try:
-        cards = dashboard.overview_cards(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+        cards = dashboard.overview_cards(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return Overview(**asdict(cards), last_synced_at=_last_synced_iso())
@@ -82,7 +89,10 @@ def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | Non
 
 @router.get("/api/chart/dollar")
 def get_dollar_chart(
-    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    start: date | None = None,
+    end: date | None = None,
 ) -> DollarChart:
     """Return the three/four-line dollar chart plus reallocation markers.
 
@@ -97,9 +107,10 @@ def get_dollar_chart(
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session)
+    settings = dashboard.load_settings(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
-        series = dashboard.dollar_chart_series(ledger, _config(), range_start, range_end)
+        series = dashboard.dollar_chart_series(ledger, _config(), settings, range_start, range_end)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     markers = dashboard.reallocation_markers(ledger)
@@ -111,7 +122,10 @@ def get_dollar_chart(
 
 @router.get("/api/chart/growth-of-100")
 def get_growth_of_100_chart(
-    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[GrowthOf100Point]:
     """Return the growth-of-$100 chart: NAV plus every benchmark, indexed to 100.
 
@@ -126,9 +140,10 @@ def get_growth_of_100_chart(
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session)
+    settings = dashboard.load_settings(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
-        series = dashboard.growth_of_100_chart(ledger, _config(), range_start, range_end)
+        series = dashboard.growth_of_100_chart(ledger, _config(), settings, range_start, range_end)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return [GrowthOf100Point(**row) for row in series.to_dicts()]
@@ -136,7 +151,10 @@ def get_growth_of_100_chart(
 
 @router.get("/api/chart/cash-history")
 def get_cash_history(
-    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[CashHistoryPoint]:
     """Return the uninvested cash balance for every day in range, plus what it would be worth invested immediately.
 
@@ -158,15 +176,16 @@ def get_cash_history(
     """
     ledger = _load_ledger(session)
     config = _config()
+    settings = dashboard.load_settings(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, range_end))
     adjusted_lookup = dashboard.make_price_lookup(config, adjusted=True)
-    benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
+    benchmark_symbol = dashboard.resolved_benchmark_symbol(config, settings)
     try:
         counterfactual = dashboard.cash_received_counterfactual(
             daily_cash,
             benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
-            hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
+            hysa_rate_lookup=dashboard.hysa_rate_lookup(config, settings),
             days_per_year=config.returns.days_per_year,
         )
     except ValueError as error:
@@ -176,7 +195,10 @@ def get_cash_history(
 
 
 @router.get("/api/cash-sitting")
-def get_cash_sitting(session: Annotated[Session, Depends(get_db)]) -> CashSitting:
+def get_cash_sitting(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CashSitting:
     """Report how long the current uninvested cash balance has been sitting idle, and what it's missed out on.
 
     Returns
@@ -191,11 +213,12 @@ def get_cash_sitting(session: Annotated[Session, Depends(get_db)]) -> CashSittin
     """
     ledger = _load_ledger(session)
     config = _config()
+    settings = dashboard.load_settings(session, user_id)
     today = datetime.now(tz=UTC).date()
     range_start = _first_event_date(ledger)
     try:
         daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, today))
-        growth_index = dashboard.growth_of_100_chart(ledger, config, range_start, today)
+        growth_index = dashboard.growth_of_100_chart(ledger, config, settings, range_start, today)
         summary = dashboard.cash_sitting_summary(daily_cash, growth_index, today, config)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -253,7 +276,11 @@ def get_monthly_pnl_by_symbol(
 
 
 @router.get("/api/allocation")
-def get_allocation(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> list[AllocationRow]:
+def get_allocation(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+) -> list[AllocationRow]:
     """Return the current-value allocation by symbol (including cash), against the target.
 
     Returns
@@ -267,15 +294,20 @@ def get_allocation(session: Annotated[Session, Depends(get_db)], as_of: date | N
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session)
+    settings = dashboard.load_settings(session, user_id)
     try:
-        rows = dashboard.allocation_view(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+        rows = dashboard.allocation_view(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return [AllocationRow(**row) for row in rows.to_dicts()]
 
 
 @router.get("/api/tax/report")
-def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> TaxReport:
+def get_tax_report(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+) -> TaxReport:
     """Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
 
     Returns
@@ -296,8 +328,9 @@ def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | N
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session)
+    settings = dashboard.load_settings(session, user_id)
     try:
-        summary = dashboard.tax_summary(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+        summary = dashboard.tax_summary(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return TaxReport(
@@ -315,7 +348,11 @@ def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | N
 
 
 @router.get("/api/lots")
-def get_lots(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> LotsTable:
+def get_lots(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    as_of: date | None = None,
+) -> LotsTable:
     """Return the trade-level table: open lots, closed lots, per-symbol rollup.
 
     Returns
@@ -329,8 +366,9 @@ def get_lots(session: Annotated[Session, Depends(get_db)], as_of: date | None = 
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session)
+    settings = dashboard.load_settings(session, user_id)
     try:
-        table = dashboard.lots_table(ledger, _config(), as_of or datetime.now(tz=UTC).date())
+        table = dashboard.lots_table(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return LotsTable(
@@ -365,7 +403,10 @@ def get_risk(
 
 
 @router.get("/api/data-quality")
-def get_data_quality(session: Annotated[Session, Depends(get_db)]) -> list[DataQualityRow]:
+def get_data_quality(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> list[DataQualityRow]:
     """Return the last cached price date per symbol ever held or benchmarked against.
 
     Returns
@@ -374,8 +415,9 @@ def get_data_quality(session: Annotated[Session, Depends(get_db)]) -> list[DataQ
         One entry per symbol.
     """
     config = _config()
+    settings = dashboard.load_settings(session, user_id)
     ledger = _load_ledger(session)
-    held_and_benchmark = {*ledger["symbol"].unique().to_list(), dashboard.resolved_benchmark_symbol(config)}
+    held_and_benchmark = {*ledger["symbol"].unique().to_list(), dashboard.resolved_benchmark_symbol(config, settings)}
     symbols = sorted(held_and_benchmark - {config.ledger.cash_symbol})
     rows = dashboard.data_quality(symbols, config)
     return [DataQualityRow(**row) for row in rows.to_dicts()]

@@ -36,8 +36,3 @@ class AccountingConfig(BaseModel):
     def exchange_rates_csv_path(self) -> Path:
         """Where the derived daily exchange-rate history is cached, under `data_dir`."""
         return self.data_dir / "exchange_rates" / "rates.csv"
-
-    @property
-    def llm_usage_path(self) -> Path:
-        """Where each LLM provider's self-tracked call count and rate-limit state is persisted, under `data_dir`."""
-        return self.data_dir / "llm_usage.json"

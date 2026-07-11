@@ -1023,7 +1023,7 @@ def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
     assert body["mistral"]["period"] == "monthly"
 
 
-def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monkeypatch) -> None:
+def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, db_session, monkeypatch) -> None:
     class _FakeCredentials:
         gemini_api_key = object()
         mistral_api_key = None
@@ -1032,7 +1032,7 @@ def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monke
 
     from accounting.llm.usage import record_call  # noqa: PLC0415
 
-    record_call("gemini", accounting_api.state.config.llm_usage_path, error="429 RESOURCE_EXHAUSTED")
+    record_call("gemini", db_session, DEFAULT_USER_ID, error="429 RESOURCE_EXHAUSTED")
 
     body = client.get("/api/accounting/llm-usage").json()
     assert body["gemini"] == {
