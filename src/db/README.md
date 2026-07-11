@@ -263,25 +263,46 @@ previous-keys map until you've confirmed nothing still needs it.
 
 ## Backups: how they work, and how to restore one
 
-`db.backup.run_backup()` (run as `python -m db.backup`) does three things,
-in order:
+`db.backup.run_backup(retention_count=14)` (run as `python -m db.backup`)
+does four things, in order:
 
 1. **Dumps** the whole database with `pg_dump --format=custom`, connecting
    as `finance` (`DatabaseSettings`, never `AppRuntimeDatabaseSettings`) —
    a backup has to see every row in every table regardless of RLS, which
    is exactly the privilege the restricted `app_runtime` role must never
    implicitly have.
-2. **Names** the dump by timestamp: `{UTC timestamp}.dump`.
-3. **Uploads** it to Cloudflare R2 under `backups/postgres/`, if R2 is
-   configured (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+2. **Verifies the dump is actually restorable** (`verify_backup_restorable`)
+   before doing anything else with it: it creates a throwaway scratch
+   database on the same Postgres server (`CREATE DATABASE
+   backup_verify_<uuid>`, using `finance`'s superuser/`CREATEDB`
+   privileges), restores the dump into it with `pg_restore --clean
+   --if-exists`, then drops the scratch database again (`DROP DATABASE ...
+   WITH (FORCE)`) regardless of whether the restore succeeded. If
+   `pg_restore` fails, the error propagates immediately and `run_backup`
+   stops right there — it does **not** upload the bad dump or touch any
+   existing backups. This is deliberate: a broken backup should never
+   silently replace, or even sit alongside, a good one; a human needs to
+   see this failure, not have it hidden behind an apparently-successful
+   run.
+3. **Names** the dump by timestamp (`{UTC timestamp}.dump`) and **uploads**
+   it to Cloudflare R2 under `backups/postgres/`, if R2 is configured
+   (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
    `R2_BUCKET_NAME`, `R2_ENDPOINT_URL` all set) — otherwise it falls back
    to writing the same file to local disk, under `data/backups/postgres/`.
+   Only reached once step 2 has passed.
+4. **Prunes** old backups (`prune_old_backups`) down to the newest 14 —
+   whichever backend is active (R2 or local disk), backups are sorted
+   newest-first by their timestamp-prefixed filename (already
+   lexicographically = chronologically sortable) and anything beyond the
+   newest 14 is deleted. Only ever runs after a successful verify + upload,
+   so a failed backup never causes a good one to be pruned away.
 
 **This does not run by itself.** `python -m db.backup` is just a command —
 nothing in this repo schedules it automatically. Making it run on a
 recurring basis (e.g. daily) is an infrastructure-level setup step, done
 once, outside of this code; it isn't part of what `docker compose up`
-brings up on its own.
+brings up on its own. See `docs/server-setup/maintenance.md` for the
+actual cron entry.
 
 **Restoring** a dump — this is destructive (it drops and recreates
 objects before loading), so only run it against a database you actually

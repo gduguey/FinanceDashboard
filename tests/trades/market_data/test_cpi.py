@@ -5,6 +5,7 @@ import pytest
 
 from trades.market_data import cpi
 from trades.config import AppConfig
+from trades.utils import cache_backup
 
 
 def _config(tmp_path) -> AppConfig:
@@ -92,3 +93,46 @@ def test_cpi_as_of_rolls_back_to_latest_known_month() -> None:
     assert cpi.cpi_as_of(history, date(2026, 2, 15)) == pytest.approx(301.2)
     assert cpi.cpi_as_of(history, date(2026, 1, 15)) == pytest.approx(300.1)
     assert cpi.cpi_as_of(history, date(2025, 12, 1)) is None
+
+
+def test_update_cpi_cache_backs_up_the_written_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        cpi,
+        "fetch_cpi_series",
+        lambda config, session=None: pl.DataFrame({"observation_date": [date(2026, 1, 1)], "value": [300.1]}),
+    )
+    config = _config(tmp_path)
+    backup_calls = []
+    monkeypatch.setattr(
+        cpi, "backup_cache_file", lambda local_path, backup_key: backup_calls.append((local_path, backup_key))
+    )
+
+    cpi.update_cpi_cache(config)
+
+    assert backup_calls == [(tmp_path / "CPIAUCSL.csv", "cpi.csv")]
+
+
+def test_load_cpi_cache_recovers_from_corruption_when_a_backup_exists(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backup-root")
+    config = _config(tmp_path)
+    path = tmp_path / "CPIAUCSL.csv"
+
+    good = pl.DataFrame({"observation_date": [date(2026, 1, 1)], "value": [300.1]})
+    good.write_csv(path)
+    cache_backup.backup_cache_file(path, "cpi.csv")
+
+    path.write_text('observation_date,value\n"unterminated\n')
+
+    result = cpi.load_cpi_cache(config)
+
+    assert result["value"].to_list() == pytest.approx([300.1])
+
+
+def test_load_cpi_cache_raises_when_corrupted_with_no_backup_available(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backup-root")
+    config = _config(tmp_path)
+    path = tmp_path / "CPIAUCSL.csv"
+    path.write_text('observation_date,value\n"unterminated\n')
+
+    with pytest.raises(pl.exceptions.ComputeError):
+        cpi.load_cpi_cache(config)

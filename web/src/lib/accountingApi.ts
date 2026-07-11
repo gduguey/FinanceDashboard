@@ -20,7 +20,6 @@ import type {
   DismissSuggestionRequest,
   DuplicateGroup,
   ExchangeRateHistoryPoint,
-  ExchangeRateSyncResult,
   GeneralBudget,
   Goal,
   GoalContribution,
@@ -110,7 +109,6 @@ export const accountingApi = {
   clearLlmSettings: () => request<LlmSettings>('/api/accounting/settings/llm', { method: 'DELETE' }),
   verifyLlmSettings: (provider: 'gemini' | 'mistral') =>
     request<VerifyResult>(`/api/accounting/settings/llm/verify?provider=${provider}`, { method: 'POST' }),
-  syncExchangeRates: () => request<ExchangeRateSyncResult>('/api/accounting/sync-exchange-rates', { method: 'POST' }),
   currentExchangeRate: (currency: string) =>
     request<CurrentExchangeRate>(`/api/accounting/exchange-rates/current${queryString({ currency })}`),
   exchangeRateHistory: (currency: string) =>

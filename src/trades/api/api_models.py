@@ -416,5 +416,4 @@ class SyncResult(BaseModel):
     synced_at: str | None
     new_event_count: int
     total_event_count: int
-    symbols_refreshed: list[str]
     steps: list[SyncStep]

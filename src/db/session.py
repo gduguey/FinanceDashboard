@@ -7,6 +7,7 @@ makes concurrent requests safe against Postgres, not anything session-level.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -17,6 +18,7 @@ from db.current_user import get_current_user_id
 from db.settings import AppRuntimeDatabaseSettings
 
 if TYPE_CHECKING:
+    import uuid
     from collections.abc import Iterator
 
 
@@ -54,6 +56,33 @@ def session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(), expire_on_commit=False)
 
 
+@contextmanager
+def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
+    """Open one `Session` scoped to `user_id` for Row-Level Security, outside a FastAPI request.
+
+    Does exactly what `get_db` does for a request — build a session and
+    set the `app.current_user_id` session variable every RLS policy checks
+    — but takes the acting user explicitly rather than through
+    `get_current_user_id()`, since a cron script or CLI entrypoint has no
+    "current request" to read that from. Callers running outside a
+    request (e.g. `python -m` scripts on a schedule) pass
+    `db.current_user.DEFAULT_USER_ID` explicitly, the same convention
+    `db.backup`/`trades.utils.statement_archive` already use.
+
+    Parameters
+    ----------
+    user_id
+        The user to scope this session's RLS policies to.
+
+    Yields
+    ------
+    Session
+    """
+    with session_factory()() as session:
+        session.execute(text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": str(user_id)})
+        yield session
+
+
 def get_db() -> Iterator[Session]:
     """FastAPI dependency yielding one `Session` per request.
 
@@ -73,8 +102,5 @@ def get_db() -> Iterator[Session]:
     ------
     Session
     """
-    with session_factory()() as session:
-        session.execute(
-            text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": str(get_current_user_id())}
-        )
+    with session_scope(get_current_user_id()) as session:
         yield session

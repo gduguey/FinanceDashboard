@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 import requests
 
 from accounting.models import BASE_CURRENCY, SUPPORTED_CURRENCIES
+from accounting.utils.cache_backup import backup_cache_file, restore_cache_file
 from accounting.utils.io_utils import write_csv_atomic
 
 if TYPE_CHECKING:
@@ -43,6 +44,9 @@ RATE_HISTORY_SCHEMA: dict[str, type[pl.DataType] | pl.DataType] = {
     "rate_to_base": pl.Float64,
 }
 
+_CACHE_BACKUP_KEY = "exchange_rates.csv"
+"""Key `backup_cache_file`/`restore_cache_file` store the cached history's backup under."""
+
 
 def _save_raw_response(config: AccountingConfig, response_text: str) -> None:
     """Archive the raw Frankfurter response with a timestamp, never overwritten."""
@@ -55,6 +59,16 @@ def _save_raw_response(config: AccountingConfig, response_text: str) -> None:
 def load_rate_history(config: AccountingConfig) -> pl.DataFrame:
     """Read the cached daily exchange-rate history.
 
+    If the cache file exists but fails to parse (e.g. a botched write
+    outside the app's control, a Docker volume issue — file corruption,
+    not a failed fetch: a failed fetch never touches this file in the
+    first place, see `update_rate_history_cache`), this transparently
+    restores the last known-good backup (`restore_cache_file`) and
+    retries the read once. A second failure after restoring propagates
+    uncaught, and a corrupted file with no backup available re-raises the
+    original parse error rather than pretending the cache is empty — a
+    human needs to see either case, not silently get wrong data.
+
     Parameters
     ----------
     config
@@ -64,26 +78,41 @@ def load_rate_history(config: AccountingConfig) -> pl.DataFrame:
     -------
     polars.DataFrame
         Columns `date`, `currency`, `rate_to_base`. Empty if never synced.
+
+    Raises
+    ------
+    polars.exceptions.ComputeError
+        If the cache file is corrupted and either the restored backup is
+        itself unreadable, or no backup exists to restore.
     """
     if not config.exchange_rates_csv_path.exists():
         return pl.DataFrame(schema=RATE_HISTORY_SCHEMA)
-    return pl.read_csv(config.exchange_rates_csv_path, schema_overrides=RATE_HISTORY_SCHEMA, try_parse_dates=True)
+    try:
+        return pl.read_csv(config.exchange_rates_csv_path, schema_overrides=RATE_HISTORY_SCHEMA, try_parse_dates=True)
+    except pl.exceptions.ComputeError:
+        if not restore_cache_file(config.exchange_rates_csv_path, _CACHE_BACKUP_KEY):
+            raise
+        return pl.read_csv(config.exchange_rates_csv_path, schema_overrides=RATE_HISTORY_SCHEMA, try_parse_dates=True)
 
 
-def fetch_rate_history(
-    config: AccountingConfig, history_years: int = DEFAULT_HISTORY_YEARS, session: requests.Session | None = None
+def _fetch_rate_history_range(
+    config: AccountingConfig, start: date, end: date, session: requests.Session | None = None
 ) -> pl.DataFrame:
-    """Pull every non-base currency's daily rate for the last `history_years` years from Frankfurter.
+    """Pull every non-base currency's daily rate for `[start, end]` from Frankfurter.
 
     The raw response is archived before parsing, per this repo's
-    cache-raw-first rule.
+    cache-raw-first rule. Split out from `fetch_rate_history` so
+    `update_rate_history_cache` can request an explicit incremental range
+    instead of always requesting the full `history_years`-year window.
 
     Parameters
     ----------
     config
         Application configuration; `config.exchange_rates_raw_dir` is written to.
-    history_years
-        How many years of daily history to request.
+    start
+        First date to fetch, inclusive.
+    end
+        Last date to fetch, inclusive.
     session
         HTTP session to use instead of the top-level `requests` module.
 
@@ -94,8 +123,6 @@ def fetch_rate_history(
         units one unit of `currency` was worth on `date`.
     """
     symbols = [code for code in SUPPORTED_CURRENCIES if code != BASE_CURRENCY]
-    end = datetime.now(tz=UTC).date()
-    start = end - timedelta(days=history_years * 365)
 
     http = session or requests
     response = http.get(
@@ -115,15 +142,15 @@ def fetch_rate_history(
     return pl.DataFrame(rows, schema=RATE_HISTORY_SCHEMA)
 
 
-def update_rate_history_cache(
+def fetch_rate_history(
     config: AccountingConfig, history_years: int = DEFAULT_HISTORY_YEARS, session: requests.Session | None = None
 ) -> pl.DataFrame:
-    """Re-fetch exchange-rate history and overwrite the on-disk cache with it.
+    """Pull every non-base currency's daily rate for the last `history_years` years from Frankfurter.
 
     Parameters
     ----------
     config
-        Application configuration; `config.exchange_rates_csv_path` is written to.
+        Application configuration; `config.exchange_rates_raw_dir` is written to.
     history_years
         How many years of daily history to request.
     session
@@ -132,11 +159,66 @@ def update_rate_history_cache(
     Returns
     -------
     polars.DataFrame
-        The freshly fetched history.
+        Columns `date`, `currency`, `rate_to_base` — how many `BASE_CURRENCY`
+        units one unit of `currency` was worth on `date`.
     """
-    history = fetch_rate_history(config, history_years, session)
-    write_csv_atomic(history.sort("date", "currency"), config.exchange_rates_csv_path)
-    return history
+    end = datetime.now(tz=UTC).date()
+    start = end - timedelta(days=history_years * 365)
+    return _fetch_rate_history_range(config, start, end, session)
+
+
+def update_rate_history_cache(
+    config: AccountingConfig, history_years: int = DEFAULT_HISTORY_YEARS, session: requests.Session | None = None
+) -> pl.DataFrame:
+    """Incrementally refresh the cached exchange-rate history, fetching only what's missing.
+
+    Checks the existing cache's latest date (`load_rate_history`) and
+    requests Frankfurter only for the range from the day after that
+    through today — a run that finds the cache already current makes no
+    network call at all. Falls back to the full `history_years`-year
+    window only when the cache is empty (never synced), the same
+    gap-then-merge-then-write shape as
+    `trades.market_data.prices.update_price_cache`, minus the
+    per-symbol dimension exchange rates don't have.
+
+    Once the merged history is written, its bytes are backed up
+    (`backup_cache_file`) as the new "last known good" copy —
+    `load_rate_history` restores from this backup if the cache file is
+    ever found corrupted on disk.
+
+    Parameters
+    ----------
+    config
+        Application configuration; `config.exchange_rates_csv_path` is
+        both read (for the existing cache) and written.
+    history_years
+        How many years of daily history to backfill when the cache is empty.
+    session
+        HTTP session to use instead of the top-level `requests` module.
+
+    Returns
+    -------
+    polars.DataFrame
+        The full cached history after the update.
+    """
+    existing = load_rate_history(config)
+
+    if existing.is_empty():
+        fetched = fetch_rate_history(config, history_years, session)
+    else:
+        start = cast("date", existing["date"].max()) + timedelta(days=1)
+        end = datetime.now(tz=UTC).date()
+        if start > end:
+            return existing
+        fetched = _fetch_rate_history_range(config, start, end, session)
+
+    if fetched.is_empty():
+        return existing
+
+    merged = pl.concat([existing, fetched]).unique(subset=["date", "currency"], keep="last").sort("date", "currency")
+    write_csv_atomic(merged, config.exchange_rates_csv_path)
+    backup_cache_file(config.exchange_rates_csv_path, _CACHE_BACKUP_KEY)
+    return merged
 
 
 def smoothed_rate_as_of(

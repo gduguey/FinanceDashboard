@@ -7,7 +7,6 @@ import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocatio
 import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { PageHeader, type PageHeaderSection } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
@@ -321,7 +320,6 @@ export function NetWorthPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
         sections={hasData ? SECTIONS : undefined}

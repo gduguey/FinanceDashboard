@@ -484,31 +484,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/sync-exchange-rates': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Post Sync Exchange Rates
-     * @description Re-fetch exchange-rate history from Frankfurter and overwrite the cache.
-     *
-     *     Returns
-     *     -------
-     *     ExchangeRateSyncResult
-     *         `as_of`, and every non-base currency's freshly smoothed rate into `accounting.models.BASE_CURRENCY`.
-     */
-    post: operations['post_sync_exchange_rates_api_accounting_sync_exchange_rates_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/accounting/exchange-rates/current': {
     parameters: {
       query?: never
@@ -1342,19 +1317,19 @@ export interface paths {
     }
     /**
      * Get Llm Settings
-     * @description Report whether each LLM provider's Settings-page key override is set, without exposing its value.
+     * @description Report whether each LLM provider's API key is saved, without ever exposing its value.
      *
      *     Returns
      *     -------
      *     LlmSettings
-     *         Whether the Settings-page override itself has each key, regardless
-     *         of `.env` (see `GET /llm-usage`'s own `configured`, which reflects
-     *         both sources).
+     *         Whether this user has a key saved for each provider — there is no
+     *         `.env` fallback left to also reflect (see `GET /llm-usage`'s own
+     *         `configured`, which now means exactly the same thing).
      */
     get: operations['get_llm_settings_api_accounting_settings_llm_get']
     /**
      * Put Llm Settings
-     * @description Persist an LLM API key override (merges into the existing one).
+     * @description Persist an LLM API key update (merges into whatever's already saved).
      *
      *     Returns
      *     -------
@@ -1365,7 +1340,7 @@ export interface paths {
     post?: never
     /**
      * Delete Llm Settings
-     * @description Clear the Settings-page LLM key override, falling back to `.env` (if any) again.
+     * @description Clear this user's saved API key for every provider.
      *
      *     Returns
      *     -------
@@ -2424,8 +2399,8 @@ export interface paths {
      * Put Target Allocation
      * @description Persist a new target allocation, set from the frontend.
      *
-     *     Merges into the existing settings — a settings file is one JSON blob,
-     *     so writing this field naively from a fresh `DashboardSettings()` would
+     *     Merges into the existing settings — a settings row is one record, so
+     *     writing this field naively from a fresh `DashboardSettings()` would
      *     silently wipe out the HYSA/benchmark settings saved separately.
      *
      *     Returns
@@ -2565,15 +2540,14 @@ export interface paths {
      *     Returns
      *     -------
      *     IbkrSettings
-     *         `configured` (true if a token and query id are available from
-     *         either the Settings-page override or `.env`), `token_set` and
-     *         `query_id_set` (whether the Settings-page override itself has
-     *         each field, regardless of `.env`).
+     *         `configured` (true once both a token and a query id are saved for
+     *         this user in Postgres — there is no `.env` fallback), `token_set`
+     *         and `query_id_set` (whether each field individually is saved).
      */
     get: operations['get_ibkr_settings_api_settings_ibkr_get']
     /**
      * Put Ibkr Settings
-     * @description Persist an IBKR credential override (merges into the existing one).
+     * @description Persist an IBKR credential update (merges into whatever's already saved).
      *
      *     Returns
      *     -------
@@ -2584,7 +2558,7 @@ export interface paths {
     post?: never
     /**
      * Delete Ibkr Settings
-     * @description Clear the Settings-page IBKR credential override, falling back to `.env` (if any) again.
+     * @description Clear this user's saved IBKR credentials entirely.
      *
      *     Returns
      *     -------
@@ -2782,26 +2756,22 @@ export interface paths {
     put?: never
     /**
      * Sync
-     * @description Pull the latest IBKR statement and refresh the price/CPI/HYSA-rate caches.
+     * @description Pull the latest IBKR statement into the ledger.
      *
-     *     Refreshes the raw price cache for every symbol ever held plus the
-     *     benchmark symbol, the adjusted (dividend-reinvested) cache for the
-     *     benchmark symbol only (adjusted prices are for benchmark
-     *     counterfactuals, never for pricing your own positions), the CPI
-     *     cache, and every bank's HYSA rate history. Reports progress to
-     *     `app.state.sync_progress` throughout, readable via `GET
-     *     /api/sync/progress` — the IBKR pull is the one step slow enough that a
-     *     bare spinner isn't good enough feedback.
+     *     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
+     *     here — they run on their own cron schedule instead. Reports progress
+     *     to `app.state.sync_progress` throughout, readable via `GET
+     *     /api/sync/progress` — the IBKR pull can take a while, so a bare
+     *     spinner isn't good enough feedback.
      *
-     *     Concurrent requests are serialized by a lock to prevent cache and ledger
+     *     Concurrent requests are serialized by a lock to prevent ledger
      *     corruption from simultaneous writes.
      *
      *     Returns
      *     -------
      *     SyncResult
-     *         `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`,
-     *         and `steps` — each leg's own `label`/`ok`/`error`, since one
-     *         failing (e.g. a bad IBKR token) no longer aborts the rest.
+     *         `synced_at`, `new_event_count`, `total_event_count`, and `steps`
+     *         — the one IBKR leg's own `label`/`ok`/`error`.
      */
     post: operations['sync_api_sync_post']
     delete?: never
@@ -3878,26 +3848,6 @@ export interface components {
       rate: number
       /** Smoothed Rate */
       smoothed_rate: number
-    }
-    /**
-     * ExchangeRateSyncResult
-     * @description Response body for `POST /sync-exchange-rates`.
-     */
-    ExchangeRateSyncResult: {
-      /**
-       * As Of
-       * Format: date
-       */
-      as_of: string
-      /**
-       * Base Currency
-       * @enum {string}
-       */
-      base_currency: 'USD' | 'EUR'
-      /** Rates To Base */
-      rates_to_base: {
-        [key: string]: number
-      }
     }
     /**
      * GeneralBudget
@@ -5135,8 +5085,6 @@ export interface components {
       new_event_count: number
       /** Total Event Count */
       total_event_count: number
-      /** Symbols Refreshed */
-      symbols_refreshed: string[]
       /** Steps */
       steps: components['schemas']['SyncStep'][]
     }
@@ -6087,26 +6035,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_sync_exchange_rates_api_accounting_sync_exchange_rates_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExchangeRateSyncResult']
         }
       }
     }

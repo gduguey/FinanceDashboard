@@ -1739,16 +1739,9 @@ def _mock_fetch(monkeypatch) -> None:
     )
 
 
-def test_sync_exchange_rates_persists_the_fetched_history(client, monkeypatch) -> None:
-    _mock_fetch(monkeypatch)
-    response = client.post("/api/accounting/sync-exchange-rates")
-    assert response.status_code == 200
-    assert response.json()["rates_to_base"]["EUR"] == pytest.approx(2.0)
-
-
 def test_net_worth_succeeds_for_a_eur_account_once_rates_are_synced(client, monkeypatch) -> None:
     _mock_fetch(monkeypatch)
-    client.post("/api/accounting/sync-exchange-rates")
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
     client.post(
         "/api/accounting/accounts",
         json={
@@ -1780,7 +1773,7 @@ def test_net_worth_400s_when_a_needed_currency_was_never_synced(client) -> None:
 
 def test_get_current_exchange_rate_after_sync(client, monkeypatch) -> None:
     _mock_fetch(monkeypatch)
-    client.post("/api/accounting/sync-exchange-rates")
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
     response = client.get("/api/accounting/exchange-rates/current", params={"currency": "EUR"})
     assert response.status_code == 200
     body = response.json()
@@ -1790,7 +1783,7 @@ def test_get_current_exchange_rate_after_sync(client, monkeypatch) -> None:
 
 def test_get_exchange_rate_history_after_sync(client, monkeypatch) -> None:
     _mock_fetch(monkeypatch)
-    client.post("/api/accounting/sync-exchange-rates")
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
     response = client.get("/api/accounting/exchange-rates/history", params={"currency": "EUR"})
     assert response.status_code == 200
     body = response.json()
