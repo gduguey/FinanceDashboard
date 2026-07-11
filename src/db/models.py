@@ -36,19 +36,25 @@ class User(Base):
 
 
 class UserSecret(Base):
-    """One named credential belonging to a user — an IBKR token, an LLM API key, whatever comes next.
+    """One named credential belonging to a user — a broker token, an LLM API key, whatever comes next.
 
     Generic by design: a new kind of secret (a new broker's API token, a
     new LLM provider's key) never needs a schema change, only a new `key`
     value that the code reading and writing it agrees on (e.g.
-    `"ibkr_flex_token"`, `"gemini_api_key"`) — the same role
-    `trades.credentials.IbkrCredentialOverride` and
-    `accounting.llm.settings`'s credentials file play today, unified into
-    one table instead of one bespoke JSON file per secret kind.
+    `"broker:ibkr"`, `"llm:gemini"`) — see `db.secrets` for the
+    get/set/delete functions every credential module (`trades.brokers.*`,
+    `accounting.llm.settings`) is built on, instead of each keeping its own
+    JSON file or reading `.env`.
 
-    `value` is application-encrypted before it ever reaches this column —
-    this table only enforces the shape (whose secret, which one), never
-    the encryption itself.
+    `kind` groups secrets by shape (e.g. `"broker_credentials"`,
+    `"llm_api_key"`) independently of the free-form `key`, so "every broker
+    credential across every user" is a real filter, not a string-match over
+    `key`. `ciphertext` is application-encrypted (see `db.encryption`)
+    before it ever reaches this column — this table only enforces the
+    shape (whose secret, which one, encrypted under which key version),
+    never the encryption itself. `encryption_key_version` records which
+    `db.encryption.SecretsEncryptionSettings` key encrypted this row, so
+    the signing key can rotate without making existing rows undecryptable.
     """
 
     __tablename__ = "user_secrets"
@@ -57,6 +63,8 @@ class UserSecret(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     key: Mapped[str] = mapped_column(primary_key=True)
-    value: Mapped[str]
+    kind: Mapped[str]
+    ciphertext: Mapped[str]
+    encryption_key_version: Mapped[int]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

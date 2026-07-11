@@ -35,9 +35,9 @@ from db.current_user import DEFAULT_USER_ID
 if TYPE_CHECKING:
     import uuid
     from collections.abc import Callable
+    from typing import Any
 
     from sqlalchemy.orm import Session
-    from typing import Any
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder

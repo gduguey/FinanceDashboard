@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Any
 
 import polars as pl
@@ -25,15 +26,16 @@ from accounting.llm.gemini import GeminiProvider, verify_gemini_key
 from accounting.llm.mistral import MistralProvider, verify_mistral_key
 from accounting.llm.provider import LLMProvider, LLMProviderError, complete_with_fallback
 from accounting.llm.settings import (
-    LLMCredentialOverride,
-    load_llm_credential_override,
+    clear_llm_api_key,
+    load_llm_api_key,
     resolve_llm_credentials,
-    save_llm_credential_override,
+    save_llm_api_key,
 )
 from accounting.llm.usage import RESET_PERIOD, TrackedProvider, load_usage
 from accounting.models import CategoryClassification, PendingSuggestionSource
 from accounting.store import load_overrides, save_overrides
 from accounting.utils.io_utils import collect_if_lazy
+from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
@@ -41,8 +43,8 @@ router = APIRouter()
 _MAX_FEW_SHOT_EXAMPLES = 20
 
 
-def _llm_providers() -> list[LLMProvider]:
-    """Build the default-Gemini-then-Mistral fallback chain from whichever API keys `.env` actually has set.
+def _llm_providers(session: Session, user_id: uuid.UUID) -> list[LLMProvider]:
+    """Build the default-Gemini-then-Mistral fallback chain from whichever API keys this user has saved.
 
     Every provider is wrapped in `TrackedProvider` so each call's outcome
     is recorded to `llm_usage.json` regardless of which provider in the
@@ -51,9 +53,9 @@ def _llm_providers() -> list[LLMProvider]:
     Returns
     -------
     list[LLMProvider]
-        Gemini first (if `GEMINI_API_KEY` is set), then Mistral (if `MISTRAL_API_KEY` is set) — empty if neither is.
+        Gemini first (if a Gemini key is saved), then Mistral (if a Mistral key is saved) — empty if neither is.
     """
-    credentials = resolve_llm_credentials(state.config)
+    credentials = resolve_llm_credentials(session, user_id)
     providers: list[LLMProvider] = []
     if credentials.gemini_api_key is not None:
         providers.append(
@@ -73,7 +75,10 @@ def _llm_providers() -> list[LLMProvider]:
 
 
 @router.get("/llm-usage")
-def get_llm_usage() -> dict[str, LlmProviderUsage]:
+def get_llm_usage(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, LlmProviderUsage]:
     """Return each LLM provider's self-tracked call count this period, and whether it's currently rate-limited.
 
     Returns
@@ -83,7 +88,7 @@ def get_llm_usage() -> dict[str, LlmProviderUsage]:
         the provider's own error text from the last refused call, `None`
         if it hasn't been refused since its count last reset.
     """
-    credentials = resolve_llm_credentials(state.config)
+    credentials = resolve_llm_credentials(session, user_id)
     configured = {
         "gemini": credentials.gemini_api_key is not None,
         "mistral": credentials.mistral_api_key is not None,
@@ -102,7 +107,11 @@ def get_llm_usage() -> dict[str, LlmProviderUsage]:
 
 
 @router.post("/settings/llm/verify")
-def verify_llm_settings(provider: str) -> VerifyResult:
+def verify_llm_settings(
+    provider: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> VerifyResult:
     """Actually attempt to authenticate with a provider, not just check that a key is typed in.
 
     `verify_gemini_key`/`verify_mistral_key` make a single free, read-only
@@ -124,7 +133,7 @@ def verify_llm_settings(provider: str) -> VerifyResult:
     HTTPException
         400 if `provider` isn't `"gemini"` or `"mistral"`.
     """
-    credentials = resolve_llm_credentials(state.config)
+    credentials = resolve_llm_credentials(session, user_id)
     if provider == "gemini":
         key = credentials.gemini_api_key
         verify = verify_gemini_key
@@ -144,52 +153,62 @@ def verify_llm_settings(provider: str) -> VerifyResult:
 
 
 @router.get("/settings/llm")
-def get_llm_settings() -> LlmSettings:
-    """Report whether each LLM provider's Settings-page key override is set, without exposing its value.
+def get_llm_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> LlmSettings:
+    """Report whether each LLM provider's API key is saved, without ever exposing its value.
 
     Returns
     -------
     LlmSettings
-        Whether the Settings-page override itself has each key, regardless
-        of `.env` (see `GET /llm-usage`'s own `configured`, which reflects
-        both sources).
+        Whether this user has a key saved for each provider — there is no
+        `.env` fallback left to also reflect (see `GET /llm-usage`'s own
+        `configured`, which now means exactly the same thing).
     """
-    override = load_llm_credential_override(state.config)
-    return LlmSettings(gemini_key_set=bool(override.gemini_api_key), mistral_key_set=bool(override.mistral_api_key))
+    return LlmSettings(
+        gemini_key_set=load_llm_api_key(session, user_id, "gemini") is not None,
+        mistral_key_set=load_llm_api_key(session, user_id, "mistral") is not None,
+    )
 
 
 @router.put("/settings/llm")
-def put_llm_settings(update: LLMSettingsUpdate) -> LlmSettings:
-    """Persist an LLM API key override (merges into the existing one).
+def put_llm_settings(
+    update: LLMSettingsUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> LlmSettings:
+    """Persist an LLM API key update (merges into whatever's already saved).
 
     Returns
     -------
     LlmSettings
         Same shape as `GET /settings/llm`, reflecting what was just persisted.
     """
-    existing = load_llm_credential_override(state.config)
-    updated = existing.model_copy(
-        update={
-            "gemini_api_key": update.gemini_api_key if update.gemini_api_key is not None else existing.gemini_api_key,
-            "mistral_api_key": (
-                update.mistral_api_key if update.mistral_api_key is not None else existing.mistral_api_key
-            ),
-        }
+    if update.gemini_api_key is not None:
+        save_llm_api_key(session, user_id, "gemini", update.gemini_api_key)
+    if update.mistral_api_key is not None:
+        save_llm_api_key(session, user_id, "mistral", update.mistral_api_key)
+    return LlmSettings(
+        gemini_key_set=load_llm_api_key(session, user_id, "gemini") is not None,
+        mistral_key_set=load_llm_api_key(session, user_id, "mistral") is not None,
     )
-    save_llm_credential_override(updated, state.config)
-    return LlmSettings(gemini_key_set=bool(updated.gemini_api_key), mistral_key_set=bool(updated.mistral_api_key))
 
 
 @router.delete("/settings/llm")
-def delete_llm_settings() -> LlmSettings:
-    """Clear the Settings-page LLM key override, falling back to `.env` (if any) again.
+def delete_llm_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> LlmSettings:
+    """Clear this user's saved API key for every provider.
 
     Returns
     -------
     LlmSettings
         Same shape as `GET /settings/llm`.
     """
-    save_llm_credential_override(LLMCredentialOverride(), state.config)
+    clear_llm_api_key(session, user_id, "gemini")
+    clear_llm_api_key(session, user_id, "mistral")
     return LlmSettings(gemini_key_set=False, mistral_key_set=False)
 
 
@@ -249,7 +268,11 @@ def _stage_and_save_pending_suggestion(
 
 @router.post("/postings/{posting_id}/ai-suggest-category")
 def post_ai_suggest_category(
-    posting_id: str, *, lock_category_id: str | None = None, session: Annotated[Session, Depends(get_db)]
+    posting_id: str,
+    *,
+    lock_category_id: str | None = None,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CategorySuggestionResult:
     """Ask an LLM to suggest a category for one posting, from already-categorized examples — never automatic.
 
@@ -294,7 +317,7 @@ def post_ai_suggest_category(
         target_row["description"], classification, store.categories, _few_shot_examples(postings, classification)
     )
     try:
-        raw_response = complete_with_fallback(_llm_providers(), system_prompt, user_prompt)
+        raw_response = complete_with_fallback(_llm_providers(session, user_id), system_prompt, user_prompt)
     except LLMProviderError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import uuid
 import zipfile
 from datetime import UTC, datetime
 from threading import Lock
@@ -12,6 +13,7 @@ import requests
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
+from db.current_user import get_current_user_id
 from db.session import get_db
 from trades import dashboard
 from trades.api.api_models import SyncProgress, SyncResult, SyncStep
@@ -23,8 +25,8 @@ from trades.api.dependencies import (
     app,
 )
 from trades.brokers.ibkr import main
+from trades.brokers.ibkr.credentials import resolve_ibkr_credentials
 from trades.config import AppConfig
-from trades.credentials import resolve_ibkr_credentials
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
@@ -77,7 +79,7 @@ def get_sync_progress() -> SyncProgress:
     return cast("SyncProgress", app.state.sync_progress)
 
 
-def _run_sync(config: AppConfig, session: Session) -> SyncResult:
+def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncResult:
     """Run every leg of a sync independently — one failing never skips the rest.
 
     A bad IBKR token shouldn't also block a benchmark price refresh that
@@ -98,7 +100,7 @@ def _run_sync(config: AppConfig, session: Session) -> SyncResult:
     _report_sync_progress("Connecting to IBKR", 0.0)
     sync_result = None
     try:
-        credentials = resolve_ibkr_credentials(config)
+        credentials = resolve_ibkr_credentials(session, user_id)
         sync_result = main.sync_ibkr_account(credentials, config, session, on_progress=_report_sync_progress)
         steps.append(SyncStep(label="Portfolio data", ok=True))
     except requests.exceptions.RequestException:
@@ -161,7 +163,10 @@ def _run_sync(config: AppConfig, session: Session) -> SyncResult:
 
 
 @router.post("/api/sync")
-def sync(session: Annotated[Session, Depends(get_db)]) -> SyncResult:
+def sync(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> SyncResult:
     """Pull the latest IBKR statement and refresh the price/CPI/HYSA-rate caches.
 
     Refreshes the raw price cache for every symbol ever held plus the
@@ -185,7 +190,7 @@ def sync(session: Annotated[Session, Depends(get_db)]) -> SyncResult:
     """
     with _sync_lock:
         try:
-            result = _run_sync(_config(), session)
+            result = _run_sync(_config(), session, user_id)
         except Exception as error:
             # Only reachable for something outside every leg's own
             # try/except in _run_sync — each expected failure mode is

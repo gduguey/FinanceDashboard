@@ -29,9 +29,14 @@ RUN uv sync --locked --no-dev --extra api --extra llm
 FROM python:3.14-slim
 WORKDIR /app
 
-# Install runtime dependencies (postgresql client if needed, curl for health checks)
+# Install runtime dependencies: curl for health checks, postgresql-client for
+# `pg_dump` (see db.backup / docs/server-setup/maintenance.md's cron entry) —
+# Debian's packaged version may trail the postgres:16-alpine server's; pg_dump
+# is generally compatible with newer servers, but pin to the PGDG apt repo
+# instead if that ever actually causes a dump to fail.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python virtual environment from builder
@@ -39,6 +44,11 @@ COPY --from=python-builder /opt/venv /opt/venv
 
 # Copy source code
 COPY src/ src/
+
+# alembic.ini lives at the repo root, not under src/ — needed here so
+# `alembic upgrade head` (run by CMD below on every container start) can
+# find its own config and migration scripts.
+COPY alembic.ini ./
 
 # Copy built frontend from builder
 COPY --from=frontend-builder /app/web/dist/ web/dist/
@@ -64,7 +74,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # Expose ports
 EXPOSE 8000
 
-# Run FastAPI server
+# Run migrations, then the FastAPI server — every container start, not a
+# separate manual deploy step (see migration 817ace9deb09's own docstring
+# for why a failed migration refusing to start the app is deliberate).
+# Shell form (not the usual JSON-array CMD) specifically so `&&`/`exec` work
+# without a separate entrypoint script — `exec` replaces this shell with
+# uvicorn as PID 1, so it still receives signals (e.g. `docker stop`) directly.
 # - Bind to 0.0.0.0 so it's accessible from outside the container
 # - Use uvicorn directly (already installed via --extra api)
-CMD ["uvicorn", "trades.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD alembic upgrade head && exec uvicorn trades.api:app --host 0.0.0.0 --port 8000

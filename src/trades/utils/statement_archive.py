@@ -110,8 +110,9 @@ def get_r2_credentials() -> R2Credentials:
 
     A thin wrapper around `R2Credentials()` so every `StatementArchive`
     resolves credentials through one function — tests intercept R2 by
-    monkeypatching this, the same seam `trades.credentials.resolve_ibkr_credentials`
-    is for IBKR credentials.
+    monkeypatching this, the same seam
+    `trades.brokers.ibkr.credentials.resolve_ibkr_credentials` is for IBKR
+    credentials.
 
     Returns
     -------

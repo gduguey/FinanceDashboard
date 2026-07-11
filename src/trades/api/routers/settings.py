@@ -1,10 +1,15 @@
-"""Settings endpoints — mirrors `trades.config`/`trades.credentials`: target allocation, HYSA, benchmark, tax, IBKR."""
+"""Settings endpoints — mirrors `trades.config`/`trades.brokers.ibkr.credentials`: allocation, HYSA, tax, IBKR."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter
-from pydantic import ValidationError
+import uuid
+from typing import Annotated
 
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from db.current_user import get_current_user_id
+from db.session import get_db
 from trades import dashboard
 from trades.api.api_models import (
     BenchmarkSetting,
@@ -19,14 +24,15 @@ from trades.api.api_models import (
 )
 from trades.api.dependencies import _config
 from trades.brokers.ibkr import api as ibkr_api
-from trades.config import AppConfig
-from trades.credentials import (
-    IbkrCredentialOverride,
+from trades.brokers.ibkr.credentials import (
+    IbkrCredentialsNotConfiguredError,
+    clear_ibkr_credentials,
+    ibkr_credential_fields,
     ibkr_is_configured,
-    load_ibkr_credential_override,
     resolve_ibkr_credentials,
-    save_ibkr_credential_override,
+    save_ibkr_credentials,
 )
+from trades.config import AppConfig
 
 router = APIRouter()
 
@@ -187,67 +193,70 @@ def put_tax_settings(update: TaxSettingsUpdate) -> TaxSettings:
 
 
 @router.get("/api/settings/ibkr")
-def get_ibkr_settings() -> IbkrSettings:
+def get_ibkr_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> IbkrSettings:
     """Report whether IBKR credentials are available, without ever exposing their value.
 
     Returns
     -------
     IbkrSettings
-        `configured` (true if a token and query id are available from
-        either the Settings-page override or `.env`), `token_set` and
-        `query_id_set` (whether the Settings-page override itself has
-        each field, regardless of `.env`).
+        `configured` (true once both a token and a query id are saved for
+        this user in Postgres — there is no `.env` fallback), `token_set`
+        and `query_id_set` (whether each field individually is saved).
     """
-    config = _config()
-    override = load_ibkr_credential_override(config)
+    fields = ibkr_credential_fields(session, user_id)
     return IbkrSettings(
-        configured=ibkr_is_configured(config),
-        token_set=bool(override.token),
-        query_id_set=bool(override.query_id),
+        configured=ibkr_is_configured(session, user_id),
+        token_set="token" in fields,
+        query_id_set="query_id" in fields,
     )
 
 
 @router.put("/api/settings/ibkr")
-def put_ibkr_settings(update: IbkrCredentialsUpdate) -> IbkrSettings:
-    """Persist an IBKR credential override (merges into the existing one).
+def put_ibkr_settings(
+    update: IbkrCredentialsUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> IbkrSettings:
+    """Persist an IBKR credential update (merges into whatever's already saved).
 
     Returns
     -------
     IbkrSettings
         Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
     """
-    config = _config()
-    existing = load_ibkr_credential_override(config)
-    updated = existing.model_copy(
-        update={
-            "token": update.token if update.token is not None else existing.token,
-            "query_id": update.query_id if update.query_id is not None else existing.query_id,
-        }
-    )
-    save_ibkr_credential_override(updated, config)
+    save_ibkr_credentials(session, user_id, token=update.token, query_id=update.query_id)
+    fields = ibkr_credential_fields(session, user_id)
     return IbkrSettings(
-        configured=ibkr_is_configured(config),
-        token_set=bool(updated.token),
-        query_id_set=bool(updated.query_id),
+        configured=ibkr_is_configured(session, user_id),
+        token_set="token" in fields,
+        query_id_set="query_id" in fields,
     )
 
 
 @router.delete("/api/settings/ibkr")
-def delete_ibkr_settings() -> IbkrSettings:
-    """Clear the Settings-page IBKR credential override, falling back to `.env` (if any) again.
+def delete_ibkr_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> IbkrSettings:
+    """Clear this user's saved IBKR credentials entirely.
 
     Returns
     -------
     IbkrSettings
         Same shape as `GET /api/settings/ibkr`.
     """
-    config = _config()
-    save_ibkr_credential_override(IbkrCredentialOverride(), config)
-    return IbkrSettings(configured=ibkr_is_configured(config), token_set=False, query_id_set=False)
+    clear_ibkr_credentials(session, user_id)
+    return IbkrSettings(configured=False, token_set=False, query_id_set=False)
 
 
 @router.post("/api/settings/ibkr/verify")
-def verify_ibkr_settings() -> VerifyResult:
+def verify_ibkr_settings(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> VerifyResult:
     """Actually attempt to authenticate with IBKR, not just check that something's typed in.
 
     A single fast HTTP call (see `verify_flex_credentials`) — not a full
@@ -262,8 +271,8 @@ def verify_ibkr_settings() -> VerifyResult:
     """
     config = _config()
     try:
-        credentials = resolve_ibkr_credentials(config)
-    except ValidationError:
+        credentials = resolve_ibkr_credentials(session, user_id)
+    except IbkrCredentialsNotConfiguredError:
         return VerifyResult(ok=False, error="No credentials configured")
     try:
         ibkr_api.verify_flex_credentials(credentials, config)

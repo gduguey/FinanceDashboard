@@ -27,6 +27,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 
@@ -68,20 +69,40 @@ def _no_r2_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
+_TEST_SECRETS_ENCRYPTION_KEY = Fernet.generate_key().decode()
+
+
+@pytest.fixture(autouse=True)
+def _fixed_secrets_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test a fixed, in-memory `db.encryption` key instead of whatever `.env` has (or lacks).
+
+    Same reasoning as `_no_r2_by_default`: a real key in the developer's own
+    `.env` must never leak into a test run (a test asserting on ciphertext
+    would otherwise depend on production key material), and a run with no
+    key configured at all must not fail every secrets-related test with a
+    missing-env-var error unrelated to what's actually being tested.
+    """
+    monkeypatch.setenv("APP_SECRETS_ENCRYPTION_KEY", _TEST_SECRETS_ENCRYPTION_KEY)
+    monkeypatch.setenv("APP_SECRETS_ENCRYPTION_KEY_VERSION", "1")
+    monkeypatch.delenv("APP_SECRETS_ENCRYPTION_KEYS_PREVIOUS", raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip `DATABASE_URL` (the real dev database) from every test's environment.
+    """Strip `DATABASE_URL`/`DATABASE_URL_APP` (the real dev database) from every test's environment.
 
     `TestDatabaseSettings` reading a separate `DATABASE_URL_TEST` only
     protects tests that go through it — `db.session.get_engine` reads
-    `DatabaseSettings().database_url` (i.e. `DATABASE_URL`) directly, and an
-    API test that forgets to override the `get_db` FastAPI dependency (see
+    `AppRuntimeDatabaseSettings().database_url` (`DATABASE_URL_APP`, falling
+    back to `DATABASE_URL`) directly, and an API test that forgets to
+    override the `get_db` FastAPI dependency (see
     `test_api.py`/`test_accounting_api.py`/`test_accounting_goals_api.py`)
     would otherwise silently connect to and mutate the real dev database
-    instead of failing. With `DATABASE_URL` gone, that failure mode becomes
-    a loud `ValidationError` (missing required field) instead.
+    instead of failing. With both gone, that failure mode becomes a loud
+    `ValidationError` (missing required field) instead.
     """
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL_APP", raising=False)
 
 
 @pytest.fixture(scope="session")
