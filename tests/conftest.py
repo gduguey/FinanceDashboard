@@ -53,14 +53,35 @@ except ModuleNotFoundError:
     trades_storage = None
 
 
+_R2_ENV_VARS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_ENDPOINT_URL")
+
+
 @pytest.fixture(autouse=True)
 def _no_r2_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _R2_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     if trades_storage is not None:
         monkeypatch.setattr(trades_storage, "get_r2_credentials", lambda: trades_storage.R2Credentials(_env_file=None))
     if accounting_storage is not None:
         monkeypatch.setattr(
             accounting_storage, "get_r2_credentials", lambda: accounting_storage.R2Credentials(_env_file=None)
         )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip `DATABASE_URL` (the real dev database) from every test's environment.
+
+    `TestDatabaseSettings` reading a separate `DATABASE_URL_TEST` only
+    protects tests that go through it — `db.session.get_engine` reads
+    `DatabaseSettings().database_url` (i.e. `DATABASE_URL`) directly, and an
+    API test that forgets to override the `get_db` FastAPI dependency (see
+    `test_api.py`/`test_accounting_api.py`/`test_accounting_goals_api.py`)
+    would otherwise silently connect to and mutate the real dev database
+    instead of failing. With `DATABASE_URL` gone, that failure mode becomes
+    a loud `ValidationError` (missing required field) instead.
+    """
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
 
 @pytest.fixture(scope="session")

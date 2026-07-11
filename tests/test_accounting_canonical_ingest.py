@@ -38,7 +38,9 @@ def _register_account(session: Session, user_id: uuid.UUID) -> None:
     save_store(store.model_copy(update={"accounts": {**store.accounts, ACCOUNT_ID: account}}), session, user_id=user_id)
 
 
-def test_ingest_canonical_csv_archives_the_raw_file_verbatim(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_ingest_canonical_csv_archives_the_raw_file_verbatim(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id)
     ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
