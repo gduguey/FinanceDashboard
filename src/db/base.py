@@ -9,13 +9,17 @@ their own Postgres schema and never foreign-key into each other directly.
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import MetaData, Numeric
 from sqlalchemy.orm import DeclarativeBase
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
+    from typing import Any
+
+    from sqlalchemy.orm import Session
 
 MONEY = Numeric(18, 4, asdecimal=False)
 """The column type for every money amount in this schema.
@@ -76,3 +80,94 @@ def check_in_sql(column: str, values: Sequence[str]) -> str:
     """
     quoted = ", ".join(f"'{value}'" for value in values)
     return f"{column} IN ({quoted})"
+
+
+_ID_NAMESPACE = uuid.UUID("f47b6a1e-6e21-4f5f-8a2f-9f1a2b3c4d5e")
+"""Fixed, arbitrary namespace UUID every `derive_id` call hashes against — never changes."""
+
+
+def derive_id(user_id: uuid.UUID, table: str, natural_key: str) -> uuid.UUID:
+    """Compute a table row's opaque surrogate `id`, deterministically, from its human-meaningful natural key.
+
+    Every table that used to use a human-chosen string (`account_id`,
+    `category_id`, a content-addressed import key like
+    `f"sofi:{kind}:{last4}"`, ...) directly as its primary key now stores
+    that same string as `natural_key` instead, and derives its real `id`
+    (a UUID, opaque, never exposed to guess row counts from) from it via
+    this function. Two properties this buys, that a random
+    `gen_random_uuid()` default couldn't:
+
+    - **Stable across a full delete-and-recreate rewrite.** Several
+      tables (see `accounting.store`) are persisted by deleting every row
+      for a user and reinserting the current in-memory state from
+      scratch on every save — the same natural key always re-derives the
+      same `id`, so anything that FK-referenced this row (a posting's
+      `category_id`, a category's own `parent_category_id`) keeps
+      pointing at a row that still exists after the rewrite, without a
+      lookup pass to remap ids.
+    - **Idempotent re-import.** A content-addressed natural key (an
+      import's own dedup convention) re-derives the same `id` every time
+      the same source is re-imported, so "insert, conflict on
+      `(user_id, natural_key)`, skip" still works exactly as it did when
+      the natural key was the primary key directly.
+
+    Parameters
+    ----------
+    user_id
+        Whose row this is — the same `(user_id, natural_key)` pair a
+        table's `UNIQUE` constraint enforces, so two different users'
+        otherwise-identical natural keys never collide on the same id.
+    table
+        The table this id is for, e.g. `"accounts"` — included so the
+        same natural key never accidentally derives the same id on two
+        different tables.
+    natural_key
+        The human-meaningful string this row's identity used to be keyed
+        on directly, e.g. an `account_id`, a `category_id`, or an
+        import's own dedup key.
+
+    Returns
+    -------
+    uuid.UUID
+    """
+    return uuid.uuid5(_ID_NAMESPACE, f"{user_id}:{table}:{natural_key}")
+
+
+def natural_keys_by_id(
+    session: Session,
+    model: Any,  # noqa: ANN401 — generic helper shared across every model with an id/natural_key/user_id shape
+    user_id: uuid.UUID,
+    ids: Iterable[uuid.UUID | None],
+) -> dict[uuid.UUID, str]:
+    """Batch-resolve `model.id -> model.natural_key` for a set of ids — reversing a stored FK back to its natural key.
+
+    Shared by `accounting.store` and `accounting.importers.ingest`
+    (and any future module in the same position): a row read back from
+    Postgres only ever has a FK column's opaque `id`, never the
+    human-meaningful string a pydantic model's own field expects — this
+    is the one place that reversal happens, batched into a single query
+    rather than one lookup per row.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    model
+        The ORM model to look up, e.g. `accounting.db.core.Posting`.
+    user_id
+        Whose rows to look up.
+    ids
+        The ids to resolve; `None` entries are ignored.
+
+    Returns
+    -------
+    dict[uuid.UUID, str]
+        Empty if `ids` has no non-`None` entries.
+    """
+    id_list = {row_id for row_id in ids if row_id is not None}
+    if not id_list:
+        return {}
+    rows: list[tuple[uuid.UUID, str]] = (
+        session.query(model.id, model.natural_key).filter(model.user_id == user_id, model.id.in_(id_list)).all()
+    )
+    return dict(rows)

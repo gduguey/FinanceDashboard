@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,13 +24,13 @@ class SimulatorScenario(Base):
             check_in_sql("compounding_frequency", get_args(CompoundingFrequency)),
             name="compounding_frequency",
         ),
+        UniqueConstraint("user_id", "natural_key", name="uq_simulator_scenarios_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
-    scenario_id: Mapped[str] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    natural_key: Mapped[str]
     name: Mapped[str]
     initial_capital: Mapped[float] = mapped_column(MONEY)
     monthly_contribution: Mapped[float] = mapped_column(MONEY)

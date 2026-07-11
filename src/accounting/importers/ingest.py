@@ -30,6 +30,7 @@ from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.statement_archive import DEFAULT_USER_ID as ARCHIVE_DEFAULT_USER_ID
 from accounting.utils.statement_archive import StatementArchive
+from db.base import derive_id, natural_keys_by_id
 from db.current_user import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
@@ -113,21 +114,38 @@ def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.Da
     rows = session.query(adb.Posting).filter_by(user_id=user_id).all()
     if not rows:
         return pl.DataFrame(schema=Posting.polars_schema)
-    tag_ids_by_posting: dict[str, list[str]] = defaultdict(list)
+
+    transaction_natural_key_by_id = natural_keys_by_id(
+        session, adb.Transaction, user_id, [row.transaction_id for row in rows]
+    )
+    account_natural_key_by_id = natural_keys_by_id(session, adb.Account, user_id, [row.account_id for row in rows])
+    category_natural_key_by_id = natural_keys_by_id(
+        session,
+        adb.Category,
+        user_id,
+        [row.category_id for row in rows] + [row.subcategory_id for row in rows],
+    )
+    tag_ids_by_posting: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
+    tag_ids: set[uuid.UUID] = set()
     for posting_tag in session.query(adb.PostingTag).filter_by(user_id=user_id):
         tag_ids_by_posting[posting_tag.posting_id].append(posting_tag.tag_id)
+        tag_ids.add(posting_tag.tag_id)
+    tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, tag_ids)
+
     records = [
         {
-            "posting_id": row.posting_id,
-            "transaction_id": row.transaction_id,
-            "account_id": row.account_id,
+            "posting_id": row.natural_key,
+            "transaction_id": transaction_natural_key_by_id[row.transaction_id],
+            "account_id": account_natural_key_by_id[row.account_id],
             "posted_at": row.posted_at,
             "amount": row.amount,
             "currency": row.currency,
-            "category_id": row.category_id,
-            "subcategory_id": row.subcategory_id,
+            "category_id": category_natural_key_by_id.get(row.category_id) if row.category_id is not None else None,
+            "subcategory_id": category_natural_key_by_id.get(row.subcategory_id)
+            if row.subcategory_id is not None
+            else None,
             "budget_id": row.budget_id,
-            "tag_ids": tag_ids_by_posting.get(row.posting_id, []),
+            "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(row.id, [])],
             "description": row.description,
             "meta": row.meta,
         }
@@ -159,24 +177,33 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = D
     """
     rows = ledger.to_dicts()
 
-    transaction_ids = {row["transaction_id"] for row in rows}
-    for transaction_id in transaction_ids:
-        session.merge(adb.Transaction(user_id=user_id, transaction_id=transaction_id))
+    transaction_ids: set[uuid.UUID] = set()
+    for row in rows:
+        transaction_id = derive_id(user_id, "transactions", row["transaction_id"])
+        transaction_ids.add(transaction_id)
+        session.merge(adb.Transaction(id=transaction_id, user_id=user_id, natural_key=row["transaction_id"]))
     session.flush()
 
-    posting_ids = {row["posting_id"] for row in rows}
+    posting_ids: set[uuid.UUID] = set()
     for row in rows:
+        posting_id = derive_id(user_id, "postings", row["posting_id"])
+        posting_ids.add(posting_id)
         session.merge(
             adb.Posting(
+                id=posting_id,
                 user_id=user_id,
-                posting_id=row["posting_id"],
-                transaction_id=row["transaction_id"],
-                account_id=row["account_id"],
+                natural_key=row["posting_id"],
+                transaction_id=derive_id(user_id, "transactions", row["transaction_id"]),
+                account_id=derive_id(user_id, "accounts", row["account_id"]),
                 posted_at=row["posted_at"],
                 amount=row["amount"],
                 currency=row["currency"],
-                category_id=row["category_id"],
-                subcategory_id=row["subcategory_id"],
+                category_id=derive_id(user_id, "categories", row["category_id"])
+                if row["category_id"] is not None
+                else None,
+                subcategory_id=derive_id(user_id, "categories", row["subcategory_id"])
+                if row["subcategory_id"] is not None
+                else None,
                 budget_id=row["budget_id"],
                 description=row["description"],
                 meta=row["meta"],
@@ -187,25 +214,27 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = D
     # Postings first, then transactions — a transaction that lost every one of
     # its postings would otherwise still be referenced by the very rows this
     # step is trying to delete first.
-    existing_posting_ids = {row.posting_id for row in session.query(adb.Posting.posting_id).filter_by(user_id=user_id)}
+    existing_posting_ids = {row.id for row in session.query(adb.Posting.id).filter_by(user_id=user_id)}
     removed_posting_ids = existing_posting_ids - posting_ids
     if removed_posting_ids:
-        session.query(adb.Posting).filter_by(user_id=user_id).filter(
-            adb.Posting.posting_id.in_(removed_posting_ids)
-        ).delete(synchronize_session=False)
+        session.query(adb.Posting).filter_by(user_id=user_id).filter(adb.Posting.id.in_(removed_posting_ids)).delete(
+            synchronize_session=False
+        )
 
-    existing_transaction_ids = {
-        row.transaction_id for row in session.query(adb.Transaction.transaction_id).filter_by(user_id=user_id)
-    }
+    existing_transaction_ids = {row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id)}
     removed_transaction_ids = existing_transaction_ids - transaction_ids
     if removed_transaction_ids:
         session.query(adb.Transaction).filter_by(user_id=user_id).filter(
-            adb.Transaction.transaction_id.in_(removed_transaction_ids)
+            adb.Transaction.id.in_(removed_transaction_ids)
         ).delete(synchronize_session=False)
 
     session.query(adb.PostingTag).filter_by(user_id=user_id).delete()
     session.add_all(
-        adb.PostingTag(user_id=user_id, posting_id=row["posting_id"], tag_id=tag_id)
+        adb.PostingTag(
+            user_id=user_id,
+            posting_id=derive_id(user_id, "postings", row["posting_id"]),
+            tag_id=derive_id(user_id, "tags", tag_id),
+        )
         for row in rows
         for tag_id in row["tag_ids"]
     )

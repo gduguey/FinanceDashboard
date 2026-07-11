@@ -255,11 +255,6 @@ class IbkrFlexApiConfig(BaseModel):
     )
 
     @property
-    def ledger_csv_path(self) -> Path:
-        """Where the derived ledger CSV is cached, under `cache_dir`."""
-        return self.cache_dir / "ledger.csv"
-
-    @property
     def raw_statement_dir(self) -> Path:
         """Where every raw Flex statement is archived, under `cache_dir`."""
         return self.cache_dir / "raw_statements"

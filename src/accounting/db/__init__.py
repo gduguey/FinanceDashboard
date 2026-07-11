@@ -23,9 +23,10 @@ from accounting.db.core import (
 )
 from accounting.db.corrections import (
     DismissedSuggestion,
-    ManualOverride,
     PostingMerge,
     PostingMergeDuplicate,
+    PostingOverride,
+    PostingPendingSuggestion,
     PostingSplit,
     PostingSplitLeg,
 )
@@ -41,13 +42,14 @@ __all__ = [
     "GeneralBudget",
     "Goal",
     "GoalContribution",
-    "ManualOverride",
     "ManualTransfer",
     "OpeningBalance",
     "OtherAsset",
     "Posting",
     "PostingMerge",
     "PostingMergeDuplicate",
+    "PostingOverride",
+    "PostingPendingSuggestion",
     "PostingSplit",
     "PostingSplitLeg",
     "PostingTag",
