@@ -361,9 +361,7 @@ def get_monthly_pnl_by_symbol(
 
 
 @app.get("/api/allocation")
-def get_allocation(
-    session: Annotated[Session, Depends(get_db)], as_of: date | None = None
-) -> list[dict[str, Any]]:
+def get_allocation(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> list[dict[str, Any]]:
     """Return the current-value allocation by symbol (including cash), against the target.
 
     Returns

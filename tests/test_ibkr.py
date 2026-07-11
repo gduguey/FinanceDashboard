@@ -255,9 +255,7 @@ def test_rebuild_from_raw_statements_raises_without_archive(
         main.rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
 
-def test_rebuild_from_raw_statements_recomputes_ledger(
-    tmp_path, db_session: Session, test_user_id: uuid.UUID
-) -> None:
+def test_rebuild_from_raw_statements_recomputes_ledger(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
     config = _config(tmp_path)
     raw_dir = config.ibkr.raw_statement_dir
     raw_dir.mkdir(parents=True)

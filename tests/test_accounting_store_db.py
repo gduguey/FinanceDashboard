@@ -249,7 +249,12 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
             },
             "recurring_additions": [
                 RecurringAddition(
-                    addition_id="ra1", goal_id="g1", start_date=datetime(2026, 1, 1).date(), frequency="monthly", mode="fixed_amount", value=50
+                    addition_id="ra1",
+                    goal_id="g1",
+                    start_date=datetime(2026, 1, 1).date(),
+                    frequency="monthly",
+                    mode="fixed_amount",
+                    value=50,
                 )
             ],
             "withdrawal_priorities": [WithdrawalPriorityEntry(goal_id="g1", priority=1)],

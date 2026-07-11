@@ -55,7 +55,9 @@ def _register_account(session: Session, user_id: uuid.UUID, account_id: str = "c
             update={
                 "accounts": {
                     **store.accounts,
-                    account_id: Account(account_id=account_id, name="Test", kind="checking", institution="x", currency="USD"),
+                    account_id: Account(
+                        account_id=account_id, name="Test", kind="checking", institution="x", currency="USD"
+                    ),
                 }
             }
         )
@@ -64,7 +66,9 @@ def _register_account(session: Session, user_id: uuid.UUID, account_id: str = "c
 
 def _frame(*postings: Posting) -> pl.DataFrame:
     records = [p.model_dump(mode="python") for p in postings]
-    return pl.DataFrame(records, schema=Posting.polars_schema) if records else pl.DataFrame(schema=Posting.polars_schema)
+    return (
+        pl.DataFrame(records, schema=Posting.polars_schema) if records else pl.DataFrame(schema=Posting.polars_schema)
+    )
 
 
 def test_load_ledger_with_no_postings_yet_is_an_empty_frame_with_the_right_schema(
@@ -99,7 +103,9 @@ def test_write_then_load_ledger_round_trips_tag_ids(db_session: Session, test_us
     assert reloaded.row(0, named=True)["tag_ids"] == ["trip"]
 
 
-def test_write_ledger_is_a_full_overwrite_like_the_json_era_one_was(db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_write_ledger_is_a_full_overwrite_like_the_json_era_one_was(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
     _register_account(db_session, test_user_id)
     _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
     _write_ledger(_frame(_posting("p1", "t1"), _posting("p2", "t2")), db_session, user_id=test_user_id)
@@ -138,7 +144,9 @@ def test_remap_ledger_category_ids_is_a_noop_for_an_empty_remap(db_session: Sess
     assert load_ledger(db_session, user_id=test_user_id).row(0, named=True)["category_id"] == "expense:food-drink"
 
 
-def test_remap_ledger_category_ids_updates_category_and_subcategory(db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_remap_ledger_category_ids_updates_category_and_subcategory(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
     _register_account(db_session, test_user_id)
     # Both already exist among the seeded defaults — a real merge (see
     # `store.plan_category_rename`) always remaps onto another real category.

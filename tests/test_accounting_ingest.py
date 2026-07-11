@@ -62,17 +62,23 @@ def test_ingest_csv_archives_the_raw_file_verbatim(tmp_path, db_session: Session
 def test_ingest_csv_merges_into_the_ledger(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
-    result = ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+    result = ingest_csv(
+        CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id
+    )
     assert result.new_posting_count == 4
     assert result.total_posting_count == 4
     assert len(load_ledger(db_session, user_id=test_user_id)) == 4
 
 
-def test_ingest_csv_reimporting_the_same_file_is_a_no_op(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_ingest_csv_reimporting_the_same_file_is_a_no_op(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
     ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
-    second = ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+    second = ingest_csv(
+        CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id
+    )
     assert second.new_posting_count == 0
     assert second.total_posting_count == 4
 
@@ -128,7 +134,9 @@ def test_ingest_csv_a_third_matching_purchase_adds_one_more_not_a_collision(
     three_coffees = two_coffees + "DEBIT,06/29/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2490.00,,\n"
 
     ingest_csv(two_coffees, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
-    result = ingest_csv(three_coffees, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+    result = ingest_csv(
+        three_coffees, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id
+    )
 
     assert result.new_posting_count == 2  # only the third coffee is new
     ledger = load_ledger(db_session, user_id=test_user_id)
@@ -149,7 +157,15 @@ def test_ingest_csv_two_different_accounts_both_land_in_the_ledger(
 
 def test_ingest_csv_unsupported_institution_raises(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
     with pytest.raises(UnsupportedImportError):
-        ingest_csv("a,b\n1,2\n", "BankOfAmerica", "checking", "boa:checking:0000", _config(tmp_path), db_session, user_id=test_user_id)
+        ingest_csv(
+            "a,b\n1,2\n",
+            "BankOfAmerica",
+            "checking",
+            "boa:checking:0000",
+            _config(tmp_path),
+            db_session,
+            user_id=test_user_id,
+        )
 
 
 def test_rebuild_from_raw_statements_reconstructs_the_same_ledger(
@@ -169,7 +185,9 @@ def test_rebuild_from_raw_statements_reconstructs_the_same_ledger(
     assert after["posting_id"].to_list() == before["posting_id"].to_list()
 
 
-def test_rebuild_from_raw_statements_with_no_archives_raises(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_rebuild_from_raw_statements_with_no_archives_raises(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
     config = _config(tmp_path)
     with pytest.raises(FileNotFoundError):
         rebuild_from_raw_statements(config, db_session, user_id=test_user_id)

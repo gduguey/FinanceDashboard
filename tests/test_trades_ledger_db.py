@@ -47,7 +47,11 @@ def _event(
 
 def _frame(*events: LedgerEvent) -> pl.DataFrame:
     records = [e.model_dump(mode="python") for e in events]
-    return pl.DataFrame(records, schema=LedgerEvent.polars_schema) if records else pl.DataFrame(schema=LedgerEvent.polars_schema)
+    return (
+        pl.DataFrame(records, schema=LedgerEvent.polars_schema)
+        if records
+        else pl.DataFrame(schema=LedgerEvent.polars_schema)
+    )
 
 
 def test_load_ledger_with_no_events_yet_is_an_empty_frame_with_the_right_schema(
