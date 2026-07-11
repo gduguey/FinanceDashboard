@@ -580,7 +580,7 @@ export function useRebuildLedger() {
 export function useSetPostingOverride() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ postingId, override }: { postingId: string; override: ManualOverride }) =>
+    mutationFn: ({ postingId, override }: { postingId: string; override: Partial<ManualOverride> }) =>
       accountingApi.putPostingOverride(postingId, override),
     onSuccess: invalidate,
   })

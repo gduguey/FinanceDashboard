@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!!**/dist", "!!**/*.css"]
+    "includes": ["**", "!!**/dist", "!!**/*.css", "!!**/*.svg"]
   },
   "formatter": {
     "enabled": true,
@@ -14,7 +14,19 @@
     "lineWidth": 120
   },
   "linter": {
-    "enabled": false
+    "enabled": true,
+    "rules": {
+      "preset": "none",
+      "correctness": {
+        "useHookAtTopLevel": "error"
+      },
+      "style": {
+        "useComponentExportOnlyModules": {
+          "level": "warn",
+          "options": { "allowConstantExport": true }
+        }
+      }
+    }
   },
   "javascript": {
     "formatter": {

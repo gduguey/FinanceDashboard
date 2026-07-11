@@ -345,9 +345,9 @@ export function AccountsManagementTable({
             last4: editing.account_id.split(':').pop() ?? '',
             accountId: editing.account_id,
             name: editing.name,
-            parentAccountId: editing.parent_account_id,
+            parentAccountId: editing.parent_account_id ?? null,
             openingBalance: '',
-            externalRef: editing.external_ref,
+            externalRef: editing.external_ref ?? null,
           }}
           locked={accountIdsWithPostings.has(editing.account_id)}
           knownInstitutions={knownInstitutions}

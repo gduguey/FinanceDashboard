@@ -59,7 +59,7 @@ export function DashboardTab({
         const day = posting.posted_at.slice(0, 10)
         if (day < filter.period.start || day > filter.period.end) return false
         if (filter.accountId && posting.account_id !== filter.accountId) return false
-        if (filter.tagId && !posting.tag_ids.includes(filter.tagId)) return false
+        if (filter.tagId && !posting.tag_ids?.includes(filter.tagId)) return false
         return true
       }),
     [postings, filter.period, filter.accountId, filter.tagId],

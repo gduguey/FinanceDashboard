@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import io
 import zipfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 from zoneinfo import ZoneInfo
 
 import requests
@@ -48,10 +48,12 @@ from trades.credentials import (
     resolve_ibkr_credentials,
     save_ibkr_credential_override,
 )
+from trades.dashboard.cash_sitting import WarningLevel
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
 from trades.market_data import symbol_search as symbol_search_module
+from trades.models import LedgerEvent
 from trades.utils.frames import collect_if_lazy
 from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
@@ -59,8 +61,7 @@ if TYPE_CHECKING:
     import polars as pl
 
 
-@dataclass
-class SyncProgress:
+class SyncProgress(BaseModel):
     """A snapshot of an in-flight (or just-finished) sync, for the frontend's progress bar."""
 
     step: str
@@ -172,13 +173,36 @@ def _last_synced_iso() -> str | None:
     return _to_display_zone(last_synced, config).isoformat() if last_synced else None
 
 
+class Overview(BaseModel):
+    """The overview card row: value, gain split, XIRR, dollar alpha, TWR."""
+
+    as_of: date
+    value_usd: float
+    gain_usd: float
+    gain_pct: float | None
+    realized_gain_usd: float
+    unrealized_gain_usd: float
+    xirr_pct: float | None
+    xirr_is_provisional: bool
+    dollar_alpha_vs_hysa_usd: float
+    twr_pct: float | None
+    twr_annualized_pct: float | None
+    timing_gap_pct: float | None
+    total_deposited_usd: float
+    total_withdrawn_usd: float
+    total_dividends_gross_usd: float
+    total_withholding_usd: float
+    total_fees_usd: float
+    last_synced_at: str | None
+
+
 @app.get("/api/overview")
-def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> dict[str, Any]:
+def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> Overview:
     """Return the overview card row: value, gain split, XIRR, dollar alpha, TWR.
 
     Returns
     -------
-    dict[str, Any]
+    Overview
         `OverviewCards` fields, plus `last_synced_at`.
 
     Raises
@@ -191,18 +215,44 @@ def get_overview(session: Annotated[Session, Depends(get_db)], as_of: date | Non
         cards = dashboard.overview_cards(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {**asdict(cards), "last_synced_at": _last_synced_iso()}
+    return Overview(**asdict(cards), last_synced_at=_last_synced_iso())
+
+
+class DollarChartPoint(BaseModel):
+    """One day's worth of the dollar chart's series."""
+
+    date: date
+    contributions_usd: float
+    portfolio_value_usd: float
+    hysa_value_usd: float
+    benchmark_value_usd: float
+    hysa_rate_pct: float
+
+
+class ReallocationMarker(BaseModel):
+    """A date where a sell funded a same-day buy of a different symbol."""
+
+    date: date
+    sold_symbols: list[str]
+    bought_symbols: list[str]
+
+
+class DollarChart(BaseModel):
+    """The three/four-line dollar chart plus reallocation markers."""
+
+    series: list[DollarChartPoint]
+    reallocation_markers: list[ReallocationMarker]
 
 
 @app.get("/api/chart/dollar")
 def get_dollar_chart(
     session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
-) -> dict[str, Any]:
+) -> DollarChart:
     """Return the three/four-line dollar chart plus reallocation markers.
 
     Returns
     -------
-    dict[str, Any]
+    DollarChart
         `series` (one entry per day) and `reallocation_markers`.
 
     Raises
@@ -217,18 +267,32 @@ def get_dollar_chart(
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     markers = dashboard.reallocation_markers(ledger)
-    return {"series": series.to_dicts(), "reallocation_markers": markers.to_dicts()}
+    return DollarChart(
+        series=[DollarChartPoint(**row) for row in series.to_dicts()],
+        reallocation_markers=[ReallocationMarker(**row) for row in markers.to_dicts()],
+    )
+
+
+class GrowthOf100Point(BaseModel):
+    """One day's worth of the growth-of-$100 chart: NAV plus every benchmark, indexed to 100."""
+
+    date: date
+    portfolio_index: float | None
+    hysa_index: float | None
+    benchmark_index: float | None
+    cpi_index: float | None
+    hysa_rate_pct: float | None
 
 
 @app.get("/api/chart/growth-of-100")
 def get_growth_of_100_chart(
     session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
-) -> list[dict[str, Any]]:
+) -> list[GrowthOf100Point]:
     """Return the growth-of-$100 chart: NAV plus every benchmark, indexed to 100.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[GrowthOf100Point]
         One entry per day.
 
     Raises
@@ -239,22 +303,33 @@ def get_growth_of_100_chart(
     ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
-        return dashboard.growth_of_100_chart(ledger, _config(), range_start, range_end).to_dicts()
+        series = dashboard.growth_of_100_chart(ledger, _config(), range_start, range_end)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    return [GrowthOf100Point(**row) for row in series.to_dicts()]
+
+
+class CashHistoryPoint(BaseModel):
+    """One day's uninvested cash balance, plus what it would be worth invested immediately."""
+
+    date: date
+    cash: float
+    benchmark_live_usd: float
+    benchmark_realized_usd: float
+    hysa_live_usd: float
+    hysa_realized_usd: float
 
 
 @app.get("/api/chart/cash-history")
 def get_cash_history(
     session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
-) -> list[dict[str, Any]]:
+) -> list[CashHistoryPoint]:
     """Return the uninvested cash balance for every day in range, plus what it would be worth invested immediately.
 
     Returns
     -------
-    list[dict[str, Any]]
-        One `{"date", "cash", "benchmark_live_usd", "benchmark_realized_usd",
-        "hysa_live_usd", "hysa_realized_usd"}` entry per day.
+    list[CashHistoryPoint]
+        One entry per day.
         `*_live_usd` is what currently-sitting cash would be worth had it
         been invested in the benchmark/HYSA since it arrived — bounded,
         tracks `cash`'s own shape. `*_realized_usd` is a running total,
@@ -282,17 +357,31 @@ def get_cash_history(
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return daily_cash.join(counterfactual, on="date", how="left").to_dicts()
+    combined = daily_cash.join(counterfactual, on="date", how="left")
+    return [CashHistoryPoint(**row) for row in combined.to_dicts()]
+
+
+class CashSitting(BaseModel):
+    """How long the current uninvested cash balance has been sitting idle, and what it's missed out on."""
+
+    cash_usd: float
+    sitting_since: date
+    days_sitting: int
+    warning_level: WarningLevel
+    hypothetical_value_portfolio_usd: float
+    missed_earnings_portfolio_usd: float
+    hypothetical_value_benchmark_usd: float
+    missed_earnings_benchmark_usd: float
 
 
 @app.get("/api/cash-sitting")
-def get_cash_sitting(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def get_cash_sitting(session: Annotated[Session, Depends(get_db)]) -> CashSitting:
     """Report how long the current uninvested cash balance has been sitting idle, and what it's missed out on.
 
     Returns
     -------
-    dict[str, Any]
-        See `dashboard.cash_sitting.CashSittingSummary` — `sitting_since` as an ISO date string.
+    CashSitting
+        See `dashboard.cash_sitting.CashSittingSummary`.
 
     Raises
     ------
@@ -309,18 +398,26 @@ def get_cash_sitting(session: Annotated[Session, Depends(get_db)]) -> dict[str, 
         summary = dashboard.cash_sitting_summary(daily_cash, growth_index, today, config)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {**asdict(summary), "sitting_since": summary.sitting_since.isoformat()}
+    return CashSitting(**asdict(summary))
+
+
+class MonthlyPnlRow(BaseModel):
+    """One calendar month's value change split into contributions and market gain."""
+
+    month: str
+    contributions_usd: float
+    market_gain_usd: float
 
 
 @app.get("/api/chart/monthly-pnl")
 def get_monthly_pnl(
     session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
-) -> list[dict[str, Any]]:
+) -> list[MonthlyPnlRow]:
     """Return each month's value change split into contributions and market gain.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[MonthlyPnlRow]
         One entry per calendar month.
 
     Raises
@@ -331,20 +428,30 @@ def get_monthly_pnl(
     ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
-        return dashboard.monthly_pnl(ledger, _config(), range_start, range_end).to_dicts()
+        rows = dashboard.monthly_pnl(ledger, _config(), range_start, range_end)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    return [MonthlyPnlRow(**row) for row in rows.to_dicts()]
+
+
+class MonthlyPnlBySymbolRow(BaseModel):
+    """One (month, symbol) pair's value change split into that symbol's trading and market gain."""
+
+    month: str
+    symbol: str
+    contribution_usd: float
+    market_gain_usd: float
 
 
 @app.get("/api/chart/monthly-pnl/by-symbol")
 def get_monthly_pnl_by_symbol(
     session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
-) -> list[dict[str, Any]]:
+) -> list[MonthlyPnlBySymbolRow]:
     """Return each month's value change split into contributions and market gain, per symbol.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[MonthlyPnlBySymbolRow]
         One entry per (month, symbol) pair.
 
     Raises
@@ -355,18 +462,29 @@ def get_monthly_pnl_by_symbol(
     ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
-        return dashboard.monthly_pnl_by_symbol(ledger, _config(), range_start, range_end).to_dicts()
+        rows = dashboard.monthly_pnl_by_symbol(ledger, _config(), range_start, range_end)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    return [MonthlyPnlBySymbolRow(**row) for row in rows.to_dicts()]
+
+
+class AllocationRow(BaseModel):
+    """One symbol's (or cash's) current-value allocation, against a target."""
+
+    symbol: str
+    value_usd: float
+    current_pct: float
+    target_pct: float
+    drift_pct: float
 
 
 @app.get("/api/allocation")
-def get_allocation(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> list[dict[str, Any]]:
+def get_allocation(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> list[AllocationRow]:
     """Return the current-value allocation by symbol (including cash), against the target.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[AllocationRow]
         One entry per symbol (plus cash).
 
     Raises
@@ -376,9 +494,10 @@ def get_allocation(session: Annotated[Session, Depends(get_db)], as_of: date | N
     """
     ledger = _load_ledger(session)
     try:
-        return dashboard.allocation_view(ledger, _config(), as_of or datetime.now(tz=UTC).date()).to_dicts()
+        rows = dashboard.allocation_view(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    return [AllocationRow(**row) for row in rows.to_dicts()]
 
 
 @app.get("/api/settings/target-allocation")
@@ -419,26 +538,33 @@ class HysaSettingsUpdate(BaseModel):
     fixed_rate_pct: float | None = None
 
 
+class HysaSettings(BaseModel):
+    """The persisted HYSA bank selection / fixed-rate override."""
+
+    bank_id: str | None
+    fixed_rate_pct: float | None
+
+
 @app.get("/api/settings/hysa")
-def get_hysa_settings() -> dict[str, Any]:
+def get_hysa_settings() -> HysaSettings:
     """Return the persisted HYSA bank selection / fixed-rate override.
 
     Returns
     -------
-    dict[str, Any]
+    HysaSettings
         `bank_id`, `fixed_rate_pct` — both None if never set.
     """
     settings = dashboard.load_settings(_config())
-    return {"bank_id": settings.hysa_bank_id, "fixed_rate_pct": settings.hysa_fixed_rate_pct}
+    return HysaSettings(bank_id=settings.hysa_bank_id, fixed_rate_pct=settings.hysa_fixed_rate_pct)
 
 
 @app.put("/api/settings/hysa")
-def put_hysa_settings(update: HysaSettingsUpdate) -> dict[str, Any]:
+def put_hysa_settings(update: HysaSettingsUpdate) -> HysaSettings:
     """Persist a HYSA bank selection and/or fixed-rate override (merges into existing settings).
 
     Returns
     -------
-    dict[str, Any]
+    HysaSettings
         `bank_id`, `fixed_rate_pct` as persisted.
     """
     config = _config()
@@ -446,7 +572,7 @@ def put_hysa_settings(update: HysaSettingsUpdate) -> dict[str, Any]:
         update={"hysa_bank_id": update.bank_id, "hysa_fixed_rate_pct": update.fixed_rate_pct}
     )
     dashboard.save_settings(updated, config)
-    return {"bank_id": updated.hysa_bank_id, "fixed_rate_pct": updated.hysa_fixed_rate_pct}
+    return HysaSettings(bank_id=updated.hysa_bank_id, fixed_rate_pct=updated.hysa_fixed_rate_pct)
 
 
 class BenchmarkSettingUpdate(BaseModel):
@@ -455,37 +581,46 @@ class BenchmarkSettingUpdate(BaseModel):
     symbol_override: str | None = None
 
 
+class BenchmarkSetting(BaseModel):
+    """The persisted benchmark symbol override, plus the default it falls back to."""
+
+    symbol_override: str | None
+    default_symbol: str
+
+
 @app.get("/api/settings/benchmark")
-def get_benchmark_setting() -> dict[str, str | None]:
+def get_benchmark_setting() -> BenchmarkSetting:
     """Return the persisted benchmark symbol override, plus the default it falls back to.
 
     Returns
     -------
-    dict[str, str or None]
+    BenchmarkSetting
         `symbol_override` (None if never set) and `default_symbol` — the
         frontend needs the latter to display a concrete symbol even when
         no override is set.
     """
     config = _config()
-    return {
-        "symbol_override": dashboard.load_settings(config).benchmark_symbol_override,
-        "default_symbol": config.returns.benchmark_symbol,
-    }
+    return BenchmarkSetting(
+        symbol_override=dashboard.load_settings(config).benchmark_symbol_override,
+        default_symbol=config.returns.benchmark_symbol,
+    )
 
 
 @app.put("/api/settings/benchmark")
-def put_benchmark_setting(update: BenchmarkSettingUpdate) -> dict[str, str | None]:
+def put_benchmark_setting(update: BenchmarkSettingUpdate) -> BenchmarkSetting:
     """Persist a benchmark symbol override (merges into existing settings).
 
     Returns
     -------
-    dict[str, str or None]
+    BenchmarkSetting
         `symbol_override` as persisted, plus `default_symbol`.
     """
     config = _config()
     updated = dashboard.load_settings(config).model_copy(update={"benchmark_symbol_override": update.symbol_override})
     dashboard.save_settings(updated, config)
-    return {"symbol_override": updated.benchmark_symbol_override, "default_symbol": config.returns.benchmark_symbol}
+    return BenchmarkSetting(
+        symbol_override=updated.benchmark_symbol_override, default_symbol=config.returns.benchmark_symbol
+    )
 
 
 class TaxSettingsUpdate(BaseModel):
@@ -500,29 +635,44 @@ class TaxSettingsUpdate(BaseModel):
     qualified_ltcg_rate_pct: float | None
 
 
-def _tax_settings_response(config: AppConfig) -> dict[str, Any]:
+class TaxSettings(BaseModel):
+    """The persisted tax-reporting settings, alongside what the tax report actually resolves them to."""
+
+    tax_enabled: bool
+    tax_regime: TaxRegime | None
+    resolved_tax_regime: TaxRegime
+    residency_status_change_date: date | None
+    w8ben_claimed: bool
+    w8ben_treaty_rate_pct: float | None
+    marginal_ordinary_rate_pct: float | None
+    resolved_marginal_ordinary_rate_pct: float
+    qualified_ltcg_rate_pct: float | None
+    resolved_qualified_ltcg_rate_pct: float
+
+
+def _tax_settings_response(config: AppConfig) -> TaxSettings:
     settings = dashboard.load_settings(config)
-    return {
-        "tax_enabled": settings.tax_enabled,
-        "tax_regime": settings.tax_regime,
-        "resolved_tax_regime": dashboard.resolved_tax_regime(config),
-        "residency_status_change_date": settings.residency_status_change_date,
-        "w8ben_claimed": settings.w8ben_claimed,
-        "w8ben_treaty_rate_pct": settings.w8ben_treaty_rate_pct,
-        "marginal_ordinary_rate_pct": settings.marginal_ordinary_rate_pct,
-        "resolved_marginal_ordinary_rate_pct": dashboard.resolved_marginal_ordinary_rate(config) * 100,
-        "qualified_ltcg_rate_pct": settings.qualified_ltcg_rate_pct,
-        "resolved_qualified_ltcg_rate_pct": dashboard.resolved_qualified_ltcg_rate(config) * 100,
-    }
+    return TaxSettings(
+        tax_enabled=settings.tax_enabled,
+        tax_regime=settings.tax_regime,
+        resolved_tax_regime=dashboard.resolved_tax_regime(config),
+        residency_status_change_date=settings.residency_status_change_date,
+        w8ben_claimed=settings.w8ben_claimed,
+        w8ben_treaty_rate_pct=settings.w8ben_treaty_rate_pct,
+        marginal_ordinary_rate_pct=settings.marginal_ordinary_rate_pct,
+        resolved_marginal_ordinary_rate_pct=dashboard.resolved_marginal_ordinary_rate(config) * 100,
+        qualified_ltcg_rate_pct=settings.qualified_ltcg_rate_pct,
+        resolved_qualified_ltcg_rate_pct=dashboard.resolved_qualified_ltcg_rate(config) * 100,
+    )
 
 
 @app.get("/api/settings/tax")
-def get_tax_settings() -> dict[str, Any]:
+def get_tax_settings() -> TaxSettings:
     """Return the persisted tax-reporting settings.
 
     Returns
     -------
-    dict[str, Any]
+    TaxSettings
         `tax_enabled`, `tax_regime` (the raw selection, None if never
         set), `resolved_tax_regime` (what the tax report actually uses —
         `RESIDENT` when `tax_regime` is unset), `residency_status_change_date`,
@@ -535,12 +685,12 @@ def get_tax_settings() -> dict[str, Any]:
 
 
 @app.put("/api/settings/tax")
-def put_tax_settings(update: TaxSettingsUpdate) -> dict[str, Any]:
+def put_tax_settings(update: TaxSettingsUpdate) -> TaxSettings:
     """Persist tax-reporting settings (merges into existing settings).
 
     Returns
     -------
-    dict[str, Any]
+    TaxSettings
         Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
     """
     config = _config()
@@ -571,13 +721,21 @@ class IbkrCredentialsUpdate(BaseModel):
     query_id: str | None = None
 
 
+class IbkrSettings(BaseModel):
+    """Whether IBKR credentials are available, without ever exposing their value."""
+
+    configured: bool
+    token_set: bool
+    query_id_set: bool
+
+
 @app.get("/api/settings/ibkr")
-def get_ibkr_settings() -> dict[str, Any]:
+def get_ibkr_settings() -> IbkrSettings:
     """Report whether IBKR credentials are available, without ever exposing their value.
 
     Returns
     -------
-    dict[str, Any]
+    IbkrSettings
         `configured` (true if a token and query id are available from
         either the Settings-page override or `.env`), `token_set` and
         `query_id_set` (whether the Settings-page override itself has
@@ -585,20 +743,20 @@ def get_ibkr_settings() -> dict[str, Any]:
     """
     config = _config()
     override = load_ibkr_credential_override(config)
-    return {
-        "configured": ibkr_is_configured(config),
-        "token_set": bool(override.token),
-        "query_id_set": bool(override.query_id),
-    }
+    return IbkrSettings(
+        configured=ibkr_is_configured(config),
+        token_set=bool(override.token),
+        query_id_set=bool(override.query_id),
+    )
 
 
 @app.put("/api/settings/ibkr")
-def put_ibkr_settings(update: IbkrCredentialsUpdate) -> dict[str, Any]:
+def put_ibkr_settings(update: IbkrCredentialsUpdate) -> IbkrSettings:
     """Persist an IBKR credential override (merges into the existing one).
 
     Returns
     -------
-    dict[str, Any]
+    IbkrSettings
         Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
     """
     config = _config()
@@ -610,29 +768,36 @@ def put_ibkr_settings(update: IbkrCredentialsUpdate) -> dict[str, Any]:
         }
     )
     save_ibkr_credential_override(updated, config)
-    return {
-        "configured": ibkr_is_configured(config),
-        "token_set": bool(updated.token),
-        "query_id_set": bool(updated.query_id),
-    }
+    return IbkrSettings(
+        configured=ibkr_is_configured(config),
+        token_set=bool(updated.token),
+        query_id_set=bool(updated.query_id),
+    )
 
 
 @app.delete("/api/settings/ibkr")
-def delete_ibkr_settings() -> dict[str, Any]:
+def delete_ibkr_settings() -> IbkrSettings:
     """Clear the Settings-page IBKR credential override, falling back to `.env` (if any) again.
 
     Returns
     -------
-    dict[str, Any]
+    IbkrSettings
         Same shape as `GET /api/settings/ibkr`.
     """
     config = _config()
     save_ibkr_credential_override(IbkrCredentialOverride(), config)
-    return {"configured": ibkr_is_configured(config), "token_set": False, "query_id_set": False}
+    return IbkrSettings(configured=ibkr_is_configured(config), token_set=False, query_id_set=False)
+
+
+class VerifyResult(BaseModel):
+    """Whether IBKR accepted the configured credentials."""
+
+    ok: bool
+    error: str | None
 
 
 @app.post("/api/settings/ibkr/verify")
-def verify_ibkr_settings() -> dict[str, Any]:
+def verify_ibkr_settings() -> VerifyResult:
     """Actually attempt to authenticate with IBKR, not just check that something's typed in.
 
     A single fast HTTP call (see `verify_flex_credentials`) — not a full
@@ -641,7 +806,7 @@ def verify_ibkr_settings() -> dict[str, Any]:
 
     Returns
     -------
-    dict[str, Any]
+    VerifyResult
         `ok` (whether IBKR accepted the token/query id) and `error`
         (IBKR's own message, or a generic one, only when `ok` is false).
     """
@@ -649,26 +814,100 @@ def verify_ibkr_settings() -> dict[str, Any]:
     try:
         credentials = resolve_ibkr_credentials(config)
     except ValidationError:
-        return {"ok": False, "error": "No credentials configured"}
+        return VerifyResult(ok=False, error="No credentials configured")
     try:
         api.verify_flex_credentials(credentials, config)
     except api.FlexApiError as error:
-        return {"ok": False, "error": error.message}
+        return VerifyResult(ok=False, error=error.message)
     except Exception:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
         # Not str(error): a connection/HTTP error's own message includes the
         # full request URL, which embeds the token as a query param (see
         # `_send_flex_request`) — that must never round-trip back to the client.
-        return {"ok": False, "error": "Could not reach IBKR to verify credentials"}
-    return {"ok": True, "error": None}
+        return VerifyResult(ok=False, error="Could not reach IBKR to verify credentials")
+    return VerifyResult(ok=True, error=None)
+
+
+class AnnualTaxRow(BaseModel):
+    """One (year, regime) pair's realized gains and dividend income."""
+
+    year: int
+    regime: TaxRegime
+    long_term_gain_usd: float
+    short_term_gain_usd: float
+    qualified_dividends_usd: float
+    ordinary_dividends_usd: float
+    ordinary_interest_usd: float
+    withholding_tax_usd: float
+
+
+class TaxOwedRow(AnnualTaxRow):
+    """One (year, regime) pair's estimated tax bill, netted against withholding already paid."""
+
+    capital_gains_tax_usd: float
+    dividend_tax_usd: float
+    total_tax_usd: float
+    balance_due_usd: float
+
+
+class WashSaleRow(BaseModel):
+    """A closed lot whose loss might be disallowed by a nearby repurchase.
+
+    `closed_by_event_id` is returned by `taxes.flag_wash_sales` (it's part
+    of `lots.ClosedLot`) but is not currently declared on the hand-written
+    `web/src/types/portfolio.ts` `WashSaleRow` interface — a stale-TS
+    discrepancy kept here rather than silently dropped, since dropping it
+    would be a real (if minor) behavior change versus what the endpoint
+    returns today.
+    """
+
+    lot_id: str
+    symbol: str
+    opened_at: datetime
+    closed_at: datetime
+    shares: float
+    cost_per_share: float
+    exit_price: float
+    realized_gain: float
+    term: Literal["LONG", "SHORT"]
+    closed_by_event_id: str
+    dividends_received: float
+    wash_sale_flag: bool
+
+
+class SalePreviewRow(BaseModel):
+    """What selling one open lot today, without actually selling it, would look like."""
+
+    lot_id: str
+    symbol: str
+    shares: float
+    days_held: int
+    term: Literal["LONG", "SHORT"]
+    unrealized_gain_usd: float
+    would_wash_sale: bool
+
+
+class TaxReport(BaseModel):
+    """The full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews."""
+
+    annual: list[AnnualTaxRow]
+    tax_owed: list[TaxOwedRow]
+    wash_sales: list[WashSaleRow]
+    sale_previews: list[SalePreviewRow]
+    after_tax_dollar_alpha_vs_hysa_usd: float
+    liquidation_pretax_value_usd: float
+    liquidation_long_term_gain_usd: float
+    liquidation_short_term_gain_usd: float
+    liquidation_capital_gains_tax_usd: float
+    liquidation_value_usd: float
 
 
 @app.get("/api/tax/report")
-def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> dict[str, Any]:
+def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> TaxReport:
     """Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
 
     Returns
     -------
-    dict[str, Any]
+    TaxReport
         `annual`, `tax_owed` (the annual report plus estimated
         `capital_gains_tax_usd`, `dividend_tax_usd`, `total_tax_usd`,
         `balance_due_usd` per year), `wash_sales`, `sale_previews`,
@@ -688,41 +927,73 @@ def get_tax_report(session: Annotated[Session, Depends(get_db)], as_of: date | N
         summary = dashboard.tax_summary(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {
-        "annual": summary.annual.to_dicts(),
-        "tax_owed": summary.tax_owed.to_dicts(),
-        "wash_sales": summary.wash_sales.to_dicts(),
-        "sale_previews": summary.sale_previews.to_dicts(),
-        "after_tax_dollar_alpha_vs_hysa_usd": summary.after_tax_dollar_alpha_vs_hysa_usd,
-        "liquidation_pretax_value_usd": summary.liquidation_pretax_value_usd,
-        "liquidation_long_term_gain_usd": summary.liquidation_long_term_gain_usd,
-        "liquidation_short_term_gain_usd": summary.liquidation_short_term_gain_usd,
-        "liquidation_capital_gains_tax_usd": summary.liquidation_capital_gains_tax_usd,
-        "liquidation_value_usd": summary.liquidation_value_usd,
-    }
+    return TaxReport(
+        annual=[AnnualTaxRow(**row) for row in summary.annual.to_dicts()],
+        tax_owed=[TaxOwedRow(**row) for row in summary.tax_owed.to_dicts()],
+        wash_sales=[WashSaleRow(**row) for row in summary.wash_sales.to_dicts()],
+        sale_previews=[SalePreviewRow(**row) for row in summary.sale_previews.to_dicts()],
+        after_tax_dollar_alpha_vs_hysa_usd=summary.after_tax_dollar_alpha_vs_hysa_usd,
+        liquidation_pretax_value_usd=summary.liquidation_pretax_value_usd,
+        liquidation_long_term_gain_usd=summary.liquidation_long_term_gain_usd,
+        liquidation_short_term_gain_usd=summary.liquidation_short_term_gain_usd,
+        liquidation_capital_gains_tax_usd=summary.liquidation_capital_gains_tax_usd,
+        liquidation_value_usd=summary.liquidation_value_usd,
+    )
+
+
+class HysaBank(BaseModel):
+    """One bank known to the HYSA rate cache."""
+
+    bank_id: str
+    bank_name: str
+
+
+class HysaRatePoint(BaseModel):
+    """One (bank, rate-change date, APY) triple."""
+
+    bank_id: str
+    bank_name: str
+    rate_date: date
+    apy_pct: float
+
+
+class HysaRates(BaseModel):
+    """Every bank's known rate history, for the bank picker and APY comparison chart."""
+
+    banks: list[HysaBank]
+    history: list[HysaRatePoint]
+    default_bank_id: str
 
 
 @app.get("/api/hysa-rates")
-def get_hysa_rates() -> dict[str, Any]:
+def get_hysa_rates() -> HysaRates:
     """Return every bank's known rate history, for the bank picker and APY comparison chart.
 
     Returns
     -------
-    dict[str, Any]
+    HysaRates
         `banks` (id/name pairs), `history` (every rate-change row), `default_bank_id`.
     """
     config = _config()
     history = hysa_rates_module.load_hysa_rates_cache(config)
     banks = collect_if_lazy(hysa_rates_module.list_banks(history))
-    return {
-        "banks": banks.to_dicts(),
-        "history": history.to_dicts(),
-        "default_bank_id": config.hysa_rates.default_bank_id,
-    }
+    return HysaRates(
+        banks=[HysaBank(**row) for row in banks.to_dicts()],
+        history=[HysaRatePoint(**row) for row in history.to_dicts()],
+        default_bank_id=config.hysa_rates.default_bank_id,
+    )
+
+
+class SymbolSearchResult(BaseModel):
+    """One ticker-symbol search match."""
+
+    symbol: str
+    name: str
+    exchange: str
 
 
 @app.get("/api/symbols/search")
-def get_symbol_search(q: str) -> list[dict[str, str]]:
+def get_symbol_search(q: str) -> list[SymbolSearchResult]:
     """Search Yahoo Finance for a ticker symbol, for the benchmark picker.
 
     Unlike every other GET endpoint, this touches the network — a live
@@ -730,14 +1001,22 @@ def get_symbol_search(q: str) -> list[dict[str, str]]:
 
     Returns
     -------
-    list[dict[str, str]]
+    list[SymbolSearchResult]
         One entry per match: `symbol`, `name`, `exchange`.
     """
-    return symbol_search_module.search_symbols(q, _config())
+    return [SymbolSearchResult(**row) for row in symbol_search_module.search_symbols(q, _config())]
+
+
+class SymbolPriceStatus(BaseModel):
+    """Whether a symbol's price cache needed a refresh, and its last cached date."""
+
+    symbol: str
+    was_stale: bool
+    last_price_date: str | None
 
 
 @app.post("/api/symbols/{symbol}/ensure-priced")
-def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db)]) -> SymbolPriceStatus:
     """Refresh one symbol's price cache if it isn't already current, without a full sync.
 
     Lets picking a new benchmark symbol take effect immediately —
@@ -747,7 +1026,7 @@ def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db
 
     Returns
     -------
-    dict[str, Any]
+    SymbolPriceStatus
         `symbol`, `was_stale` (whether a fetch was actually needed), `last_price_date`.
 
     Raises
@@ -769,20 +1048,83 @@ def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     last_price_date = updated["price_date"].max() if not updated.is_empty() else None
-    return {
-        "symbol": symbol,
-        "was_stale": was_stale,
-        "last_price_date": str(last_price_date) if last_price_date else None,
-    }
+    return SymbolPriceStatus(
+        symbol=symbol,
+        was_stale=was_stale,
+        last_price_date=str(last_price_date) if last_price_date else None,
+    )
+
+
+class OpenLotRow(BaseModel):
+    """One open lot, with its return since it was opened."""
+
+    lot_id: str
+    symbol: str
+    opened_at: datetime
+    shares: float
+    cost_per_share: float
+    dividends_received: float
+    current_price: float
+    days_held: int
+    raw_return_pct: float
+    annualized_return_pct: float | None
+
+
+class ClosedLotRow(BaseModel):
+    """One closed lot, with its total return and alpha vs. HYSA over its holding window.
+
+    `closed_by_event_id` is part of `lots.ClosedLot` but is not currently
+    declared on the hand-written `web/src/types/portfolio.ts` `ClosedLot`
+    interface — a stale-TS discrepancy kept here rather than silently
+    dropped, since dropping it would be a real (if minor) behavior change
+    versus what the endpoint returns today.
+    """
+
+    lot_id: str
+    symbol: str
+    opened_at: datetime
+    closed_at: datetime
+    shares: float
+    cost_per_share: float
+    exit_price: float
+    realized_gain: float
+    term: Literal["LONG", "SHORT"]
+    closed_by_event_id: str
+    dividends_received: float
+    days_held: int | None
+    total_return_pct: float | None
+    alpha_vs_hysa_pct: float | None
+
+
+class SymbolRollupRow(BaseModel):
+    """One symbol's lifecycle stats and money-weighted return."""
+
+    symbol: str
+    invested: float
+    proceeds_received: float
+    dividends_received: float
+    current_value: float
+    realized_gain: float
+    unrealized_gain: float
+    status: Literal["open", "closed"]
+    xirr: float
+
+
+class LotsTable(BaseModel):
+    """The trade-level table: open lots, closed lots, per-symbol rollup."""
+
+    open_lots: list[OpenLotRow]
+    closed_lots: list[ClosedLotRow]
+    symbol_rollup: list[SymbolRollupRow]
 
 
 @app.get("/api/lots")
-def get_lots(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> dict[str, Any]:
+def get_lots(session: Annotated[Session, Depends(get_db)], as_of: date | None = None) -> LotsTable:
     """Return the trade-level table: open lots, closed lots, per-symbol rollup.
 
     Returns
     -------
-    dict[str, Any]
+    LotsTable
         `open_lots`, `closed_lots`, `symbol_rollup`.
 
     Raises
@@ -795,22 +1137,28 @@ def get_lots(session: Annotated[Session, Depends(get_db)], as_of: date | None = 
         table = dashboard.lots_table(ledger, _config(), as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {
-        "open_lots": table.open_lots.to_dicts(),
-        "closed_lots": table.closed_lots.to_dicts(),
-        "symbol_rollup": table.symbol_rollup.to_dicts(),
-    }
+    return LotsTable(
+        open_lots=[OpenLotRow(**row) for row in table.open_lots.to_dicts()],
+        closed_lots=[ClosedLotRow(**row) for row in table.closed_lots.to_dicts()],
+        symbol_rollup=[SymbolRollupRow(**row) for row in table.symbol_rollup.to_dicts()],
+    )
+
+
+class RiskStat(BaseModel):
+    """The largest peak-to-trough NAV decline over a window."""
+
+    max_drawdown_pct: float
 
 
 @app.get("/api/risk")
 def get_risk(
     session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
-) -> dict[str, Any]:
+) -> RiskStat:
     """Return the largest peak-to-trough NAV decline over a window.
 
     Returns
     -------
-    dict[str, Any]
+    RiskStat
         `max_drawdown_pct`.
 
     Raises
@@ -821,37 +1169,45 @@ def get_risk(
     ledger = _load_ledger(session)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
-        return {"max_drawdown_pct": dashboard.risk_stat(ledger, _config(), range_start, range_end)}
+        return RiskStat(max_drawdown_pct=dashboard.risk_stat(ledger, _config(), range_start, range_end))
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
+class DataQualityRow(BaseModel):
+    """The last cached price date for one symbol."""
+
+    symbol: str
+    last_price_date: date | None
+
+
 @app.get("/api/data-quality")
-def get_data_quality(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def get_data_quality(session: Annotated[Session, Depends(get_db)]) -> list[DataQualityRow]:
     """Return the last cached price date per symbol ever held or benchmarked against.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[DataQualityRow]
         One entry per symbol.
     """
     config = _config()
     ledger = _load_ledger(session)
     held_and_benchmark = {*ledger["symbol"].unique().to_list(), dashboard.resolved_benchmark_symbol(config)}
     symbols = sorted(held_and_benchmark - {config.ledger.cash_symbol})
-    return dashboard.data_quality(symbols, config).to_dicts()
+    rows = dashboard.data_quality(symbols, config)
+    return [DataQualityRow(**row) for row in rows.to_dicts()]
 
 
 @app.get("/api/ledger/export")
-def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[dict[str, Any]]:
+def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[LedgerEvent]:
     """Export the full ledger, for the user's own backup.
 
     Returns
     -------
-    list[dict[str, Any]]
+    list[LedgerEvent]
         Every ledger row.
     """
-    return _load_ledger(session).to_dicts()
+    return [LedgerEvent(**row) for row in _load_ledger(session).to_dicts()]
 
 
 @app.get("/api/statements/export")
@@ -878,7 +1234,7 @@ def get_statements_export() -> Response:
 
 
 @app.get("/api/sync/progress")
-def get_sync_progress() -> dict[str, Any]:
+def get_sync_progress() -> SyncProgress:
     """Return the current (or most recently finished) sync's progress.
 
     Polled by the frontend's progress bar while a sync is running.
@@ -888,14 +1244,13 @@ def get_sync_progress() -> dict[str, Any]:
 
     Returns
     -------
-    dict[str, Any]
+    SyncProgress
         `step`, `percent`, `done`, `error`.
     """
-    return asdict(cast("SyncProgress", app.state.sync_progress))
+    return cast("SyncProgress", app.state.sync_progress)
 
 
-@dataclass
-class _SyncStep:
+class SyncStep(BaseModel):
     """One independent leg of a sync — a UI-friendly label, not the underlying provider's name."""
 
     label: str
@@ -903,7 +1258,17 @@ class _SyncStep:
     error: str | None = None
 
 
-def _run_sync(config: AppConfig, session: Session) -> dict[str, Any]:
+class SyncResult(BaseModel):
+    """The outcome of a sync: what changed in the ledger, plus each independent leg's own success/failure."""
+
+    synced_at: str | None
+    new_event_count: int
+    total_event_count: int
+    symbols_refreshed: list[str]
+    steps: list[SyncStep]
+
+
+def _run_sync(config: AppConfig, session: Session) -> SyncResult:
     """Run every leg of a sync independently — one failing never skips the rest.
 
     A bad IBKR token shouldn't also block a benchmark price refresh that
@@ -915,25 +1280,25 @@ def _run_sync(config: AppConfig, session: Session) -> dict[str, Any]:
 
     Returns
     -------
-    dict[str, Any]
+    SyncResult
         `synced_at`, `new_event_count`, `total_event_count`,
         `symbols_refreshed`, and `steps` — each leg's own `label`/`ok`/`error`.
     """
-    steps: list[_SyncStep] = []
+    steps: list[SyncStep] = []
 
     _report_sync_progress("Connecting to IBKR", 0.0)
     sync_result = None
     try:
         credentials = resolve_ibkr_credentials(config)
         sync_result = main.sync_ibkr_account(credentials, config, session, on_progress=_report_sync_progress)
-        steps.append(_SyncStep("Portfolio data", ok=True))
+        steps.append(SyncStep(label="Portfolio data", ok=True))
     except requests.exceptions.RequestException:
         # Not str(error): a request-level failure's own message includes the
         # full IBKR request URL, which embeds the token as a query param (see
         # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
-        steps.append(_SyncStep("Portfolio data", ok=False, error="Could not reach IBKR"))
+        steps.append(SyncStep(label="Portfolio data", ok=False, error="Could not reach IBKR"))
     except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
-        steps.append(_SyncStep("Portfolio data", ok=False, error=str(error)))
+        steps.append(SyncStep(label="Portfolio data", ok=False, error=str(error)))
 
     raw_ledger = main.load_ledger(session)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
@@ -952,42 +1317,42 @@ def _run_sync(config: AppConfig, session: Session) -> dict[str, Any]:
     _report_sync_progress("Updating price history", 65.0)
     try:
         prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
-        steps.append(_SyncStep("Market prices", ok=True))
+        steps.append(SyncStep(label="Market prices", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Market prices", ok=False, error=str(error)))
+        steps.append(SyncStep(label="Market prices", ok=False, error=str(error)))
 
     _report_sync_progress("Updating benchmark prices", 80.0)
     try:
         prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
-        steps.append(_SyncStep("Benchmark prices", ok=True))
+        steps.append(SyncStep(label="Benchmark prices", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Benchmark prices", ok=False, error=str(error)))
+        steps.append(SyncStep(label="Benchmark prices", ok=False, error=str(error)))
 
     _report_sync_progress("Updating CPI index", 90.0)
     try:
         cpi_module.update_cpi_cache(config)
-        steps.append(_SyncStep("Inflation data", ok=True))
+        steps.append(SyncStep(label="Inflation data", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Inflation data", ok=False, error=str(error)))
+        steps.append(SyncStep(label="Inflation data", ok=False, error=str(error)))
 
     _report_sync_progress("Updating savings rates", 95.0)
     try:
         hysa_rates_module.update_hysa_rates_cache(config)
-        steps.append(_SyncStep("Savings rates", ok=True))
+        steps.append(SyncStep(label="Savings rates", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Savings rates", ok=False, error=str(error)))
+        steps.append(SyncStep(label="Savings rates", ok=False, error=str(error)))
 
-    return {
-        "synced_at": _last_synced_iso(),
-        "new_event_count": sync_result.new_event_count if sync_result else 0,
-        "total_event_count": sync_result.total_event_count if sync_result else raw_ledger.height,
-        "symbols_refreshed": raw_symbols,
-        "steps": [asdict(step) for step in steps],
-    }
+    return SyncResult(
+        synced_at=_last_synced_iso(),
+        new_event_count=sync_result.new_event_count if sync_result else 0,
+        total_event_count=sync_result.total_event_count if sync_result else raw_ledger.height,
+        symbols_refreshed=raw_symbols,
+        steps=steps,
+    )
 
 
 @app.post("/api/sync")
-def sync(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
+def sync(session: Annotated[Session, Depends(get_db)]) -> SyncResult:
     """Pull the latest IBKR statement and refresh the price/CPI/HYSA-rate caches.
 
     Refreshes the raw price cache for every symbol ever held plus the
@@ -1004,7 +1369,7 @@ def sync(session: Annotated[Session, Depends(get_db)]) -> dict[str, Any]:
 
     Returns
     -------
-    dict[str, Any]
+    SyncResult
         `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`,
         and `steps` — each leg's own `label`/`ok`/`error`, since one
         failing (e.g. a bad IBKR token) no longer aborts the rest.

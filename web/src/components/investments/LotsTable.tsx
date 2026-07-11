@@ -53,10 +53,10 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
     const costBasis = group.reduce((sum, l) => sum + l.shares * l.cost_per_share, 0)
     const realizedGain = group.reduce((sum, l) => sum + l.realized_gain, 0)
     const dividendsReceived = group.reduce((sum, l) => sum + l.dividends_received, 0)
-    const daysHeld = group.reduce((sum, l) => sum + l.shares * l.days_held, 0) / shares
+    const daysHeld = group.reduce((sum, l) => sum + l.shares * (l.days_held ?? 0), 0) / shares
     const totalReturnPct = ((realizedGain + dividendsReceived) / costBasis) * 100
     const alphaVsHysaPct =
-      group.reduce((sum, l) => sum + l.shares * l.cost_per_share * l.alpha_vs_hysa_pct, 0) / costBasis
+      group.reduce((sum, l) => sum + l.shares * l.cost_per_share * (l.alpha_vs_hysa_pct ?? 0), 0) / costBasis
     const largest = group.reduce((a, b) => (b.shares > a.shares ? b : a))
     return {
       lot_id: group.map((l) => l.lot_id).join('+'),
@@ -68,6 +68,7 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
       exit_price: group.reduce((sum, l) => sum + l.shares * l.exit_price, 0) / shares,
       realized_gain: realizedGain,
       term: largest.term,
+      closed_by_event_id: largest.closed_by_event_id,
       dividends_received: dividendsReceived,
       days_held: daysHeld,
       total_return_pct: totalReturnPct,
