@@ -12,7 +12,7 @@ if [ $# -lt 1 ]; then
 fi
 
 HOST="$1"
-REMOTE_DIR="~/FinanceDashboard-staging"
+REMOTE_DIR='$HOME/FinanceDashboard-staging'
 
 echo "==> Wiping staging on $HOST"
 ssh "$HOST" "

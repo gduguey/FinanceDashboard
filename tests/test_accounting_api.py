@@ -374,7 +374,7 @@ def test_categorize_from_file_apply_never_matches_the_same_posting_twice(client)
         files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
     )
     matches = response.json()["matches"]
-    coffee_matches = [m for m in matches if m["amount"] == -5.0]
+    coffee_matches = [m for m in matches if m["amount"] == pytest.approx(-5.0)]
     assert len(coffee_matches) == 2
     matched_posting_ids = {m["posting_id"] for m in coffee_matches}
     assert None not in matched_posting_ids

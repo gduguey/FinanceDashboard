@@ -49,6 +49,7 @@ const SECTIONS: { title: string; icon: typeof TrendingUp; terms: GlossaryTerm[] 
       'openLot',
       'closedLot',
       'lotTerm',
+      'symbolXirr',
       'lotReturn',
       'annualizedReturn',
       'realizedGain',

@@ -50,6 +50,7 @@ from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
 from trades.market_data import symbol_search as symbol_search_module
+from trades.utils.frames import collect_if_lazy
 from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
@@ -246,8 +247,12 @@ def get_cash_history(start: date | None = None, end: date | None = None) -> list
         tracks `cash`'s own shape. `*_realized_usd` is a running total,
         banked once per past sitting episode at the moment it ended, of
         the gain that episode's cash missed out on — frozen from then on
-        (see `dashboard.cash_received_counterfactual`). Raises 404 (via
-        `_load_ledger`) if no ledger is cached yet.
+        (see `dashboard.cash_received_counterfactual`).
+
+    Raises
+    ------
+    HTTPException
+        Via `_load_ledger`, if no ledger is cached yet (404).
     """
     ledger = _load_ledger()
     config = _config()
@@ -691,7 +696,7 @@ def get_hysa_rates() -> dict[str, Any]:
     """
     config = _config()
     history = hysa_rates_module.load_hysa_rates_cache(config)
-    banks = hysa_rates_module.list_banks(history)
+    banks = collect_if_lazy(hysa_rates_module.list_banks(history))
     return {
         "banks": banks.to_dicts(),
         "history": history.to_dicts(),
@@ -888,6 +893,12 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
     is down. `steps` in the return value reports each leg's own
     success/failure — that's what the UI shows, not just one overall
     pass/fail.
+
+    Returns
+    -------
+    dict[str, Any]
+        `synced_at`, `new_event_count`, `total_event_count`,
+        `symbols_refreshed`, and `steps` — each leg's own `label`/`ok`/`error`.
     """
     steps: list[_SyncStep] = []
 
@@ -896,14 +907,14 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
     try:
         credentials = resolve_ibkr_credentials(config)
         sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
-        steps.append(_SyncStep("Portfolio data", True))
+        steps.append(_SyncStep("Portfolio data", ok=True))
     except requests.exceptions.RequestException:
         # Not str(error): a request-level failure's own message includes the
         # full IBKR request URL, which embeds the token as a query param (see
         # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
-        steps.append(_SyncStep("Portfolio data", False, "Could not reach IBKR"))
+        steps.append(_SyncStep("Portfolio data", ok=False, error="Could not reach IBKR"))
     except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
-        steps.append(_SyncStep("Portfolio data", False, str(error)))
+        steps.append(_SyncStep("Portfolio data", ok=False, error=str(error)))
 
     raw_ledger = main.load_ledger(config)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
@@ -922,30 +933,30 @@ def _run_sync(config: AppConfig) -> dict[str, Any]:
     _report_sync_progress("Updating price history", 65.0)
     try:
         prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
-        steps.append(_SyncStep("Market prices", True))
+        steps.append(_SyncStep("Market prices", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Market prices", False, str(error)))
+        steps.append(_SyncStep("Market prices", ok=False, error=str(error)))
 
     _report_sync_progress("Updating benchmark prices", 80.0)
     try:
         prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
-        steps.append(_SyncStep("Benchmark prices", True))
+        steps.append(_SyncStep("Benchmark prices", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Benchmark prices", False, str(error)))
+        steps.append(_SyncStep("Benchmark prices", ok=False, error=str(error)))
 
     _report_sync_progress("Updating CPI index", 90.0)
     try:
         cpi_module.update_cpi_cache(config)
-        steps.append(_SyncStep("Inflation data", True))
+        steps.append(_SyncStep("Inflation data", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Inflation data", False, str(error)))
+        steps.append(_SyncStep("Inflation data", ok=False, error=str(error)))
 
     _report_sync_progress("Updating savings rates", 95.0)
     try:
         hysa_rates_module.update_hysa_rates_cache(config)
-        steps.append(_SyncStep("Savings rates", True))
+        steps.append(_SyncStep("Savings rates", ok=True))
     except Exception as error:  # noqa: BLE001
-        steps.append(_SyncStep("Savings rates", False, str(error)))
+        steps.append(_SyncStep("Savings rates", ok=False, error=str(error)))
 
     return {
         "synced_at": _last_synced_iso(),
@@ -1006,6 +1017,12 @@ if _FRONTEND_DIST.is_dir():
         `index.html` for any path that isn't a real file in `web/dist/` —
         e.g. a hard refresh on `/settings` — so the frontend's client-side
         router gets a chance to handle it instead of a bare 404.
+
+        Returns
+        -------
+        FileResponse
+            The requested static file if it exists under `web/dist/`,
+            otherwise `index.html` so client-side routing can take over.
         """
         candidate = (_FRONTEND_DIST / full_path).resolve()
         if full_path and candidate.is_relative_to(_FRONTEND_DIST) and candidate.is_file():

@@ -28,7 +28,7 @@ There is exactly one `FastAPI()` instance in this repo, created in
 # src/trades/api.py
 app = FastAPI(title="Investments API")
 ...
-app.include_router(accounting_router)   # from accounting.api
+app.include_router(accounting_router)  # from accounting.api
 ```
 
 `accounting/api.py` never constructs its own `FastAPI()` — it only

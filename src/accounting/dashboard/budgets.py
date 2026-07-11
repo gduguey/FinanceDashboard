@@ -9,6 +9,7 @@ could drift out of sync with the ledger.
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
@@ -133,11 +134,7 @@ def suggested_budget_amount(
     total_by_month = dict(zip(monthly["month"].to_list(), monthly["amount"].to_list(), strict=True))
     totals = [total_by_month.get(one_month, 0.0) for one_month in months]
 
-    ordered = sorted(totals)
-    mid = len(ordered) // 2
-    if len(ordered) % 2 == 0:
-        return (ordered[mid - 1] + ordered[mid]) / 2
-    return ordered[mid]
+    return statistics.median(totals)
 
 
 def budget_comparison(

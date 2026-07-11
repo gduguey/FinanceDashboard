@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import boto3
@@ -125,6 +125,11 @@ class StatementArchive:
     one relative path, never a full key or filesystem path, and never
     anything a client request could supply directly. The R2 key is always
     `f"{remote_prefix}/{relative_path}"`, derived here, server-side.
+    `exists`/`write`/`read` all reject a `relative_path` that's absolute or
+    contains a `..` segment, enforcing that invariant in code rather than
+    just asserting it here — callers have gotten this wrong before (see
+    `accounting.importers.ingest._archive_raw_statement`, which forwards
+    unvalidated form fields into it).
     """
 
     def __init__(self, local_root: Path, remote_prefix: str, credentials: R2Credentials | None = None) -> None:
@@ -143,22 +148,64 @@ class StatementArchive:
         self.local_root = local_root
         self.remote_prefix = remote_prefix
         self._resolved = (credentials if credentials is not None else get_r2_credentials()).resolve()
+        self._boto_client: Any | None = None
 
     @staticmethod
-    def _client(resolved: _ResolvedR2Credentials) -> Any:  # noqa: ANN401 — boto3 ships no typed client
-        return boto3.client(
-            "s3",
-            endpoint_url=resolved.endpoint_url,
-            aws_access_key_id=resolved.access_key_id,
-            aws_secret_access_key=resolved.secret_access_key,
-            region_name="auto",
-        )
+    def _validated(relative_path: str) -> str:
+        """Reject a `relative_path` that could escape `local_root`/`remote_prefix`.
+
+        Parameters
+        ----------
+        relative_path
+            The path to check.
+
+        Returns
+        -------
+        str
+            `relative_path`, unchanged, once confirmed safe.
+
+        Raises
+        ------
+        ValueError
+            If `relative_path` is absolute or contains a `..` segment.
+        """
+        as_path = PurePosixPath(relative_path)
+        if as_path.is_absolute() or ".." in as_path.parts:
+            message = f"relative_path must stay within the archive, got {relative_path!r}"
+            raise ValueError(message)
+        return relative_path
+
+    def _client(self, resolved: _ResolvedR2Credentials) -> Any:  # noqa: ANN401 — boto3 ships no typed client
+        """Build this archive's boto3 S3 client on first use, then reuse it.
+
+        Parameters
+        ----------
+        resolved
+            This archive's resolved R2 credentials.
+
+        Returns
+        -------
+        Any
+            A boto3 S3 client pointed at `resolved.endpoint_url`.
+        """
+        if self._boto_client is None:
+            self._boto_client = boto3.client(
+                "s3",
+                endpoint_url=resolved.endpoint_url,
+                aws_access_key_id=resolved.access_key_id,
+                aws_secret_access_key=resolved.secret_access_key,
+                region_name="auto",
+            )
+        return self._boto_client
 
     def _key(self, relative_path: str) -> str:
         return f"{self.remote_prefix}/{relative_path}"
 
     def exists(self, relative_path: str) -> bool:
         """Whether a file is already archived at `relative_path`.
+
+        Rejects (via `_validated`) a `relative_path` that's absolute or
+        contains a `..` segment, raising `ValueError`.
 
         Returns
         -------
@@ -170,6 +217,7 @@ class StatementArchive:
             If R2 is configured and the lookup fails for any reason other
             than the object not existing.
         """
+        relative_path = self._validated(relative_path)
         resolved = self._resolved
         if resolved is None:
             return (self.local_root / relative_path).exists()
@@ -182,7 +230,12 @@ class StatementArchive:
         return True
 
     def write(self, relative_path: str, data: bytes) -> None:
-        """Archive `data` at `relative_path`, creating parent directories/prefixes as needed."""
+        """Archive `data` at `relative_path`, creating parent directories/prefixes as needed.
+
+        Rejects (via `_validated`) a `relative_path` that's absolute or
+        contains a `..` segment, raising `ValueError`.
+        """
+        relative_path = self._validated(relative_path)
         resolved = self._resolved
         if resolved is None:
             path = self.local_root / relative_path
@@ -191,13 +244,69 @@ class StatementArchive:
             return
         self._client(resolved).put_object(Bucket=resolved.bucket_name, Key=self._key(relative_path), Body=data)
 
+    def write_if_absent(self, relative_path: str, data: bytes) -> bool:
+        """Archive `data` at `relative_path` only if nothing is there yet, the create itself atomic.
+
+        Unlike `write`, this never overwrites an existing file: the create
+        is atomic (`O_EXCL` locally, `IfNoneMatch` on R2), so two concurrent
+        callers racing for the same `relative_path` can't clobber each
+        other the way a separate `exists()` check followed by `write()`
+        could.
+
+        Rejects (via `_validated`) a `relative_path` that's absolute or
+        contains a `..` segment, raising `ValueError`.
+
+        Parameters
+        ----------
+        relative_path
+            Where to archive `data`, if nothing is there yet.
+        data
+            The bytes to archive.
+
+        Returns
+        -------
+        bool
+            `True` if this call actually wrote the file; `False` if
+            something was already there and nothing was changed.
+
+        Raises
+        ------
+        botocore.exceptions.ClientError
+            If R2 is configured and the write fails for any reason other
+            than the object already existing.
+        """
+        relative_path = self._validated(relative_path)
+        resolved = self._resolved
+        if resolved is None:
+            path = self.local_root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with path.open("xb") as handle:
+                    handle.write(data)
+            except FileExistsError:
+                return False
+            return True
+        try:
+            self._client(resolved).put_object(
+                Bucket=resolved.bucket_name, Key=self._key(relative_path), Body=data, IfNoneMatch="*"
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") in {"PreconditionFailed", "412"}:
+                return False
+            raise
+        return True
+
     def read(self, relative_path: str) -> bytes:
         """Read back the bytes archived at `relative_path`.
+
+        Rejects (via `_validated`) a `relative_path` that's absolute or
+        contains a `..` segment, raising `ValueError`.
 
         Returns
         -------
         bytes
         """
+        relative_path = self._validated(relative_path)
         resolved = self._resolved
         if resolved is None:
             return (self.local_root / relative_path).read_bytes()

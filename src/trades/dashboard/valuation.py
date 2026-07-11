@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,7 @@ import polars as pl
 
 from trades.ledger.replay import portfolio_value, replay_ledger
 from trades.market_data import prices
+from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -96,7 +98,7 @@ def daily_portfolio_values(
         Same type as input.
     """
     was_eager = isinstance(ledger, pl.DataFrame)
-    ledger_df = ledger if was_eager else ledger.collect()
+    ledger_df = collect_if_lazy(ledger)
 
     # Extract unique event dates in [start, end] range using Polars
     event_dates_result = ledger_df.filter(
@@ -117,10 +119,10 @@ def daily_portfolio_values(
     all_dates = [start + timedelta(days=n) for n in range((end - start).days + 1)]
     values: list[float] = []
     for cal_date in all_dates:
-        # Find most recent event date <= this calendar date
-        recent_event_dates = [d for d in event_dates if d <= cal_date]
-        if recent_event_dates:
-            state = state_by_date[max(recent_event_dates)]
+        # Find most recent event date <= this calendar date (event_dates is sorted)
+        idx = bisect.bisect_right(event_dates, cal_date) - 1
+        if idx >= 0:
+            state = state_by_date[event_dates[idx]]
             values.append(portfolio_value(state, price_lookup, cal_date))
         else:
             # No events yet; portfolio value is 0

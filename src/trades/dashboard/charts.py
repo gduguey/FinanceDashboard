@@ -150,11 +150,15 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     adjusted_lookup = make_price_lookup(config, adjusted=True)
     benchmark_symbol = resolved_benchmark_symbol(config)
 
-    daily_values = daily_portfolio_values(ledger, raw_lookup, start, end, config)
+    daily_values = collect_if_lazy(daily_portfolio_values(ledger, raw_lookup, start, end, config))
     flows = collect_if_lazy(external_cashflows(ledger))
     contributions = _cumulative_contributions(flows, daily_values["date"])
-    hysa_series = hysa_counterfactual_series(flows, end, hysa_rate_lookup(config), config.returns.days_per_year)
-    benchmark_series = benchmark_counterfactual_series(flows, end, lambda day: adjusted_lookup(benchmark_symbol, day))
+    hysa_series = collect_if_lazy(
+        hysa_counterfactual_series(flows, end, hysa_rate_lookup(config), config.returns.days_per_year)
+    )
+    benchmark_series = collect_if_lazy(
+        benchmark_counterfactual_series(flows, end, lambda day: adjusted_lookup(benchmark_symbol, day))
+    )
     hysa_rate = _hysa_rate_series(daily_values["date"], config)
 
     return (
@@ -204,7 +208,7 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
     adjusted_lookup = make_price_lookup(config, adjusted=True)
     benchmark_symbol = resolved_benchmark_symbol(config)
 
-    daily_values = daily_portfolio_values(ledger, raw_lookup, start, end, config)
+    daily_values = collect_if_lazy(daily_portfolio_values(ledger, raw_lookup, start, end, config))
     flows = collect_if_lazy(external_cashflows(ledger))
     nav = cast("pl.DataFrame", nav_series(daily_values, flows))
 
@@ -217,8 +221,8 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
         "event_datetime": [datetime.combine(start, datetime.min.time())],
         "amount": [-100.0],
     })
-    hysa_series = hysa_counterfactual_series(
-        hysa_principal, end, hysa_rate_lookup(config), config.returns.days_per_year
+    hysa_series = collect_if_lazy(
+        hysa_counterfactual_series(hysa_principal, end, hysa_rate_lookup(config), config.returns.days_per_year)
     )
     hysa_rate = _hysa_rate_series(daily_values["date"], config)
 

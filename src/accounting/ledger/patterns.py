@@ -70,7 +70,7 @@ def match_patterns_bulk(
     """
     active_patterns = [pattern for pattern in patterns.values() if pattern.active]
     is_lazy = isinstance(descriptions, pl.LazyFrame)
-    lazy_descriptions = descriptions if is_lazy else descriptions.lazy()
+    lazy_descriptions = descriptions.lazy() if isinstance(descriptions, pl.DataFrame) else descriptions
     if not active_patterns:
         empty = pl.LazyFrame(schema=_MATCH_SCHEMA)
         return empty if is_lazy else empty.collect()

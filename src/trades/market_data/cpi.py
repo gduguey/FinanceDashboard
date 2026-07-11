@@ -12,7 +12,7 @@ crash mid-write.
 from __future__ import annotations
 
 import io
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -55,7 +55,7 @@ def _save_raw_response(config: AppConfig, response_text: str) -> None:
     """Archive the raw FRED response with a timestamp, never overwritten."""
     raw_dir = _raw_archive_dir(config)
     raw_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().isoformat(timespec="seconds").replace(":", "")
+    timestamp = datetime.now(UTC).isoformat(timespec="seconds").replace(":", "")
     raw_path = raw_dir / f"{timestamp}.csv"
     raw_path.write_text(response_text, encoding="utf-8")
 

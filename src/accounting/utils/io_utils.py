@@ -20,7 +20,21 @@ from typing import Any
 import polars as pl
 
 
-def _collect_if_lazy(frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+def collect_if_lazy(frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
+    """Materialize a frame only if it isn't already.
+
+    Parameters
+    ----------
+    frame
+        A DataFrame or LazyFrame, at a point where the caller's original
+        type no longer matters because the surrounding function's own
+        result is never lazy (row iteration, a scalar extraction, a pivot).
+
+    Returns
+    -------
+    polars.DataFrame
+        `frame`, collected if it was a `LazyFrame`; returned unchanged otherwise.
+    """
     return frame.collect() if isinstance(frame, pl.LazyFrame) else frame
 
 
@@ -43,7 +57,7 @@ def write_csv_atomic(frame: pl.DataFrame | pl.LazyFrame, path: Path) -> None:
         The destination CSV path. Its parent directory is created if missing.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    eager_frame = _collect_if_lazy(frame)
+    eager_frame = collect_if_lazy(frame)
 
     # Use mkstemp for a unique temp filename with no open file descriptor conflicts
     fd, tmp_path_str = tempfile.mkstemp(suffix=".csv", dir=str(path.parent))
