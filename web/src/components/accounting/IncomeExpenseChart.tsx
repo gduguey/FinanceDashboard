@@ -1,7 +1,7 @@
 import { Bar, BarChart, CartesianGrid, Legend, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/shared/ChartCard'
-import { formatCurrency, formatMonth } from '@/lib/format'
 import { useMonthlyIncomeExpense } from '@/hooks/useAccountingData'
+import { formatCurrency, formatMonth } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
 function twelveMonthsAgo(): string {

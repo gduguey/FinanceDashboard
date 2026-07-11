@@ -1,9 +1,9 @@
 import { useSearchParams } from 'react-router-dom'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { PageHeader } from '@/components/layout/PageHeader'
 import { TransferRulesTab } from '@/components/accounting/TransferRulesTab'
 import { TransferSuggestionsPanel } from '@/components/accounting/TransferSuggestionsPanel'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 
 // Was the "Transfer rules" tab inside the old combined Accounting page,

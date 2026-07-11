@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { api } from '@/lib/api'
 import { useBenchmarkSetting, useEnsureSymbolPriced, useSetBenchmarkSetting } from '@/hooks/usePortfolioData'
+import { api } from '@/lib/api'
 import type { SymbolSearchResult } from '@/types/portfolio'
 
 // Lets the user pick which fund to benchmark against instead of a

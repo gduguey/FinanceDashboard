@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { InstitutionCombobox } from '@/components/accounting/InstitutionCombobox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { useCurrencies } from '@/hooks/useAccountingData'
 import { useIbkrSettings } from '@/hooks/usePortfolioData'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, AccountKind, CurrencyCode } from '@/types/accounting'
 
 // Every real, importable account kind, plus `external_investment` — a

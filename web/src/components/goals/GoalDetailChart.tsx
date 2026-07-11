@@ -1,8 +1,8 @@
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useCurrencies, useRatesToBase } from '@/hooks/useAccountingData'
 import { convertCurrency } from '@/lib/currency'
 import { formatCurrency, formatCurrencyCompact, formatDate } from '@/lib/format'
-import { useCurrencies, useRatesToBase } from '@/hooks/useAccountingData'
 import type { Goal, GoalContribution } from '@/types/accounting'
 
 interface CurvePoint {

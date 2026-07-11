@@ -1,5 +1,5 @@
-import type { ComponentType, ReactNode } from 'react'
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ComponentType, ReactNode } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
 import { ErrorBoundary } from '@/components/layout/ErrorBoundary'

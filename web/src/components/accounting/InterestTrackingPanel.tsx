@@ -1,11 +1,11 @@
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { formatCurrency, signColor } from '@/lib/format'
-import { useSortableRows } from '@/hooks/useSortableRows'
 import { useAccountingStore, useInterestSummary, useUpdateAccount } from '@/hooks/useAccountingData'
+import { useSortableRows } from '@/hooks/useSortableRows'
+import { formatCurrency, signColor } from '@/lib/format'
 
 // Savings/vault accounts have no "return" of their own the way an
 // investment does — this is the read-only counterpart for them: realized

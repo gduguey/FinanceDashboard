@@ -1,22 +1,17 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
+import { availableMonths, MonthSelect } from '@/components/accounting/MonthSelect'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
-import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
-import { withAlpha } from '@/lib/colors'
-import { formatCurrency } from '@/lib/format'
-import { hasAnyRealAccount } from '@/lib/postingClassification'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
-import { usePersistedState } from '@/hooks/usePersistedState'
 import {
   useAccountingStore,
   useCategoryTotals,
@@ -25,6 +20,11 @@ import {
   useSetGeneralBudgets,
   useSuggestedBudgetAmount,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { withAlpha } from '@/lib/colors'
+import { formatCurrency } from '@/lib/format'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Category, CategoryTotalRow, CurrencyCode } from '@/types/accounting'
 
 type BudgetMode = 'general' | 'per_month'

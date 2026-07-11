@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { accountingApi, type AccountUpdate, type ImportAccountInfo } from '@/lib/accountingApi'
+import { type AccountUpdate, accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
 import type {
   Account,
   Budget,

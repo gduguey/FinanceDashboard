@@ -1,5 +1,6 @@
-import { useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -8,9 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { useSortableRows } from '@/hooks/useSortableRows'
 import { useSetTransferRules } from '@/hooks/useAccountingData'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import type { Account, TransferRule } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see

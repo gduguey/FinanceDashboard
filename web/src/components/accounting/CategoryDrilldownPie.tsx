@@ -1,24 +1,23 @@
-import { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
-import { Cell, Pie, PieChart, Tooltip } from 'recharts'
+import { useState } from 'react'
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
+import { PieChartLegend } from '@/components/shared/PieChartLegend'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { ResponsiveContainer } from 'recharts'
-import { PieChartLegend } from '@/components/shared/PieChartLegend'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
-import { useSortableRows } from '@/hooks/useSortableRows'
 import {
-  UNCATEGORIZED_EXPENSE_CATEGORY_ID,
-  UNCATEGORIZED_INCOME_CATEGORY_ID,
   type Account,
   type CategoryClassification,
   type CategoryTotalRow,
   type CurrencyCode,
   type Posting,
+  UNCATEGORIZED_EXPENSE_CATEGORY_ID,
+  UNCATEGORIZED_INCOME_CATEGORY_ID,
 } from '@/types/accounting'
 
 interface Scope {

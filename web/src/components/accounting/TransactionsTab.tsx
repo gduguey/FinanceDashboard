@@ -1,14 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
-import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
+import { memo, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
@@ -17,11 +9,14 @@ import {
   needsCategorizing,
   splitOriginalId,
 } from '@/components/accounting/transactionCategorization'
-import { formatCurrency, formatDate } from '@/lib/format'
-import { anyLlmProviderAvailable } from '@/lib/llm'
-import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
-import { useSortableRows } from '@/hooks/useSortableRows'
-import { usePersistedState } from '@/hooks/usePersistedState'
+import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
+import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   useAiSuggestCategory,
   useDeletePostingSplit,
@@ -31,6 +26,11 @@ import {
   useSetPostingOverride,
   useValidatePending,
 } from '@/hooks/useAccountingData'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { useSortableRows } from '@/hooks/useSortableRows'
+import { formatCurrency, formatDate } from '@/lib/format'
+import { anyLlmProviderAvailable } from '@/lib/llm'
+import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the

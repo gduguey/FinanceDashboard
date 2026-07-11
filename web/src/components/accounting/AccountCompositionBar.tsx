@@ -1,4 +1,4 @@
-import { accountKindGroup, type AccountKindGroup } from '@/lib/accountKinds'
+import { type AccountKindGroup, accountKindGroup } from '@/lib/accountKinds'
 import { convertCurrency } from '@/lib/currency'
 import { formatCurrency } from '@/lib/format'
 import type { CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'

@@ -1,9 +1,9 @@
 import { AlertTriangle, Wallet } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useBenchmarkSetting, useCashSitting } from '@/hooks/usePortfolioData'
 import { formatDate, formatUsd, signColor } from '@/lib/format'
 import { benchmarkLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useCashSitting } from '@/hooks/usePortfolioData'
 import type { CashSittingWarningLevel } from '@/types/portfolio'
 
 const WARNING_COPY: Record<Exclude<CashSittingWarningLevel, 'none'>, string> = {
