@@ -10,6 +10,7 @@ import db.models as dbm
 from db.current_user import DEFAULT_USER_ID
 from db.session import get_db
 from trades import api as trades_api
+from trades.brokers.ibkr.credentials import save_ibkr_credentials
 from trades.brokers.ibkr.main import IbkrSyncResult, _write_ledger
 from trades.config import AppConfig
 from trades.models import LedgerEvent
@@ -85,7 +86,6 @@ def isolated_config(tmp_path, monkeypatch, db_session):
         cpi={"cache_dir": tmp_path / "cpi"},
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
         dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
-        credentials={"ibkr_credentials_path": tmp_path / "credentials.json"},
     )
     monkeypatch.setattr(trades_api.app.state, "config", config)
     monkeypatch.setattr(
@@ -456,9 +456,10 @@ def test_ledger_export_returns_every_row(client) -> None:
     assert len(body) == len(LEDGER_ROWS)
 
 
-def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_network(client, monkeypatch) -> None:
-    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
-    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+def test_sync_calls_ibkr_and_refreshes_price_and_cpi_caches_without_hitting_network(
+    client, db_session, monkeypatch
+) -> None:
+    save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
 
     def fake_sync(credentials, config, session, on_progress=None):
         raw_dir = config.ibkr.raw_statement_dir
@@ -541,15 +542,14 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
     assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
 
 
-def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, monkeypatch) -> None:
+def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, db_session, monkeypatch) -> None:
     """A bad IBKR token shouldn't hide whether prices/CPI/HYSA rates still refreshed.
 
     Each leg is independent now — the overall request still succeeds
     (200), `steps` reports IBKR as the one failure, and the other legs
     ran and reported success regardless.
     """
-    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
-    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+    save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
 
     def failing_sync(credentials, config, session, on_progress=None):
         message = "IBKR Flex API error 1018: too many requests"

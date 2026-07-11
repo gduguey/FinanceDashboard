@@ -36,7 +36,9 @@ if TYPE_CHECKING:
     import uuid
     from datetime import datetime
     from typing import Any
+
     from sqlalchemy.orm import Session
+
     from accounting.importers.canonical.csv import DateOrder, SkippedRowsInfo
     from accounting.models import Category
 

@@ -1,106 +1,119 @@
-"""Reads `GEMINI_API_KEY`/`MISTRAL_API_KEY` from the repo's `.env`, or from a Settings-page override.
+"""One user's own LLM provider API keys — encrypted and persisted in Postgres, never `.env`.
 
-Same convention as `trades.credentials`. Both keys are optional: a
-missing one just means that provider isn't in the fallback chain (see
-`api._llm_providers`), not an error — the "AI suggestion" button degrades
-to unavailable rather than crashing if only one, or neither, key is set.
+Same shape as `trades.broker_credentials`: `.env` has no notion of "which
+user," so a per-user API key can only ever live in the database, keyed by
+`(user_id, provider)` — see `db.secrets`, the encrypted key/value store
+both are built on. Either provider's key being unset just means that
+provider isn't in the fallback chain (see `api._llm_providers`), not an
+error — the "AI suggestion" button degrades to unavailable rather than
+crashing if only one, or neither, key is set.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 
-from accounting.utils.io_utils import write_json_atomic
+from db.secrets import delete_secret, get_secret, set_secret
 
 if TYPE_CHECKING:
-    from accounting.config import AccountingConfig
+    import uuid
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+    from sqlalchemy.orm import Session
 
-
-class LLMCredentials(BaseSettings):
-    """API keys for the LLM providers, read from `.env` or the environment."""
-
-    model_config = SettingsConfigDict(
-        env_file=str(_REPO_ROOT / ".env"),
-        env_file_encoding="utf-8",
-        extra="ignore",
-        populate_by_name=True,
-    )
-
-    gemini_api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
-    mistral_api_key: SecretStr | None = Field(default=None, validation_alias="MISTRAL_API_KEY")
+LLM_API_KEY_KIND = "llm_api_key"
 
 
-class LLMCredentialOverride(BaseModel):
-    """LLM API keys entered via the Settings page, taking precedence over `.env`.
-
-    Never sent back to a client once saved — an endpoint reporting on
-    this only ever reports whether a key is set, never its value.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    gemini_api_key: str | None = None
-    mistral_api_key: str | None = None
-
-
-def load_llm_credential_override(config: AccountingConfig) -> LLMCredentialOverride:
-    """Read the persisted LLM credential override, or an empty one if nothing's been saved yet.
-
-    Parameters
-    ----------
-    config
-        Application configuration; `config.llm_credentials_path` is read.
+def _secret_key(provider: str) -> str:
+    """Build the `db.secrets` lookup key one provider's API key for one user is stored under.
 
     Returns
     -------
-    LLMCredentialOverride
-        The persisted override, or `LLMCredentialOverride()` if the file doesn't exist yet.
+    str
     """
-    path = config.llm_credentials_path
-    if not path.exists():
-        return LLMCredentialOverride()
-    try:
-        return LLMCredentialOverride.model_validate_json(path.read_text())
-    except ValueError:
-        return LLMCredentialOverride()
+    return f"llm:{provider}"
 
 
-def save_llm_credential_override(override: LLMCredentialOverride, config: AccountingConfig) -> None:
-    """Persist an LLM credential override, overwriting whatever was saved before.
+def save_llm_api_key(session: Session, user_id: uuid.UUID, provider: str, api_key: str) -> None:
+    """Persist `api_key` as this user's key for `provider`, overwriting whatever was saved before.
 
     Parameters
     ----------
-    override
-        The credentials to persist.
-    config
-        Application configuration; `config.llm_credentials_path` is written to.
+    session
+        An active database session.
+    user_id
+        Whose key this is.
+    provider
+        `"gemini"` or `"mistral"`.
+    api_key
+        The API key to encrypt and persist.
     """
-    write_json_atomic(override.model_dump(mode="json"), config.llm_credentials_path)
+    set_secret(session, user_id, _secret_key(provider), LLM_API_KEY_KIND, api_key)
 
 
-def resolve_llm_credentials(config: AccountingConfig) -> LLMCredentials:
-    """Build the LLM credentials to actually use: the Settings-page override, falling back to `.env`.
+def load_llm_api_key(session: Session, user_id: uuid.UUID, provider: str) -> str | None:
+    """Return this user's saved API key for `provider`, or `None` if nothing's been saved yet.
 
     Parameters
     ----------
-    config
-        Application configuration; `config.llm_credentials_path` is read.
+    session
+        An active database session.
+    user_id
+        Whose key to look up.
+    provider
+        `"gemini"` or `"mistral"`.
+
+    Returns
+    -------
+    str or None
+    """
+    return get_secret(session, user_id, _secret_key(provider))
+
+
+def clear_llm_api_key(session: Session, user_id: uuid.UUID, provider: str) -> None:
+    """Delete this user's saved API key for `provider`. A no-op if nothing was saved.
+
+    Parameters
+    ----------
+    session
+        An active database session.
+    user_id
+        Whose key to clear.
+    provider
+        `"gemini"` or `"mistral"`.
+    """
+    delete_secret(session, user_id, _secret_key(provider))
+
+
+class LLMCredentials(BaseModel):
+    """One user's resolved API keys for every LLM provider — either may be unset."""
+
+    model_config = ConfigDict(frozen=True)
+
+    gemini_api_key: SecretStr | None = None
+    mistral_api_key: SecretStr | None = None
+
+
+def resolve_llm_credentials(session: Session, user_id: uuid.UUID) -> LLMCredentials:
+    """Build this user's `LLMCredentials` from whatever's saved in Postgres.
+
+    Parameters
+    ----------
+    session
+        An active database session.
+    user_id
+        Whose credentials to resolve.
 
     Returns
     -------
     LLMCredentials
-        Either key left unset (by both the override and `.env`/the environment) stays `None`.
+        Either key left unset stays `None` — never an error, since this app
+        degrades to whichever provider (if any) has a key configured.
     """
-    override = load_llm_credential_override(config)
-    kwargs: dict[str, Any] = {}
-    if override.gemini_api_key:
-        kwargs["gemini_api_key"] = override.gemini_api_key
-    if override.mistral_api_key:
-        kwargs["mistral_api_key"] = override.mistral_api_key
-    return LLMCredentials(**kwargs)
+    gemini_api_key = load_llm_api_key(session, user_id, "gemini")
+    mistral_api_key = load_llm_api_key(session, user_id, "mistral")
+    return LLMCredentials(
+        gemini_api_key=SecretStr(gemini_api_key) if gemini_api_key else None,
+        mistral_api_key=SecretStr(mistral_api_key) if mistral_api_key else None,
+    )
