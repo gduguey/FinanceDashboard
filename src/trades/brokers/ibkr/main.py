@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 
 import trades.db as tdb
+from db.base import derive_id
 from db.current_user import DEFAULT_USER_ID
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
@@ -83,22 +84,28 @@ def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.Da
         ledger and dashboard module depends on that shape, not on how it's
         actually stored. An empty frame if it has never been synced.
     """
-    rows = session.query(tdb.LedgerEvent).filter_by(user_id=user_id).all()
+    rows = (
+        session
+        .query(tdb.LedgerEvent, tdb.LedgerEventTradeDetails)
+        .outerjoin(tdb.LedgerEventTradeDetails, tdb.LedgerEventTradeDetails.ledger_event_id == tdb.LedgerEvent.id)
+        .filter(tdb.LedgerEvent.user_id == user_id)
+        .all()
+    )
     if not rows:
         return pl.DataFrame(schema=LedgerEvent.polars_schema)
     records = [
         {
-            "event_id": row.event_id,
-            "event_datetime": row.event_datetime,
-            "symbol": row.symbol,
-            "event_type": row.event_type,
-            "shares": row.shares,
-            "price": row.price,
-            "amount": row.amount,
-            "currency": row.currency,
-            "meta": row.meta,
+            "event_id": event.natural_key,
+            "event_datetime": event.event_datetime,
+            "symbol": event.symbol,
+            "event_type": event.event_type,
+            "shares": details.shares if details is not None else None,
+            "price": details.price if details is not None else None,
+            "amount": event.amount,
+            "currency": event.currency,
+            "meta": event.meta,
         }
-        for row in rows
+        for event, details in rows
     ]
     return pl.DataFrame(records, schema=LedgerEvent.polars_schema).sort("event_datetime", "symbol", "event_id")
 
@@ -120,26 +127,42 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = D
     user_id
         Whose ledger this is. See `load_ledger` for why it defaults.
     """
-    session.merge(tdb.BrokerConnection(user_id=user_id, connection_id=_DEFAULT_CONNECTION_ID, broker="ibkr"))
+    connection_id = derive_id(user_id, "broker_connections", _DEFAULT_CONNECTION_ID)
+    session.merge(
+        tdb.BrokerConnection(id=connection_id, user_id=user_id, natural_key=_DEFAULT_CONNECTION_ID, broker="ibkr")
+    )
     session.flush()
 
+    # ON DELETE CASCADE on ledger_event_trade_details.ledger_event_id means this alone
+    # also removes every deleted event's trade details — no separate delete needed.
     session.query(tdb.LedgerEvent).filter_by(user_id=user_id).delete()
-    session.add_all(
-        tdb.LedgerEvent(
-            user_id=user_id,
-            connection_id=_DEFAULT_CONNECTION_ID,
-            event_id=row["event_id"],
-            event_datetime=row["event_datetime"],
-            symbol=row["symbol"],
-            event_type=row["event_type"],
-            shares=row["shares"],
-            price=row["price"],
-            amount=row["amount"],
-            currency=row["currency"],
-            meta=row["meta"],
+
+    new_events: list[tdb.LedgerEvent] = []
+    new_trade_details: list[tdb.LedgerEventTradeDetails] = []
+    for row in ledger.to_dicts():
+        event_id = derive_id(user_id, "ledger_events", row["event_id"])
+        new_events.append(
+            tdb.LedgerEvent(
+                id=event_id,
+                user_id=user_id,
+                natural_key=row["event_id"],
+                connection_id=connection_id,
+                event_datetime=row["event_datetime"],
+                symbol=row["symbol"],
+                event_type=row["event_type"],
+                amount=row["amount"],
+                currency=row["currency"],
+                meta=row["meta"],
+            )
         )
-        for row in ledger.to_dicts()
-    )
+        if row["shares"] is not None:
+            new_trade_details.append(
+                tdb.LedgerEventTradeDetails(
+                    ledger_event_id=event_id, user_id=user_id, shares=row["shares"], price=row["price"]
+                )
+            )
+    session.add_all(new_events)
+    session.add_all(new_trade_details)
     session.commit()
 
 

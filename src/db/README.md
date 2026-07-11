@@ -20,6 +20,64 @@ for, and the exact commands for the scenarios you'll actually run into.
 | `secrets.py` | `get_secret`/`set_secret`/`delete_secret` — the only way any code in this repo reads or writes a credential. |
 | `backup.py` | Dumps the whole database and uploads it somewhere durable. |
 
+## Stable ids: `derive_id`, and why its namespace constant is a plain constant, not a secret
+
+Most tables' `id` column isn't a random id — it's computed from something
+human-chosen (an account's `institution:kind:last4`, a category's own
+name-based key, ...) via `db.base.derive_id`, so that re-deriving it later
+from the same input always gives back the exact same id (see that
+function's own docstring for why: some tables get fully rewritten on every
+save, and re-imports need to recognize "this already exists" instead of
+creating a duplicate).
+
+The mechanism is `uuid.uuid5(namespace, name)` — a **hash function**, not a
+random generator: think of it as a recipe. Feed it the exact same two
+ingredients twice, and you get the exact same output both times, no
+randomness involved; feed it different ingredients, and the output comes
+out completely different. The two ingredients it needs:
+
+- **`name`** — the actual thing being described, e.g.
+  `"<user id>:accounts:chase:checking:1234"`.
+- **`namespace`** — a second ingredient the recipe requires that's always
+  the *same* value no matter what's being described. It doesn't need to
+  mean anything; it just needs to never change.
+
+`_ID_NAMESPACE` is that second ingredient: one arbitrary UUID, generated a
+single time, hardcoded directly in `base.py`. Change it, and every id this
+function has ever produced would come out different if recomputed — every
+foreign key pointing at an old id would suddenly point at nothing.
+
+**Should it live in `.env`, or somewhere with backups, instead of hardcoded
+in source?** No — that would make it *less* safe, not more. `.env` files
+are gitignored on purpose (that's what makes them safe for actual secrets)
+and exist only as loose, uncommitted copies on whichever machines they've
+been manually pasted onto — no version history, no diff if someone edits
+one character by mistake, and nothing stopping the value from silently
+drifting between a laptop's `.env` and the server's `.env.docker`. This
+constant needs the exact opposite properties: it must be **identical in
+every environment, forever**, and a plain constant in versioned source
+code already guarantees both, for free — every clone of this repo has the
+same value, every change to it shows up in `git log`/`git blame` as an
+ordinary, reviewable commit, and reverting it is a normal `git revert`.
+Putting it in `.env` instead would introduce the exact failure mode it's
+protecting against: a copy-paste slip, or someone regenerating "a new
+one" thinking it's like `APP_SECRETS_ENCRYPTION_KEY`, would quietly break
+every id derivation in that one environment.
+
+This isn't a workaround specific to this app, either — it's how `uuid5` is
+meant to be used. The `uuid` module itself ships several of these same
+fixed namespace constants built in (`uuid.NAMESPACE_DNS`,
+`uuid.NAMESPACE_URL`, ...), hardcoded in the Python standard library's own
+source, unchanged since the format was standardized. `_ID_NAMESPACE` is
+the same idea at this app's scale: mint one arbitrary constant, commit it,
+never touch it again.
+
+The real risk isn't "it gets deleted" (`git revert` fixes that
+immediately) — it's a one-character edit slipping through review
+unnoticed. `tests/db/test_base.py` pins the exact expected output of
+`derive_id` for a fixed input, so a change to `_ID_NAMESPACE` fails a test
+immediately instead of silently shipping.
+
 ## The two tables here: `users` and `user_secrets`
 
 - **`users`** — one row per person using the app. Right now there's

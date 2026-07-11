@@ -28,21 +28,6 @@ class AccountingConfig(BaseModel):
         return self.data_dir / "raw_statements"
 
     @property
-    def ledger_csv_path(self) -> Path:
-        """Where the derived posting ledger is cached, under `data_dir`."""
-        return self.data_dir / "ledger.csv"
-
-    @property
-    def store_path(self) -> Path:
-        """Where accounts, categories, tags, rules, and other assets are persisted, under `data_dir`."""
-        return self.data_dir / "store.json"
-
-    @property
-    def overrides_path(self) -> Path:
-        """Where manual per-posting categorization overrides are persisted, under `data_dir`."""
-        return self.data_dir / "manual_overrides.json"
-
-    @property
     def exchange_rates_raw_dir(self) -> Path:
         """Where every fetched exchange-rate-history response is archived verbatim, under `data_dir`."""
         return self.data_dir / "exchange_rates" / "raw"

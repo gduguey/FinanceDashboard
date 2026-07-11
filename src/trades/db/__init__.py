@@ -7,6 +7,6 @@ matters to Alembic and to test fixtures.
 
 from __future__ import annotations
 
-from trades.db.models import BrokerConnection, LedgerEvent
+from trades.db.models import BrokerConnection, LedgerEvent, LedgerEventTradeDetails
 
-__all__ = ["BrokerConnection", "LedgerEvent"]
+__all__ = ["BrokerConnection", "LedgerEvent", "LedgerEventTradeDetails"]
