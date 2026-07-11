@@ -130,7 +130,7 @@ def _liquidation_estimate(
     if result.open_lots.is_empty():
         return LiquidationEstimate(value, 0.0, 0.0, 0.0, value)
 
-    previews = preview_sale(result.open_lots, ledger, price_lookup, as_of, config)
+    previews = collect_if_lazy(preview_sale(result.open_lots, ledger, price_lookup, as_of, config))
     long_term_gain, short_term_gain = liquidation_gain_buckets(previews)
     tax = liquidation_tax_usd(previews, regime, marginal_ordinary_rate, qualified_ltcg_rate)
     return LiquidationEstimate(value, long_term_gain, short_term_gain, tax, value - tax)
@@ -160,14 +160,14 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, as_of: date) -> TaxSumm
     qualified_ltcg_rate = resolved_qualified_ltcg_rate(config)
     result = replay_ledger(ledger, config)
 
-    annual = annual_tax_report(result.closed_lots, ledger, config, regime, status_change_date)
+    annual = collect_if_lazy(annual_tax_report(result.closed_lots, ledger, config, regime, status_change_date))
     owed = tax_owed_by_year_and_regime(
         annual, marginal_ordinary_rate, qualified_ltcg_rate, resolved_nra_dividend_tax_rate(config)
     )
     wash_sales = cast("pl.DataFrame", flag_wash_sales(result.closed_lots, ledger, config)).filter(
         pl.col("wash_sale_flag")
     )
-    previews = preview_sale(result.open_lots, ledger, make_price_lookup(config), as_of, config)
+    previews = collect_if_lazy(preview_sale(result.open_lots, ledger, make_price_lookup(config), as_of, config))
     after_tax_alpha = _after_tax_dollar_alpha_vs_hysa(
         ledger, config, as_of, regime, status_change_date, marginal_ordinary_rate
     )

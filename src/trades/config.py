@@ -106,7 +106,7 @@ class PriceApiConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    cache_dir: Path = _REPO_ROOT / "data" / "prices"
+    cache_dir: Path = _REPO_ROOT / "data" / "trades" / "prices"
     chart_url_template: str = "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}"
     request_headers: dict[str, str] = Field(
         default_factory=lambda: {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
@@ -119,7 +119,7 @@ class CpiConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    cache_dir: Path = _REPO_ROOT / "data" / "cpi"
+    cache_dir: Path = _REPO_ROOT / "data" / "trades" / "cpi"
     series_id: str = Field(default="CPIAUCSL", min_length=1)
     csv_url_template: str = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"  # noqa: RUF027
     request_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -147,7 +147,7 @@ class HysaRatesConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    cache_dir: Path = _REPO_ROOT / "data" / "hysa_rates"
+    cache_dir: Path = _REPO_ROOT / "data" / "trades" / "hysa_rates"
     source_url: str = "https://www.apyarchives.com"
     request_headers: dict[str, str] = Field(
         default_factory=lambda: {"User-Agent": "Mozilla/5.0 (compatible; trades/0.1)"}
@@ -238,7 +238,7 @@ class IbkrFlexApiConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    cache_dir: Path = _REPO_ROOT / "data" / "brokers" / "ibkr"
+    cache_dir: Path = _REPO_ROOT / "data" / "trades" / "brokers" / "ibkr"
     send_request_url: str = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest"
     fallback_statement_url: str = "https://gdcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement"
     request_headers: dict[str, str] = Field(default_factory=lambda: {"User-Agent": "Java"})
@@ -266,7 +266,7 @@ class IbkrFlexApiConfig(BaseModel):
 class DashboardConfig(BaseModel):
     """Where dashboard-only, user-editable settings (e.g. a target allocation) are persisted.
 
-    These aren't fetched data (see `docs/architecture.md`'s caching rule)
+    These aren't fetched data (see `docs/trades/architecture.md`'s caching rule)
     and aren't a code-level tunable either — they're settings a user
     changes from the frontend, so `dashboard.py` reads/writes a small JSON
     file here instead of holding them as a hardcoded default.
@@ -274,7 +274,36 @@ class DashboardConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    settings_path: Path = _REPO_ROOT / "data" / "dashboard_settings.json"
+    settings_path: Path = _REPO_ROOT / "data" / "trades" / "dashboard_settings.json"
+
+
+class CashSittingConfig(BaseModel):
+    """Tunables for the uninvested-cash warning shown on the card.
+
+    See `dashboard.cash_sitting.open_cash_lots` — every dollar is tracked
+    as its own FIFO lot from the day it arrives, so there's no threshold
+    to tune for "was this decrease big enough to count as deployment";
+    any decrease consumes the oldest lot(s) exactly. Only how long the
+    oldest lot has to sit before it's worth flagging is a tunable.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    light_warning_days: int = Field(default=7, gt=0, description="Days sitting before the light warning shows.")
+    heavy_warning_days: int = Field(default=14, gt=0, description="Days sitting before the heavy warning shows.")
+
+
+class CredentialOverridesConfig(BaseModel):
+    """Where credentials entered via the Settings page are persisted, instead of `.env`.
+
+    See `credentials.resolve_ibkr_credentials` — an override here takes
+    precedence over `.env` field-by-field, so entering just a query id
+    still lets a token already in `.env` resolve normally.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ibkr_credentials_path: Path = _REPO_ROOT / "data" / "trades" / "credentials.json"
 
 
 class AppConfig(BaseModel):
@@ -292,3 +321,5 @@ class AppConfig(BaseModel):
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    credentials: CredentialOverridesConfig = Field(default_factory=CredentialOverridesConfig)
+    cash_sitting: CashSittingConfig = Field(default_factory=CashSittingConfig)

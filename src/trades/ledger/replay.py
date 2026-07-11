@@ -45,7 +45,32 @@ class ReplayResult:
     cash_balance: float
 
 
-def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig, *, net_dividends: bool = False) -> ReplayResult:
+def _withholding_by_symbol_date(rows: pl.DataFrame) -> dict[tuple[str, date], float]:
+    """Sum `WITHHOLDING` amounts per `(symbol, date)`, for netting against same-day dividends.
+
+    Parameters
+    ----------
+    rows
+        Ledger rows, already materialized.
+
+    Returns
+    -------
+    dict[tuple[str, datetime.date], float]
+        Total withheld amount per symbol per day.
+    """
+    withholding: dict[tuple[str, date], float] = {}
+    wh_rows = rows.filter(pl.col("event_type") == "WITHHOLDING")
+    if wh_rows.is_empty():
+        return withholding
+    for r in wh_rows.with_columns(dt=pl.col("event_datetime").dt.date()).iter_rows(named=True):
+        key = (r["symbol"], r["dt"])
+        withholding[key] = withholding.get(key, 0.0) + r["amount"]
+    return withholding
+
+
+def replay_ledger(
+    ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig, *, net_dividends: bool = False
+) -> ReplayResult:
     """Replay a ledger into open/closed lots and a cash balance.
 
     `config.ledger.cash_symbol` is a plain running total, not a lot: every
@@ -85,14 +110,7 @@ def replay_ledger(ledger: pl.DataFrame | pl.LazyFrame, config: AppConfig, *, net
     open_lots_by_symbol: dict[str, list[Lot]] = {}
     closed_lots: list[ClosedLot] = []
     cash_balance = 0.0
-
-    withholding_by_symbol_date: dict[tuple[str, date], float] = {}
-    if net_dividends:
-        wh_rows = rows.filter(pl.col("event_type") == "WITHHOLDING")
-        if not wh_rows.is_empty():
-            for r in wh_rows.with_columns(dt=pl.col("event_datetime").dt.date()).iter_rows(named=True):
-                key = (r["symbol"], r["dt"])
-                withholding_by_symbol_date[key] = withholding_by_symbol_date.get(key, 0.0) + r["amount"]
+    withholding_by_symbol_date = _withholding_by_symbol_date(rows) if net_dividends else {}
 
     for row in rows.iter_rows(named=True):
         event_type: str = row["event_type"]

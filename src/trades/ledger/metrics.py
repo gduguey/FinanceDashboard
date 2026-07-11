@@ -323,9 +323,9 @@ def symbol_metrics(
         Application configuration; `config.returns.days_per_year` is read.
     net_dividends
         When ``True``, ``dividends_received`` is gross dividends minus
-        withholding and the XIRR cashflow set includes ``WITHHOLDING``
-        events as negative flows, matching the after-withholding income
-        actually received.
+        withholding instead of the gross amount. Does not affect ``xirr``:
+        its cashflow set always includes ``WITHHOLDING`` (see
+        `_symbol_cashflows`), independent of this flag.
 
     Returns
     -------
@@ -350,7 +350,7 @@ def symbol_metrics(
         current_value = float(open_lots["shares"].sum()) * price
         unrealized = float((open_lots["shares"] * (price - open_lots["cost_per_share"])).sum())
 
-    cashflow_dates, cashflow_amounts = _symbol_cashflows(rows, net_dividends=net_dividends)
+    cashflow_dates, cashflow_amounts = _symbol_cashflows(rows)
     if is_open:
         cashflow_dates.append(as_of)
         cashflow_amounts.append(current_value)
@@ -393,28 +393,31 @@ def _symbol_invested(buys: pl.DataFrame) -> float:
     return float(buys.filter(~is_drip)["amount"].sum())
 
 
-def _symbol_cashflows(rows: pl.DataFrame, *, net_dividends: bool = False) -> tuple[list[date], list[float]]:
-    """Build a symbol's `BUY`/`SELL`/`DIVIDEND` cashflows for `xirr`.
+def _symbol_cashflows(rows: pl.DataFrame) -> tuple[list[date], list[float]]:
+    """Build a symbol's `BUY`/`SELL`/`DIVIDEND`/`WITHHOLDING` cashflows for `xirr`.
+
+    `WITHHOLDING` is always included as a negative flow, the same way
+    `replay.replay_ledger` always subtracts it from `cash_balance` — so the
+    cash XIRR is computed from reflects what actually moved, independent of
+    `symbol_metrics`'s `net_dividends` toggle (which only changes how
+    `dividends_received` is reported, not the underlying cashflows).
 
     Parameters
     ----------
     rows
         The symbol's ledger rows.
-    net_dividends
-        When ``True``, dividend amounts are already net of withholding
-        (from lot accrual), so ``WITHHOLDING`` events are excluded to
-        avoid double-counting.
 
     Returns
     -------
     tuple[list[datetime.date], list[float]]
-        Dates and signed amounts (``BUY`` negative,
-        ``SELL``/``DIVIDEND`` positive).
+        Dates and signed amounts (`BUY`/`WITHHOLDING` negative,
+        `SELL`/`DIVIDEND` positive).
     """
-    types = ["BUY", "SELL", "DIVIDEND"]
+    types = ["BUY", "SELL", "DIVIDEND", "WITHHOLDING"]
     flows = rows.filter(pl.col("event_type").is_in(types)).select(
         "event_datetime",
-        amount=pl.when(pl.col("event_type") == "BUY")
+        amount=pl
+        .when(pl.col("event_type").is_in(["BUY", "WITHHOLDING"]))
         .then(-pl.col("amount"))
         .otherwise(pl.col("amount")),
     )

@@ -3,7 +3,7 @@
 Every endpoint below calls `dashboard.py` (which composes `ledger.*` and
 `market_data.*`) and serializes the result — no aggregation happens in
 this module itself, matching the split documented in
-docs/architecture.md.
+docs/trades/architecture.md.
 
 GET endpoints only ever read what's already cached on disk — they never
 make a network call, with one exception: `GET /api/symbols/search` is a
@@ -20,22 +20,38 @@ benchmark takes effect without waiting for a full sync.
 
 from __future__ import annotations
 
+import io
+import zipfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
+from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import requests
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ValidationError
 
+from accounting.api import router as accounting_router
 from trades import dashboard
 from trades.brokers.ibkr import api, main
-from trades.config import AppConfig, IbkrFlexCredentials, TaxRegime
+from trades.config import AppConfig, TaxRegime
+from trades.credentials import (
+    IbkrCredentialOverride,
+    ibkr_is_configured,
+    load_ibkr_credential_override,
+    resolve_ibkr_credentials,
+    save_ibkr_credential_override,
+)
 from trades.market_data import cpi as cpi_module
 from trades.market_data import hysa_rates as hysa_rates_module
 from trades.market_data import prices
 from trades.market_data import symbol_search as symbol_search_module
+from trades.utils.frames import collect_if_lazy
+from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     import polars as pl
@@ -54,6 +70,12 @@ class SyncProgress:
 app = FastAPI(title="Investments API")
 app.state.config = AppConfig()
 app.state.sync_progress = SyncProgress(step="Idle", percent=0.0, done=True)
+app.include_router(accounting_router)
+
+# Same layout in the Docker image (built by the frontend-builder stage into
+# web/dist/) and in a local dev checkout (built by hand via `npm run build`)
+# — both put this file at src/trades/api.py, two levels under the repo root.
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
 # Lock to prevent concurrent syncs: /api/sync writes to caches and the ledger,
 # so concurrent requests would step on each other's writes.
@@ -209,6 +231,72 @@ def get_growth_of_100_chart(start: date | None = None, end: date | None = None) 
         return dashboard.growth_of_100_chart(ledger, _config(), range_start, range_end).to_dicts()
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/chart/cash-history")
+def get_cash_history(start: date | None = None, end: date | None = None) -> list[dict[str, Any]]:
+    """Return the uninvested cash balance for every day in range, plus what it would be worth invested immediately.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One `{"date", "cash", "benchmark_live_usd", "benchmark_realized_usd",
+        "hysa_live_usd", "hysa_realized_usd"}` entry per day.
+        `*_live_usd` is what currently-sitting cash would be worth had it
+        been invested in the benchmark/HYSA since it arrived — bounded,
+        tracks `cash`'s own shape. `*_realized_usd` is a running total,
+        banked once per past sitting episode at the moment it ended, of
+        the gain that episode's cash missed out on — frozen from then on
+        (see `dashboard.cash_received_counterfactual`).
+
+    Raises
+    ------
+    HTTPException
+        Via `_load_ledger`, if no ledger is cached yet (404).
+    """
+    ledger = _load_ledger()
+    config = _config()
+    range_start, range_end = _chart_range(ledger, start, end)
+    daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, range_end))
+    adjusted_lookup = dashboard.make_price_lookup(config, adjusted=True)
+    benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
+    try:
+        counterfactual = dashboard.cash_received_counterfactual(
+            daily_cash,
+            benchmark_price_lookup=lambda day: adjusted_lookup(benchmark_symbol, day),
+            hysa_rate_lookup=dashboard.hysa_rate_lookup(config),
+            days_per_year=config.returns.days_per_year,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return daily_cash.join(counterfactual, on="date", how="left").to_dicts()
+
+
+@app.get("/api/cash-sitting")
+def get_cash_sitting() -> dict[str, Any]:
+    """Report how long the current uninvested cash balance has been sitting idle, and what it's missed out on.
+
+    Returns
+    -------
+    dict[str, Any]
+        See `dashboard.cash_sitting.CashSittingSummary` — `sitting_since` as an ISO date string.
+
+    Raises
+    ------
+    HTTPException
+        404 if no ledger is cached yet; 422 if a required price is missing.
+    """
+    ledger = _load_ledger()
+    config = _config()
+    today = datetime.now(tz=UTC).date()
+    range_start = _first_event_date(ledger)
+    try:
+        daily_cash = cast("pl.DataFrame", dashboard.daily_cash_balances(ledger, config, range_start, today))
+        growth_index = dashboard.growth_of_100_chart(ledger, config, range_start, today)
+        summary = dashboard.cash_sitting_summary(daily_cash, growth_index, today, config)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {**asdict(summary), "sitting_since": summary.sitting_since.isoformat()}
 
 
 @app.get("/api/chart/monthly-pnl")
@@ -454,6 +542,109 @@ def put_tax_settings(update: TaxSettingsUpdate) -> dict[str, Any]:
     return _tax_settings_response(config)
 
 
+class IbkrCredentialsUpdate(BaseModel):
+    """Request body for `PUT /api/settings/ibkr`.
+
+    Either field left `None` leaves that one exactly as it was — a query
+    id entered with no token doesn't clear an existing token, the same
+    partial-merge convention `PUT /api/settings/benchmark`/`/tax` use.
+    """
+
+    token: str | None = None
+    query_id: str | None = None
+
+
+@app.get("/api/settings/ibkr")
+def get_ibkr_settings() -> dict[str, Any]:
+    """Report whether IBKR credentials are available, without ever exposing their value.
+
+    Returns
+    -------
+    dict[str, Any]
+        `configured` (true if a token and query id are available from
+        either the Settings-page override or `.env`), `token_set` and
+        `query_id_set` (whether the Settings-page override itself has
+        each field, regardless of `.env`).
+    """
+    config = _config()
+    override = load_ibkr_credential_override(config)
+    return {
+        "configured": ibkr_is_configured(config),
+        "token_set": bool(override.token),
+        "query_id_set": bool(override.query_id),
+    }
+
+
+@app.put("/api/settings/ibkr")
+def put_ibkr_settings(update: IbkrCredentialsUpdate) -> dict[str, Any]:
+    """Persist an IBKR credential override (merges into the existing one).
+
+    Returns
+    -------
+    dict[str, Any]
+        Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
+    """
+    config = _config()
+    existing = load_ibkr_credential_override(config)
+    updated = existing.model_copy(
+        update={
+            "token": update.token if update.token is not None else existing.token,
+            "query_id": update.query_id if update.query_id is not None else existing.query_id,
+        }
+    )
+    save_ibkr_credential_override(updated, config)
+    return {
+        "configured": ibkr_is_configured(config),
+        "token_set": bool(updated.token),
+        "query_id_set": bool(updated.query_id),
+    }
+
+
+@app.delete("/api/settings/ibkr")
+def delete_ibkr_settings() -> dict[str, Any]:
+    """Clear the Settings-page IBKR credential override, falling back to `.env` (if any) again.
+
+    Returns
+    -------
+    dict[str, Any]
+        Same shape as `GET /api/settings/ibkr`.
+    """
+    config = _config()
+    save_ibkr_credential_override(IbkrCredentialOverride(), config)
+    return {"configured": ibkr_is_configured(config), "token_set": False, "query_id_set": False}
+
+
+@app.post("/api/settings/ibkr/verify")
+def verify_ibkr_settings() -> dict[str, Any]:
+    """Actually attempt to authenticate with IBKR, not just check that something's typed in.
+
+    A single fast HTTP call (see `verify_flex_credentials`) — not a full
+    sync — so this is cheap enough for the Settings page to call whenever
+    it wants a real "does this work" answer instead of "is this set".
+
+    Returns
+    -------
+    dict[str, Any]
+        `ok` (whether IBKR accepted the token/query id) and `error`
+        (IBKR's own message, or a generic one, only when `ok` is false).
+    """
+    config = _config()
+    try:
+        credentials = resolve_ibkr_credentials(config)
+    except ValidationError:
+        return {"ok": False, "error": "No credentials configured"}
+    try:
+        api.verify_flex_credentials(credentials, config)
+    except api.FlexApiError as error:
+        return {"ok": False, "error": error.message}
+    except Exception:  # noqa: BLE001 — surfacing any failure to the caller is the entire point here
+        # Not str(error): a connection/HTTP error's own message includes the
+        # full request URL, which embeds the token as a query param (see
+        # `_send_flex_request`) — that must never round-trip back to the client.
+        return {"ok": False, "error": "Could not reach IBKR to verify credentials"}
+    return {"ok": True, "error": None}
+
+
 @app.get("/api/tax/report")
 def get_tax_report(as_of: date | None = None) -> dict[str, Any]:
     """Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
@@ -505,7 +696,7 @@ def get_hysa_rates() -> dict[str, Any]:
     """
     config = _config()
     history = hysa_rates_module.load_hysa_rates_cache(config)
-    banks = hysa_rates_module.list_banks(history)
+    banks = collect_if_lazy(hysa_rates_module.list_banks(history))
     return {
         "banks": banks.to_dicts(),
         "history": history.to_dicts(),
@@ -644,6 +835,29 @@ def get_ledger_export() -> list[dict[str, Any]]:
     return _load_ledger().to_dicts()
 
 
+@app.get("/api/statements/export")
+def get_statements_export() -> Response:
+    """Zip every raw Flex statement archived from a sync (verbatim XML, as received) for download.
+
+    Returns
+    -------
+    fastapi.Response
+        A `.zip` attachment, one entry per archived statement, empty if
+        nothing has ever been synced.
+    """
+    buffer = io.BytesIO()
+    archive = StatementArchive(_config().ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for relative_path, data in archive.read_all():
+            zip_file.writestr(relative_path, data)
+    filename = f"trades-statements-{datetime.now(tz=UTC).date().isoformat()}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/sync/progress")
 def get_sync_progress() -> dict[str, Any]:
     """Return the current (or most recently finished) sync's progress.
@@ -661,32 +875,95 @@ def get_sync_progress() -> dict[str, Any]:
     return asdict(cast("SyncProgress", app.state.sync_progress))
 
 
-def _run_sync(config: AppConfig) -> dict[str, Any]:
-    _report_sync_progress("Connecting to IBKR", 0.0)
-    credentials = IbkrFlexCredentials()  # type: ignore[call-arg]  # token/query_id come from the environment
-    sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
+@dataclass
+class _SyncStep:
+    """One independent leg of a sync — a UI-friendly label, not the underlying provider's name."""
 
-    ledger = _load_ledger()
+    label: str
+    ok: bool
+    error: str | None = None
+
+
+def _run_sync(config: AppConfig) -> dict[str, Any]:
+    """Run every leg of a sync independently — one failing never skips the rest.
+
+    A bad IBKR token shouldn't also block a benchmark price refresh that
+    has nothing to do with IBKR; each leg below is caught on its own, so
+    e.g. market prices and savings rates still update even if IBKR itself
+    is down. `steps` in the return value reports each leg's own
+    success/failure — that's what the UI shows, not just one overall
+    pass/fail.
+
+    Returns
+    -------
+    dict[str, Any]
+        `synced_at`, `new_event_count`, `total_event_count`,
+        `symbols_refreshed`, and `steps` — each leg's own `label`/`ok`/`error`.
+    """
+    steps: list[_SyncStep] = []
+
+    _report_sync_progress("Connecting to IBKR", 0.0)
+    sync_result = None
+    try:
+        credentials = resolve_ibkr_credentials(config)
+        sync_result = main.sync_ibkr_account(credentials, config, on_progress=_report_sync_progress)
+        steps.append(_SyncStep("Portfolio data", ok=True))
+    except requests.exceptions.RequestException:
+        # Not str(error): a request-level failure's own message includes the
+        # full IBKR request URL, which embeds the token as a query param (see
+        # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
+        steps.append(_SyncStep("Portfolio data", ok=False, error="Could not reach IBKR"))
+    except Exception as error:  # noqa: BLE001 — one leg's failure must never abort the rest
+        steps.append(_SyncStep("Portfolio data", ok=False, error=str(error)))
+
+    raw_ledger = main.load_ledger(config)
     benchmark_symbol = dashboard.resolved_benchmark_symbol(config)
-    held_symbols = sorted(set(ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol})
-    raw_symbols = sorted({*held_symbols, benchmark_symbol})
-    first_event = _first_event_date(ledger)
     today = datetime.now(tz=UTC).date()
+    if raw_ledger.is_empty():
+        # Nothing's ever been synced successfully — nothing to backfill
+        # held-symbol prices for, but the benchmark/CPI/HYSA legs below are
+        # still worth attempting on their own.
+        held_symbols: list[str] = []
+        first_event = today
+    else:
+        held_symbols = sorted(set(raw_ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol})
+        first_event = _first_event_date(raw_ledger)
+    raw_symbols = sorted({*held_symbols, benchmark_symbol})
 
     _report_sync_progress("Updating price history", 65.0)
-    prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
+    try:
+        prices.update_price_caches(raw_symbols, since=first_event, as_of=today, config=config)
+        steps.append(_SyncStep("Market prices", ok=True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Market prices", ok=False, error=str(error)))
+
     _report_sync_progress("Updating benchmark prices", 80.0)
-    prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
+    try:
+        prices.update_price_cache(benchmark_symbol, since=first_event, as_of=today, config=config, adjusted=True)
+        steps.append(_SyncStep("Benchmark prices", ok=True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Benchmark prices", ok=False, error=str(error)))
+
     _report_sync_progress("Updating CPI index", 90.0)
-    cpi_module.update_cpi_cache(config)
+    try:
+        cpi_module.update_cpi_cache(config)
+        steps.append(_SyncStep("Inflation data", ok=True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Inflation data", ok=False, error=str(error)))
+
     _report_sync_progress("Updating savings rates", 95.0)
-    hysa_rates_module.update_hysa_rates_cache(config)
+    try:
+        hysa_rates_module.update_hysa_rates_cache(config)
+        steps.append(_SyncStep("Savings rates", ok=True))
+    except Exception as error:  # noqa: BLE001
+        steps.append(_SyncStep("Savings rates", ok=False, error=str(error)))
 
     return {
         "synced_at": _last_synced_iso(),
-        "new_event_count": sync_result.new_event_count,
-        "total_event_count": sync_result.total_event_count,
+        "new_event_count": sync_result.new_event_count if sync_result else 0,
+        "total_event_count": sync_result.total_event_count if sync_result else raw_ledger.height,
         "symbols_refreshed": raw_symbols,
+        "steps": [asdict(step) for step in steps],
     }
 
 
@@ -709,14 +986,45 @@ def sync() -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`.
+        `synced_at`, `new_event_count`, `total_event_count`, `symbols_refreshed`,
+        and `steps` — each leg's own `label`/`ok`/`error`, since one
+        failing (e.g. a bad IBKR token) no longer aborts the rest.
     """
     with _sync_lock:
         try:
             result = _run_sync(_config())
         except Exception as error:
+            # Only reachable for something outside every leg's own
+            # try/except in _run_sync — each expected failure mode is
+            # already caught there and reported per-step instead.
             app.state.sync_progress = SyncProgress(step="Sync failed", percent=100.0, done=True, error=str(error))
             raise
 
         app.state.sync_progress = SyncProgress(step="Done", percent=100.0, done=True)
         return result
+
+
+if _FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str) -> FileResponse:
+        """Serve the built React app for anything no route above matched.
+
+        Registered last on purpose: Starlette matches routes in registration
+        order, so every `/api/...` route (and `/docs`, `/openapi.json`)
+        defined earlier in this module is tried first. Falls back to
+        `index.html` for any path that isn't a real file in `web/dist/` —
+        e.g. a hard refresh on `/settings` — so the frontend's client-side
+        router gets a chance to handle it instead of a bare 404.
+
+        Returns
+        -------
+        FileResponse
+            The requested static file if it exists under `web/dist/`,
+            otherwise `index.html` so client-side routing can take over.
+        """
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if full_path and candidate.is_relative_to(_FRONTEND_DIST) and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_DIST / "index.html")

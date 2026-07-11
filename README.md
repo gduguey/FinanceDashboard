@@ -15,7 +15,15 @@ The same logic is exposed two ways today:
 
 Both read the same on-disk cache under `data/` and call the same
 `trades.*` modules; neither owns the actual logic (see
-[docs/architecture.md](docs/architecture.md)).
+[docs/trades/architecture.md](docs/trades/architecture.md)).
+
+Alongside it, the `accounting` package tracks day-to-day cash accounts —
+checking, savings, credit cards — imported from bank exports and statement
+PDFs, categorized, and rolled up into net worth, an income statement,
+budgets, and goals (see
+[docs/accounting/architecture.md](docs/accounting/architecture.md)). It
+shares the same web dashboard and API process as `trades` but is otherwise
+independent.
 
 ## Prerequisites
 
@@ -50,23 +58,24 @@ IBKR_QUERY_ID=...
 
 These come from a Flex Query you configure in IBKR's Account Management UI
 ("Trade History API", exposing Trades + Cash Transactions) — see
-[docs/ibkr_flex_api.md](docs/ibkr_flex_api.md) for exactly how to set that
-query up and where to find the token/query ID. Without a `.env`, everything
-still works against whatever's already cached in `data/` — you just can't
-pull anything new.
+[docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) for exactly how
+to set that query up and where to find the token/query ID. Without a `.env`,
+everything still works against whatever's already cached in `data/` — you
+just can't pull anything new.
 
 ## Keeping the data fresh
 
 Whichever front end you use, the numbers come from on-disk caches:
 
-- `data/brokers/ibkr/` — your trade/cash history, pulled from IBKR's Flex
-  Web Service
-- `data/prices/` — daily close prices per symbol, pulled from Yahoo Finance
-- `data/cpi/` — CPI index from FRED
-- `data/hysa_rates/` — HYSA APY history from apyarchives.com
+- `data/trades/brokers/ibkr/` — your trade/cash history, pulled from IBKR's
+  Flex Web Service
+- `data/trades/prices/` — daily close prices per symbol, pulled from Yahoo
+  Finance
+- `data/trades/cpi/` — CPI index from FRED
+- `data/trades/hysa_rates/` — HYSA APY history from apyarchives.com
 
 All are safe to refresh as often as you like (deduped/idempotent — see
-[docs/architecture.md](docs/architecture.md)). Do it either by:
+[docs/trades/architecture.md](docs/trades/architecture.md)). Do it either by:
 
 - running the individual sync notebooks (`ibkr_sync.ipynb`,
   `prices_sync.ipynb`, `cpi_sync.ipynb`, `hysa_sync.ipynb`), or
@@ -75,8 +84,8 @@ All are safe to refresh as often as you like (deduped/idempotent — see
 
 Run this regularly if you're actively trading — IBKR's Flex Query is scoped
 to a rolling window on their side, so a sync you skip for too long can leave
-a permanent gap ([docs/ibkr_flex_api.md](docs/ibkr_flex_api.md) covers
-backfilling one if it happens).
+a permanent gap ([docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md)
+covers backfilling one if it happens).
 
 ## Option A: the notebooks
 
@@ -134,36 +143,54 @@ src/trades/
   brokers/ibkr/       IBKR Flex Web Service → ledger
   api.py              JSON endpoints for the web dashboard (needs `api` extra)
   visualization.py    Plotly charts for the notebook
+src/accounting/
+  config.py           accounting-specific tunables (store/ledger/overrides paths)
+  models.py           pydantic schemas — Account, Posting, Category, TransferRule, …
+  dashboard/          net worth and income-statement aggregation
+  ledger/             replay, categorization, currency conversion, transfers
+  importers/          bank CSV/PDF → canonical postings (Chase, SoFi, canonical/ fallback)
+  api.py              JSON endpoints, mounted onto the same FastAPI app as trades
 notebooks/
-  portfolio.ipynb     analysis notebook (assumes syncing already done)
-  ibkr_sync.ipynb     sync IBKR trade/cash history
-  prices_sync.ipynb   sync Yahoo Finance price caches
-  cpi_sync.ipynb      sync FRED CPI series
-  hysa_sync.ipynb     sync HYSA rate history
+  trades/
+    portfolio.ipynb     analysis notebook (assumes syncing already done)
+    ibkr_sync.ipynb     sync IBKR trade/cash history
+    prices_sync.ipynb   sync Yahoo Finance price caches
+    cpi_sync.ipynb      sync FRED CPI series
+    hysa_sync.ipynb     sync HYSA rate history
+  accounting/            (empty for now)
 web/                  React frontend
-data/                 gitignored — caches live here
-docs/                 architecture deep-dives (see below)
+data/                 gitignored — caches live here, under data/trades/ and data/accounting/
+docs/                 architecture deep-dives (see below), under docs/trades/ and docs/accounting/
 ```
 
 ## Documentation
 
 | Doc | What it covers |
 |-----|----------------|
-| [architecture.md](docs/architecture.md) | Module map, conventions, data layout |
-| [ledger.md](docs/ledger.md) | Event types, replay, lots, cashflows |
-| [metrics_and_benchmarks.md](docs/metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
-| [market_data.md](docs/market_data.md) | Yahoo prices, FRED CPI, HYSA rates |
-| [ibkr_flex_api.md](docs/ibkr_flex_api.md) | Syncing from Interactive Brokers |
-| [glossary.md](docs/glossary.md) | Plain-language definitions of dashboard terms |
+| [trades/architecture.md](docs/trades/architecture.md) | Module map, conventions, data layout |
+| [trades/ledger.md](docs/trades/ledger.md) | Event types, replay, lots, cashflows |
+| [trades/metrics_and_benchmarks.md](docs/trades/metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
+| [trades/market_data.md](docs/trades/market_data.md) | Yahoo prices, FRED CPI, HYSA rates |
+| [trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) | Syncing from Interactive Brokers |
+| [trades/glossary.md](docs/trades/glossary.md) | Plain-language definitions of dashboard terms |
+| [accounting/architecture.md](docs/accounting/architecture.md) | Module map, canonical ledger schema, core conventions |
+| [accounting/categorization.md](docs/accounting/categorization.md) | Categories, tags, rules vs. category patterns vs. AI suggestions, splitting, transfer/duplicate detection |
+| [accounting/planning.md](docs/accounting/planning.md) | Budgets and goals, including recurring/withdrawal automations |
+| [accounting/currency-handling.md](docs/accounting/currency-handling.md) | Multi-currency conversion, adding a new supported currency |
+| [accounting/adding-accounts.md](docs/accounting/adding-accounts.md) | Teaching the app a new bank's export format |
+| [accounting/canonical-csv-import.md](docs/accounting/canonical-csv-import.md) | The no-code fallback CSV importer for a bank with no dedicated standardizer |
 
-Start with [architecture.md](docs/architecture.md) if you're adding a new
-data source or broker.
+Start with [trades/architecture.md](docs/trades/architecture.md) or
+[accounting/architecture.md](docs/accounting/architecture.md) if you're
+adding a new data source or broker.
 
 ## Dev
 
 ```bash
-uv run pytest         # requires the `api` extra installed (see Setup) for tests/test_api.py
+uv run pytest              # requires the `api` extra installed (see Setup) for tests/test_api.py
 uv run ruff check .
+uv run --with mypy mypy src/accounting   # accounting is fully typed and mypy-clean
 
-cd web && npm run build   # typechecks + production-builds the frontend
+cd web && npm run build    # typechecks + production-builds the frontend
+cd web && npm run lint
 ```

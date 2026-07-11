@@ -5,10 +5,13 @@ one, both change. Keep it that way: if a tool ever needs its own
 differently-named file (e.g. `.cursorrules`), symlink it here too rather
 than duplicating content that can then drift.
 
-For what this repo is and how it's organized, read `README.md` and
-`docs/architecture.md` first. The two conventions below are things a past
-session got explicit, repeated instructions about — treat them as standing
-rules for this repo, not one-off preferences.
+For what this repo is and how it's organized, read `README.md`,
+`docs/architecture.md` (how the `trades`/`accounting` modules and the one
+FastAPI app fit together), and each module's own
+`docs/trades/architecture.md`/`docs/accounting/architecture.md` first. The
+two conventions below are things a past session got explicit, repeated
+instructions about — treat them as standing rules for this repo, not
+one-off preferences.
 
 ## 1. New data source -> canonical schema, always
 
@@ -31,7 +34,7 @@ existing source) that overlaps with an existing concept:
   no matching model exists yet for this concept, that's a sign to add one
   — not a reason to skip validation.
 
-See `docs/architecture.md` ("The ledger") for the concrete example this
+See `docs/trades/architecture.md` ("The ledger") for the concrete example this
 pattern is based on (`IBKR <Trade> rows -> LedgerEvent`, in
 `preprocessing.standardize_ibkr_ledger`).
 
@@ -52,7 +55,19 @@ that raw archive — cheap to delete and regenerate (see
 `rebuild_from_raw_statements`), never the only copy of the data. Apply this
 to any new fetched-and-cached data source, not just IBKR.
 
-## 3. Rules for coding
+## 3. Guarding tests against real credentials in `.env`
+
+Tests that need to disable a real external service (e.g. R2) can't just
+pass `_env_file=None` to a pydantic-settings model — that only stops it
+reading the `.env` *file*, not real values already sitting in
+`os.environ`. Editors that auto-load `${workspaceFolder}/.env` (e.g. VS
+Code's Python extension, on by default) put those values there before the
+test process even starts, so a "disabled" credentials object can still
+resolve to production secrets. Clear the relevant env vars yourself
+(`monkeypatch.delenv(..., raising=False)`) in addition to disabling the
+env file — see `tests/conftest.py`'s `_no_r2_by_default` fixture.
+
+## 4. Rules for coding
 
 Avoid using for loops. Use instead polars or numpy expressions whenever possible.
 

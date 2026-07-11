@@ -18,15 +18,15 @@ export const GLOSSARY = {
   },
   timingGap: {
     title: 'Timing gap (XIRR − TWR)',
-    body: "The difference between the money-weighted return (XIRR) and the investment return (TWR). A positive value means deposit and withdrawal timing helped. A negative value means timing hurt, such as adding money before a market drop.",
+    body: 'The difference between the money-weighted return (XIRR) and the investment return (TWR). A positive value means deposit and withdrawal timing helped. A negative value means timing hurt, such as adding money before a market drop.',
   },
   growthOf100: {
     title: 'Growth of $100',
-    body: "Shows what $100 invested on day one would be worth today with no later deposits or withdrawals. Every line starts at 100 so investment performance can be compared directly. Unlike the dollar chart, contribution timing is ignored.",
+    body: 'Shows what $100 invested on day one would be worth today with no later deposits or withdrawals. Every line starts at 100 so investment performance can be compared directly. Unlike the dollar chart, contribution timing is ignored.',
   },
   nav: {
     title: 'NAV — Net Asset Value (per unit)',
-    body: "The value of one portfolio unit. Deposits buy more units and withdrawals sell units, so the unit price changes only because the investments gained or lost value. This separates investment performance from money moving in or out. Formula: NAV(t) = portfolio value(t) ÷ units outstanding(t).",
+    body: 'The value of one portfolio unit. Deposits buy more units and withdrawals sell units, so the unit price changes only because the investments gained or lost value. This separates investment performance from money moving in or out. Formula: NAV(t) = portfolio value(t) ÷ units outstanding(t).',
   },
   cpi: {
     title: 'CPI',
@@ -38,11 +38,15 @@ export const GLOSSARY = {
   },
   hysaCounterfactual: {
     title: 'HYSA counterfactual',
-    body: "Shows what the same deposits and withdrawals would be worth today if they had gone into a high-yield savings account instead. Interest compounds daily using the configured rate. This compares investing with simply keeping the money in cash.",
+    body: 'Shows what the same deposits and withdrawals would be worth today if they had gone into a high-yield savings account instead. Interest compounds daily using the configured rate. This compares investing with simply keeping the money in cash.',
   },
   benchmarkCounterfactual: {
     title: 'Benchmark counterfactual',
-    body: "Shows what the same deposits and withdrawals would be worth if every deposit bought the benchmark fund (VOO by default) and every withdrawal sold shares on that day. Dividends are reinvested. This compares the portfolio with buying the benchmark using the exact same cash-flow schedule. Formula: shares(t) = Σ(deposit ÷ benchmark price) − shares sold; value(t) = shares(t) × benchmark price(t).",
+    body: 'Shows what the same deposits and withdrawals would be worth if every deposit bought the benchmark fund (VOO by default) and every withdrawal sold shares on that day. Dividends are reinvested. This compares the portfolio with buying the benchmark using the exact same cash-flow schedule. Formula: shares(t) = Σ(deposit ÷ benchmark price) − shares sold; value(t) = shares(t) × benchmark price(t).',
+  },
+  cashSittingCounterfactual: {
+    title: 'Sitting-cash counterfactual',
+    body: "Two numbers, not one. \"Live\" is what cash sitting right now would be worth had it been invested since it arrived — it tracks the real cash balance's own shape, dropping back toward it once that cash actually gets invested. \"Realized\" is a separate running total, banked once per past sitting episode at the moment it ended, then frozen — it only ever grows, and never resets, because it's the permanent cost of episodes that are already over. It's frozen rather than left compounding so it doesn't double-count against the portfolio's own performance from the day that money was actually invested onward.",
   },
   benchmarkIndex: {
     title: 'Benchmark',
@@ -54,19 +58,23 @@ export const GLOSSARY = {
   },
   portfolioValue: {
     title: 'Portfolio value',
-    body: "The total value of the account today. It includes every holding at its current market price plus any cash in the account, including uninvested deposits and cash dividends.",
+    body: 'The total value of the account today. It includes every holding at its current market price plus any cash in the account, including uninvested deposits and cash dividends.',
   },
   contributions: {
     title: 'Contributions',
-    body: "Cumulative deposits minus withdrawals. Only money entering or leaving the account counts. Dividends and trades between holdings are excluded because no money entered from outside the account.",
+    body: 'Cumulative deposits minus withdrawals. Only money entering or leaving the account counts. Dividends and trades between holdings are excluded because no money entered from outside the account.',
   },
   marketGain: {
     title: 'Market gain',
-    body: "The change in value that came from investment performance rather than deposits or withdrawals. Formula: ending value − starting value − net deposits. Includes both price changes and dividends.",
+    body: 'The change in value that came from investment performance rather than deposits or withdrawals. Formula: ending value − starting value − net deposits. Includes both price changes and dividends.',
+  },
+  symbolXirr: {
+    title: 'XIRR (per symbol)',
+    body: "This symbol's own money-weighted return: buys count negative, sells and dividends count positive, and any withholding on those dividends counts negative too. If the position is still open, its current value is added as a final flow, as if sold today. Unlike the portfolio-level XIRR, trades count here — a symbol has no deposits or withdrawals of its own to measure against.",
   },
   lotReturn: {
     title: 'Return',
-    body: "The total return for this lot. Formula: (current value + dividends received) ÷ purchase amount − 1. It is not adjusted for how long the lot has been held.",
+    body: 'The total return for this lot. Formula: (current value + dividends received) ÷ purchase amount − 1. It is not adjusted for how long the lot has been held.',
   },
   annualizedReturn: {
     title: 'Annualized return',
@@ -74,11 +82,11 @@ export const GLOSSARY = {
   },
   realizedGain: {
     title: 'Realized gain',
-    body: "Gain or loss that became final when shares were sold. It does not change after the sale, regardless of future market prices.",
+    body: 'Gain or loss that became final when shares were sold. It does not change after the sale, regardless of future market prices.',
   },
   unrealizedGain: {
     title: 'Unrealized gain',
-    body: "Gain or loss on shares that are still held. It changes as the market price changes until the shares are sold.",
+    body: 'Gain or loss on shares that are still held. It changes as the market price changes until the shares are sold.',
   },
   lotTerm: {
     title: 'Term',
@@ -94,43 +102,47 @@ export const GLOSSARY = {
   },
   maxDrawdown: {
     title: 'Largest peak-to-trough so far',
-    body: "The largest drop in NAV from its highest value up to that point. It measures the worst decline experienced before reaching a new high. Formula: min over time of NAV(t) ÷ (highest NAV seen so far) − 1.",
+    body: 'The largest drop in NAV from its highest value up to that point. It measures the worst decline experienced before reaching a new high. Formula: min over time of NAV(t) ÷ (highest NAV seen so far) − 1.',
   },
   dripReinvestment: {
     title: 'DRIP (dividend reinvestment)',
-    body: "Shares bought automatically using a cash dividend. They are not counted as new contributions because no new money entered the account. The additional shares and their future gains are still included in portfolio performance.",
+    body: 'Shares bought automatically using a cash dividend. They are not counted as new contributions because no new money entered the account. The additional shares and their future gains are still included in portfolio performance.',
   },
   ledger: {
     title: 'Ledger',
-    body: "The complete history of every deposit, withdrawal, buy, sell, and dividend, stored in one common format. Every calculation on this dashboard is rebuilt from this history, so nothing is stored as pre-computed results.",
+    body: 'The complete history of every deposit, withdrawal, buy, sell, and dividend, stored in one common format. Every calculation on this dashboard is rebuilt from this history, so nothing is stored as pre-computed results.',
   },
   lot: {
     title: 'Lot',
-    body: "One purchase of shares. Each purchase is tracked separately because purchase date, purchase price, holding period, and gains can all be different. When shares are sold, the oldest lots are used first (FIFO).",
+    body: 'One purchase of shares. Each purchase is tracked separately because purchase date, purchase price, holding period, and gains can all be different. When shares are sold, the oldest lots are used first (FIFO).',
   },
   openLot: {
     title: 'Open lot',
-    body: "A purchase that still has shares remaining. Its gain or loss is unrealized and changes with the current market price.",
+    body: 'A purchase that still has shares remaining. Its gain or loss is unrealized and changes with the current market price.',
   },
   closedLot: {
     title: 'Closed lot',
-    body: "The part of a purchase that has been sold. It has its own sale price, holding period, and realized gain. A single sale may close multiple lots or only part of one lot.",
+    body: 'The part of a purchase that has been sold. It has its own sale price, holding period, and realized gain. A single sale may close multiple lots or only part of one lot.',
   },
   taxRegime: {
     title: 'Tax regime',
-    body: "Which U.S. tax treatment applies: NRA (nonresident alien, e.g. F-1 student status) generally owes no U.S. tax on bank interest or on security sales at all; RESIDENT (e.g. H-1B, once the substantial-presence test is met) is taxed the same way a U.S. citizen is, on both.",
+    body: "Which U.S. tax treatment applies: NRA (nonresident alien, e.g. F-1 student status) generally owes no U.S. tax on bank interest or on security sales at all, as long as you're present in the U.S. fewer than 183 days in the tax year; RESIDENT (e.g. H-1B, once the substantial-presence test is met) is taxed the same way a U.S. citizen is, on both. This app doesn't count your actual days present — picking a regime here is a statement of which one applies to you, not something it verifies.",
+  },
+  ltcg: {
+    title: 'LTCG — Long-Term Capital Gains',
+    body: "The profit from selling a lot held longer than 365 days (see Term) — taxed, under the RESIDENT regime, at this lower rate instead of your regular marginal rate. A qualified dividend gets the same lower rate. Only ever applies under RESIDENT: an NRA's capital gains aren't U.S.-taxed at all, so no LTCG rate applies to them regardless of holding period.",
   },
   washSaleFlag: {
     title: 'Wash-sale',
-    body: "A loss sale is flagged when the same security — or one on a declared similar-fund list — was bought back within 30 days before or after the sale. On this page it is just a mechanical proximity check, to surfaces the risk.",
+    body: "A loss sale is flagged when the same security — or one on a declared similar-fund list — was bought back within 30 days before or after the sale. On this page it is just a mechanical proximity check, to surface the risk — it doesn't disallow the loss in any of the numbers shown here, since that adjustment lives on an actual tax return, not this dashboard.",
   },
   taxToggle: {
     title: 'Taxes',
-    body: "Reveals the tax section further down the page: the annual realized-gain and dividend report, an estimated tax-owed summary, flagged wash sales, and open-lot sale previews. It also changes two things outside that section, easy to miss: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. When tax mode is enabled, dividend amounts in per-lot returns and metrics are shown net of withholding (reflecting the actual cash received); XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized.",
+    body: "Changes how this page and Allocation show tax's effect on your numbers — the full annual report, estimated tax owed, flagged wash sales, and sale previews always live on the separate Taxes page regardless of this switch. Here, it changes two things: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. On Allocation, lot-level dividend figures switch from gross to net of withholding, reflecting the actual cash received; XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized. The regime and rates it applies are set on the Taxes page, not here.",
   },
   taxOwed: {
     title: 'Estimated tax owed',
-    body: "Capital-gains tax on the year's net realized gain, plus dividend/interest tax, at the rates set above — a resident alien pays the marginal rate on short-term gains and ordinary income, the lower rate on long-term gains and qualified dividends; a nonresident alien owes nothing on gains or interest and a flat rate on dividends. A net loss in a bucket is floored at zero, not a rebate. Balance due nets this estimate against tax already withheld by the broker.",
+    body: "Capital-gains tax on the year's net realized gain, plus dividend/interest tax, at the rates set above — a resident alien pays the marginal rate on short-term gains and ordinary income, the lower LTCG rate on long-term gains and qualified dividends; a nonresident alien owes nothing on gains or interest, and a flat rate on dividends (a tax treaty's negotiated rate if W-8BEN is claimed, otherwise the default 30% statutory withholding). A net loss in a bucket is floored at zero, not a rebate. Balance due nets this estimate against tax already withheld by the broker.",
   },
   liquidationValue: {
     title: 'After-tax liquidation value',

@@ -2,7 +2,7 @@
 
 Fetches the "Trade History API" Flex Query (Cash Report + Open Positions +
 Trades) via IBKR's Flex Web Service and parses the response. See
-docs/ibkr_flex_api.md for how the two-step SendRequest/GetStatement
+docs/trades/ibkr_flex_api.md for how the two-step SendRequest/GetStatement
 protocol and its error codes work.
 """
 
@@ -17,15 +17,15 @@ import requests
 from defusedxml import ElementTree
 
 from trades.brokers.ibkr.models import IbkrCashTransaction, IbkrTrade, parse_ibkr_datetime
+from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import date
-    from pathlib import Path
 
     from trades.config import AppConfig, IbkrFlexCredentials
 
-# IBKR's own documented Flex Web Service v3 error codes (docs/ibkr_flex_api.md)
+# IBKR's own documented Flex Web Service v3 error codes (docs/trades/ibkr_flex_api.md)
 # — protocol facts, not tunable parameters.
 _RETRYABLE_GENERATING_CODES = frozenset({"1001", "1004", "1005", "1006", "1007", "1008", "1009", "1019", "1021"})
 _RETRYABLE_THROTTLED_CODES = frozenset({"1018"})
@@ -65,13 +65,19 @@ def _send_flex_request(
 ) -> tuple[str, str]:
     if on_progress:
         on_progress("Requesting IBKR statement", 5.0)
-    response = requests.get(
-        config.ibkr.send_request_url,
-        params={"v": "3", "t": credentials.token.get_secret_value(), "q": credentials.query_id},
-        headers=config.ibkr.request_headers,
-        timeout=config.ibkr.request_timeout_seconds,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.get(
+            config.ibkr.send_request_url,
+            params={"v": "3", "t": credentials.token.get_secret_value(), "q": credentials.query_id},
+            headers=config.ibkr.request_headers,
+            timeout=config.ibkr.request_timeout_seconds,
+        )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        # Not str(error): a request-level failure's own message includes the
+        # full request URL, which embeds the token as a query param above —
+        # never let that reach a caller.
+        raise FlexApiError("network_error", "Could not reach IBKR's Flex Web Service") from error
     root = ElementTree.fromstring(response.text)
     if root.findtext("Status") != "Success":
         raise FlexApiError(root.findtext("ErrorCode", "unknown"), root.findtext("ErrorMessage", response.text))
@@ -114,6 +120,28 @@ def _poll_flex_statement(
             raise FlexApiError(code or "unknown", root.findtext("ErrorMessage", response.text))
     message = f"Statement not ready after {config.ibkr.max_poll_attempts} attempts"
     raise FlexApiError("timeout", message)
+
+
+def verify_flex_credentials(credentials: IbkrFlexCredentials, config: AppConfig) -> None:
+    """Check that the token/query id actually authenticate, without generating a full report.
+
+    Just the SendRequest step — a single fast HTTP call — not the
+    GetStatement poll loop `fetch_flex_statement` does afterward, which
+    can take up to a minute waiting for IBKR to generate the report.
+    An invalid token or query id surfaces here immediately as a non-Success
+    status, so this is cheap enough to run whenever Settings wants to know
+    "does this actually work" rather than just "is something typed in." Lets
+    `_send_flex_request`'s `FlexApiError` propagate as-is if IBKR rejects
+    the token/query id.
+
+    Parameters
+    ----------
+    credentials
+        The IBKR Flex Web Service token and query id to check.
+    config
+        Application configuration; `config.ibkr` is read.
+    """
+    _send_flex_request(credentials, config)
 
 
 def fetch_flex_statement(
@@ -178,11 +206,17 @@ def parse_statement(xml_text: str) -> ParsedStatement:
     )
 
 
-def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) -> Path:
+def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) -> None:
     """Archive the exact bytes IBKR returned, before any parsing is attempted.
 
-    Files are never overwritten: a same-second collision (e.g. two calls
-    in a fast test loop) gets a numeric suffix instead of clobbering the first.
+    Written to R2 (`statements/<user_id>/ibkr/...`) when configured, else to
+    `config.ibkr.raw_statement_dir` on disk — see `utils.statement_archive`.
+    Files are never overwritten: a same-second collision (e.g. two calls in
+    a fast test loop, or two overlapping syncs) gets a numeric suffix
+    instead of clobbering the first — enforced by attempting an atomic
+    create per candidate name (`StatementArchive.write_if_absent`) rather
+    than checking existence first and writing second, which two concurrent
+    callers could both pass before either had written anything.
 
     Parameters
     ----------
@@ -193,21 +227,17 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
         `models.py`'s storage convention).
     config
         Application configuration; `config.ibkr.raw_statement_dir` is read.
-
-    Returns
-    -------
-    pathlib.Path
-        The path the statement was written to.
     """
-    raw_dir = config.ibkr.raw_statement_dir
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    path = raw_dir / f"{received_at:%Y%m%dT%H%M%S}.xml"
-    suffix = 1
-    while path.exists():
-        path = raw_dir / f"{received_at:%Y%m%dT%H%M%S}-{suffix}.xml"
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    data = xml_text.encode("utf-8")
+    suffix = 0
+    while True:
+        relative_path = (
+            f"{received_at:%Y%m%dT%H%M%S}.xml" if suffix == 0 else f"{received_at:%Y%m%dT%H%M%S}-{suffix}.xml"
+        )
+        if archive.write_if_absent(relative_path, data):
+            return
         suffix += 1
-    path.write_text(xml_text, encoding="utf-8")
-    return path
 
 
 def last_synced_at(config: AppConfig) -> datetime | None:
@@ -224,9 +254,10 @@ def last_synced_at(config: AppConfig) -> datetime | None:
         The receive time of the most recently archived raw statement, or
         None if nothing has ever been synced.
     """
-    raw_paths = list(config.ibkr.raw_statement_dir.glob("*.xml"))
-    if not raw_paths:
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    relative_paths = archive.list_relative_paths("*.xml")
+    if not relative_paths:
         return None
     # "-N" suffix is the same-second collision tag `save_raw_statement` appends.
-    stems = (path.stem.split("-")[0] for path in raw_paths)
+    stems = (relative_path.removesuffix(".xml").split("-")[0] for relative_path in relative_paths)
     return max(datetime.strptime(stem, "%Y%m%dT%H%M%S") for stem in stems)  # noqa: DTZ007

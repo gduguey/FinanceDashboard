@@ -13,6 +13,7 @@ from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
 from trades.models import LedgerEvent
 from trades.utils.io_utils import write_csv_atomic
+from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -161,13 +162,17 @@ def rebuild_from_raw_statements(config: AppConfig) -> IbkrSyncResult:
     FileNotFoundError
         If no raw statements have ever been archived.
     """
-    raw_paths = sorted(config.ibkr.raw_statement_dir.glob("*.xml"))
-    if not raw_paths:
-        message = f"No archived raw statements under {config.ibkr.raw_statement_dir}"
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    relative_paths = archive.list_relative_paths("*.xml")
+    if not relative_paths:
+        message = (
+            f"No archived raw statements found (checked {archive.remote_prefix!r} on R2, "
+            f"else {config.ibkr.raw_statement_dir})"
+        )
         raise FileNotFoundError(message)
 
     statements: list[ParsedStatement] = sorted(
-        (parse_statement(path.read_text(encoding="utf-8")) for path in raw_paths),
+        (parse_statement(archive.read(relative_path).decode("utf-8")) for relative_path in relative_paths),
         key=lambda statement: statement.when_generated,
     )
 

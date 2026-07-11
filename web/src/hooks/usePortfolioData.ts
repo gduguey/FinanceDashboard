@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type DateRange } from '@/lib/api'
-import type { BenchmarkSettingUpdate, HysaSettings, TargetAllocation, TaxSettingsUpdate } from '@/types/portfolio'
+import type {
+  BenchmarkSettingUpdate,
+  HysaSettings,
+  IbkrSettingsUpdate,
+  TargetAllocation,
+  TaxSettingsUpdate,
+} from '@/types/portfolio'
 
 // One query key per endpoint, grouped under a shared "portfolio" root so a
 // single invalidate (see useSync below) refreshes every panel at once.
@@ -15,11 +21,15 @@ const keys = {
   lots: ['portfolio', 'lots'],
   risk: (range?: DateRange) => ['portfolio', 'risk', range ?? {}],
   dataQuality: ['portfolio', 'data-quality'],
+  cashHistory: (range?: DateRange) => ['portfolio', 'chart', 'cash-history', range ?? {}],
+  cashSitting: ['portfolio', 'cash-sitting'],
   hysaRates: ['portfolio', 'hysa-rates'],
   hysaSettings: ['portfolio', 'settings', 'hysa'],
   benchmarkSetting: ['portfolio', 'settings', 'benchmark'],
   taxSettings: ['portfolio', 'settings', 'tax'],
   taxReport: ['portfolio', 'tax-report'],
+  ibkrSettings: ['portfolio', 'settings', 'ibkr'],
+  ibkrVerify: ['portfolio', 'settings', 'ibkr', 'verify'],
 } as const
 
 export const useOverview = () => useQuery({ queryKey: keys.overview, queryFn: () => api.overview() })
@@ -38,8 +48,7 @@ export const useMonthlyPnlBySymbol = (range?: DateRange) =>
 
 export const useAllocation = () => useQuery({ queryKey: keys.allocation, queryFn: () => api.allocation() })
 
-export const useTargetAllocation = () =>
-  useQuery({ queryKey: keys.targetAllocation, queryFn: api.targetAllocation })
+export const useTargetAllocation = () => useQuery({ queryKey: keys.targetAllocation, queryFn: api.targetAllocation })
 
 export function useSetTargetAllocation() {
   const queryClient = useQueryClient()
@@ -51,10 +60,14 @@ export function useSetTargetAllocation() {
 
 export const useLots = () => useQuery({ queryKey: keys.lots, queryFn: () => api.lots() })
 
-export const useRisk = (range?: DateRange) =>
-  useQuery({ queryKey: keys.risk(range), queryFn: () => api.risk(range) })
+export const useRisk = (range?: DateRange) => useQuery({ queryKey: keys.risk(range), queryFn: () => api.risk(range) })
 
 export const useDataQuality = () => useQuery({ queryKey: keys.dataQuality, queryFn: api.dataQuality })
+
+export const useCashHistory = (range?: DateRange) =>
+  useQuery({ queryKey: keys.cashHistory(range), queryFn: () => api.cashHistory(range) })
+
+export const useCashSitting = () => useQuery({ queryKey: keys.cashSitting, queryFn: () => api.cashSitting() })
 
 export const useHysaRates = () => useQuery({ queryKey: keys.hysaRates, queryFn: api.hysaRates })
 
@@ -71,8 +84,7 @@ export function useSetHysaSettings() {
   })
 }
 
-export const useBenchmarkSetting = () =>
-  useQuery({ queryKey: keys.benchmarkSetting, queryFn: api.benchmarkSetting })
+export const useBenchmarkSetting = () => useQuery({ queryKey: keys.benchmarkSetting, queryFn: api.benchmarkSetting })
 
 export function useSetBenchmarkSetting() {
   const queryClient = useQueryClient()
@@ -92,6 +104,51 @@ export function useEnsureSymbolPriced() {
     mutationFn: (symbol: string) => api.ensureSymbolPriced(symbol),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
   })
+}
+
+export const useIbkrSettings = () => useQuery({ queryKey: keys.ibkrSettings, queryFn: api.ibkrSettings })
+
+export function useSetIbkrSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (update: IbkrSettingsUpdate) => api.setIbkrSettings(update),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.ibkrSettings }),
+  })
+}
+
+export function useClearIbkrSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.clearIbkrSettings(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.ibkrSettings }),
+  })
+}
+
+export type ConnectionState = 'none' | 'checking' | 'invalid' | 'connected'
+
+// The one shared definition of "is IBKR actually connected" — Settings,
+// the sidebar's Investments switch, and the onboarding page all read this
+// same cached query rather than each deciding for themselves, so they can
+// never disagree. A real auth check (one fast HTTP call to IBKR), not
+// just "is a value present" — `configured` alone doesn't catch a
+// wrong/expired token, only "something was typed in". Saving or clearing
+// credentials invalidates `keys.ibkrSettings`, which — via React Query's
+// prefix matching — invalidates this query too, so it always re-checks
+// against whatever credential is actually in effect right now.
+export function useIbkrConnectionStatus(): { state: ConnectionState; error: string | null } {
+  const { data: settings } = useIbkrSettings()
+  const configured = settings?.configured ?? false
+  const verify = useQuery({
+    queryKey: keys.ibkrVerify,
+    queryFn: () => api.verifyIbkrSettings(),
+    enabled: configured,
+    staleTime: 30_000,
+  })
+
+  if (!configured) return { state: 'none', error: null }
+  if (verify.isPending || !verify.data) return { state: 'checking', error: null }
+  if (!verify.data.ok) return { state: 'invalid', error: verify.data.error }
+  return { state: 'connected', error: null }
 }
 
 export function useSync() {

@@ -1,9 +1,15 @@
 import { Brush, CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useGrowthOf100Chart, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
+import {
+  useBenchmarkSetting,
+  useGrowthOf100Chart,
+  useHysaRates,
+  useHysaSettings,
+  useTaxSettings,
+} from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 import type { GrowthOf100Point } from '@/types/portfolio'
 
@@ -35,10 +41,7 @@ function ChartLegend({
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {items.map((item) => (
         <span key={item.label} className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-0.5 w-3"
-            style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }}
-          />
+          <span className="inline-block h-0.5 w-3" style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }} />
           {item.label}
           <InfoTooltip term={item.term} />
         </span>
@@ -51,7 +54,7 @@ function ChartLegend({
 // to 100 at the same start, so your NAV is directly comparable to
 // published benchmark numbers with no cashflow matching.
 export function GrowthOf100Chart() {
-  const { data, isLoading } = useGrowthOf100Chart()
+  const { data, isLoading, error } = useGrowthOf100Chart()
   const { data: benchmarkSetting } = useBenchmarkSetting()
   const { data: hysaSettings } = useHysaSettings()
   const { data: hysaRates } = useHysaRates()
@@ -71,11 +74,12 @@ export function GrowthOf100Chart() {
       legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />}
       isLoading={isLoading}
       isEmpty={!data?.length}
+      error={error?.message}
     >
       <LineChart data={data} margin={{ left: 8, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} stroke="var(--border)" />
         <XAxis dataKey="date" tickFormatter={formatDate} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-        <YAxis tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
+        <YAxis domain={['auto', 'auto']} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={48} />
         <Tooltip
           formatter={(value, name, item) => {
             const formatted = Number(value).toFixed(1)

@@ -63,7 +63,7 @@ function StatSkeleton({ big }: { big?: boolean }) {
 // like it matters most. The secondary row (XIRR, dollar alpha, TWR, risk)
 // fills out evenly instead of leaving an orphaned single card on its own row.
 export function OverviewCards() {
-  const { data, isLoading, isError } = useOverview()
+  const { data, isLoading, isError, error } = useOverview()
   const risk = useRisk()
   const { data: taxSettings } = useTaxSettings()
   const taxAdjusted = taxSettings?.tax_enabled ?? false
@@ -84,7 +84,7 @@ export function OverviewCards() {
   if (isError || !data) {
     return (
       <p className="text-sm text-muted-foreground">
-        No portfolio data yet — hit Sync to pull it from IBKR.
+        {error?.message || 'No portfolio data yet — hit Sync to pull it from IBKR.'}
       </p>
     )
   }
@@ -139,9 +139,7 @@ export function OverviewCards() {
                   {formatUsd(data.unrealized_gain_usd)}
                 </div>
                 {data.total_fees_usd > 0 && (
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    Fees: {formatUsd(data.total_fees_usd)}
-                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">Fees: {formatUsd(data.total_fees_usd)}</div>
                 )}
               </div>
             </div>

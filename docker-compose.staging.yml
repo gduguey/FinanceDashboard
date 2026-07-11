@@ -1,0 +1,129 @@
+# A second, fully independent stack — separate containers, separate named
+# volumes (Postgres data, Caddy certs), separate secrets file. Nothing here
+# is shared with docker-compose.yml (production) except the same Dockerfile
+# and the same VM's spare capacity. See docs/server-setup/staging.md for
+# the full runbook — what to create by hand first, and exactly what to run.
+#
+# Meant to run from its own separate clone directory on the VM
+# (~/FinanceDashboard-staging), so it can track a different branch/commit
+# than production without the two ever fighting over the same checked-out
+# files. Always invoke with an explicit project name so container/volume
+# names can never collide with production's, even by mistake:
+#   docker compose -p staging -f docker-compose.staging.yml up -d --build
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Same convention as production (docs/server-setup/versioning.md), a
+    # distinct image name so the two stacks never share a tag.
+    image: financedashboard-api-staging:${APP_VERSION:-dev}
+
+    container_name: staging-finance-dashboard
+    restart: unless-stopped
+
+    env_file:
+      - .env.staging
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Same rule as production: never published to the host directly, only
+    # reachable from staging's own Caddy over this compose network.
+    expose:
+      - "8000"
+
+    volumes:
+      # Disposable on purpose — staging data is meant to be wiped and
+      # reseeded with fake accounts, never a copy of anyone's real numbers.
+      - ./data:/app/data
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 768M
+        reservations:
+          # Lower than production's own reservation — if the VM is ever
+          # under real contention, the scheduler should favor production.
+          cpus: "0.25"
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: staging-finance-postgres
+    restart: unless-stopped
+
+    # env_file alone is enough — same gotcha already caught in production's
+    # docker-compose.yml: an explicit `environment:` block referencing
+    # ${POSTGRES_DB} here would resolve to blank, since Compose's own
+    # interpolation only reads a file literally named `.env`, not
+    # `.env.staging`. Let env_file inject these directly instead.
+    env_file:
+      - .env.staging
+
+    # No `ports:` here either — same reasoning as production, never
+    # exposed to the host's public interface.
+    volumes:
+      - staging_pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: staging-finance-caddy
+    restart: unless-stopped
+
+    depends_on:
+      - api
+
+    env_file:
+      - .env.staging
+
+    # Different host ports than production's 80/443 — both stacks run on
+    # the same VM/IP, so they can't both claim the standard ports. Combined
+    # with `tls internal` in Caddyfile.staging (self-signed, not Let's
+    # Encrypt), this also sidesteps a real constraint: ACME's HTTP-01
+    # challenge always targets port 80 of the domain being validated, which
+    # a non-standard port can never satisfy anyway. Self-signed is the
+    # right tool here, not a workaround — nobody but you ever visits
+    # staging, so a "not trusted" browser warning you click through once
+    # is a fine trade for zero production changes.
+    ports:
+      - "8080:80"
+      - "8443:443"
+
+    volumes:
+      - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - staging_caddy_data:/data
+      - staging_caddy_config:/config
+
+volumes:
+  staging_pgdata:
+  staging_caddy_data:
+  staging_caddy_config:

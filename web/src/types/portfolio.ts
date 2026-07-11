@@ -52,6 +52,33 @@ export interface GrowthOf100Point {
   hysa_rate_pct: number | null
 }
 
+export interface CashHistoryPoint {
+  date: string
+  cash: number
+  // What *currently-sitting* cash would be worth had it been invested in
+  // the benchmark/HYSA since it arrived — bounded, tracks `cash`'s own
+  // shape. `*_realized_usd` is a running total banked once per past
+  // sitting episode, frozen from the moment it ended — see
+  // `dashboard.cash_received_counterfactual`.
+  benchmark_live_usd: number
+  benchmark_realized_usd: number
+  hysa_live_usd: number
+  hysa_realized_usd: number
+}
+
+export type CashSittingWarningLevel = 'none' | 'light' | 'heavy'
+
+export interface CashSitting {
+  cash_usd: number
+  sitting_since: string
+  days_sitting: number
+  warning_level: CashSittingWarningLevel
+  hypothetical_value_portfolio_usd: number
+  missed_earnings_portfolio_usd: number
+  hypothetical_value_benchmark_usd: number
+  missed_earnings_benchmark_usd: number
+}
+
 export interface MonthlyPnl {
   month: string
   contributions_usd: number
@@ -143,11 +170,18 @@ export interface LedgerEvent {
   meta: Record<string, string>
 }
 
+export interface SyncStep {
+  label: string
+  ok: boolean
+  error: string | null
+}
+
 export interface SyncResult {
   synced_at: string | null
   new_event_count: number
   total_event_count: number
   symbols_refreshed: string[]
+  steps: SyncStep[]
 }
 
 export interface HysaBank {
@@ -180,6 +214,22 @@ export interface BenchmarkSetting {
 
 export interface BenchmarkSettingUpdate {
   symbol_override: string | null
+}
+
+export interface IbkrSettings {
+  configured: boolean
+  token_set: boolean
+  query_id_set: boolean
+}
+
+export interface IbkrSettingsUpdate {
+  token?: string
+  query_id?: string
+}
+
+export interface VerifyResult {
+  ok: boolean
+  error: string | null
 }
 
 export interface SymbolSearchResult {

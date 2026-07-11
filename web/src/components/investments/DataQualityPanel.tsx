@@ -1,31 +1,22 @@
-import { Download } from 'lucide-react'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/investments/SortableTableHead'
+import { ExportButtons } from '@/components/shared/ExportButtons'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { api } from '@/lib/api'
+import { downloadCsv, downloadJson, exportStamp } from '@/lib/download'
 import { formatDate } from '@/lib/format'
 import { useDataQuality } from '@/hooks/usePortfolioData'
 
 // A monitoring tool you can't trust is worse than none — surface the last
 // price sync per symbol, and make the ledger exportable so your financial
-// history never lives only in this local cache.
+// history never lives only in this local cache. The same export also
+// lives on Settings' own Export tab, for anyone who'd rather find every
+// export in one place than hunt for it next to the data it happens to sit near.
 export function DataQualityPanel() {
-  const { data, isLoading, isError } = useDataQuality()
+  const { data, isLoading, isError, error } = useDataQuality()
   const { sorted, sort, toggleSort } = useSortableRows(data, 'symbol')
-
-  async function exportLedger() {
-    const ledger = await api.ledgerExport()
-    const blob = new Blob([JSON.stringify(ledger, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `ledger-${new Date().toISOString().slice(0, 10)}.json`
-    link.click()
-    URL.revokeObjectURL(url)
-  }
 
   return (
     <Card>
@@ -37,7 +28,7 @@ export function DataQualityPanel() {
         {isLoading ? (
           <Skeleton className="h-32 w-full" />
         ) : isError || !data ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">No data yet</p>
+          <p className="py-4 text-center text-sm text-muted-foreground">{error?.message || 'No data yet'}</p>
         ) : (
           <Table>
             <TableHeader>
@@ -67,10 +58,12 @@ export function DataQualityPanel() {
             </TableBody>
           </Table>
         )}
-        <Button variant="outline" size="sm" onClick={exportLedger} className="mt-4">
-          <Download />
-          Export ledger
-        </Button>
+        <div className="mt-4">
+          <ExportButtons
+            onJson={async () => downloadJson(await api.ledgerExport(), `investments-ledger-${exportStamp()}.json`)}
+            onCsv={async () => downloadCsv(await api.ledgerExport(), `investments-ledger-${exportStamp()}.csv`)}
+          />
+        </div>
       </CardContent>
     </Card>
   )

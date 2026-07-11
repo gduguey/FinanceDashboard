@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { TooltipContentProps } from 'recharts'
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { colorForIndex } from '@/lib/colors'
 import { formatMonth, formatUsd } from '@/lib/format'
@@ -118,6 +118,7 @@ export function MonthlyPnlChart() {
 
   const isLoading = bySymbol ? perSymbol.isLoading : aggregate.isLoading
   const isEmpty = bySymbol ? !pivoted.length : !aggregate.data?.length
+  const error = bySymbol ? perSymbol.error : aggregate.error
 
   return (
     <ChartCard
@@ -126,6 +127,7 @@ export function MonthlyPnlChart() {
       description="What you put in, separated from what the market actually did"
       isLoading={isLoading}
       isEmpty={isEmpty}
+      error={error?.message}
       action={
         <Button variant="outline" size="sm" onClick={() => setBySymbol((v) => !v)}>
           {bySymbol ? 'Show total' : 'Break down by symbol'}
@@ -135,7 +137,13 @@ export function MonthlyPnlChart() {
       {bySymbol ? (
         <BarChart data={pivoted} margin={{ left: 8, right: 8, top: 20 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="month" tickFormatter={formatMonth} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="month"
+            tickFormatter={formatMonth}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis
             tickFormatter={(v) => formatUsd(v, true)}
             tick={{ fontSize: 12 }}
@@ -178,7 +186,13 @@ export function MonthlyPnlChart() {
       ) : (
         <BarChart data={aggregate.data} margin={{ left: 8, right: 8, top: 8 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
-          <XAxis dataKey="month" tickFormatter={formatMonth} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
+          <XAxis
+            dataKey="month"
+            tickFormatter={formatMonth}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis
             tickFormatter={(v) => formatUsd(v, true)}
             tick={{ fontSize: 12 }}

@@ -17,6 +17,7 @@ data/
 # Secrets
 .env
 .env.*
+!.env.*.example
 
 # Virtual environments
 .venv
@@ -25,8 +26,20 @@ data/
 .pytest_cache/
 .mypy_cache/
 .claude/
+.ipynb_checkpoints/
 
 AGENTS.md
 CLAUDE.md
 
 info/
+
+# Personal server-setup notes
+docs/server-setup/
+
+# Personal learning notes on the app's own tech stack
+docs/app-stack/
+
+# Personal planning notes, never meant to be committed
+NEW_TASKS.md
+NEXT_STEPS.md
+ACCOUNTING_PLAN.md

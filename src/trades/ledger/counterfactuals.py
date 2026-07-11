@@ -135,7 +135,7 @@ def hysa_counterfactual_value(
     float
         The virtual HYSA balance as of `as_of`.
     """
-    series = hysa_counterfactual_series(cashflows, as_of, rate_lookup, days_per_year)
+    series = collect_if_lazy(hysa_counterfactual_series(cashflows, as_of, rate_lookup, days_per_year))
     if series.is_empty():
         return 0.0
     return float(series["value"][-1])
@@ -241,7 +241,7 @@ def benchmark_counterfactual_value(
     float
         `shares_held x price(as_of)`.
     """
-    series = benchmark_counterfactual_series(cashflows, as_of, price_lookup)
+    series = collect_if_lazy(benchmark_counterfactual_series(cashflows, as_of, price_lookup))
     if series.is_empty():
         return 0.0
     return float(series["value"][-1])

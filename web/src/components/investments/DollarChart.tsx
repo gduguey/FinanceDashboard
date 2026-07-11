@@ -1,9 +1,15 @@
 import { Brush, CartesianGrid, Line, LineChart, ReferenceLine, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate, formatUsd } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'
-import { useBenchmarkSetting, useDollarChart, useHysaRates, useHysaSettings, useTaxSettings } from '@/hooks/usePortfolioData'
+import {
+  useBenchmarkSetting,
+  useDollarChart,
+  useHysaRates,
+  useHysaSettings,
+  useTaxSettings,
+} from '@/hooks/usePortfolioData'
 import type { GlossaryTerm } from '@/lib/glossary'
 import type { DollarChartPoint } from '@/types/portfolio'
 
@@ -40,10 +46,7 @@ function ChartLegend({
     <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {items.map((item) => (
         <span key={item.label} className="inline-flex items-center gap-1">
-          <span
-            className="inline-block h-0.5 w-3"
-            style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }}
-          />
+          <span className="inline-block h-0.5 w-3" style={{ background: item.color, opacity: item.dashed ? 0.6 : 1 }} />
           {item.label}
           <InfoTooltip term={item.term} />
         </span>
@@ -57,7 +60,7 @@ function ChartLegend({
 // distances answer "what's happening / am I beating cash / is the gap
 // growing" at a glance.
 export function DollarChart() {
-  const { data, isLoading } = useDollarChart()
+  const { data, isLoading, error } = useDollarChart()
   const { data: benchmarkSetting } = useBenchmarkSetting()
   const { data: hysaSettings } = useHysaSettings()
   const { data: hysaRates } = useHysaRates()
@@ -78,6 +81,7 @@ export function DollarChart() {
       legend={<ChartLegend benchmarkName={benchmarkName} hysaName={hysaName} taxAdjusted={taxAdjusted} />}
       isLoading={isLoading}
       isEmpty={!series?.length}
+      error={error?.message}
     >
       <LineChart data={series} margin={{ left: 8, right: 8, top: 8 }}>
         <CartesianGrid vertical={false} stroke="var(--border)" />

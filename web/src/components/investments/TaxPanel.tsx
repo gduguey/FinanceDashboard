@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Landmark } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
@@ -8,9 +9,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { TermCard } from '@/components/shared/TermCard'
 import { formatUsd, signColor } from '@/lib/format'
 import { useSetTaxSettings, useTaxReport, useTaxSettings } from '@/hooks/usePortfolioData'
-import type { AnnualTaxRow, SalePreviewRow, TaxOwedRow, TaxRegime, TaxSettingsUpdate, WashSaleRow } from '@/types/portfolio'
+import type {
+  AnnualTaxRow,
+  SalePreviewRow,
+  TaxOwedRow,
+  TaxRegime,
+  TaxSettingsUpdate,
+  WashSaleRow,
+} from '@/types/portfolio'
 
 const REGIME_LABELS: Record<TaxRegime, string> = {
   NRA: 'NRA / F-1 (nonresident alien)',
@@ -43,7 +52,7 @@ function regimeRules(regime: TaxRegime, w8benClaimed: boolean): { label: string;
   return [
     {
       label: 'Dividends',
-      text: "Qualified dividends — from a U.S. or qualifying foreign company, held more than 60 days around the ex-dividend date — are taxed at the lower long-term capital-gains rate. Everything else (ordinary dividends, interest) is taxed at your regular income rate.",
+      text: 'Qualified dividends — from a U.S. or qualifying foreign company, held more than 60 days around the ex-dividend date — are taxed at the lower long-term capital-gains rate. Everything else (ordinary dividends, interest) is taxed at your regular income rate.',
     },
     {
       label: 'Capital gains',
@@ -55,32 +64,27 @@ function regimeRules(regime: TaxRegime, w8benClaimed: boolean): { label: string;
     },
     {
       label: 'The 30-day rule',
-      text: 'Sell at a loss, then buy the same — or a "substantially identical" — security within 30 days before or after that sale, and the loss is disallowed. It exists so a loss can\'t be claimed for tax purposes while functionally keeping the same position; the disallowed amount isn\'t lost, it\'s added to the cost basis of the repurchased shares instead.',
+      text: "Sell at a loss, then buy the same — or a \"substantially identical\" — security within 30 days before or after that sale, and the loss is disallowed. It exists so a loss can't be claimed for tax purposes while functionally keeping the same position; the disallowed amount isn't lost, it's added to the cost basis of the repurchased shares instead.",
     },
   ]
 }
 
-function RulesCard({ regime, w8benClaimed }: { regime: TaxRegime; w8benClaimed: boolean }) {
+export function RulesCard({ regime, w8benClaimed }: { regime: TaxRegime; w8benClaimed: boolean }) {
   const rules = regimeRules(regime, w8benClaimed)
   return (
-    <Card className="border-foreground/10 bg-gradient-to-br from-muted/60 to-transparent">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Landmark className="size-4 text-muted-foreground" />
-          How {REGIME_LABELS[regime]} status is taxed here
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <dl className="grid grid-cols-1 gap-4 text-sm leading-relaxed text-muted-foreground md:grid-cols-2">
-          {rules.map((rule) => (
-            <div key={rule.label}>
-              <dt className="font-medium text-foreground">{rule.label}</dt>
-              <dd className="mt-0.5">{rule.text}</dd>
-            </div>
-          ))}
-        </dl>
-      </CardContent>
-    </Card>
+    <div className="space-y-4">
+      <h2 className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-foreground">
+        <Landmark className="size-5 text-muted-foreground" />
+        How {REGIME_LABELS[regime]} status is taxed here
+      </h2>
+      <dl className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {rules.map((rule) => (
+          <TermCard key={rule.label} term={rule.label}>
+            {rule.text}
+          </TermCard>
+        ))}
+      </dl>
+    </div>
   )
 }
 
@@ -94,7 +98,7 @@ function RateField({
   resolvedPct,
   onCommit,
 }: {
-  label: string
+  label: ReactNode
   override: number | null
   resolvedPct: number
   onCommit: (pct: number | null) => void
@@ -120,21 +124,12 @@ function RateField({
   )
 }
 
-// The controls that decide how the rest of the page's tax-adjusted numbers
-// are computed — meant to sit above the Overview section, since it affects
-// more than just the Taxes section further down (see the `taxToggle`
-// glossary entry surfaced by its info icon).
-export function TaxSettingsControls() {
-  const { data: settings, isLoading } = useTaxSettings()
+// Shared by both `TaxEnabledToggle` and `TaxRegimeSelector` — a plain
+// object rather than re-deriving from `settings` at each call site.
+function useTaxSettingsUpdater() {
+  const { data: settings } = useTaxSettings()
   const setSettings = useSetTaxSettings()
-
-  if (isLoading) return <Skeleton className="h-10 w-48" />
-  if (!settings) return null
-
-  const regime = settings.tax_regime ?? settings.resolved_tax_regime
-  const isNra = regime === 'NRA'
-
-  function update(partial: Partial<TaxSettingsUpdate>) {
+  return function update(partial: Partial<TaxSettingsUpdate>) {
     if (!settings) return
     setSettings.mutate({
       tax_enabled: settings.tax_enabled,
@@ -147,64 +142,104 @@ export function TaxSettingsControls() {
       ...partial,
     })
   }
+}
+
+// Just the on/off switch — shown on Performance and Allocation, the two
+// pages whose own figures change shape (after-tax dollar chart, lot
+// tax-lot detail) depending on it. The full regime/rate configuration
+// lives only on the Taxes page itself (see `TaxRegimeSelector`) since
+// picking a regime is a taxes-specific concern, not something every page
+// that merely respects the toggle needs to expose.
+export function TaxEnabledToggle() {
+  const { data: settings, isLoading } = useTaxSettings()
+  const update = useTaxSettingsUpdater()
+
+  if (isLoading) return <Skeleton className="h-8 w-32" />
+  if (!settings) return null
+
+  const regime = settings.tax_regime ?? settings.resolved_tax_regime
 
   return (
-    <div className="flex flex-wrap items-center gap-3">
+    <div className="flex items-center gap-2">
       <label className="flex items-center gap-2 text-sm font-medium">
         Apply taxes
         <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
         <InfoTooltip term="taxToggle" />
       </label>
       {settings.tax_enabled && (
-        <>
-          <Select value={regime} onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}>
-            <SelectTrigger size="sm" className="w-56">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>
-              <SelectItem value="RESIDENT">H-1B (resident alien)</SelectItem>
-            </SelectContent>
-          </Select>
-          <RateField
-            label="Marginal rate"
-            override={settings.marginal_ordinary_rate_pct}
-            resolvedPct={settings.resolved_marginal_ordinary_rate_pct}
-            onCommit={(pct) => update({ marginal_ordinary_rate_pct: pct })}
-          />
-          <RateField
-            label="LTCG / qualified div. rate"
-            override={settings.qualified_ltcg_rate_pct}
-            resolvedPct={settings.resolved_qualified_ltcg_rate_pct}
-            onCommit={(pct) => update({ qualified_ltcg_rate_pct: pct })}
-          />
-          {isNra && (
-            <>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                W-8BEN treaty benefits
-                <Switch
-                  checked={settings.w8ben_claimed}
-                  onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
-                />
-              </label>
-              {settings.w8ben_claimed && (
-                <RateField
-                  label="Treaty rate"
-                  override={settings.w8ben_treaty_rate_pct}
-                  resolvedPct={settings.w8ben_treaty_rate_pct ?? 30}
-                  onCommit={(pct) => update({ w8ben_treaty_rate_pct: pct })}
-                />
-              )}
-            </>
-          )}
-        </>
+        <span className="text-xs text-muted-foreground">
+          Applying the {REGIME_LABELS[regime]} tax regime set up in{' '}
+          <Link to="/investments/taxes" className="text-primary underline-offset-4 hover:underline">
+            Taxes
+          </Link>
+        </span>
       )}
     </div>
   )
 }
 
-export function TaxControlBar() {
-  return null
+// The regime/rate configuration — shown only on the Taxes page, above its
+// own tab selector, unconditional on the on/off toggle since the Taxes
+// page always shows its report regardless of whether other pages are
+// currently applying after-tax figures.
+export function TaxRegimeSelector() {
+  const { data: settings, isLoading } = useTaxSettings()
+  const update = useTaxSettingsUpdater()
+
+  if (isLoading) return <Skeleton className="h-10 w-full max-w-xl" />
+  if (!settings) return null
+
+  const regime = settings.tax_regime ?? settings.resolved_tax_regime
+  const isNra = regime === 'NRA'
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Select value={regime} onValueChange={(value) => value && update({ tax_regime: value as TaxRegime })}>
+        <SelectTrigger size="sm" className="w-56">
+          <SelectValue items={REGIME_LABELS} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="NRA">NRA / F-1 (nonresident alien)</SelectItem>
+          <SelectItem value="RESIDENT">H-1B (resident alien)</SelectItem>
+        </SelectContent>
+      </Select>
+      <RateField
+        label="Marginal rate"
+        override={settings.marginal_ordinary_rate_pct}
+        resolvedPct={settings.resolved_marginal_ordinary_rate_pct}
+        onCommit={(pct) => update({ marginal_ordinary_rate_pct: pct })}
+      />
+      <RateField
+        label={
+          <>
+            LTCG / qualified div. rate <InfoTooltip term="ltcg" />
+          </>
+        }
+        override={settings.qualified_ltcg_rate_pct}
+        resolvedPct={settings.resolved_qualified_ltcg_rate_pct}
+        onCommit={(pct) => update({ qualified_ltcg_rate_pct: pct })}
+      />
+      {isNra && (
+        <>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            W-8BEN treaty benefits
+            <Switch
+              checked={settings.w8ben_claimed}
+              onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
+            />
+          </label>
+          {settings.w8ben_claimed && (
+            <RateField
+              label="Treaty rate"
+              override={settings.w8ben_treaty_rate_pct}
+              resolvedPct={settings.w8ben_treaty_rate_pct ?? 30}
+              onCommit={(pct) => update({ w8ben_treaty_rate_pct: pct })}
+            />
+          )}
+        </>
+      )}
+    </div>
+  )
 }
 
 function AnnualReportTable({ rows }: { rows: AnnualTaxRow[] }) {
@@ -363,66 +398,17 @@ function SalePreviewTable({ rows }: { rows: SalePreviewRow[] }) {
   )
 }
 
-// The report tables and summary cards — everything the top-of-page
-// TaxControlBar's toggle reveals besides the rules card, which renders
-// next to that bar instead of down here. Reads the same settings/report
-// queries as the control bar; React Query dedupes the underlying requests.
-export function TaxDetailSection() {
-  const { data: settings, isLoading } = useTaxSettings()
+// The report tables and summary cards — the Taxes page's own "Report" tab.
+// Always shown regardless of the Performance/Allocation on/off toggle: the
+// backend computes this report unconditionally off the resolved regime, so
+// there's no reason to hide it here too.
+export function TaxReportTab() {
+  const { data: settings } = useTaxSettings()
   const { data: report } = useTaxReport()
-
-  if (isLoading) return <Skeleton className="h-48 w-full" />
-  if (!settings || !settings.tax_enabled) return null
-
-  const regime = settings.tax_regime ?? settings.resolved_tax_regime
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-medium text-muted-foreground">Taxes</h2>
-
-      <RulesCard regime={regime} w8benClaimed={settings.w8ben_claimed} />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Annual realized gains &amp; dividends</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <AnnualReportTable rows={report?.annual ?? []} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-1.5">
-            Estimated tax owed <InfoTooltip term="taxOwed" />
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <TaxOwedTable rows={report?.tax_owed ?? []} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-1.5">
-            Flagged wash sales <InfoTooltip term="washSaleFlag" />
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <WashSaleTable rows={report?.wash_sales ?? []} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>If you sold today</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <SalePreviewTable rows={report?.sale_previews ?? []} />
-        </CardContent>
-      </Card>
-
-      {report && (
+      {report && settings && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-1.5">
@@ -466,6 +452,46 @@ export function TaxDetailSection() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Annual realized gains &amp; dividends</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <AnnualReportTable rows={report?.annual ?? []} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5">
+            Estimated tax owed <InfoTooltip term="taxOwed" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <TaxOwedTable rows={report?.tax_owed ?? []} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-1.5">
+            Flagged wash sales <InfoTooltip term="washSaleFlag" />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <WashSaleTable rows={report?.wash_sales ?? []} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>If you sold today</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <SalePreviewTable rows={report?.sale_previews ?? []} />
+        </CardContent>
+      </Card>
     </div>
   )
 }

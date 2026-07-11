@@ -38,6 +38,7 @@ def _ibkr_trade(
         trade_money=trade_money,
         ib_commission=ib_commission,
         net_cash=trade_money + ib_commission,
+        level_of_detail="EXECUTION",
         notes=notes,
     ).model_dump()
 

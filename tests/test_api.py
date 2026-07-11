@@ -1,4 +1,6 @@
-from datetime import date, datetime
+import io
+import zipfile
+from datetime import UTC, date, datetime
 
 import polars as pl
 import pytest
@@ -59,6 +61,7 @@ def isolated_config(tmp_path, monkeypatch):
         cpi={"cache_dir": tmp_path / "cpi"},
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
         dashboard={"settings_path": tmp_path / "dashboard_settings.json"},
+        credentials={"ibkr_credentials_path": tmp_path / "credentials.json"},
     )
     monkeypatch.setattr(trades_api.app.state, "config", config)
     monkeypatch.setattr(
@@ -119,6 +122,45 @@ def test_growth_of_100_chart_returns_one_entry_per_day(client) -> None:
     body = client.get("/api/chart/growth-of-100", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert len(body) == 3
     assert body[0]["portfolio_index"] == pytest.approx(100.0)
+
+
+def test_cash_history_returns_one_entry_per_day(client) -> None:
+    body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert [row["cash"] for row in body] == pytest.approx([2000.0, 1000.0, 1550.0])
+
+
+def test_cash_history_includes_a_benchmark_counterfactual_for_cash_received(client) -> None:
+    # Jan 1: $2000 arrives as one lot. Jan 2: a $1000 real BUY consumes
+    # $1000 of that lot at an unchanged price -> $0 banked, $1000 stays
+    # open. Jan 3: the price rises to 560 and a $550 SELL creates a second,
+    # separate lot -> live value is both lots' current worth: 1000*(560/500)
+    # + 550*(560/560) = 1670; nothing further gets consumed, so realized stays 0.
+    body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    assert [row["benchmark_live_usd"] for row in body] == pytest.approx([2000.0, 1000.0, 1670.0])
+    assert [row["benchmark_realized_usd"] for row in body] == pytest.approx([0.0, 0.0, 0.0])
+    assert all(row["hysa_live_usd"] > 0 for row in body)
+
+
+def test_statements_export_returns_a_zip_of_every_archived_flex_statement(client, isolated_config) -> None:
+    raw_dir = isolated_config.ibkr.raw_statement_dir
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "2026-01-01T00-00-00.xml").write_text("<FlexQueryResponse />")
+
+    response = client.get("/api/statements/export")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    zip_file = zipfile.ZipFile(io.BytesIO(response.content))
+    assert zip_file.namelist() == ["2026-01-01T00-00-00.xml"]
+
+
+def test_cash_sitting_reports_current_balance_and_when_it_last_dropped(client) -> None:
+    body = client.get("/api/cash-sitting").json()
+    assert body["cash_usd"] == pytest.approx(1550.0)
+    # $1000 of the original Jan 1 lot is still open (Jan 2's BUY only
+    # consumed $1000 of it); Jan 3's SELL proceeds are a separate, newer
+    # lot -- the oldest *open* dollar has been sitting since Jan 1.
+    assert body["sitting_since"] == "2026-01-01"
+    assert body["warning_level"] == "heavy"
 
 
 def test_monthly_pnl_returns_one_entry_for_january(client) -> None:
@@ -245,6 +287,36 @@ def test_tax_settings_put_preserves_target_allocation(client) -> None:
     assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
 
 
+def test_ibkr_settings_default_to_no_override(client) -> None:
+    body = client.get("/api/settings/ibkr").json()
+    assert body["token_set"] is False
+    assert body["query_id_set"] is False
+
+
+def test_ibkr_settings_put_then_get_round_trips(client) -> None:
+    put_response = client.put("/api/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
+    assert put_response.status_code == 200
+    assert put_response.json() == {"configured": True, "token_set": True, "query_id_set": True}
+    assert client.get("/api/settings/ibkr").json() == {"configured": True, "token_set": True, "query_id_set": True}
+
+
+def test_ibkr_settings_put_merges_a_partial_update(client) -> None:
+    client.put("/api/settings/ibkr", json={"token": "my-token"})
+    client.put("/api/settings/ibkr", json={"query_id": "99999"})
+    body = client.get("/api/settings/ibkr").json()
+    assert body["token_set"] is True
+    assert body["query_id_set"] is True
+
+
+def test_ibkr_settings_delete_clears_the_override(client) -> None:
+    client.put("/api/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
+    delete_response = client.delete("/api/settings/ibkr")
+    assert delete_response.status_code == 200
+    body = client.get("/api/settings/ibkr").json()
+    assert body["token_set"] is False
+    assert body["query_id_set"] is False
+
+
 def test_tax_report_returns_the_realized_gain_and_an_open_lot_preview(client) -> None:
     body = client.get("/api/tax/report", params={"as_of": "2026-01-03"}).json()
     annual_row = next(row for row in body["annual"] if row["year"] == 2026)
@@ -306,7 +378,10 @@ def test_ensure_symbol_priced_refreshes_raw_and_adjusted_caches(client, monkeypa
 
 
 def test_ensure_symbol_priced_reports_not_stale_when_cache_already_covers_today(client, monkeypatch) -> None:
-    today = datetime.now().date()
+    # Must match the endpoint's own UTC "today" (src/trades/api.py's `ensure_symbol_priced`,
+    # and every other `as_of`-default in this codebase) — a naive local `datetime.now()`
+    # can land on the previous UTC day depending on machine timezone/time of day.
+    today = datetime.now(UTC).date()
     cached = pl.DataFrame({"price_date": [today], "close": [500.0]})
     monkeypatch.setattr(trades_api.prices, "load_price_cache", lambda symbol, config: cached)
     monkeypatch.setattr(
@@ -440,7 +515,13 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
     assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
 
 
-def test_sync_progress_reflects_failure_and_still_raises(client, monkeypatch) -> None:
+def test_sync_survives_ibkr_failing_and_still_refreshes_everything_else(client, monkeypatch) -> None:
+    """A bad IBKR token shouldn't hide whether prices/CPI/HYSA rates still refreshed.
+
+    Each leg is independent now — the overall request still succeeds
+    (200), `steps` reports IBKR as the one failure, and the other legs
+    ran and reported success regardless.
+    """
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
@@ -449,10 +530,36 @@ def test_sync_progress_reflects_failure_and_still_raises(client, monkeypatch) ->
         raise ValueError(message)
 
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", failing_sync)
+    price_calls = []
+    monkeypatch.setattr(
+        trades_api.prices, "update_price_caches", lambda symbols, since, as_of, config: price_calls.append(symbols)
+    )
+    monkeypatch.setattr(
+        trades_api.prices, "update_price_cache", lambda symbol, since, as_of, config, adjusted=False: None
+    )
+    cpi_calls = []
+    monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", cpi_calls.append)
+    hysa_rates_calls = []
+    monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", hysa_rates_calls.append)
 
-    with pytest.raises(ValueError, match="too many requests"):
-        client.post("/api/sync")
+    response = client.post("/api/sync")
 
-    body = client.get("/api/sync/progress").json()
-    assert body["done"] is True
-    assert body["error"] is not None
+    assert response.status_code == 200
+    steps = {step["label"]: step for step in response.json()["steps"]}
+    assert steps["Portfolio data"] == {
+        "label": "Portfolio data",
+        "ok": False,
+        "error": "IBKR Flex API error 1018: too many requests",
+    }
+    assert steps["Market prices"]["ok"] is True
+    assert steps["Benchmark prices"]["ok"] is True
+    assert steps["Inflation data"]["ok"] is True
+    assert steps["Savings rates"]["ok"] is True
+    assert len(price_calls) == 1
+    assert len(cpi_calls) == 1
+    assert len(hysa_rates_calls) == 1
+
+    # The sync as a *whole* still finished normally — only the individual
+    # leg is what failed.
+    progress = client.get("/api/sync/progress").json()
+    assert progress == {"step": "Done", "percent": 100.0, "done": True, "error": None}

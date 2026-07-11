@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Legend, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatPercent, formatUsd } from '@/lib/format'
@@ -14,7 +14,7 @@ import { useAllocation, useSetTargetAllocation, useTargetAllocation } from '@/ho
 // type it — "Save" only persists it for next time, it isn't required to
 // see the effect.
 export function AllocationView() {
-  const { data, isLoading } = useAllocation()
+  const { data, isLoading, error } = useAllocation()
   const { data: targets } = useTargetAllocation()
   const setTargets = useSetTargetAllocation()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -49,11 +49,25 @@ export function AllocationView() {
         description="Current value vs. target, by symbol (including cash)"
         isLoading={isLoading}
         isEmpty={!liveRows?.length}
+        error={error?.message}
       >
         <BarChart data={liveRows} layout="vertical" margin={{ left: 8, right: 24, top: 8 }}>
           <CartesianGrid horizontal={false} stroke="var(--border)" />
-          <XAxis type="number" tickFormatter={(v) => `${v}%`} tick={{ fontSize: 12 }} axisLine={false} tickLine={false} />
-          <YAxis type="category" dataKey="symbol" tick={{ fontSize: 12 }} axisLine={false} tickLine={false} width={56} />
+          <XAxis
+            type="number"
+            tickFormatter={(v) => `${v}%`}
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <YAxis
+            type="category"
+            dataKey="symbol"
+            tick={{ fontSize: 12 }}
+            axisLine={false}
+            tickLine={false}
+            width={56}
+          />
           <Tooltip formatter={(value, name) => [formatPercent(Number(value), 1), name]} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
           <Bar dataKey="current_pct" name="Current %" fill="#0f172a" radius={2} />

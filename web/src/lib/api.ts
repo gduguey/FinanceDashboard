@@ -2,11 +2,15 @@ import type {
   AllocationRow,
   BenchmarkSetting,
   BenchmarkSettingUpdate,
+  CashHistoryPoint,
+  CashSitting,
   DataQualityRow,
   DollarChart,
   GrowthOf100Point,
   HysaRates,
   HysaSettings,
+  IbkrSettings,
+  IbkrSettingsUpdate,
   LedgerEvent,
   LotsTable,
   MonthlyPnl,
@@ -21,6 +25,7 @@ import type {
   TaxReport,
   TaxSettings,
   TaxSettingsUpdate,
+  VerifyResult,
 } from '@/types/portfolio'
 
 export class ApiError extends Error {}
@@ -51,16 +56,13 @@ function withRange(path: string, range?: DateRange): string {
 }
 
 export const api = {
-  overview: (asOf?: string) =>
-    request<Overview>(asOf ? `/api/overview?as_of=${asOf}` : '/api/overview'),
+  overview: (asOf?: string) => request<Overview>(asOf ? `/api/overview?as_of=${asOf}` : '/api/overview'),
   dollarChart: (range?: DateRange) => request<DollarChart>(withRange('/api/chart/dollar', range)),
-  growthOf100Chart: (range?: DateRange) =>
-    request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
+  growthOf100Chart: (range?: DateRange) => request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
   monthlyPnl: (range?: DateRange) => request<MonthlyPnl[]>(withRange('/api/chart/monthly-pnl', range)),
   monthlyPnlBySymbol: (range?: DateRange) =>
     request<MonthlyPnlBySymbol[]>(withRange('/api/chart/monthly-pnl/by-symbol', range)),
-  allocation: (asOf?: string) =>
-    request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
+  allocation: (asOf?: string) => request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
   targetAllocation: () => request<TargetAllocation>('/api/settings/target-allocation'),
   setTargetAllocation: (target: TargetAllocation) =>
     request<TargetAllocation>('/api/settings/target-allocation', {
@@ -70,6 +72,8 @@ export const api = {
     }),
   lots: (asOf?: string) => request<LotsTable>(asOf ? `/api/lots?as_of=${asOf}` : '/api/lots'),
   risk: (range?: DateRange) => request<RiskStat>(withRange('/api/risk', range)),
+  cashHistory: (range?: DateRange) => request<CashHistoryPoint[]>(withRange('/api/chart/cash-history', range)),
+  cashSitting: () => request<CashSitting>('/api/cash-sitting'),
   dataQuality: () => request<DataQualityRow[]>('/api/data-quality'),
   ledgerExport: () => request<LedgerEvent[]>('/api/ledger/export'),
   sync: () => request<SyncResult>('/api/sync', { method: 'POST' }),
@@ -89,8 +93,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(setting),
     }),
-  searchSymbols: (query: string) =>
-    request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
+  searchSymbols: (query: string) => request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
   ensureSymbolPriced: (symbol: string) =>
     request<SymbolPriceStatus>(`/api/symbols/${encodeURIComponent(symbol)}/ensure-priced`, { method: 'POST' }),
   taxSettings: () => request<TaxSettings>('/api/settings/tax'),
@@ -101,4 +104,13 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   taxReport: (asOf?: string) => request<TaxReport>(asOf ? `/api/tax/report?as_of=${asOf}` : '/api/tax/report'),
+  ibkrSettings: () => request<IbkrSettings>('/api/settings/ibkr'),
+  setIbkrSettings: (update: IbkrSettingsUpdate) =>
+    request<IbkrSettings>('/api/settings/ibkr', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    }),
+  clearIbkrSettings: () => request<IbkrSettings>('/api/settings/ibkr', { method: 'DELETE' }),
+  verifyIbkrSettings: () => request<VerifyResult>('/api/settings/ibkr/verify', { method: 'POST' }),
 }

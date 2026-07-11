@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/investments/SortableTableHead'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatDate, formatPercent, formatUsd, signColor } from '@/lib/format'
 import { useLots, useTaxSettings } from '@/hooks/usePortfolioData'
@@ -36,8 +36,7 @@ function aggregateOpenLotsByDay(lots: OpenLot[]): OpenLot[] {
       current_price: currentPrice,
       days_held: daysHeld,
       raw_return_pct: rawReturnPct,
-      annualized_return_pct:
-        daysHeld >= 365 ? ((1 + rawReturnPct / 100) ** (365 / daysHeld) - 1) * 100 : null,
+      annualized_return_pct: daysHeld >= 365 ? ((1 + rawReturnPct / 100) ** (365 / daysHeld) - 1) * 100 : null,
     }
   })
 }
@@ -56,7 +55,8 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
     const dividendsReceived = group.reduce((sum, l) => sum + l.dividends_received, 0)
     const daysHeld = group.reduce((sum, l) => sum + l.shares * l.days_held, 0) / shares
     const totalReturnPct = ((realizedGain + dividendsReceived) / costBasis) * 100
-    const alphaVsHysaPct = group.reduce((sum, l) => sum + l.shares * l.cost_per_share * l.alpha_vs_hysa_pct, 0) / costBasis
+    const alphaVsHysaPct =
+      group.reduce((sum, l) => sum + l.shares * l.cost_per_share * l.alpha_vs_hysa_pct, 0) / costBasis
     const largest = group.reduce((a, b) => (b.shares > a.shares ? b : a))
     return {
       lot_id: group.map((l) => l.lot_id).join('+'),
@@ -80,7 +80,7 @@ function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
 // self-inflicted survivorship bias — so open and closed lots get their
 // own tabs, plus a per-symbol rollup that doesn't exist anywhere else.
 export function LotsTable() {
-  const { data, isLoading, isError } = useLots()
+  const { data, isLoading, isError, error } = useLots()
   const { data: taxSettings } = useTaxSettings()
   const [aggregateByDay, setAggregateByDay] = useState(false)
   const taxEnabled = taxSettings?.tax_enabled ?? false
@@ -96,7 +96,7 @@ export function LotsTable() {
           <Skeleton className="h-64 w-full" />
         ) : isError || !data ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            No lots yet — hit Sync to pull trade history.
+            {error?.message || 'No lots yet — hit Sync to pull trade history.'}
           </p>
         ) : (
           <div className="space-y-6">
@@ -120,7 +120,6 @@ export function LotsTable() {
               <TabsContent value="closed">
                 <ClosedLotsTable
                   lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots}
-                  taxEnabled={taxEnabled}
                 />
               </TabsContent>
             </Tabs>
@@ -145,7 +144,12 @@ function OpenLotsTable({ lots, taxEnabled }: { lots: OpenLot[]; taxEnabled: bool
           <SortableTableHead active={sort.key === 'opened_at'} desc={sort.desc} onClick={() => toggleSort('opened_at')}>
             Opened
           </SortableTableHead>
-          <SortableTableHead align="right" active={sort.key === 'shares'} desc={sort.desc} onClick={() => toggleSort('shares')}>
+          <SortableTableHead
+            align="right"
+            active={sort.key === 'shares'}
+            desc={sort.desc}
+            onClick={() => toggleSort('shares')}
+          >
             Shares
           </SortableTableHead>
           <SortableTableHead
@@ -221,7 +225,7 @@ function OpenLotsTable({ lots, taxEnabled }: { lots: OpenLot[]; taxEnabled: bool
   )
 }
 
-function ClosedLotsTable({ lots, taxEnabled }: { lots: ClosedLot[]; taxEnabled: boolean }) {
+function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
   const { sorted, sort, toggleSort } = useSortableRows(lots, 'closed_at')
   if (!lots.length) return <p className="py-6 text-center text-sm text-muted-foreground">No closed lots</p>
   return (
@@ -234,7 +238,12 @@ function ClosedLotsTable({ lots, taxEnabled }: { lots: ClosedLot[]; taxEnabled: 
           <SortableTableHead active={sort.key === 'closed_at'} desc={sort.desc} onClick={() => toggleSort('closed_at')}>
             Exit date
           </SortableTableHead>
-          <SortableTableHead align="right" active={sort.key === 'shares'} desc={sort.desc} onClick={() => toggleSort('shares')}>
+          <SortableTableHead
+            align="right"
+            active={sort.key === 'shares'}
+            desc={sort.desc}
+            onClick={() => toggleSort('shares')}
+          >
             Shares
           </SortableTableHead>
           <SortableTableHead
@@ -355,8 +364,13 @@ function SymbolRollupTable({ rows, taxEnabled }: { rows: SymbolRollup[]; taxEnab
             >
               Unrealized <InfoTooltip term="unrealizedGain" />
             </SortableTableHead>
-            <SortableTableHead align="right" active={sort.key === 'xirr'} desc={sort.desc} onClick={() => toggleSort('xirr')}>
-              XIRR <InfoTooltip term="xirr" />
+            <SortableTableHead
+              align="right"
+              active={sort.key === 'xirr'}
+              desc={sort.desc}
+              onClick={() => toggleSort('xirr')}
+            >
+              XIRR <InfoTooltip term="symbolXirr" />
             </SortableTableHead>
           </TableRow>
         </TableHeader>
