@@ -93,7 +93,7 @@ export type LlmUsage = Record<string, LlmProviderUsage>
 
 export type LlmSettings = components['schemas']['LlmSettings']
 export type LlmSettingsUpdate = components['schemas']['LLMSettingsUpdate']
-export type VerifyResult = components['schemas']['accounting__api__VerifyResult']
+export type VerifyResult = components['schemas']['accounting__api__api_models__VerifyResult']
 export type CategoryTotalRow = components['schemas']['CategoryTotalRow']
 export type MonthlyIncomeExpenseRow = components['schemas']['MonthlyIncomeExpenseRow']
 export type SpendCurvePoint = components['schemas']['SpendCurvePoint']

@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for the `accounting` Postgres schema.
 
 Importing this package registers every accounting table on `db.base.Base`'s
-shared metadata — `alembic/env.py` and any test fixture that calls
+shared metadata — `migration/env.py` and any test fixture that calls
 `Base.metadata.create_all` must import `accounting.db` (directly or
 transitively) before doing so, or these tables silently won't exist yet.
 """

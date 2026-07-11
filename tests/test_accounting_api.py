@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 import db.models as dbm
 from accounting import api as accounting_api
+from accounting.api.routers import imports as accounting_imports_router
+from accounting.api.routers import llm as accounting_llm_router
 from accounting.config import AccountingConfig
 from accounting.importers import ingest as ingest_module
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
@@ -562,7 +564,7 @@ def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monke
         "Pay Date: 06/30/2026\nGross Pay: $2,000.00\nTotal Taxes: $500.00\nNet Pay: $1,500.00\n"
         "Direct Deposit\nChecking ending in 9579 $1,500.00\n"
     )
-    monkeypatch.setattr(accounting_api, "extract_paystub_pdf_text", lambda _pdf_bytes: paystub_text)
+    monkeypatch.setattr(accounting_imports_router, "extract_paystub_pdf_text", lambda _pdf_bytes: paystub_text)
 
     response = client.post(
         "/api/accounting/import/paystub", files={"file": ("paystub.pdf", b"%PDF-fake", "application/pdf")}
@@ -590,7 +592,9 @@ def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monke
 
 
 def test_import_paystub_400s_on_unrecognized_text(client, monkeypatch) -> None:
-    monkeypatch.setattr(accounting_api, "extract_paystub_pdf_text", lambda _pdf_bytes: "not a paystub at all")
+    monkeypatch.setattr(
+        accounting_imports_router, "extract_paystub_pdf_text", lambda _pdf_bytes: "not a paystub at all"
+    )
     response = client.post(
         "/api/accounting/import/paystub", files={"file": ("paystub.pdf", b"%PDF-fake", "application/pdf")}
     )
@@ -620,7 +624,7 @@ def test_ai_suggest_category_applies_a_valid_suggestion(client, monkeypatch) -> 
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
 
     response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
     assert response.status_code == 200
@@ -647,7 +651,7 @@ def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monk
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
     fake_response = '{"category_id": "not-a-real-category", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
 
     response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
     assert response.status_code == 200
@@ -676,7 +680,7 @@ def test_ai_suggest_category_with_lock_category_id_only_fills_the_subcategory(cl
     )
 
     fake_response = '{"category_id": "income:reimbursement", "subcategory_id": "income:reimbursement:employer"}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
 
     response = client.post(
         f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category",
@@ -706,7 +710,7 @@ def test_ai_suggest_category_with_lock_category_id_discards_a_disagreeing_guess(
     client.put(f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:salary"})
 
     fake_response = '{"category_id": "income:reimbursement", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
 
     response = client.post(
         f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category",
@@ -734,13 +738,13 @@ def test_ai_suggest_category_503s_when_no_provider_is_configured(client, monkeyp
     postings = client.get("/api/accounting/postings").json()
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
-    monkeypatch.setattr(accounting_api, "_llm_providers", list)
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", list)
     response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
     assert response.status_code == 503
 
 
 def test_ai_suggest_category_404s_for_an_unknown_posting(client, monkeypatch) -> None:
-    monkeypatch.setattr(accounting_api, "_llm_providers", list)
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", list)
     response = client.post("/api/accounting/postings/does-not-exist/ai-suggest-category")
     assert response.status_code == 404
 
@@ -760,7 +764,7 @@ def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, m
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
     client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
     updated = client.get("/api/accounting/postings").json()
@@ -785,7 +789,7 @@ def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> 
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
     client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
     response = client.post("/api/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]})
@@ -814,7 +818,7 @@ def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) 
     assert payroll["category_id"] is None
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
     client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
     client.put(f"/api/accounting/postings/{payroll['posting_id']}/override", json={"pending_selected": False})
 
@@ -843,7 +847,7 @@ def test_validate_pending_ignores_postings_outside_the_given_list(client, monkey
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
     client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
     response = client.post("/api/accounting/postings/validate-pending", json={"posting_ids": ["some-other-posting"]})
@@ -990,7 +994,7 @@ def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
         gemini_api_key = None
         mistral_api_key = None
 
-    monkeypatch.setattr(accounting_api, "resolve_llm_credentials", lambda config: _NoCredentials())
+    monkeypatch.setattr(accounting_llm_router, "resolve_llm_credentials", lambda config: _NoCredentials())
 
     body = client.get("/api/accounting/llm-usage").json()
     assert body["gemini"] == {
@@ -1008,7 +1012,7 @@ def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, monke
         gemini_api_key = object()
         mistral_api_key = None
 
-    monkeypatch.setattr(accounting_api, "resolve_llm_credentials", lambda config: _FakeCredentials())
+    monkeypatch.setattr(accounting_llm_router, "resolve_llm_credentials", lambda config: _FakeCredentials())
 
     from accounting.llm.usage import record_call  # noqa: PLC0415
 
@@ -2264,7 +2268,7 @@ def test_category_totals_excludes_unconfirmed_pending_suggestions(client, monkey
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
-    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
     client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
     response = client.get(

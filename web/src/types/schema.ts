@@ -55,85 +55,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/sync-exchange-rates': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Post Sync Exchange Rates
-     * @description Re-fetch exchange-rate history from Frankfurter and overwrite the cache.
-     *
-     *     Returns
-     *     -------
-     *     ExchangeRateSyncResult
-     *         `as_of`, and every non-base currency's freshly smoothed rate into `accounting.models.BASE_CURRENCY`.
-     */
-    post: operations['post_sync_exchange_rates_api_accounting_sync_exchange_rates_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/exchange-rates/current': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Current Exchange Rate
-     * @description Return the smoothed rate this app currently uses for one currency, and how it's computed.
-     *
-     *     Returns
-     *     -------
-     *     CurrentExchangeRate
-     */
-    get: operations['get_current_exchange_rate_api_accounting_exchange_rates_current_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/exchange-rates/history': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Exchange Rate History
-     * @description Return the cached daily rate history for one currency, alongside the smoothed value at each point.
-     *
-     *     Returns
-     *     -------
-     *     list[ExchangeRateHistoryPoint]
-     *         One point per cached day, oldest first.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         400 if exchange rates have never been synced.
-     */
-    get: operations['get_exchange_rate_history_api_accounting_exchange_rates_history_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/accounting/categories': {
     parameters: {
       query?: never
@@ -381,30 +302,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/simulator/project': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Simulator Projection
-     * @description Project a compound-interest scenario forward, month by month.
-     *
-     *     Returns
-     *     -------
-     *     list[ProjectionPoint]
-     */
-    get: operations['get_simulator_projection_api_accounting_simulator_project_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/accounting/accounts': {
     parameters: {
       query?: never
@@ -582,6 +479,85 @@ export interface paths {
      *         The account whose opening balance was cleared.
      */
     delete: operations['delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/sync-exchange-rates': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Sync Exchange Rates
+     * @description Re-fetch exchange-rate history from Frankfurter and overwrite the cache.
+     *
+     *     Returns
+     *     -------
+     *     ExchangeRateSyncResult
+     *         `as_of`, and every non-base currency's freshly smoothed rate into `accounting.models.BASE_CURRENCY`.
+     */
+    post: operations['post_sync_exchange_rates_api_accounting_sync_exchange_rates_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/exchange-rates/current': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Current Exchange Rate
+     * @description Return the smoothed rate this app currently uses for one currency, and how it's computed.
+     *
+     *     Returns
+     *     -------
+     *     CurrentExchangeRate
+     */
+    get: operations['get_current_exchange_rate_api_accounting_exchange_rates_current_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/exchange-rates/history': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Exchange Rate History
+     * @description Return the cached daily rate history for one currency, alongside the smoothed value at each point.
+     *
+     *     Returns
+     *     -------
+     *     list[ExchangeRateHistoryPoint]
+     *         One point per cached day, oldest first.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if exchange rates have never been synced.
+     */
+    get: operations['get_exchange_rate_history_api_accounting_exchange_rates_history_get']
+    put?: never
+    post?: never
+    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -1131,6 +1107,166 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/postings/validate-pending': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Validate Pending
+     * @description Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
+     *
+     *     Only ever touches postings named in `payload.posting_ids` — the
+     *     caller's current filtered view — so a pending suggestion sitting
+     *     outside that view is never affected by this call, per the "validate
+     *     selection" button's contract. A posting with no override, or one
+     *     whose override isn't pending, is silently skipped.
+     *
+     *     Returns
+     *     -------
+     *     ValidatePendingResult
+     */
+    post: operations['post_validate_pending_api_accounting_postings_validate_pending_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/transfer-suggestions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Transfer Suggestions
+     * @description Suggest likely internal transfers no rule has already resolved.
+     *
+     *     Parameters
+     *     ----------
+     *     window_days
+     *         How many days apart the two postings can be and still count as
+     *         one transfer — widen this if a transfer took longer than 3 days
+     *         to land on both sides (e.g. an ACH transfer over a weekend).
+     *
+     *     Returns
+     *     -------
+     *     list[TransferSuggestion]
+     *         Each carries both sides' own `description` and a `suggestion_id`,
+     *         for the caller to propose a `TransferRule` from or dismiss —
+     *         never applied automatically. Excludes any pair already dismissed
+     *         (see `POST /dismissed-suggestions`).
+     */
+    get: operations['get_transfer_suggestions_api_accounting_transfer_suggestions_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/duplicate-suggestions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Duplicate Suggestions
+     * @description Suggest likely duplicate transactions no merge decision has already resolved.
+     *
+     *     Parameters
+     *     ----------
+     *     window_days
+     *         How many days apart two transactions can be and still count as one duplicate.
+     *
+     *     Returns
+     *     -------
+     *     list[DuplicateGroup]
+     *         Sorted least-certain first, since those need the closest review.
+     *         Each carries a `suggestion_id` for dismissing it. Excludes any
+     *         group already dismissed (see `POST /dismissed-suggestions`).
+     */
+    get: operations['get_duplicate_suggestions_api_accounting_duplicate_suggestions_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/dismissed-suggestions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Dismissed Suggestions
+     * @description List every archived (dismissed) suggestion, most recently dismissed first.
+     *
+     *     Returns
+     *     -------
+     *     list[DismissedSuggestion]
+     */
+    get: operations['get_dismissed_suggestions_api_accounting_dismissed_suggestions_get']
+    put?: never
+    /**
+     * Post Dismissed Suggestion
+     * @description Archive a suggestion so it stops being proposed, without discarding it.
+     *
+     *     Returns
+     *     -------
+     *     DismissedSuggestion
+     *         The archived entry just persisted.
+     */
+    post: operations['post_dismissed_suggestion_api_accounting_dismissed_suggestions_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/dismissed-suggestions/{suggestion_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Dismissed Suggestion
+     * @description Restore a dismissed suggestion so it can be proposed again.
+     *
+     *     Returns
+     *     -------
+     *     SuggestionIdResponse
+     *         The entry just restored.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no archived entry has this id.
+     */
+    delete: operations['delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/accounting/llm-usage': {
     parameters: {
       query?: never
@@ -1381,37 +1517,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/validate-pending': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Post Validate Pending
-     * @description Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
-     *
-     *     Only ever touches postings named in `payload.posting_ids` — the
-     *     caller's current filtered view — so a pending suggestion sitting
-     *     outside that view is never affected by this call, per the "validate
-     *     selection" button's contract. A posting with no override, or one
-     *     whose override isn't pending, is silently skipped.
-     *
-     *     Returns
-     *     -------
-     *     ValidatePendingResult
-     */
-    post: operations['post_validate_pending_api_accounting_postings_validate_pending_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/transfer-suggestions': {
+  '/api/accounting/simulator/project': {
     parameters: {
       query?: never
       header?: never
@@ -1419,123 +1525,17 @@ export interface paths {
       cookie?: never
     }
     /**
-     * Get Transfer Suggestions
-     * @description Suggest likely internal transfers no rule has already resolved.
-     *
-     *     Parameters
-     *     ----------
-     *     window_days
-     *         How many days apart the two postings can be and still count as
-     *         one transfer — widen this if a transfer took longer than 3 days
-     *         to land on both sides (e.g. an ACH transfer over a weekend).
+     * Get Simulator Projection
+     * @description Project a compound-interest scenario forward, month by month.
      *
      *     Returns
      *     -------
-     *     list[TransferSuggestion]
-     *         Each carries both sides' own `description` and a `suggestion_id`,
-     *         for the caller to propose a `TransferRule` from or dismiss —
-     *         never applied automatically. Excludes any pair already dismissed
-     *         (see `POST /dismissed-suggestions`).
+     *     list[ProjectionPoint]
      */
-    get: operations['get_transfer_suggestions_api_accounting_transfer_suggestions_get']
+    get: operations['get_simulator_projection_api_accounting_simulator_project_get']
     put?: never
     post?: never
     delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/duplicate-suggestions': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Duplicate Suggestions
-     * @description Suggest likely duplicate transactions no merge decision has already resolved.
-     *
-     *     Parameters
-     *     ----------
-     *     window_days
-     *         How many days apart two transactions can be and still count as one duplicate.
-     *
-     *     Returns
-     *     -------
-     *     list[DuplicateGroup]
-     *         Sorted least-certain first, since those need the closest review.
-     *         Each carries a `suggestion_id` for dismissing it. Excludes any
-     *         group already dismissed (see `POST /dismissed-suggestions`).
-     */
-    get: operations['get_duplicate_suggestions_api_accounting_duplicate_suggestions_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/dismissed-suggestions': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Dismissed Suggestions
-     * @description List every archived (dismissed) suggestion, most recently dismissed first.
-     *
-     *     Returns
-     *     -------
-     *     list[DismissedSuggestion]
-     */
-    get: operations['get_dismissed_suggestions_api_accounting_dismissed_suggestions_get']
-    put?: never
-    /**
-     * Post Dismissed Suggestion
-     * @description Archive a suggestion so it stops being proposed, without discarding it.
-     *
-     *     Returns
-     *     -------
-     *     DismissedSuggestion
-     *         The archived entry just persisted.
-     */
-    post: operations['post_dismissed_suggestion_api_accounting_dismissed_suggestions_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/dismissed-suggestions/{suggestion_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Dismissed Suggestion
-     * @description Restore a dismissed suggestion so it can be proposed again.
-     *
-     *     Returns
-     *     -------
-     *     SuggestionIdResponse
-     *         The entry just restored.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no archived entry has this id.
-     */
-    delete: operations['delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -2256,6 +2256,153 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/tax/report': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Tax Report
+     * @description Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
+     *
+     *     Returns
+     *     -------
+     *     TaxReport
+     *         `annual`, `tax_owed` (the annual report plus estimated
+     *         `capital_gains_tax_usd`, `dividend_tax_usd`, `total_tax_usd`,
+     *         `balance_due_usd` per year), `wash_sales`, `sale_previews`,
+     *         `after_tax_dollar_alpha_vs_hysa_usd`, and the liquidation estimate —
+     *         `liquidation_pretax_value_usd`, `liquidation_long_term_gain_usd`,
+     *         `liquidation_short_term_gain_usd`, `liquidation_capital_gains_tax_usd`,
+     *         `liquidation_value_usd` — what a full sale of every open lot right
+     *         now would leave you with, and the arithmetic behind that number.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no ledger is cached yet; 422 if a required price is missing.
+     */
+    get: operations['get_tax_report_api_tax_report_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/lots': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Lots
+     * @description Return the trade-level table: open lots, closed lots, per-symbol rollup.
+     *
+     *     Returns
+     *     -------
+     *     LotsTable
+     *         `open_lots`, `closed_lots`, `symbol_rollup`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no ledger is cached yet; 422 if a required price is missing.
+     */
+    get: operations['get_lots_api_lots_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/risk': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Risk
+     * @description Return the largest peak-to-trough NAV decline over a window.
+     *
+     *     Returns
+     *     -------
+     *     RiskStat
+     *         `max_drawdown_pct`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no ledger is cached yet; 422 if a required price is missing.
+     */
+    get: operations['get_risk_api_risk_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/data-quality': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Data Quality
+     * @description Return the last cached price date per symbol ever held or benchmarked against.
+     *
+     *     Returns
+     *     -------
+     *     list[DataQualityRow]
+     *         One entry per symbol.
+     */
+    get: operations['get_data_quality_api_data_quality_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/ledger/export': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Ledger Export
+     * @description Export the full ledger, for the user's own backup.
+     *
+     *     Returns
+     *     -------
+     *     list[LedgerEvent]
+     *         Every ledger row.
+     */
+    get: operations['get_ledger_export_api_ledger_export_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/settings/target-allocation': {
     parameters: {
       query?: never
@@ -2480,43 +2627,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/tax/report': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Tax Report
-     * @description Return the full tax view: the annual report, estimated tax owed, flagged wash sales, and sale previews.
-     *
-     *     Returns
-     *     -------
-     *     TaxReport
-     *         `annual`, `tax_owed` (the annual report plus estimated
-     *         `capital_gains_tax_usd`, `dividend_tax_usd`, `total_tax_usd`,
-     *         `balance_due_usd` per year), `wash_sales`, `sale_previews`,
-     *         `after_tax_dollar_alpha_vs_hysa_usd`, and the liquidation estimate —
-     *         `liquidation_pretax_value_usd`, `liquidation_long_term_gain_usd`,
-     *         `liquidation_short_term_gain_usd`, `liquidation_capital_gains_tax_usd`,
-     *         `liquidation_value_usd` — what a full sale of every open lot right
-     *         now would leave you with, and the arithmetic behind that number.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no ledger is cached yet; 422 if a required price is missing.
-     */
-    get: operations['get_tax_report_api_tax_report_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/hysa-rates': {
     parameters: {
       query?: never
@@ -2599,116 +2709,6 @@ export interface paths {
      *         404 if no ledger is cached yet; 422 if Yahoo Finance has no data for `symbol`.
      */
     post: operations['ensure_symbol_priced_api_symbols__symbol__ensure_priced_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/lots': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Lots
-     * @description Return the trade-level table: open lots, closed lots, per-symbol rollup.
-     *
-     *     Returns
-     *     -------
-     *     LotsTable
-     *         `open_lots`, `closed_lots`, `symbol_rollup`.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no ledger is cached yet; 422 if a required price is missing.
-     */
-    get: operations['get_lots_api_lots_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/risk': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Risk
-     * @description Return the largest peak-to-trough NAV decline over a window.
-     *
-     *     Returns
-     *     -------
-     *     RiskStat
-     *         `max_drawdown_pct`.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no ledger is cached yet; 422 if a required price is missing.
-     */
-    get: operations['get_risk_api_risk_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/data-quality': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Data Quality
-     * @description Return the last cached price date per symbol ever held or benchmarked against.
-     *
-     *     Returns
-     *     -------
-     *     list[DataQualityRow]
-     *         One entry per symbol.
-     */
-    get: operations['get_data_quality_api_data_quality_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/ledger/export': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Ledger Export
-     * @description Export the full ledger, for the user's own backup.
-     *
-     *     Returns
-     *     -------
-     *     list[LedgerEvent]
-     *         Every ledger row.
-     */
-    get: operations['get_ledger_export_api_ledger_export_get']
-    put?: never
-    post?: never
     delete?: never
     options?: never
     head?: never
@@ -2823,10 +2823,10 @@ export interface paths {
      *
      *     Registered last on purpose: Starlette matches routes in registration
      *     order, so every `/api/...` route (and `/docs`, `/openapi.json`)
-     *     defined earlier in this module is tried first. Falls back to
-     *     `index.html` for any path that isn't a real file in `web/dist/` —
-     *     e.g. a hard refresh on `/settings` — so the frontend's client-side
-     *     router gets a chance to handle it instead of a bare 404.
+     *     defined earlier is tried first. Falls back to `index.html` for any
+     *     path that isn't a real file in `web/dist/` — e.g. a hard refresh on
+     *     `/settings` — so the frontend's client-side router gets a chance to
+     *     handle it instead of a bare 404.
      *
      *     Returns
      *     -------
@@ -5480,7 +5480,7 @@ export interface components {
      * VerifyResult
      * @description Response body for `POST /settings/llm/verify`.
      */
-    accounting__api__VerifyResult: {
+    accounting__api__api_models__VerifyResult: {
       /** Ok */
       ok: boolean
       /** Error */
@@ -5490,7 +5490,7 @@ export interface components {
      * VerifyResult
      * @description Whether IBKR accepted the configured credentials.
      */
-    trades__api__VerifyResult: {
+    trades__api__api_models__VerifyResult: {
       /** Ok */
       ok: boolean
       /** Error */
@@ -5541,88 +5541,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['Currency'][]
-        }
-      }
-    }
-  }
-  post_sync_exchange_rates_api_accounting_sync_exchange_rates_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExchangeRateSyncResult']
-        }
-      }
-    }
-  }
-  get_current_exchange_rate_api_accounting_exchange_rates_current_get: {
-    parameters: {
-      query: {
-        currency: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CurrentExchangeRate']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_exchange_rate_history_api_accounting_exchange_rates_history_get: {
-    parameters: {
-      query: {
-        currency: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExchangeRateHistoryPoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }
@@ -5942,41 +5860,6 @@ export interface operations {
       }
     }
   }
-  get_simulator_projection_api_accounting_simulator_project_get: {
-    parameters: {
-      query: {
-        initial_capital: number
-        monthly_contribution: number
-        horizon_years: number
-        annual_rate_pct: number
-        compounding_frequency?: 'annually' | 'monthly' | 'daily'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ProjectionPoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   post_account_api_accounting_accounts_post: {
     parameters: {
       query?: never
@@ -6195,6 +6078,88 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['AccountIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_sync_exchange_rates_api_accounting_sync_exchange_rates_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ExchangeRateSyncResult']
+        }
+      }
+    }
+  }
+  get_current_exchange_rate_api_accounting_exchange_rates_current_get: {
+    parameters: {
+      query: {
+        currency: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CurrentExchangeRate']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_exchange_rate_history_api_accounting_exchange_rates_history_get: {
+    parameters: {
+      query: {
+        currency: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ExchangeRateHistoryPoint'][]
         }
       }
       /** @description Validation Error */
@@ -6697,6 +6662,185 @@ export interface operations {
       }
     }
   }
+  post_validate_pending_api_accounting_postings_validate_pending_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ValidatePendingRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ValidatePendingResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_transfer_suggestions_api_accounting_transfer_suggestions_get: {
+    parameters: {
+      query?: {
+        window_days?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferSuggestion'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_duplicate_suggestions_api_accounting_duplicate_suggestions_get: {
+    parameters: {
+      query?: {
+        window_days?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DuplicateGroup'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion'][]
+        }
+      }
+    }
+  }
+  post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DismissSuggestionRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SuggestionIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_llm_usage_api_accounting_llm_usage_get: {
     parameters: {
       query?: never
@@ -6736,7 +6880,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['accounting__api__VerifyResult']
+          'application/json': components['schemas']['accounting__api__api_models__VerifyResult']
         }
       }
       /** @description Validation Error */
@@ -6922,43 +7066,14 @@ export interface operations {
       }
     }
   }
-  post_validate_pending_api_accounting_postings_validate_pending_post: {
+  get_simulator_projection_api_accounting_simulator_project_get: {
     parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ValidatePendingRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ValidatePendingResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_transfer_suggestions_api_accounting_transfer_suggestions_get: {
-    parameters: {
-      query?: {
-        window_days?: number
+      query: {
+        initial_capital: number
+        monthly_contribution: number
+        horizon_years: number
+        annual_rate_pct: number
+        compounding_frequency?: 'annually' | 'monthly' | 'daily'
       }
       header?: never
       path?: never
@@ -6972,122 +7087,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TransferSuggestion'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_duplicate_suggestions_api_accounting_duplicate_suggestions_get: {
-    parameters: {
-      query?: {
-        window_days?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DuplicateGroup'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DismissedSuggestion'][]
-        }
-      }
-    }
-  }
-  post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['DismissSuggestionRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DismissedSuggestion']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        suggestion_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SuggestionIdResponse']
+          'application/json': components['schemas']['ProjectionPoint'][]
         }
       }
       /** @description Validation Error */
@@ -7909,6 +7909,140 @@ export interface operations {
       }
     }
   }
+  get_tax_report_api_tax_report_get: {
+    parameters: {
+      query?: {
+        as_of?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TaxReport']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_lots_api_lots_get: {
+    parameters: {
+      query?: {
+        as_of?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LotsTable']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_risk_api_risk_get: {
+    parameters: {
+      query?: {
+        start?: string | null
+        end?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RiskStat']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_data_quality_api_data_quality_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DataQualityRow'][]
+        }
+      }
+    }
+  }
+  get_ledger_export_api_ledger_export_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LedgerEvent'][]
+        }
+      }
+    }
+  }
   get_target_allocation_api_settings_target_allocation_get: {
     parameters: {
       query?: never
@@ -8215,38 +8349,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['trades__api__VerifyResult']
-        }
-      }
-    }
-  }
-  get_tax_report_api_tax_report_get: {
-    parameters: {
-      query?: {
-        as_of?: string | null
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['TaxReport']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
+          'application/json': components['schemas']['trades__api__api_models__VerifyResult']
         }
       }
     }
@@ -8329,109 +8432,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_lots_api_lots_get: {
-    parameters: {
-      query?: {
-        as_of?: string | null
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['LotsTable']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_risk_api_risk_get: {
-    parameters: {
-      query?: {
-        start?: string | null
-        end?: string | null
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['RiskStat']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_data_quality_api_data_quality_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DataQualityRow'][]
-        }
-      }
-    }
-  }
-  get_ledger_export_api_ledger_export_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['LedgerEvent'][]
         }
       }
     }
