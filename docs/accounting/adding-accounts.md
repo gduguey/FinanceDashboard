@@ -125,8 +125,7 @@ Add one entry to `_STANDARDIZERS` in `ingest.py`:
 
 ```python
 _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
-    ...
-    ("Ally", "savings"): standardize_ally_savings,
+    ...("Ally", "savings"): standardize_ally_savings,
 }
 ```
 

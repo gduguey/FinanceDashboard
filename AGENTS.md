@@ -55,7 +55,19 @@ that raw archive — cheap to delete and regenerate (see
 `rebuild_from_raw_statements`), never the only copy of the data. Apply this
 to any new fetched-and-cached data source, not just IBKR.
 
-## 3. Rules for coding
+## 3. Guarding tests against real credentials in `.env`
+
+Tests that need to disable a real external service (e.g. R2) can't just
+pass `_env_file=None` to a pydantic-settings model — that only stops it
+reading the `.env` *file*, not real values already sitting in
+`os.environ`. Editors that auto-load `${workspaceFolder}/.env` (e.g. VS
+Code's Python extension, on by default) put those values there before the
+test process even starts, so a "disabled" credentials object can still
+resolve to production secrets. Clear the relevant env vars yourself
+(`monkeypatch.delenv(..., raising=False)`) in addition to disabling the
+env file — see `tests/conftest.py`'s `_no_r2_by_default` fixture.
+
+## 4. Rules for coding
 
 Avoid using for loops. Use instead polars or numpy expressions whenever possible.
 

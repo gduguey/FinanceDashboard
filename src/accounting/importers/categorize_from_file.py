@@ -33,6 +33,7 @@ from accounting.store import load_overrides, save_overrides
 
 if TYPE_CHECKING:
     from datetime import datetime
+    from typing import Any
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import DateOrder, SkippedRowsInfo
@@ -136,7 +137,7 @@ def preview_categorize_from_file(  # noqa: PLR0913, PLR0914, C901
     *,
     is_excel: bool,
     existing_categories: dict[str, Category],
-    ledger: pl.DataFrame,
+    ledger: pl.DataFrame | pl.LazyFrame,
     account_ids: list[str] | None = None,
     separator: str | None = None,
     date_order: DateOrder = "MDY",
@@ -197,14 +198,18 @@ def preview_categorize_from_file(  # noqa: PLR0913, PLR0914, C901
     )
     all_categories = {**existing_categories, **new_categories}
 
-    candidates = ledger.filter(pl.col("posting_id").str.ends_with(":0"))
+    ledger_df = ledger.lazy() if isinstance(ledger, pl.DataFrame) else ledger
+    candidates = ledger_df.filter(pl.col("posting_id").str.ends_with(":0"))
     if account_ids:
         candidates = candidates.filter(pl.col("account_id").is_in(account_ids))
-    candidate_rows = candidates.select(
-        "posting_id", "transaction_id", "posted_at", "description", "amount", "category_id"
-    ).to_dicts()
+    candidate_rows = (
+        candidates
+        .select("posting_id", "transaction_id", "posted_at", "description", "amount", "category_id")
+        .collect()
+        .to_dicts()
+    )
 
-    candidates_by_amount: dict[float, list[dict]] = {}
+    candidates_by_amount: dict[float, list[dict[str, Any]]] = {}
     for candidate in candidate_rows:
         candidates_by_amount.setdefault(round(candidate["amount"], 2), []).append(candidate)
 
@@ -239,7 +244,7 @@ def preview_categorize_from_file(  # noqa: PLR0913, PLR0914, C901
     matches: list[CategorizationMatch] = []
     for row_index, row in enumerate(resolved_rows):
         match = best_match_for_row.get(row_index)
-        candidate = candidate_by_posting_id[match[0]] if match else None
+        matched_candidate = candidate_by_posting_id[match[0]] if match else None
         matches.append(
             CategorizationMatch(
                 row_number=row.row_number,
@@ -250,10 +255,10 @@ def preview_categorize_from_file(  # noqa: PLR0913, PLR0914, C901
                 proposed_category_name=_category_name(row.category_id, all_categories),
                 proposed_subcategory_id=row.subcategory_id,
                 proposed_subcategory_name=_category_name(row.subcategory_id, all_categories),
-                posting_id=candidate["posting_id"] if candidate else None,
-                transaction_id=candidate["transaction_id"] if candidate else None,
-                matched_description=candidate["description"] if candidate else None,
-                existing_category_id=candidate["category_id"] if candidate else None,
+                posting_id=matched_candidate["posting_id"] if matched_candidate else None,
+                transaction_id=matched_candidate["transaction_id"] if matched_candidate else None,
+                matched_description=matched_candidate["description"] if matched_candidate else None,
+                existing_category_id=matched_candidate["category_id"] if matched_candidate else None,
                 confidence=match[1] if match else None,
             )
         )
@@ -303,10 +308,10 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
             patch["subcategory_id"] = entry.subcategory_id
         existing = overrides.get(entry.posting_id)
         if existing is not None:
-            merged = existing.model_dump()
-            merged.update(patch)
-            overrides[entry.posting_id] = ManualOverride(**merged)
+            overrides[entry.posting_id] = existing.model_copy(update=patch)
         else:
-            overrides[entry.posting_id] = ManualOverride(**patch)
+            overrides[entry.posting_id] = ManualOverride(
+                category_id=patch.get("category_id"), subcategory_id=patch.get("subcategory_id")
+            )
     save_overrides(overrides, config)
     return len(applicable)

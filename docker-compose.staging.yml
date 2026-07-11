@@ -16,6 +16,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Same convention as production (docs/server-setup/versioning.md), a
+    # distinct image name so the two stacks never share a tag.
+    image: financedashboard-api-staging:${APP_VERSION:-dev}
 
     container_name: staging-finance-dashboard
     restart: unless-stopped

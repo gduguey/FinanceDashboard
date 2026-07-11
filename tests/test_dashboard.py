@@ -606,8 +606,15 @@ def test_lots_table_reports_closed_lots_with_hysa_alpha(tmp_path) -> None:
     assert table.closed_lots["alpha_vs_hysa_pct"][0] is not None
 
 
-def test_lots_table_symbol_rollup_reports_open_status() -> None:
-    config = AppConfig()
+def test_lots_table_symbol_rollup_reports_open_status(tmp_path) -> None:
+    config = _config(tmp_path)
+    write_csv_atomic(
+        pl.DataFrame({
+            "price_date": [date(2026, 1, 1), date(2026, 6, 1), date(2026, 12, 1)],
+            "close": [500.0, 600.0, 650.0],
+        }),
+        tmp_path / "VOO.csv",
+    )
     table = lots_table(_LOTS_LEDGER, config, as_of=date(2026, 12, 1))
     rollup = {row["symbol"]: row for row in table.symbol_rollup.to_dicts()}
     assert rollup["VOO"]["status"] == "open"

@@ -71,7 +71,7 @@ def daily_cash_balances(
         Same type as input.
     """
     was_eager = isinstance(ledger, pl.DataFrame)
-    ledger_df = ledger if was_eager else ledger.collect()
+    ledger_df = collect_if_lazy(ledger)
 
     event_dates_result = ledger_df.filter(
         (pl.col("event_datetime").dt.date() >= start) & (pl.col("event_datetime").dt.date() <= end)
@@ -80,8 +80,8 @@ def daily_cash_balances(
 
     cash_by_date: dict[date, float] = {}
     for event_date in event_dates:
-        result = replay_ledger(ledger_df.filter(pl.col("event_datetime").dt.date() <= event_date), config)
-        cash_by_date[event_date] = result.cash_balance
+        replayed = replay_ledger(ledger_df.filter(pl.col("event_datetime").dt.date() <= event_date), config)
+        cash_by_date[event_date] = replayed.cash_balance
 
     all_dates = [start + timedelta(days=n) for n in range((end - start).days + 1)]
     calendar = pl.DataFrame({"date": all_dates})

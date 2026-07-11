@@ -11,14 +11,16 @@ if [ $# -lt 1 ]; then
 fi
 
 HOST="$1"
-REMOTE_DIR="~/FinanceDashboard"
+REMOTE_DIR='$HOME/FinanceDashboard'
 
 echo "==> Deploying to $HOST"
 ssh "$HOST" "
     set -e
     cd $REMOTE_DIR
     git pull
-    docker compose up -d --build
+    VERSION=\$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = \"(.*)\"/\1/')
+    echo \"==> Building image tagged \$VERSION\"
+    APP_VERSION=\"\$VERSION\" docker compose up -d --build
     docker image prune -f
 "
 echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose logs -f'"

@@ -165,7 +165,10 @@ def rebuild_from_raw_statements(config: AppConfig) -> IbkrSyncResult:
     archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
     relative_paths = archive.list_relative_paths("*.xml")
     if not relative_paths:
-        message = f"No archived raw statements under {config.ibkr.raw_statement_dir}"
+        message = (
+            f"No archived raw statements found (checked {archive.remote_prefix!r} on R2, "
+            f"else {config.ibkr.raw_statement_dir})"
+        )
         raise FileNotFoundError(message)
 
     statements: list[ParsedStatement] = sorted(

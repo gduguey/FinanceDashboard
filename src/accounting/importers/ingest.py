@@ -33,11 +33,15 @@ from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Any
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
     from accounting.models import Account, Category
     from accounting.store import AccountingStore
+
+_Fingerprint = tuple[str, datetime, float, str]
+"""`(account_id, posted_at, amount, description)` — two transactions with the same fingerprint look identical."""
 
 _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
@@ -151,7 +155,7 @@ def remap_ledger_category_ids(id_remap: dict[str, str], config: AccountingConfig
     _write_ledger(ledger, config)
 
 
-def _fingerprint(row: dict) -> tuple:
+def _fingerprint(row: dict[str, Any]) -> _Fingerprint:
     """Build the (account, date, amount, description) tuple that makes two transactions look identical.
 
     Parameters
@@ -161,7 +165,7 @@ def _fingerprint(row: dict) -> tuple:
 
     Returns
     -------
-    tuple
+    _Fingerprint
         Two transactions with the same fingerprint look the same on paper, whether or not they're the same one.
     """
     return (row["account_id"], row["posted_at"], row["amount"], row["description"])
@@ -185,7 +189,7 @@ def _occurrence_suffix(transaction_id: str) -> int:
     return int(transaction_id.rsplit("#", 1)[1])
 
 
-def _existing_ids_by_fingerprint(existing: pl.DataFrame) -> dict[tuple, list[str]]:
+def _existing_ids_by_fingerprint(existing: pl.DataFrame) -> dict[_Fingerprint, list[str]]:
     """Map every fingerprint already in the ledger to the transaction_ids that share it, oldest first.
 
     Parameters
@@ -195,13 +199,13 @@ def _existing_ids_by_fingerprint(existing: pl.DataFrame) -> dict[tuple, list[str
 
     Returns
     -------
-    dict[tuple, list[str]]
+    dict[_Fingerprint, list[str]]
         Fingerprint (see `_fingerprint`) to the transaction_ids of every existing transaction that
         looks like it, ordered oldest-first so new duplicates match the longest-standing one first.
     """
     if existing.is_empty():
         return {}
-    grouped: dict[tuple, list[str]] = defaultdict(list)
+    grouped: dict[_Fingerprint, list[str]] = defaultdict(list)
     for row in existing.filter(pl.col("posting_id").str.ends_with(":0")).to_dicts():
         grouped[_fingerprint(row)].append(row["transaction_id"])
     for transaction_ids in grouped.values():
@@ -336,6 +340,33 @@ def _merge_discovered_accounts(discovered: dict[str, Account], config: Accountin
         save_store(store.model_copy(update={"accounts": accounts}), config)
 
 
+def _fallback_to_canonical_csv(
+    csv_text: str, account_id: str, config: AccountingConfig
+) -> tuple[pl.DataFrame, SkippedRowsInfo | None]:
+    """Standardize via the canonical CSV importer, merging any newly-created categories into the store.
+
+    Parameters
+    ----------
+    csv_text
+        The raw CSV file contents.
+    account_id
+        The account these rows belong to.
+    config
+        Application configuration.
+
+    Returns
+    -------
+    tuple[pl.DataFrame, SkippedRowsInfo | None]
+        The standardized postings, and info about any skipped rows.
+    """
+    store = load_store(config)
+    canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
+    if canonical_result.new_categories:
+        merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
+        save_store(store.model_copy(update={"categories": merged_categories}), config)
+    return canonical_result.postings, canonical_result.skipped_rows
+
+
 def ingest_csv(
     csv_text: str, institution: str, account_kind: str, account_id: str, config: AccountingConfig
 ) -> IngestResult:
@@ -391,14 +422,7 @@ def ingest_csv(
         # Bank-specific standardizer failed (likely validation, parsing, or format mismatch).
         # Fall back to canonical CSV importer, which is more forgiving about column names/formats.
         try:
-            store = load_store(config)
-            canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
-            new_postings = canonical_result.postings
-            skip_info = canonical_result.skipped_rows  # Capture skip info from fallback
-            # Merge any newly-created categories into the store
-            if canonical_result.new_categories:
-                merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
-                save_store(store.model_copy(update={"categories": merged_categories}), config)
+            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, config)
         except (CanonicalCsvError, ValueError, KeyError, RuntimeError) as canonical_error:
             # Both standardizers failed; raise the original bank error with fallback note
             message = (

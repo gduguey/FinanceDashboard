@@ -167,6 +167,16 @@ The part of a purchase that has been sold. It has its own sale price,
 holding period, and realized gain. A single sale may close multiple lots or
 only part of one lot.
 
+### XIRR (per symbol)
+
+This symbol's own money-weighted return: buys count negative, sells and
+dividends count positive, and any withholding on those dividends counts
+negative too. If the position is still open, its current value is added as
+a final flow, as if sold today.
+
+Unlike the portfolio-level XIRR above, trades count here — a symbol has no
+deposits or withdrawals of its own to measure against.
+
 ### Return
 
 The total return for this lot.
@@ -253,8 +263,10 @@ always shows its report regardless of this switch). Changes two things:
 the HYSA line and rate switch from the published rate to an after-tax rate
 (labeled "(after tax)"), and the overview's "Dollar alpha vs. HYSA" card is
 recomputed the same way; on Allocation, lot-level dividend figures switch
-from gross to net of withholding. Portfolio value, XIRR, TWR, and the
-benchmark comparison are never taxed here — a gain sitting unsold owes
+from gross to net of withholding, reflecting the actual cash received. XIRR
+already reflects withholding either way, since it's a cash outflow recorded
+in the ledger, not something this toggle changes. Portfolio value, TWR, and
+the benchmark comparison are never taxed here — a gain sitting unsold owes
 nothing.
 
 ### Estimated tax owed

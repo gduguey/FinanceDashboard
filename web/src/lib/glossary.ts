@@ -68,6 +68,10 @@ export const GLOSSARY = {
     title: 'Market gain',
     body: 'The change in value that came from investment performance rather than deposits or withdrawals. Formula: ending value − starting value − net deposits. Includes both price changes and dividends.',
   },
+  symbolXirr: {
+    title: 'XIRR (per symbol)',
+    body: "This symbol's own money-weighted return: buys count negative, sells and dividends count positive, and any withholding on those dividends counts negative too. If the position is still open, its current value is added as a final flow, as if sold today. Unlike the portfolio-level XIRR, trades count here — a symbol has no deposits or withdrawals of its own to measure against.",
+  },
   lotReturn: {
     title: 'Return',
     body: 'The total return for this lot. Formula: (current value + dividends received) ÷ purchase amount − 1. It is not adjusted for how long the lot has been held.',

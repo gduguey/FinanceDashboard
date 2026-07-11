@@ -130,7 +130,9 @@ def verify_flex_credentials(credentials: IbkrFlexCredentials, config: AppConfig)
     can take up to a minute waiting for IBKR to generate the report.
     An invalid token or query id surfaces here immediately as a non-Success
     status, so this is cheap enough to run whenever Settings wants to know
-    "does this actually work" rather than just "is something typed in."
+    "does this actually work" rather than just "is something typed in." Lets
+    `_send_flex_request`'s `FlexApiError` propagate as-is if IBKR rejects
+    the token/query id.
 
     Parameters
     ----------
@@ -138,11 +140,6 @@ def verify_flex_credentials(credentials: IbkrFlexCredentials, config: AppConfig)
         The IBKR Flex Web Service token and query id to check.
     config
         Application configuration; `config.ibkr` is read.
-
-    Raises
-    ------
-    FlexApiError
-        If IBKR rejects the token/query id.
     """
     _send_flex_request(credentials, config)
 
@@ -214,8 +211,12 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
 
     Written to R2 (`statements/<user_id>/ibkr/...`) when configured, else to
     `config.ibkr.raw_statement_dir` on disk — see `utils.statement_archive`.
-    Files are never overwritten: a same-second collision (e.g. two calls
-    in a fast test loop) gets a numeric suffix instead of clobbering the first.
+    Files are never overwritten: a same-second collision (e.g. two calls in
+    a fast test loop, or two overlapping syncs) gets a numeric suffix
+    instead of clobbering the first — enforced by attempting an atomic
+    create per candidate name (`StatementArchive.write_if_absent`) rather
+    than checking existence first and writing second, which two concurrent
+    callers could both pass before either had written anything.
 
     Parameters
     ----------
@@ -228,12 +229,15 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
         Application configuration; `config.ibkr.raw_statement_dir` is read.
     """
     archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
-    relative_path = f"{received_at:%Y%m%dT%H%M%S}.xml"
-    suffix = 1
-    while archive.exists(relative_path):
-        relative_path = f"{received_at:%Y%m%dT%H%M%S}-{suffix}.xml"
+    data = xml_text.encode("utf-8")
+    suffix = 0
+    while True:
+        relative_path = (
+            f"{received_at:%Y%m%dT%H%M%S}.xml" if suffix == 0 else f"{received_at:%Y%m%dT%H%M%S}-{suffix}.xml"
+        )
+        if archive.write_if_absent(relative_path, data):
+            return
         suffix += 1
-    archive.write(relative_path, xml_text.encode("utf-8"))
 
 
 def last_synced_at(config: AppConfig) -> datetime | None:

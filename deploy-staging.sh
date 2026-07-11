@@ -14,7 +14,7 @@ fi
 
 HOST="$1"
 BRANCH="${2:-}"
-REMOTE_DIR="~/FinanceDashboard-staging"
+REMOTE_DIR='$HOME/FinanceDashboard-staging'
 REPO_URL="https://github.com/gduguey/FinanceDashboard.git"
 
 echo "==> Deploying to staging on $HOST"
@@ -35,7 +35,9 @@ ssh "$HOST" "
         echo 'Copy .env.staging.example to .env.staging and fill in real values first — see docs/server-setup/staging.md.'
         exit 1
     fi
-    docker compose -p staging -f docker-compose.staging.yml up -d --build
+    VERSION=\$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = \"(.*)\"/\1/')
+    echo \"==> Building image tagged \$VERSION\"
+    APP_VERSION=\"\$VERSION\" docker compose -p staging -f docker-compose.staging.yml up -d --build
     docker image prune -f
 "
 echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose -p staging -f docker-compose.staging.yml logs -f'"

@@ -370,7 +370,7 @@ function SymbolRollupTable({ rows, taxEnabled }: { rows: SymbolRollup[]; taxEnab
               desc={sort.desc}
               onClick={() => toggleSort('xirr')}
             >
-              XIRR <InfoTooltip term="xirr" />
+              XIRR <InfoTooltip term="symbolXirr" />
             </SortableTableHead>
           </TableRow>
         </TableHeader>

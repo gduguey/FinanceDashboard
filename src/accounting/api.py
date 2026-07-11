@@ -123,6 +123,7 @@ from accounting.store import (
     save_overrides,
     save_store,
 )
+from accounting.utils.io_utils import collect_if_lazy
 from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
 
 
@@ -1912,7 +1913,7 @@ def post_pattern_suggest_category_bulk(payload: PatternSuggestBulkRequest) -> di
     if targets.is_empty():
         return {"applied": 0}
 
-    matches = match_patterns_bulk(store.category_patterns, targets.select("posting_id", "description"))
+    matches = collect_if_lazy(match_patterns_bulk(store.category_patterns, targets.select("posting_id", "description")))
     if matches.is_empty():
         return {"applied": 0}
 
@@ -2357,14 +2358,16 @@ def get_category_totals(
     """
     postings, store = _resolved_postings_for_aggregation(state.config)
     parsed_account_ids = account_ids.split(",") if account_ids else None
-    totals = income_statement.category_totals(
-        postings,
-        store.accounts,
-        store.categories,
-        start,
-        end,
-        income_statement.Scope(parsed_account_ids, tag_id),
-        _display_currency(display_currency, store),
+    totals = collect_if_lazy(
+        income_statement.category_totals(
+            postings,
+            store.accounts,
+            store.categories,
+            start,
+            end,
+            income_statement.Scope(parsed_account_ids, tag_id),
+            _display_currency(display_currency, store),
+        )
     )
     return totals.to_dicts()
 
@@ -2379,8 +2382,10 @@ def get_monthly_income_expense(start: date, end: date, display_currency: Currenc
         See `dashboard.income_statement.monthly_income_expense`.
     """
     postings, store = _resolved_postings_for_aggregation(state.config)
-    return income_statement.monthly_income_expense(
-        postings, store.accounts, start, end, _display_currency(display_currency, store)
+    return collect_if_lazy(
+        income_statement.monthly_income_expense(
+            postings, store.accounts, start, end, _display_currency(display_currency, store)
+        )
     ).to_dicts()
 
 
@@ -2396,8 +2401,10 @@ def get_spend_curve(
         See `dashboard.income_statement.spend_curve_vs_average`.
     """
     postings, store = _resolved_postings_for_aggregation(state.config)
-    return income_statement.spend_curve_vs_average(
-        postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
+    return collect_if_lazy(
+        income_statement.spend_curve_vs_average(
+            postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
+        )
     ).to_dicts()
 
 

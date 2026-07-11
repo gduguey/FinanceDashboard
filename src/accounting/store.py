@@ -376,11 +376,12 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
             update={"category_id": remap(general.category_id), "subcategory_id": remap(general.subcategory_id)}
         )
         new_key = id_remap.get(general_key, general_key)
-        collision = general_budgets.get(new_key)
-        if collision is not None:
+        general_collision = general_budgets.get(new_key)
+        if general_collision is not None:
             message = (
                 f"Merging categories would collide two general budgets: "
-                f"{collision.amount} and {updated_general.amount}. Delete or reconcile one of them before merging."
+                f"{general_collision.amount} and {updated_general.amount}. "
+                "Delete or reconcile one of them before merging."
             )
             raise ValueError(message)
         general_budgets[new_key] = updated_general
