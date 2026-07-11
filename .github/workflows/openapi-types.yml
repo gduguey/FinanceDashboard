@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'scripts/export_openapi_schema.py'
       - 'web/src/types/schema.ts'
       - 'web/package.json'
       - 'web/package-lock.json'
@@ -14,7 +13,6 @@ on:
     branches: [main]
     paths:
       - 'src/**'
-      - 'scripts/export_openapi_schema.py'
       - 'web/src/types/schema.ts'
       - 'web/package.json'
       - 'web/package-lock.json'
@@ -48,7 +46,7 @@ jobs:
         run: npm ci
 
       - name: Export OpenAPI schema
-        run: uv run python scripts/export_openapi_schema.py
+        run: uv run python -m trades.api.export_openapi
 
       - name: Generate web/src/types/schema.ts from the schema
         working-directory: web
