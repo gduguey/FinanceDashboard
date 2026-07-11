@@ -3,8 +3,8 @@ import { Bar, BarChart, CartesianGrid, Legend, Tooltip, XAxis, YAxis } from 'rec
 import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
-import { formatPercent, formatUsd } from '@/lib/format'
 import { useAllocation, useSetTargetAllocation, useTargetAllocation } from '@/hooks/usePortfolioData'
+import { formatPercent, formatUsd } from '@/lib/format'
 
 // Sliced by current value (including cash), not invested dollars —
 // invested-dollar slices can't show drift from a target. A horizontal bar

@@ -1,8 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
 import { ResponsiveContainer } from 'recharts'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
+import { Skeleton } from '@/components/ui/skeleton'
 import type { GlossaryTerm } from '@/lib/glossary'
 
 export function ChartCard({

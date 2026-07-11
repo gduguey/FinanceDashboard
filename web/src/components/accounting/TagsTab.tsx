@@ -1,12 +1,12 @@
-import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { useSortableRows } from '@/hooks/useSortableRows'
 import { useSetTags } from '@/hooks/useAccountingData'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import type { Tag } from '@/types/accounting'
 
 function slugify(text: string): string {

@@ -1,9 +1,9 @@
 import { Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { formatDate } from '@/lib/format'
 import { useCurrencies, useCurrentExchangeRate, useExchangeRateHistory } from '@/hooks/useAccountingData'
+import { formatDate } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
 const BASE_CURRENCY: CurrencyCode = 'USD'

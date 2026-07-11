@@ -1,5 +1,13 @@
-import { Fragment, useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { MonthSelect } from '@/components/accounting/MonthSelect'
+import { ContributionLedgerTable } from '@/components/goals/ContributionLedgerTable'
+import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
+import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
+import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -7,18 +15,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { MonthSelect } from '@/components/accounting/MonthSelect'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
-import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
-import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
-import { ContributionLedgerTable } from '@/components/goals/ContributionLedgerTable'
-import { colorForIndex } from '@/lib/colors'
-import { formatCurrency, formatDate } from '@/lib/format'
-import { usePersistedState } from '@/hooks/usePersistedState'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
   useCurrencies,
@@ -27,6 +23,10 @@ import {
   useRunWithdrawalAutomation,
   useSetGoals,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { colorForIndex } from '@/lib/colors'
+import { formatCurrency, formatDate } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
 type ViewMode = 'all_time' | 'per_month'

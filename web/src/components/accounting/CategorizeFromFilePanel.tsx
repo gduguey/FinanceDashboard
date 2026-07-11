@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
 import { CheckCircle2, Upload, X, XCircle } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
-import { formatCurrency, formatDate } from '@/lib/format'
 import { useApplyCategorizeFromFile, useCategorizeFromFilePreview } from '@/hooks/useAccountingData'
+import { formatCurrency, formatDate } from '@/lib/format'
 import type { CategorizationMatch } from '@/types/accounting'
 
 // One file at a time — unlike the multi-file drop in "Import statements",

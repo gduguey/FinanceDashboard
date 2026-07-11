@@ -3,9 +3,9 @@ import { Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XA
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useAccountingStore, useNetWorthHistory, useNetWorthHistoryByAccount } from '@/hooks/useAccountingData'
 import { colorForIndex } from '@/lib/colors'
 import { formatCurrency, formatCurrencyCompact, formatDate } from '@/lib/format'
-import { useAccountingStore, useNetWorthHistory, useNetWorthHistoryByAccount } from '@/hooks/useAccountingData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { CurrencyCode, NetWorthHistoryByAccountPoint } from '@/types/accounting'
 

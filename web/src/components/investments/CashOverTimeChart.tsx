@@ -1,12 +1,10 @@
 import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
+import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
+import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
 import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
-import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
-import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
-import { formatDate, formatUsd } from '@/lib/format'
-import { benchmarkLabel, hysaLabel } from '@/lib/labels'
 import {
   useBenchmarkSetting,
   useCashHistory,
@@ -14,7 +12,9 @@ import {
   useHysaSettings,
   useTaxSettings,
 } from '@/hooks/usePortfolioData'
+import { formatDate, formatUsd } from '@/lib/format'
 import type { GlossaryTerm } from '@/lib/glossary'
+import { benchmarkLabel, hysaLabel } from '@/lib/labels'
 import type { CashHistoryPoint } from '@/types/portfolio'
 
 interface DurationPoint {

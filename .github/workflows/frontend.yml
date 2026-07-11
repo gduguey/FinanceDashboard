@@ -35,6 +35,9 @@ jobs:
       - name: Format check (biome)
         run: npm run format:check
 
+      - name: Check (biome assist — import organization)
+        run: npm run check
+
       - name: Typecheck
         run: npm run typecheck
 

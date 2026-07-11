@@ -1,6 +1,6 @@
 import { RefreshCw } from 'lucide-react'
-import { Button } from '@/components/ui/button'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
+import { Button } from '@/components/ui/button'
 import { useSyncExchangeRates } from '@/hooks/useAccountingData'
 
 // The one sync action shared by every page that shows a currency-converted
