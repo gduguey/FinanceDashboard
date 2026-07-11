@@ -1,12 +1,12 @@
 import { useMemo } from 'react'
-import { PeriodFilterBar, usePeriodFilter } from '@/components/accounting/PeriodFilter'
+import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { CategoryDrilldownPie } from '@/components/accounting/CategoryDrilldownPie'
 import { IncomeExpenseChart } from '@/components/accounting/IncomeExpenseChart'
+import { PeriodFilterBar, usePeriodFilter } from '@/components/accounting/PeriodFilter'
 import { SpendCurveChart } from '@/components/accounting/SpendCurveChart'
-import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Account, CurrencyCode, Goal, GoalContribution, Posting, Tag } from '@/types/accounting'
 
 export function DashboardTab({
@@ -59,7 +59,7 @@ export function DashboardTab({
         const day = posting.posted_at.slice(0, 10)
         if (day < filter.period.start || day > filter.period.end) return false
         if (filter.accountId && posting.account_id !== filter.accountId) return false
-        if (filter.tagId && !posting.tag_ids.includes(filter.tagId)) return false
+        if (filter.tagId && !posting.tag_ids?.includes(filter.tagId)) return false
         return true
       }),
     [postings, filter.period, filter.accountId, filter.tagId],

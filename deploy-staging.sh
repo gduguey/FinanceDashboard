@@ -17,6 +17,15 @@ BRANCH="${2:-}"
 REMOTE_DIR='$HOME/FinanceDashboard-staging'
 REPO_URL="https://github.com/gduguey/FinanceDashboard.git"
 
+# BRANCH is interpolated directly into the remote shell command string below
+# (not passed as a separate argument), so it must be restricted to safe git
+# ref characters before that happens — otherwise a value containing shell
+# metacharacters would be re-parsed and executed by the remote shell.
+if [ -n "$BRANCH" ] && ! [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    echo "Error: branch name '$BRANCH' contains characters not allowed in a git ref" >&2
+    exit 1
+fi
+
 echo "==> Deploying to staging on $HOST"
 ssh "$HOST" "
     set -e

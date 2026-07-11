@@ -1,6 +1,6 @@
-import { Skeleton } from '@/components/ui/skeleton'
-import { PageHeader } from '@/components/layout/PageHeader'
 import { TagsTab } from '@/components/accounting/TagsTab'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 
 // Was the "Tags" tab inside the old combined Accounting page, promoted to

@@ -1,8 +1,8 @@
 import { Check, RefreshCw, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { formatRelativeTime } from '@/lib/format'
 import { useSync, useSyncProgress } from '@/hooks/usePortfolioData'
+import { formatRelativeTime } from '@/lib/format'
 import type { SyncStep } from '@/types/portfolio'
 
 // Each leg of a sync (portfolio pull, prices, benchmark, CPI, HYSA rates)

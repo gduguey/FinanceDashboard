@@ -1,22 +1,22 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
+import { memo, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
+import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
+import { TagsCell } from '@/components/accounting/TagsCell'
+import {
+  categoriesWithSubcategories,
+  needsCategorizing,
+  splitOriginalId,
+} from '@/components/accounting/transactionCategorization'
+import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
+import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
-import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
-import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
-import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
-import { TagsCell } from '@/components/accounting/TagsCell'
-import { formatCurrency, formatDate } from '@/lib/format'
-import { anyLlmProviderAvailable } from '@/lib/llm'
-import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
-import { useSortableRows } from '@/hooks/useSortableRows'
-import { usePersistedState } from '@/hooks/usePersistedState'
 import {
   useAiSuggestCategory,
   useDeletePostingSplit,
@@ -26,6 +26,11 @@ import {
   useSetPostingOverride,
   useValidatePending,
 } from '@/hooks/useAccountingData'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { useSortableRows } from '@/hooks/useSortableRows'
+import { formatCurrency, formatDate } from '@/lib/format'
+import { anyLlmProviderAvailable } from '@/lib/llm'
+import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
@@ -36,7 +41,6 @@ const TABLE_COLUMN_COUNT = 9
 const UNCATEGORIZED = '__uncategorized__'
 const NO_SUBCATEGORY = '__no_subcategory__'
 const CONFIRMED = '__confirmed__'
-const SPLIT_LEG_PATTERN = /^(.+):split:\d+$/
 const PENDING_ITEMS: Record<string, string> = {
   [ALL]: 'All',
   ai: 'AI pending',
@@ -44,38 +48,6 @@ const PENDING_ITEMS: Record<string, string> = {
   [CONFIRMED]: 'Confirmed',
 }
 
-// A split leg's own id encodes the original posting it came from — used to
-// offer "undo split" on a leg row instead of "split" (splitting a leg
-// further isn't supported; undo and re-split from scratch instead).
-function splitOriginalId(postingId: string): string | null {
-  return SPLIT_LEG_PATTERN.exec(postingId)?.[1] ?? null
-}
-
-function categoriesWithSubcategories(categories: Record<string, Category>): Set<string> {
-  const withSubcategories = new Set<string>()
-  for (const category of Object.values(categories)) {
-    if (category.parent_category_id !== null) withSubcategories.add(category.parent_category_id)
-  }
-  return withSubcategories
-}
-
-// A category with subcategories isn't "categorized" until one of them is
-// picked too — otherwise a row would leave "Needs categorizing" the
-// instant a category is chosen, before there's ever a chance to also pick
-// a subcategory for it.
-//
-// A posting that isn't a real income/expense leg (i.e. an internal
-// transfer between two of your own accounts) is never categorizable at
-// all, so it never needs categorizing. And a posting still carrying an
-// unconfirmed AI/pattern suggestion (`pending_source !== null`) stays in
-// "Needs categorizing" even though it already has a category/subcategory
-// filled in — it isn't truly categorized until the suggestion is validated.
-function needsCategorizing(posting: Posting, withSubcategories: Set<string>, isRealIncomeExpense: boolean): boolean {
-  if (!isRealIncomeExpense) return false
-  if (posting.pending_source !== null) return true
-  if (posting.category_id === null) return true
-  return withSubcategories.has(posting.category_id) && posting.subcategory_id === null
-}
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 interface FilterState {
@@ -134,7 +106,7 @@ interface TransactionRowProps {
   aiMessage: string | undefined
   aiPending: boolean
   aiAvailable: boolean
-  onOverride: (postingId: string, override: ManualOverride) => void
+  onOverride: (postingId: string, override: Partial<ManualOverride>) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
   onUndoSplit: (originalPostingId: string) => void
@@ -202,7 +174,7 @@ const TransactionRow = memo(function TransactionRow({
           <CategorySelect
             categories={categories}
             classification={posting.amount >= 0 ? 'income' : 'expense'}
-            value={posting.category_id}
+            value={posting.category_id ?? null}
             onChange={(categoryId) =>
               // Changing category always clears subcategory — it's a child
               // of the OLD category, never carried over. A category with
@@ -225,8 +197,8 @@ const TransactionRow = memo(function TransactionRow({
         {isRealIncomeExpense ? (
           <SubcategorySelect
             categories={categories}
-            categoryId={posting.category_id}
-            value={posting.subcategory_id}
+            categoryId={posting.category_id ?? null}
+            value={posting.subcategory_id ?? null}
             onChange={(subcategoryId) => onOverride(posting.posting_id, { subcategory_id: subcategoryId })}
           />
         ) : (
@@ -235,7 +207,7 @@ const TransactionRow = memo(function TransactionRow({
       </TableCell>
       <TableCell>
         <TagsCell
-          tagIds={posting.tag_ids}
+          tagIds={posting.tag_ids ?? []}
           tags={tags}
           onChange={(tagIds) => onOverride(posting.posting_id, { tag_ids: tagIds })}
         />
@@ -342,13 +314,18 @@ function TransactionsTable({
     setBulkPatternSuggesting(true)
     try {
       await patternSuggestBulk.mutateAsync(targets.map((posting) => posting.posting_id))
+    } catch (error) {
+      // Already surfaced via the global mutation-error toast (see App.tsx) —
+      // logged here too so a failure is distinguishable from "nothing needed
+      // suggesting" when debugging.
+      console.error('Bulk pattern suggestion failed', error)
     } finally {
       setBulkPatternSuggesting(false)
     }
   }
 
   const handleOverride = useCallback(
-    (postingId: string, override: ManualOverride) => setOverride.mutate({ postingId, override }),
+    (postingId: string, override: Partial<ManualOverride>) => setOverride.mutate({ postingId, override }),
     [setOverride],
   )
   const handleUndoSplit = useCallback(
@@ -446,7 +423,7 @@ function TransactionsTable({
         return matchesFilter(actual, filters.subcategoryFilter, filters.subcategoryExclude)
       })
       .filter((posting) =>
-        matchesFilter(posting.tag_ids.includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
+        matchesFilter((posting.tag_ids ?? []).includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
       )
       .filter((posting) => !filters.startDate || posting.posted_at.slice(0, 10) >= filters.startDate)
       .filter((posting) => !filters.endDate || posting.posted_at.slice(0, 10) <= filters.endDate)

@@ -1,5 +1,3 @@
-import type { ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import {
   ArrowRightLeft,
   BookOpen,
@@ -21,6 +19,8 @@ import {
   Upload,
   Wallet,
 } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 

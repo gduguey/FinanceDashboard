@@ -8,6 +8,7 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - '.python-version'
       - '.github/workflows/backend.yml'
   push:
     branches: [main]
@@ -16,7 +17,11 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - 'uv.lock'
+      - '.python-version'
       - '.github/workflows/backend.yml'
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -24,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -43,7 +50,7 @@ jobs:
         run: uv run ruff format --check .
 
       - name: mypy
-        run: uv run mypy src
+        run: uv run mypy
 
       - name: pytest
         run: uv run pytest
@@ -54,6 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Fetch main
         run: git fetch origin main --depth=1

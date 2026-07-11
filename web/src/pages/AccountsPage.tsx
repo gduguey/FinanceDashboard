@@ -1,6 +1,6 @@
-import { Skeleton } from '@/components/ui/skeleton'
-import { PageHeader } from '@/components/layout/PageHeader'
 import { AccountsManagementTable } from '@/components/accounting/AccountsManagementTable'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
 
 // Was the accounts table at the bottom of the old Import page, promoted to

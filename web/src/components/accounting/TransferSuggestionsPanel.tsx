@@ -1,15 +1,15 @@
-import { useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Archive } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
-import { useSortableRows } from '@/hooks/useSortableRows'
-import { usePersistedState } from '@/hooks/usePersistedState'
 import { useDismissSuggestion, useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
@@ -85,7 +85,7 @@ function DraftRuleCard({
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-xs text-muted-foreground">
-        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id)}</span>, if
+        On <span className="font-medium text-foreground">{accountName(accounts, draft.account_id ?? null)}</span>, if
         description contains…
       </p>
       <Input
@@ -94,7 +94,7 @@ function DraftRuleCard({
         onChange={(event) => onChange({ ...draft, description_contains: event.target.value })}
       />
       <p className="text-xs text-muted-foreground">
-        …repoint it to {accountName(accounts, draft.counterparty_account_id)}.
+        …repoint it to {accountName(accounts, draft.counterparty_account_id ?? null)}.
       </p>
       {alreadyAdded && <p className="text-xs text-emerald-600">Already added</p>}
     </div>

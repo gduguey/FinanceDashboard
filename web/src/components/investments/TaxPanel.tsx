@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from 'react'
 import { Landmark } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { TermCard } from '@/components/shared/TermCard'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
@@ -9,9 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { TermCard } from '@/components/shared/TermCard'
-import { formatUsd, signColor } from '@/lib/format'
 import { useSetTaxSettings, useTaxReport, useTaxSettings } from '@/hooks/usePortfolioData'
+import { formatUsd, signColor } from '@/lib/format'
 import type {
   AnnualTaxRow,
   SalePreviewRow,

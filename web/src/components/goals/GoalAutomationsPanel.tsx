@@ -1,10 +1,10 @@
-import { useState } from 'react'
 import { GripVertical, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { useSetRecurringAdditions, useSetWithdrawalPriorities } from '@/hooks/useAccountingData'
 import type {
   Goal,

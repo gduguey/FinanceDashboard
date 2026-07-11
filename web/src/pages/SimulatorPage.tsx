@@ -1,23 +1,23 @@
-import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
   useNetWorth,
   useSetSimulatorScenarios,
   useSimulatorProjection,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
 import type { CompoundingFrequency, SimulatorScenario } from '@/types/accounting'
 
 const FREQUENCY_ITEMS: Record<CompoundingFrequency, string> = {

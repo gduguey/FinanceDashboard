@@ -1,4 +1,4 @@
-import { GitCompare, Layers, PieChart, Percent, TrendingUp } from 'lucide-react'
+import { GitCompare, Layers, Percent, PieChart, TrendingUp } from 'lucide-react'
 import { TermCard } from '@/components/shared/TermCard'
 import { GLOSSARY, type GlossaryTerm } from '@/lib/glossary'
 

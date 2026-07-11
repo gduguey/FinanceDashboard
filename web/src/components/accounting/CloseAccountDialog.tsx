@@ -1,5 +1,5 @@
-import { useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -48,6 +48,10 @@ export function CloseAccountDialog({
       : [],
   )
   const [skipTransfer, setSkipTransfer] = useState(false)
+  // A stable, ever-increasing counter — not `rows.length`, which collides
+  // after a remove-then-add (e.g. removing "row-0" from a 2-row array then
+  // adding a new one would regenerate "row-1" again).
+  const nextRowIndex = useRef(1)
   // `Account` has no `closed_at` of its own (see `models.Account.closed`) —
   // this only dates the balance-moving transfer(s) recorded below, the one
   // artifact a close actually produces, defaulting to today.
@@ -79,10 +83,8 @@ export function CloseAccountDialog({
   }
 
   function addRow() {
-    setRows((prev) => [
-      ...prev,
-      { key: `row-${prev.length}-${prev.length}x`, otherAccountId: '', ownAmount: '', otherAmount: '' },
-    ])
+    const key = `row-${nextRowIndex.current++}`
+    setRows((prev) => [...prev, { key, otherAccountId: '', ownAmount: '', otherAmount: '' }])
   }
 
   function removeRow(key: string) {

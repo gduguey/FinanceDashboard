@@ -1,8 +1,8 @@
+import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
-import { formatCurrency } from '@/lib/format'
 import { useBudgetComparison, useGoalsSummary } from '@/hooks/useAccountingData'
+import { formatCurrency } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
 function currentMonth(): string {
