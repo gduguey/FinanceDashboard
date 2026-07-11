@@ -3,7 +3,7 @@
 `accounting.db.models` and `trades.db.models` both import this one `Base`
 rather than each declaring their own — that's what lets a single Alembic
 environment autogenerate migrations across every table in the project in
-one pass (see `alembic/env.py`), even though each module's tables live in
+one pass (see `migration/env.py`), even though each module's tables live in
 their own Postgres schema and never foreign-key into each other directly.
 """
 

@@ -5,7 +5,7 @@ turns that file into `web/src/types/schema.ts`, so the frontend's types
 come from the same schema FastAPI itself serves at `/openapi.json` — no
 separate hand-maintained TS interfaces to keep in sync by hand.
 
-Run via `uv run python scripts/export_openapi_schema.py`.
+Run via `uv run python -m trades.api.export_openapi`.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trades.api import app
+from trades.api.api import app
 
-_OUTPUT_PATH = Path(__file__).resolve().parents[1] / "web" / "openapi.json"
+_OUTPUT_PATH = Path(__file__).resolve().parents[3] / "web" / "openapi.json"
 
 
 def main() -> None:

@@ -80,7 +80,7 @@ ignore_missing_imports = true
 target-version = "py314"
 line-length = 120
 preview = true
-exclude = ["examples/", "*.ipynb", "alembic/"]
+exclude = ["examples/", "*.ipynb", "src/migration/"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -141,14 +141,14 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
     "TC003",
 ]
 
-"**/accounting/api.py" = [
+"**/accounting/api/**/*.py" = [
     "TC001",   # FastAPI's Depends() resolves `Session`'s annotation at runtime too, same reason as models.py/config.py
     "TC002",
     "TC003",
 ]
 
-"**/trades/api.py" = [
-    "TC001",   # Same as accounting/api.py: FastAPI's Depends() resolves `Session`'s annotation at runtime too
+"**/trades/api/**/*.py" = [
+    "TC001",   # Same as accounting/api: FastAPI's Depends() resolves `Session`'s annotation at runtime too
     "TC002",
     "TC003",
 ]
