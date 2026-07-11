@@ -4,7 +4,6 @@ import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart
 import { availableMonths, MonthSelect } from '@/components/accounting/MonthSelect'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -340,7 +339,6 @@ export function BudgetPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />

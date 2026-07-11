@@ -8,27 +8,12 @@ from typing import cast
 import polars as pl
 from fastapi import APIRouter, HTTPException
 
-from accounting.api.api_models import CurrentExchangeRate, ExchangeRateHistoryPoint, ExchangeRateSyncResult
+from accounting.api.api_models import CurrentExchangeRate, ExchangeRateHistoryPoint
 from accounting.api.dependencies import _display_currency, state
 from accounting.market_data import exchange_rates
 from accounting.models import BASE_CURRENCY, CurrencyCode
 
 router = APIRouter()
-
-
-@router.post("/sync-exchange-rates")
-def post_sync_exchange_rates() -> ExchangeRateSyncResult:
-    """Re-fetch exchange-rate history from Frankfurter and overwrite the cache.
-
-    Returns
-    -------
-    ExchangeRateSyncResult
-        `as_of`, and every non-base currency's freshly smoothed rate into `accounting.models.BASE_CURRENCY`.
-    """
-    history = exchange_rates.update_rate_history_cache(state.config)
-    as_of = datetime.now(tz=UTC).date()
-    rates = exchange_rates.current_rates_to_base(history, as_of)
-    return ExchangeRateSyncResult(as_of=as_of, base_currency=BASE_CURRENCY, rates_to_base=rates)
 
 
 @router.get("/exchange-rates/current")

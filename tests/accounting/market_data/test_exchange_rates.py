@@ -1,15 +1,26 @@
 import json
-from datetime import date
+import re
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 import pytest
 
 from accounting.config import AccountingConfig
 from accounting.market_data import exchange_rates
+from accounting.utils import cache_backup
 
 
 def _config(tmp_path) -> AccountingConfig:
     return AccountingConfig(data_dir=tmp_path)
+
+
+_URL_DATE_RANGE = re.compile(r"/v1/(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
+
+
+def _requested_range(url: str) -> tuple[date, date]:
+    match = _URL_DATE_RANGE.search(url)
+    assert match is not None
+    return date.fromisoformat(match.group(1)), date.fromisoformat(match.group(2))
 
 
 class _FakeResponse:
@@ -86,6 +97,114 @@ def test_update_rate_history_cache_writes_and_returns_the_history(tmp_path, monk
     assert list(result["rate_to_base"]) == pytest.approx([1.16])
     reloaded = exchange_rates.load_rate_history(config)
     assert list(reloaded["rate_to_base"]) == pytest.approx([1.16])
+
+
+def test_update_rate_history_cache_requests_the_full_history_years_window_when_cache_is_empty(tmp_path) -> None:
+    config = _config(tmp_path)
+    session = _FakeSession(_PAYLOAD)
+
+    exchange_rates.update_rate_history_cache(config, history_years=2, session=session)
+
+    requested_start, requested_end = _requested_range(session.calls[0]["url"])
+    today = datetime.now(tz=UTC).date()
+    assert requested_end == today
+    assert requested_start == today - timedelta(days=2 * 365)
+
+
+def test_update_rate_history_cache_requests_only_the_gap_since_the_cached_max_date(tmp_path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    existing = _history(("2026-06-01", "EUR", 1.10))
+    monkeypatch.setattr(exchange_rates, "load_rate_history", lambda cfg: existing)
+    session = _FakeSession(_PAYLOAD)
+
+    exchange_rates.update_rate_history_cache(config, session=session)
+
+    requested_start, requested_end = _requested_range(session.calls[0]["url"])
+    today = datetime.now(tz=UTC).date()
+    assert requested_start == date(2026, 6, 2)
+    assert requested_end == today
+
+
+def test_update_rate_history_cache_merges_fetched_rows_with_the_existing_cache(tmp_path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    existing = _history(("2026-06-01", "EUR", 1.10))
+    monkeypatch.setattr(exchange_rates, "load_rate_history", lambda cfg: existing)
+    monkeypatch.setattr(
+        exchange_rates,
+        "_fetch_rate_history_range",
+        lambda cfg, start, end, session=None: _history(("2026-06-02", "EUR", 1.20)),
+    )
+
+    result = exchange_rates.update_rate_history_cache(config)
+
+    assert sorted(result["date"].to_list()) == [date(2026, 6, 1), date(2026, 6, 2)]
+    written_directly = pl.read_csv(config.exchange_rates_csv_path, try_parse_dates=True)
+    assert sorted(written_directly["date"].to_list()) == [date(2026, 6, 1), date(2026, 6, 2)]
+
+
+def test_update_rate_history_cache_backs_up_the_cache_file_after_writing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backups")
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        exchange_rates,
+        "fetch_rate_history",
+        lambda cfg, history_years=2, session=None: _history(("2026-06-01", "EUR", 1.16)),
+    )
+
+    exchange_rates.update_rate_history_cache(config)
+
+    backup_path = tmp_path / "backups" / "exchange_rates.csv"
+    assert backup_path.exists()
+    assert backup_path.read_bytes() == config.exchange_rates_csv_path.read_bytes()
+
+
+def test_load_rate_history_repairs_a_corrupted_cache_from_backup(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backups")
+    config = _config(tmp_path)
+    monkeypatch.setattr(
+        exchange_rates,
+        "fetch_rate_history",
+        lambda cfg, history_years=2, session=None: _history(("2026-06-01", "EUR", 1.16)),
+    )
+    exchange_rates.update_rate_history_cache(config)
+    good_bytes = config.exchange_rates_csv_path.read_bytes()
+    config.exchange_rates_csv_path.write_text("date,currency,rate_to_base\nnotadate,EUR,1.1\n")
+
+    history = exchange_rates.load_rate_history(config)
+
+    assert history.filter(pl.col("currency") == "EUR")["rate_to_base"].item() == pytest.approx(1.16)
+    assert config.exchange_rates_csv_path.read_bytes() == good_bytes
+
+
+def test_load_rate_history_raises_when_cache_is_corrupted_and_no_backup_exists(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backups")
+    config = _config(tmp_path)
+    config.exchange_rates_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    config.exchange_rates_csv_path.write_text("date,currency,rate_to_base\nnotadate,EUR,1.1\n")
+
+    with pytest.raises(pl.exceptions.ComputeError):
+        exchange_rates.load_rate_history(config)
+
+
+def test_update_rate_history_cache_makes_no_network_call_when_already_current(tmp_path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    today = datetime.now(tz=UTC).date()
+    existing = _history((today.isoformat(), "EUR", 1.15))
+    monkeypatch.setattr(exchange_rates, "load_rate_history", lambda cfg: existing)
+
+    called: list[object] = []
+    monkeypatch.setattr(
+        exchange_rates,
+        "_fetch_rate_history_range",
+        lambda cfg, start, end, session=None: (
+            called.append((start, end)) or pl.DataFrame(schema=exchange_rates.RATE_HISTORY_SCHEMA)
+        ),
+    )
+
+    result = exchange_rates.update_rate_history_cache(config)
+
+    assert called == []
+    assert result.equals(existing)
 
 
 def _history(*rows: tuple[str, str, float]) -> pl.DataFrame:

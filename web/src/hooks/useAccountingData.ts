@@ -368,11 +368,6 @@ export function useSetSimulatorScenarios() {
   })
 }
 
-export function useSyncExchangeRates() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({ mutationFn: accountingApi.syncExchangeRates, onSuccess: invalidate })
-}
-
 export function useSetCategories() {
   const invalidate = useInvalidateAccounting()
   return useMutation({

@@ -19,8 +19,9 @@ import polars as pl
 import requests
 
 from trades.models import CpiObservation
+from trades.utils.cache_backup import backup_cache_file
 from trades.utils.frames import collect_if_lazy
-from trades.utils.io_utils import write_csv_atomic
+from trades.utils.io_utils import read_csv_recovering_from_corruption, write_csv_atomic
 
 if TYPE_CHECKING:
     from datetime import date
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from trades.config import AppConfig
 
 _FRED_MISSING_VALUE = "."
+_BACKUP_KEY = "cpi.csv"
 
 
 def _cache_path(config: AppConfig) -> Path:
@@ -76,7 +78,7 @@ def load_cpi_cache(config: AppConfig) -> pl.DataFrame:
     path = _cache_path(config)
     if not path.exists():
         return pl.DataFrame(schema=CpiObservation.polars_schema)
-    return pl.read_csv(path, try_parse_dates=True).sort("observation_date")
+    return read_csv_recovering_from_corruption(path, _BACKUP_KEY).sort("observation_date")
 
 
 def fetch_cpi_series(config: AppConfig, session: requests.Session | None = None) -> pl.DataFrame:
@@ -146,7 +148,9 @@ def update_cpi_cache(config: AppConfig, session: requests.Session | None = None)
         The freshly fetched series.
     """
     series = fetch_cpi_series(config, session)
-    write_csv_atomic(series.sort("observation_date"), _cache_path(config))
+    path = _cache_path(config)
+    write_csv_atomic(series.sort("observation_date"), path)
+    backup_cache_file(path, _BACKUP_KEY)
     return series
 
 

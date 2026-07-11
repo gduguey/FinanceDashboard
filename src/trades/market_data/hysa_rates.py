@@ -19,8 +19,9 @@ import polars as pl
 import requests
 
 from trades.models import HysaRateObservation
+from trades.utils.cache_backup import backup_cache_file
 from trades.utils.frames import collect_if_lazy
-from trades.utils.io_utils import write_csv_atomic
+from trades.utils.io_utils import read_csv_recovering_from_corruption, write_csv_atomic
 
 if TYPE_CHECKING:
     from datetime import date
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 
 _NEXT_F_CHUNK = re.compile(r'self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)')
 _ACCOUNTS_KEY = '"accounts":['
+_BACKUP_KEY = "hysa_rates.csv"
 
 
 def _cache_path(config: AppConfig) -> Path:
@@ -53,7 +55,7 @@ def load_hysa_rates_cache(config: AppConfig) -> pl.DataFrame:
     path = _cache_path(config)
     if not path.exists():
         return pl.DataFrame(schema=HysaRateObservation.polars_schema)
-    return pl.read_csv(path, try_parse_dates=True).sort("bank_id", "rate_date")
+    return read_csv_recovering_from_corruption(path, _BACKUP_KEY).sort("bank_id", "rate_date")
 
 
 def _extract_accounts_json(html: str) -> str:
@@ -155,7 +157,9 @@ def update_hysa_rates_cache(config: AppConfig, session: requests.Session | None 
         The freshly scraped rate history.
     """
     series = fetch_hysa_rates(config, session)
-    write_csv_atomic(series.sort("bank_id", "rate_date"), _cache_path(config))
+    path = _cache_path(config)
+    write_csv_atomic(series.sort("bank_id", "rate_date"), path)
+    backup_cache_file(path, _BACKUP_KEY)
     return series
 
 

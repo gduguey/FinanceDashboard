@@ -6,6 +6,7 @@ import pytest
 
 from trades.config import AppConfig
 from trades.market_data import hysa_rates
+from trades.utils import cache_backup
 
 
 def _config(tmp_path) -> AppConfig:
@@ -133,3 +134,56 @@ def test_rate_as_of_rolls_back_to_the_most_recent_change_for_that_bank() -> None
 def test_list_banks_returns_unique_bank_id_and_name_pairs() -> None:
     banks = hysa_rates.list_banks(_HISTORY)
     assert banks.sort("bank_id")["bank_id"].to_list() == ["ally-bank", "marcus"]
+
+
+def test_update_hysa_rates_cache_backs_up_the_written_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        hysa_rates,
+        "fetch_hysa_rates",
+        lambda config, session=None: pl.DataFrame({
+            "bank_id": ["ally-bank"],
+            "bank_name": ["Ally Bank"],
+            "rate_date": [date(2024, 1, 1)],
+            "apy_pct": [4.0],
+        }),
+    )
+    config = _config(tmp_path)
+    backup_calls = []
+    monkeypatch.setattr(
+        hysa_rates, "backup_cache_file", lambda local_path, backup_key: backup_calls.append((local_path, backup_key))
+    )
+
+    hysa_rates.update_hysa_rates_cache(config)
+
+    assert backup_calls == [(tmp_path / "rates.csv", "hysa_rates.csv")]
+
+
+def test_load_hysa_rates_cache_recovers_from_corruption_when_a_backup_exists(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backup-root")
+    config = _config(tmp_path)
+    path = tmp_path / "rates.csv"
+
+    good = pl.DataFrame({
+        "bank_id": ["ally-bank"],
+        "bank_name": ["Ally Bank"],
+        "rate_date": [date(2024, 1, 1)],
+        "apy_pct": [4.0],
+    })
+    good.write_csv(path)
+    cache_backup.backup_cache_file(path, "hysa_rates.csv")
+
+    path.write_text('bank_id,bank_name,rate_date,apy_pct\n"unterminated\n')
+
+    result = hysa_rates.load_hysa_rates_cache(config)
+
+    assert result["bank_id"].to_list() == ["ally-bank"]
+
+
+def test_load_hysa_rates_cache_raises_when_corrupted_with_no_backup_available(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backup-root")
+    config = _config(tmp_path)
+    path = tmp_path / "rates.csv"
+    path.write_text('bank_id,bank_name,rate_date,apy_pct\n"unterminated\n')
+
+    with pytest.raises(pl.exceptions.ComputeError):
+        hysa_rates.load_hysa_rates_cache(config)

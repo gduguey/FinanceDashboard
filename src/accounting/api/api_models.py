@@ -69,14 +69,6 @@ class AccountingStoreResponse(BaseModel):
     withdrawal_priorities: list[WithdrawalPriorityEntry]
 
 
-class ExchangeRateSyncResult(BaseModel):
-    """Response body for `POST /sync-exchange-rates`."""
-
-    as_of: date
-    base_currency: CurrencyCode
-    rates_to_base: dict[CurrencyCode, float]
-
-
 class CurrentExchangeRate(BaseModel):
     """Response body for `GET /exchange-rates/current`."""
 

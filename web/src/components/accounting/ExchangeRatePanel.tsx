@@ -1,6 +1,5 @@
 import { Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useCurrencies, useCurrentExchangeRate, useExchangeRateHistory } from '@/hooks/useAccountingData'
 import { BASE_CURRENCY } from '@/lib/currency'
@@ -15,7 +14,7 @@ function OneCurrencyPanel({ currency }: { currency: CurrencyCode }) {
   if (isError || !history?.length) {
     return (
       <p className="flex h-72 items-center justify-center px-6 text-center text-sm text-muted-foreground">
-        {error?.message || `No ${currency}/${BASE_CURRENCY} history yet — click Sync above.`}
+        {error?.message || `No ${currency}/${BASE_CURRENCY} history yet — rates sync automatically every hour.`}
       </p>
     )
   }
@@ -69,9 +68,6 @@ export function ExchangeRatePanel() {
           Every rate over the last 2 years, pulled from the European Central Bank via Frankfurter — the same source IAS
           21 "average rate" translations are built on.
         </CardDescription>
-        <CardAction>
-          <ExchangeRateSyncButton />
-        </CardAction>
       </CardHeader>
       <CardContent className="space-y-6">
         {nonBaseCurrencies.length === 0 ? (
