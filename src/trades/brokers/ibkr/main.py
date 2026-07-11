@@ -54,12 +54,13 @@ def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
 _DEFAULT_CONNECTION_ID = "ibkr"
 """The one broker connection every event belongs to today.
 
-There's no per-user IBKR credential management yet — one set of
-Flex Web Service credentials in `.env`, shared by the whole (single-user)
-deployment — so every `LedgerEvent` foreign-keys against this one fixed
+Credentials themselves are already per-user (see
+`trades.brokers.ibkr.credentials`, backed by Postgres, never `.env`), but
+there's no multi-connection UI yet — this app supports one IBKR connection
+per user, so every `LedgerEvent` foreign-keys against this one fixed
 `BrokerConnection` row, created on first write if it doesn't exist yet.
-When real per-user broker connections exist, this becomes a real id chosen
-at connection-creation time instead of a constant.
+When a user can have more than one broker connection, this becomes a real
+id chosen at connection-creation time instead of a constant.
 """
 
 

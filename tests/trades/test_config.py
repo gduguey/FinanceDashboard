@@ -54,25 +54,19 @@ def test_config_objects_are_frozen() -> None:
         config.hysa_annual_rate = 0.05
 
 
-def test_ibkr_flex_credentials_requires_env_vars(monkeypatch) -> None:
-    monkeypatch.delenv("IBKR_FLEX_WEB_SERVICE_TOKEN", raising=False)
-    monkeypatch.delenv("IBKR_QUERY_ID", raising=False)
+def test_ibkr_flex_credentials_requires_both_fields() -> None:
     with pytest.raises(ValidationError):
-        IbkrFlexCredentials(_env_file=None)
+        IbkrFlexCredentials(token="secret-token", query_id="")  # noqa: S106
 
 
-def test_ibkr_flex_credentials_reads_env_vars(monkeypatch) -> None:
-    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "secret-token")
-    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
-    credentials = IbkrFlexCredentials(_env_file=None)
+def test_ibkr_flex_credentials_round_trips_explicit_fields() -> None:
+    credentials = IbkrFlexCredentials(token="secret-token", query_id="12345")  # noqa: S106
     assert credentials.token.get_secret_value() == "secret-token"
     assert credentials.query_id == "12345"
 
 
-def test_ibkr_flex_credentials_token_is_not_exposed_in_repr(monkeypatch) -> None:
-    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "secret-token")
-    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
-    credentials = IbkrFlexCredentials(_env_file=None)
+def test_ibkr_flex_credentials_token_is_not_exposed_in_repr() -> None:
+    credentials = IbkrFlexCredentials(token="secret-token", query_id="12345")  # noqa: S106
     assert "secret-token" not in repr(credentials)
 
 

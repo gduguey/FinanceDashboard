@@ -3,8 +3,9 @@
 Every configurable value is a field on one of the frozen models below.
 `AppConfig` composes all of them into a single object that gets passed to
 every function that needs configuration. `IbkrFlexCredentials` is kept
-separate because it is a secret read from the environment, not a tunable
-with a sensible default.
+separate because it's a per-user secret resolved from Postgres (see
+`trades.broker_credentials`), never a tunable with a sensible default and
+never read from `.env`.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -214,18 +214,20 @@ class ReturnsConfig(BaseModel):
     )
 
 
-class IbkrFlexCredentials(BaseSettings):
-    """The IBKR Flex Web Service token and query ID, read from `.env` or the environment."""
+class IbkrFlexCredentials(BaseModel):
+    """The IBKR Flex Web Service token and query ID for one user, resolved from Postgres.
 
-    model_config = SettingsConfigDict(
-        env_file=str(_REPO_ROOT / ".env"),
-        env_file_encoding="utf-8",
-        extra="ignore",
-        populate_by_name=True,
-    )
+    Never `.env`-backed — see `trades.broker_credentials.resolve_ibkr_credentials`,
+    the only place this gets constructed. Both fields are required because
+    a partial credential (a query id with no token, or vice versa) can't
+    call the Flex Web Service at all; `resolve_ibkr_credentials` is what
+    turns "nothing saved yet" into a clear error before this model is ever built.
+    """
 
-    token: SecretStr = Field(validation_alias="IBKR_FLEX_WEB_SERVICE_TOKEN")
-    query_id: str = Field(validation_alias="IBKR_QUERY_ID")
+    model_config = ConfigDict(frozen=True)
+
+    token: SecretStr
+    query_id: str = Field(min_length=1)
 
 
 class IbkrFlexApiConfig(BaseModel):
@@ -293,19 +295,6 @@ class CashSittingConfig(BaseModel):
     heavy_warning_days: int = Field(default=14, gt=0, description="Days sitting before the heavy warning shows.")
 
 
-class CredentialOverridesConfig(BaseModel):
-    """Where credentials entered via the Settings page are persisted, instead of `.env`.
-
-    See `credentials.resolve_ibkr_credentials` — an override here takes
-    precedence over `.env` field-by-field, so entering just a query id
-    still lets a token already in `.env` resolve normally.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    ibkr_credentials_path: Path = _REPO_ROOT / "data" / "trades" / "credentials.json"
-
-
 class AppConfig(BaseModel):
     """Every sub-config for the application, composed into one object."""
 
@@ -321,5 +310,4 @@ class AppConfig(BaseModel):
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
-    credentials: CredentialOverridesConfig = Field(default_factory=CredentialOverridesConfig)
     cash_sitting: CashSittingConfig = Field(default_factory=CashSittingConfig)

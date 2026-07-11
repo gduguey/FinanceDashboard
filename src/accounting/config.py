@@ -56,11 +56,3 @@ class AccountingConfig(BaseModel):
     def llm_usage_path(self) -> Path:
         """Where each LLM provider's self-tracked call count and rate-limit state is persisted, under `data_dir`."""
         return self.data_dir / "llm_usage.json"
-
-    @property
-    def llm_credentials_path(self) -> Path:
-        """Where LLM API keys entered via the Settings page are persisted, under `data_dir`.
-
-        Takes precedence over `.env` when set — see `llm.settings.resolve_llm_credentials`.
-        """
-        return self.data_dir / "llm_credentials.json"
