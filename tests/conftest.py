@@ -48,10 +48,13 @@ except ModuleNotFoundError:
     accounting_storage = None
 
 try:
+    import trades.api as trades_api
     import trades.db  # noqa: F401  (registers trades.* tables on Base.metadata)
     import trades.utils.statement_archive as trades_storage
+    from trades.api.auth import require_clerk_session
 except ModuleNotFoundError:
     trades_storage = None
+    trades_api = None
 
 
 _R2_ENV_VARS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_ENDPOINT_URL")
@@ -67,6 +70,27 @@ def _no_r2_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             accounting_storage, "get_r2_credentials", lambda: accounting_storage.R2Credentials(_env_file=None)
         )
+
+
+@pytest.fixture(autouse=True)
+def _bypass_clerk_auth_by_default() -> Iterator[None]:
+    """Skip Clerk session verification for every test by default.
+
+    `trades.api.api` requires a valid Clerk session on every `/api/...`
+    route (see `trades.api.auth`); a test exercising the API through
+    `TestClient` isn't going through a real Clerk sign-in, so this
+    overrides that one FastAPI dependency to a no-op the same way
+    `_db_for_api` overrides `get_db`. A test that specifically wants to
+    exercise `require_clerk_session` itself (see
+    `tests/trades/api/test_auth.py`) calls it directly instead of going
+    through `TestClient`, so this override never masks that behavior.
+    """
+    if trades_api is None:
+        yield
+        return
+    trades_api.app.dependency_overrides[require_clerk_session] = lambda: None
+    yield
+    trades_api.app.dependency_overrides.pop(require_clerk_session, None)
 
 
 _TEST_SECRETS_ENCRYPTION_KEY = Fernet.generate_key().decode()

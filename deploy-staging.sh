@@ -45,8 +45,17 @@ ssh "$HOST" "
         exit 1
     fi
     VERSION=\$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = \"(.*)\"/\1/')
+    # Same gotcha and same fix as deploy.sh: docker-compose.staging.yml's
+    # build.args reads this from the shell env, not from .env.staging
+    # directly, since Compose's own interpolation never reads a file that
+    # isn't literally named .env.
+    VITE_CLERK_PUBLISHABLE_KEY=\$(grep -m1 '^CLERK_PUBLISHABLE_KEY=' .env.staging | cut -d= -f2-)
+    if [ -z \"\$VITE_CLERK_PUBLISHABLE_KEY\" ]; then
+        echo \"::error:: CLERK_PUBLISHABLE_KEY missing from .env.staging — aborting rather than building a frontend with no Clerk key\"
+        exit 1
+    fi
     echo \"==> Building image tagged \$VERSION\"
-    APP_VERSION=\"\$VERSION\" docker compose -p staging -f docker-compose.staging.yml up -d --build
+    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose -p staging -f docker-compose.staging.yml up -d --build
     docker image prune -f
 "
 echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose -p staging -f docker-compose.staging.yml logs -f'"

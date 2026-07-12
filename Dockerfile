@@ -6,6 +6,20 @@ WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm ci
 COPY web/ ./
+
+# Vite bakes VITE_* vars into the built JS at build time, not read at
+# runtime — so this has to arrive as a build arg (see docker-compose.yml's
+# build.args), not an ordinary container env var. A silently-blank key
+# would build fine and only fail once a browser loads the result, so this
+# refuses to build at all instead — same "refuse rather than half-configure"
+# call as AppRuntimeDatabaseSettings makes for DATABASE_URL_APP.
+# (Docker's build linter flags any ARG/ENV named like a secret regardless of
+# content — this one isn't: Clerk publishable keys are meant to ship inside
+# browser JS, see trades.api.auth's own docstring on the same key.)
+ARG VITE_CLERK_PUBLISHABLE_KEY
+RUN test -n "$VITE_CLERK_PUBLISHABLE_KEY" || { echo "VITE_CLERK_PUBLISHABLE_KEY build arg is required" >&2; exit 1; }
+ENV VITE_CLERK_PUBLISHABLE_KEY=$VITE_CLERK_PUBLISHABLE_KEY
+
 RUN npm run build
 
 # Stage 2: Build Python environment

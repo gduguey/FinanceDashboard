@@ -24,8 +24,16 @@ ssh "$HOST" "
         echo \"::error:: could not read version from pyproject.toml — aborting rather than deploying the docker-compose.yml 'dev' fallback tag\"
         exit 1
     fi
+    # docker-compose.yml's build.args reads this from the shell env, not
+    # from .env.docker directly (Compose's own interpolation never reads a
+    # file that isn't literally named .env) — so pull it out here instead.
+    VITE_CLERK_PUBLISHABLE_KEY=\$(grep -m1 '^CLERK_PUBLISHABLE_KEY=' .env.docker | cut -d= -f2-)
+    if [ -z \"\$VITE_CLERK_PUBLISHABLE_KEY\" ]; then
+        echo \"::error:: CLERK_PUBLISHABLE_KEY missing from .env.docker — aborting rather than building a frontend with no Clerk key\"
+        exit 1
+    fi
     echo \"==> Building image tagged \$VERSION\"
-    APP_VERSION=\"\$VERSION\" docker compose up -d --build
+    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose up -d --build
     # Host-wide prune: this VM only ever runs this one app's stack, so
     # cleaning up every dangling image on the host is safe here — not a
     # shared/multi-tenant machine where that would risk another stack's cache.

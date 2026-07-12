@@ -1,0 +1,141 @@
+"""`trades.api.auth` — Clerk session verification, in isolation from the rest of the app.
+
+Builds its own throwaway RSA keypair per test rather than talking to a real
+Clerk instance: `clerk_backend_api`'s own JWKS fetch is monkeypatched to
+return a JWKS built from that keypair's public half, so signing a token
+with the private half is indistinguishable, to `require_clerk_session`,
+from a real Clerk session token — without any network access or real
+Clerk credentials. Each test uses its own unique `kid` so the SDK's
+internal (time-based, unclearable-from-outside) key cache never leaks a
+key from one test into another.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+import jwt
+import pytest
+from clerk_backend_api.security import verifytoken
+from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from jwt.algorithms import RSAAlgorithm
+
+import trades.api as trades_api
+from trades.api import auth
+
+
+@dataclass
+class _FakeRequest:
+    """The bare minimum `clerk_backend_api`'s `Requestish` protocol needs: a `.headers` mapping."""
+
+    headers: dict[str, str]
+
+
+@pytest.fixture
+def keypair() -> tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
+
+@pytest.fixture(autouse=True)
+def _clerk_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLERK_SECRET_KEY", "sk_test_not_a_real_key")
+    auth._options.cache_clear()
+    yield
+    auth._options.cache_clear()
+
+
+@pytest.fixture
+def kid() -> str:
+    return str(uuid.uuid4())
+
+
+@pytest.fixture(autouse=True)
+def _mock_jwks(monkeypatch: pytest.MonkeyPatch, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str) -> None:
+    _, public_key = keypair
+    jwk: dict[str, Any] = json.loads(RSAAlgorithm.to_jwk(public_key))
+    jwk.update(kid=kid, use="sig", alg="RS256")
+    monkeypatch.setattr(verifytoken, "_fetch_jwks", lambda options: {"keys": [jwk]})
+
+
+def _sign(private_key: rsa.RSAPrivateKey, claims: dict[str, Any], kid: str) -> str:
+    return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": kid})
+
+
+def _valid_claims(**overrides: Any) -> dict[str, Any]:
+    now = int(time.time())
+    claims = {"sub": "user_123", "iat": now, "exp": now + 300}
+    claims.update(overrides)
+    return claims
+
+
+class TestRequireClerkSession:
+    def test_rejects_a_request_with_no_session_token(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            auth.require_clerk_session(_FakeRequest(headers={}))
+        assert exc_info.value.status_code == 401
+
+    def test_rejects_a_non_bearer_authorization_header(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            auth.require_clerk_session(_FakeRequest(headers={"Authorization": "Basic dXNlcjpwYXNz"}))
+        assert exc_info.value.status_code == 401
+
+    def test_accepts_a_validly_signed_unexpired_token(
+        self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str
+    ) -> None:
+        private_key, _ = keypair
+        token = _sign(private_key, _valid_claims(), kid)
+        auth.require_clerk_session(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+
+    def test_accepts_a_token_carried_in_the_clerk_session_cookie(
+        self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str
+    ) -> None:
+        private_key, _ = keypair
+        token = _sign(private_key, _valid_claims(), kid)
+        auth.require_clerk_session(_FakeRequest(headers={"cookie": f"__session={token}"}))
+
+    def test_rejects_an_expired_token(self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str) -> None:
+        private_key, _ = keypair
+        now = int(time.time())
+        token = _sign(private_key, _valid_claims(iat=now - 600, exp=now - 300), kid)
+        with pytest.raises(HTTPException) as exc_info:
+            auth.require_clerk_session(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+        assert exc_info.value.status_code == 401
+
+    def test_rejects_a_token_signed_by_an_unknown_key(self, kid: str) -> None:
+        forged_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        token = _sign(forged_key, _valid_claims(), kid)
+        with pytest.raises(HTTPException) as exc_info:
+            auth.require_clerk_session(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+        assert exc_info.value.status_code == 401
+
+    def test_rejects_a_token_whose_kid_matches_no_known_key(
+        self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey]
+    ) -> None:
+        private_key, _ = keypair
+        token = _sign(private_key, _valid_claims(), kid=str(uuid.uuid4()))
+        with pytest.raises(HTTPException) as exc_info:
+            auth.require_clerk_session(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+        assert exc_info.value.status_code == 401
+
+
+def test_an_unauthenticated_request_against_the_real_app_is_rejected() -> None:
+    """Confirms the dependency is actually wired onto every router in `trades.api.api`.
+
+    `tests/conftest.py`'s `_bypass_clerk_auth_by_default` overrides
+    `require_clerk_session` for every other test in the suite — this test
+    removes that override for its own duration, so it exercises the real
+    dependency exactly as a genuinely unauthenticated browser request would.
+    """
+    trades_api.app.dependency_overrides.pop(auth.require_clerk_session, None)
+    try:
+        response = TestClient(trades_api.app).get("/api/overview", params={"as_of": "2026-01-03"})
+    finally:
+        trades_api.app.dependency_overrides[auth.require_clerk_session] = lambda: None
+    assert response.status_code == 401

@@ -16,6 +16,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Same gotcha and same fix as production's docker-compose.yml —
+      # deploy-staging.sh exports this from .env.staging before `--build`.
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
     # Same convention as production (docs/server-setup/versioning.md), a
     # distinct image name so the two stacks never share a tag.
     image: financedashboard-api-staging:${APP_VERSION:-dev}
