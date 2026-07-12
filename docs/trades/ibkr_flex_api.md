@@ -5,9 +5,9 @@ Brokers' Flex Web Service — an XML API separate from the TWS API and from
 the market-data modules in `market_data/`.
 
 The module's job: fetch raw statements, archive them verbatim, map IBKR's
-native rows onto the canonical ledger schema, and merge into the local
-cache. Everything downstream (`ledger/`, `dashboard/`, `api.py`) reads
-`ledger.csv` and never touches IBKR directly.
+native rows onto the canonical ledger schema, and merge into the
+Postgres-backed ledger cache (per user). Everything downstream (`ledger/`,
+`dashboard/`, `api/`) reads that cache and never touches IBKR directly.
 
 For ledger event types and replay logic, see [ledger.md](ledger.md).
 
@@ -148,10 +148,11 @@ This keeps `ledger/taxes.py` free of IBKR-specific strings.
 ```
 1. fetch_flex_statement()     → raw XML
 2. save_raw_statement()       → data/brokers/ibkr/raw_statements/{timestamp}.xml
+                                 (or R2, keyed by statements/{user_id}/ibkr/... if configured)
 3. parse_statement()          → IbkrTrade + IbkrCashTransaction DataFrames
 4. statement_to_ledger()      → LedgerEvent DataFrame (validated)
 5. merge with existing ledger → dedupe by event_id, sort chronologically
-6. write ledger.csv           → atomic replace
+6. _write_ledger()            → full overwrite of this user's `ledger_events` rows in Postgres
 ```
 
 ### Gap detection
@@ -180,8 +181,12 @@ Re-syncing overlapping history only adds genuinely new events.
 ```
 data/brokers/ibkr/
   raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
-  ledger.csv                       deduplicated event ledger (rebuildable)
+                                    (local fallback; not per-user-scoped —
+                                    R2, if configured, is)
 ```
+
+The deduplicated event ledger itself is a Postgres cache (`ledger_events`,
+one row per event, scoped per user by Row-Level Security), not a flat file.
 
 ### Why the ledger is disposable
 
@@ -191,16 +196,17 @@ produces a wrong-but-complete result and overwrites the only copy.
 So:
 
 1. **Raw XML is archived first**, before any parsing.
-2. **`ledger.csv` is a cache** derived from that archive.
+2. **The Postgres ledger cache is disposable**, derived from that archive.
 
 If the ledger is ever wrong, corrupted, or missing:
 
 ```
-rebuild_from_raw_statements(config)
+rebuild_from_raw_statements(config, session, user_id)
 ```
 
-Re-parses every archived statement and regenerates `ledger.csv` from
-scratch. Fix the code, then rebuild — never hope a backup exists.
+Re-parses every archived statement and rewrites that user's `ledger_events`
+rows in Postgres from scratch. Fix the code, then rebuild — never hope a
+backup exists.
 
 ---
 

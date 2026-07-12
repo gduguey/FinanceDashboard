@@ -93,7 +93,7 @@ can — see "Dismissing a suggestion" below.
 Both suggestion sources above share one dismiss-and-archive mechanism
 (`models.DismissedSuggestion`, `POST`/`GET`/`DELETE
 /dismissed-suggestions`). `suggestion_id` is a stable key derived from the
-suggestion's own content (`api._transfer_suggestion_id`/
+suggestion's own content (`api.routers.postings._transfer_suggestion_id`/
 `_duplicate_suggestion_id`), not a random id — the same real-world pair or
 group always dismisses and restores under the same key, regardless of how
 many times the detector recomputes it on a later read. Dismissing never

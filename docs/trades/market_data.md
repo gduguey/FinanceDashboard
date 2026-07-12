@@ -11,7 +11,7 @@ wires price lookups; `dashboard/charts.py` pulls CPI and HYSA series.
 
 | Module | Source | Cached? | Update strategy |
 |--------|--------|---------|-----------------|
-| `prices.py` | Yahoo Finance chart API | Yes — per symbol | Incremental (missing ranges only), hourly |
+| `prices.py` | Yahoo Finance chart API | Yes — per symbol | Incremental (missing ranges only), a few times a day around market close |
 | `cpi.py` | FRED CSV export | Yes — one file | Full re-fetch, daily |
 | `hysa_rates.py` | apyarchives.com (scraped) | Yes — one file | Full re-fetch, daily |
 | `symbol_search.py` | Yahoo Finance search API | No | Live on each request |
@@ -61,7 +61,7 @@ We use the `query2` host; `query1` returned `429` consistently in testing.
 
 - `update_price_cache` / `update_adjusted_price_cache` fetch only the
   date range missing from the on-disk cache (`_missing_ranges`).
-- After the first backfill, an hourly cron run typically costs one small
+- After the first backfill, each cron run typically costs one small
   request per symbol (see "Syncing market data" below).
 - Rows are validated through `PriceObservation` before writing.
 - Writes are atomic (temp file + rename).
@@ -122,8 +122,8 @@ corrected upstream).
 ### Dashboard usage
 
 The user picks a bank (or sets a fixed rate override) in dashboard settings.
-`dashboard/settings.py` builds a `rate_lookup(date) → float` callable that
-feeds the HYSA counterfactual in `ledger/counterfactuals.py`.
+`dashboard/settings.hysa_rate_lookup` builds a `(date) → float` callable
+that feeds the HYSA counterfactual in `ledger/counterfactuals.py`.
 
 When the tax toggle is on, the published rate is wrapped through
 `ledger/taxes.after_tax_rate_lookup` so HYSA comparisons use an after-tax
@@ -137,7 +137,7 @@ Live ticker search against Yahoo Finance's search endpoint. **Not cached**
 — it's an on-demand lookup for the web dashboard's benchmark picker.
 
 Returns `{symbol, name, exchange}` dicts in Yahoo's relevance order. Only
-used by `GET /api/symbols/search` in `api.py`.
+used by `GET /api/symbols/search` in `api/routers/market_data.py`.
 
 ---
 
@@ -145,9 +145,9 @@ used by `GET /api/symbols/search` in `api.py`.
 
 There is no longer a single "Sync everything" action. The web dashboard's
 **Sync** button (`POST /api/sync` in `trades/api/routers/sync.py`) now only
-pulls the latest IBKR Flex Query statement into `ledger.csv` — it's a
-manual, on-demand action because that's the one leg worth watching a
-progress bar for.
+pulls that signed-in user's latest IBKR Flex Query statement into their own
+Postgres-backed ledger — it's a manual, on-demand, per-user action because
+that's the one leg worth watching a progress bar for.
 
 Market data refreshes automatically instead, on cron, with no button:
 

@@ -104,8 +104,8 @@ value for a typed `currency` field.
 
 - `market_data.exchange_rates.fetch_rate_history` builds its currency list
   as "every code in `SUPPORTED_CURRENCIES` except the base," so the very
-  next hourly sync fetches MXN's history alongside USD/EUR's with no code
-  change.
+  next cron-scheduled sync fetches MXN's history alongside USD/EUR's with
+  no code change.
 - `ledger.currency.convert`/`DisplayCurrency`, `dashboard.net_worth`,
   `dashboard.income_statement`, budgets, and goals are all already
   written generically over whatever currencies show up in the rate table
@@ -118,8 +118,8 @@ value for a typed `currency` field.
 as long as Frankfurter (the ECB-sourced rate source this app fetches
 from) actually publishes a rate for the new code, which it does for MXN
 and for the large majority of actively-traded currencies. After the two
-required edits above, the next hourly sync fetches and caches MXN's
-history alongside everything else, and every net-worth/income-statement/
+required edits above, the next cron-scheduled sync fetches and caches
+MXN's history alongside everything else, and every net-worth/income-statement/
 budget/goal total involving a peso account converts correctly from that
 point on.
 
