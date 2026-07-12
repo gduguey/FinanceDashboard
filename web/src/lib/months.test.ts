@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { availableMonths } from '@/components/accounting/MonthSelect'
+import { availableMonths } from '@/lib/months'
 import type { Posting } from '@/types/accounting'
 
 function makePosting(postedAt: string): Posting {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FILTER_ALL, matchesFilter } from '@/components/shared/FilterSelect'
+import { FILTER_ALL, matchesFilter } from '@/lib/filters'
 
 describe('matchesFilter', () => {
   it('matches everything when no filter value is set', () => {

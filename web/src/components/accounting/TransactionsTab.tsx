@@ -9,7 +9,7 @@ import {
   needsCategorizing,
   splitOriginalId,
 } from '@/components/accounting/transactionCategorization'
-import { FILTER_ALL as ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
+import { FilterSelect } from '@/components/shared/FilterSelect'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
@@ -28,6 +28,7 @@ import {
 } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
+import { FILTER_ALL as ALL, matchesFilter } from '@/lib/filters'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'

@@ -182,6 +182,7 @@ function SelectScrollDownButton({ className, ...props }: React.ComponentProps<ty
 }
 
 export {
+  // biome-ignore lint/style/useComponentExportOnlyModules: shadcn/ui generated file — re-exports primitives alongside components, the standard shape
   Select,
   SelectContent,
   SelectGroup,
