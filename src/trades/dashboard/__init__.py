@@ -2,7 +2,7 @@
 
 Combines `ledger.*` (replay, lots, metrics, counterfactuals, nav) and
 `market_data.*` into the exact shapes `api.py` serves over HTTP; `api.py`
-itself does no aggregation, matching `docs/architecture.md`'s split
+itself does no aggregation, matching `docs/trades/architecture.md`'s split
 between the layer that computes something and the layer that serializes
 it.
 """

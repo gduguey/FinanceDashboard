@@ -6,7 +6,7 @@ differently-named file (e.g. `.cursorrules`), symlink it here too rather
 than duplicating content that can then drift.
 
 For what this repo is and how it's organized, read `README.md` and
-`docs/architecture.md` first. The two conventions below are things a past
+`docs/trades/architecture.md`/`docs/accounting/architecture.md` first. The two conventions below are things a past
 session got explicit, repeated instructions about — treat them as standing
 rules for this repo, not one-off preferences.
 
@@ -31,7 +31,7 @@ existing source) that overlaps with an existing concept:
   no matching model exists yet for this concept, that's a sign to add one
   — not a reason to skip validation.
 
-See `docs/architecture.md` ("The ledger") for the concrete example this
+See `docs/trades/architecture.md` ("The ledger") for the concrete example this
 pattern is based on (`IBKR <Trade> rows -> LedgerEvent`, in
 `preprocessing.standardize_ibkr_ledger`).
 

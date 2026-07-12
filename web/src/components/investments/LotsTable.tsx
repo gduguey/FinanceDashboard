@@ -6,7 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/investments/SortableTableHead'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatDate, formatPercent, formatUsd, signColor } from '@/lib/format'
 import { useLots, useTaxSettings } from '@/hooks/usePortfolioData'
@@ -118,10 +118,7 @@ export function LotsTable() {
                 />
               </TabsContent>
               <TabsContent value="closed">
-                <ClosedLotsTable
-                  lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots}
-                  taxEnabled={taxEnabled}
-                />
+                <ClosedLotsTable lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots} />
               </TabsContent>
             </Tabs>
             <SymbolRollupTable rows={data.symbol_rollup} taxEnabled={taxEnabled} />
@@ -221,7 +218,7 @@ function OpenLotsTable({ lots, taxEnabled }: { lots: OpenLot[]; taxEnabled: bool
   )
 }
 
-function ClosedLotsTable({ lots, taxEnabled }: { lots: ClosedLot[]; taxEnabled: boolean }) {
+function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
   const { sorted, sort, toggleSort } = useSortableRows(lots, 'closed_at')
   if (!lots.length) return <p className="py-6 text-center text-sm text-muted-foreground">No closed lots</p>
   return (

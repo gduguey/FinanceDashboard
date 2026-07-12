@@ -29,7 +29,7 @@ FIXTURE_XML = """<FlexQueryResponse queryName="Trade History API" type="AF">
     buySell="BUY" tradeID="1" transactionID="9001" tradeDate="2026-06-30"
     dateTime="2026-06-30 09:48:03 EDT" notes="P"
     quantity="2" tradePrice="681.81" tradeMoney="1363.62" ibCommission="-1.00"
-    netCash="-1364.62"/>
+    netCash="-1364.62" levelOfDetail="EXECUTION"/>
 </Trades>
 </FlexStatement>
 </FlexStatements>
@@ -56,7 +56,7 @@ EARLIER_FIXTURE_XML = """<FlexQueryResponse queryName="Trade History API" type="
     buySell="BUY" tradeID="2" transactionID="8000" tradeDate="2026-06-24"
     dateTime="2026-06-24 09:30:00 EDT" notes="P"
     quantity="1" tradePrice="600.00" tradeMoney="600.00" ibCommission="-1.00"
-    netCash="-601.00"/>
+    netCash="-601.00" levelOfDetail="EXECUTION"/>
 </Trades>
 </FlexStatement>
 </FlexStatements>

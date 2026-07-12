@@ -1,5 +1,5 @@
 import { Brush, CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { formatDate } from '@/lib/format'
 import { benchmarkLabel, hysaLabel } from '@/lib/labels'

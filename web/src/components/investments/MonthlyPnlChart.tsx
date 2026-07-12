@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { TooltipContentProps } from 'recharts'
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { colorForIndex } from '@/lib/colors'
 import { formatMonth, formatUsd } from '@/lib/format'

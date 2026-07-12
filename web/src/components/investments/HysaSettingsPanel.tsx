@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TooltipContentProps } from 'recharts'
 import { Brush, CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
-import { ChartCard } from '@/components/investments/ChartCard'
+import { ChartCard } from '@/components/shared/ChartCard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -132,7 +132,13 @@ export function HysaSettingsPanel() {
         <span className="text-sm font-medium">HYSA counterfactual rate</span>
         <Select value={selectedValue} onValueChange={handleBankChange}>
           <SelectTrigger size="sm" className="w-56">
-            <SelectValue placeholder="Choose a bank" />
+            <SelectValue
+              placeholder="Choose a bank"
+              items={{
+                ...Object.fromEntries((rates?.banks ?? []).map((bank: HysaBank) => [bank.bank_id, bank.bank_name])),
+                [CUSTOM_RATE]: 'Custom fixed rate…',
+              }}
+            />
           </SelectTrigger>
           <SelectContent>
             {rates?.banks.map((bank: HysaBank) => (
