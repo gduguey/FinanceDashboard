@@ -64,6 +64,18 @@ class ParsedStatement:
 def _send_flex_request(
     credentials: IbkrFlexCredentials, config: AppConfig, on_progress: Callable[[str, float], None] | None = None
 ) -> tuple[str, str]:
+    """Kick off IBKR's Flex Query (the `SendRequest` step), returning its reference code and statement URL.
+
+    Returns
+    -------
+    tuple[str, str]
+        The reference code and statement URL to poll next.
+
+    Raises
+    ------
+    FlexApiError
+        If the request fails, or IBKR responds with a non-`Success` status.
+    """
     if on_progress:
         on_progress("Requesting IBKR statement", 5.0)
     try:
@@ -95,6 +107,19 @@ def _poll_flex_statement(
     config: AppConfig,
     on_progress: Callable[[str, float], None] | None = None,
 ) -> str:
+    """Poll IBKR's `GetStatement` step until the generated statement is ready, retrying on its documented codes.
+
+    Returns
+    -------
+    str
+        The raw `<FlexQueryResponse>` XML.
+
+    Raises
+    ------
+    FlexApiError
+        If IBKR returns a non-retryable error code, or the statement never
+        finishes generating within `config.ibkr.max_poll_attempts`.
+    """
     for attempt in range(config.ibkr.max_poll_attempts):
         if on_progress:
             # Spends most of its allotted band waiting on IBKR to finish

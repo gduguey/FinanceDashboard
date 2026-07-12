@@ -157,6 +157,12 @@ def put_benchmark_setting(
 
 
 def _tax_settings_response(config: AppConfig, settings: dashboard.DashboardSettings) -> TaxSettings:
+    """Build the tax-settings API response, resolving the effective regime alongside the raw saved fields.
+
+    Returns
+    -------
+    TaxSettings
+    """
     return TaxSettings(
         tax_enabled=settings.tax_enabled,
         tax_regime=settings.tax_regime,

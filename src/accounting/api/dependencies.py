@@ -37,6 +37,7 @@ class _State:
     """Everything a running server needs, held off the shared `app` object so tests can swap it per-test."""
 
     def __init__(self) -> None:
+        """Load the default `AccountingConfig`."""
         self.config = AccountingConfig()
 
 

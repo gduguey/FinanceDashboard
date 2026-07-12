@@ -42,6 +42,12 @@ class TradeHistoryGapError(ValueError):
 
 
 def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
+    """Combine `existing` and `new` events, deduped by `event_id`, sorted chronologically.
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     return (
         pl
         .concat([existing, new], how="vertical")

@@ -402,6 +402,12 @@ def _reassign_colliding_transaction_ids(existing: pl.DataFrame, new: pl.DataFram
 
 
 def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
+    """Combine `existing` and `new` postings, deduped by `posting_id`, sorted chronologically.
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     reconciled = _reassign_colliding_transaction_ids(existing, new)
     return (
         pl
@@ -414,6 +420,7 @@ def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
 def _archive_raw_statement(
     institution: str, account_id: str, data: bytes, config: AccountingConfig, user_id: uuid.UUID, suffix: str = "csv"
 ) -> None:
+    """Save one raw uploaded statement verbatim, timestamped, under this user's own archive prefix."""
     archive = StatementArchive(config.raw_statement_dir, f"statements/{user_id}")
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
     archive.write(f"{institution}/{account_id}/{timestamp}.{suffix}", data)
@@ -693,6 +700,12 @@ def _apply_canonical_outcome(
     session: Session,
     user_id: uuid.UUID,
 ) -> CanonicalIngestResult:
+    """Persist a canonical parse's new categories and merge its postings into the ledger — shared by CSV and Excel.
+
+    Returns
+    -------
+    CanonicalIngestResult
+    """
     if outcome.new_categories:
         merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
         save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)

@@ -47,6 +47,12 @@ def make_price_lookup(config: AppConfig, *, adjusted: bool = False) -> Callable[
     histories: dict[str, pl.DataFrame] = {}
 
     def lookup(symbol: str, as_of: date) -> float | None:
+        """Look up `symbol`'s price as of `as_of`, caching its loaded history across calls.
+
+        Returns
+        -------
+        float or None
+        """
         if symbol not in histories:
             histories[symbol] = prices.load_price_cache(symbol, config, adjusted=adjusted)
         return prices.price_as_of(histories[symbol], as_of)

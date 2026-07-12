@@ -31,6 +31,12 @@ if TYPE_CHECKING:
 
 
 def _earlier_regime(current_regime: TaxRegime) -> TaxRegime:
+    """Return whichever regime isn't `current_regime` — the one in effect before a residency status change.
+
+    Returns
+    -------
+    TaxRegime
+    """
     return "NRA" if current_regime == "RESIDENT" else "RESIDENT"
 
 
@@ -158,6 +164,12 @@ def annual_tax_report(
 def _gains_by_year_and_regime(
     closed_lots: pl.DataFrame, current_regime: TaxRegime, status_change_date: date | None
 ) -> pl.DataFrame:
+    """Sum realized long/short-term gains per (year, regime-in-effect-that-day).
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     schema = {"year": pl.Int32, "regime": pl.Utf8, "long_term_gain_usd": pl.Float64, "short_term_gain_usd": pl.Float64}
     if closed_lots.is_empty():
         return pl.DataFrame(schema=schema)
@@ -300,6 +312,12 @@ def classify_dividend(symbol: str, meta: dict[str, str], ledger: pl.DataFrame, c
 def _dividends_by_year_and_regime(
     ledger: pl.DataFrame, config: AppConfig, current_regime: TaxRegime, status_change_date: date | None
 ) -> pl.DataFrame:
+    """Sum dividend income by tax character per (year, regime-in-effect-that-day).
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     schema = {
         "year": pl.Int32,
         "regime": pl.Utf8,
@@ -339,6 +357,12 @@ def _dividends_by_year_and_regime(
 def _withholding_by_year_and_regime(
     ledger: pl.DataFrame, current_regime: TaxRegime, status_change_date: date | None
 ) -> pl.DataFrame:
+    """Sum WITHHOLDING events per (year, regime-in-effect-that-day).
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     schema = {"year": pl.Int32, "regime": pl.Utf8, "withholding_tax_usd": pl.Float64}
     withholding_rows = ledger.filter(pl.col("event_type") == "WITHHOLDING")
     if withholding_rows.is_empty():
@@ -713,6 +737,12 @@ def after_tax_rate_lookup(
     """
 
     def wrapped(day: date) -> float:
+        """Reduce `rate_lookup(day)` by `marginal_ordinary_rate` if resident status applies on `day`.
+
+        Returns
+        -------
+        float
+        """
         rate = rate_lookup(day)
         if _regime_as_of(day, current_regime, status_change_date) == "RESIDENT":
             return rate * (1 - marginal_ordinary_rate)

@@ -130,6 +130,17 @@ class SecretsEncryptor:
         return Fernet(key.encode()).decrypt(ciphertext.encode()).decode()
 
     def _key_for_version(self, key_version: int) -> str:
+        """Look up the raw key that encrypted `key_version`.
+
+        Returns
+        -------
+        str
+
+        Raises
+        ------
+        ValueError
+            If `key_version` is neither the current version nor a known previous one.
+        """
         if key_version == self._settings.current_version:
             return self._settings.current_key.get_secret_value()
         previous_keys = self._settings.previous_keys()

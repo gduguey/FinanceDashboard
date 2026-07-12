@@ -54,6 +54,12 @@ class ClerkWebhookSettings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def _webhook_settings() -> ClerkWebhookSettings:
+    """Build (once) the webhook signing settings from `CLERK_WEBHOOK_SIGNING_SECRET`.
+
+    Returns
+    -------
+    ClerkWebhookSettings
+    """
     # signing_secret has no default (see ClerkWebhookSettings) — pydantic-settings fills it from
     # CLERK_WEBHOOK_SIGNING_SECRET at runtime, but mypy has no pydantic plugin configured here to
     # know that, so it sees a required constructor argument never passed.
@@ -61,6 +67,17 @@ def _webhook_settings() -> ClerkWebhookSettings:
 
 
 def _primary_email(data: dict[str, Any]) -> str:
+    """Find the email address matching a `user.created` payload's own `primary_email_address_id`.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    HTTPException
+        400 if no email address in the payload matches `primary_email_address_id`.
+    """
     primary_id = data["primary_email_address_id"]
     for email_address in data["email_addresses"]:
         if email_address["id"] == primary_id:

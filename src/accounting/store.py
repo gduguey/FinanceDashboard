@@ -99,6 +99,12 @@ _NAMED_CATEGORY_COLORS = [
 
 
 def _hsl_to_hex(hue_deg: float, saturation: float, lightness: float) -> str:
+    """Convert an HSL color to its `#rrggbb` hex string.
+
+    Returns
+    -------
+    str
+    """
     red, green, blue = colorsys.hls_to_rgb(hue_deg / 360, lightness, saturation)
     return f"#{round(red * 255):02x}{round(green * 255):02x}{round(blue * 255):02x}"
 
@@ -183,6 +189,12 @@ OTHER_SUBCATEGORY_SUFFIX = ":other"
 
 
 def _is_other_subcategory(category: Category) -> bool:
+    """Whether `category` is one of the auto-created "Other" catch-all subcategories.
+
+    Returns
+    -------
+    bool
+    """
     return category.category_id.endswith(OTHER_SUBCATEGORY_SUFFIX)
 
 
@@ -273,6 +285,12 @@ def plan_category_rename(
     is_top_level = category.parent_category_id is None
 
     def is_merge_target(candidate: Category) -> bool:
+        """Whether `candidate` is an existing, different category the rename would merge into.
+
+        Returns
+        -------
+        bool
+        """
         if candidate.category_id == category_id or _is_other_subcategory(candidate):
             return False
         if candidate.name.strip().lower() != normalized_name:
@@ -347,6 +365,12 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         return store
 
     def remap(category_id: str | None) -> str | None:
+        """Look up `category_id`'s new id, or leave it unchanged if it wasn't merged away.
+
+        Returns
+        -------
+        str or None
+        """
         return id_remap.get(category_id, category_id) if category_id is not None else None
 
     rules = [
@@ -414,7 +438,7 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
 
 
 def default_categories() -> dict[str, Category]:
-    """Build the starting category tree (see `ACCOUNTING_PLAN.md` Part 6).
+    """Build the starting category tree every new user's store is seeded with.
 
     Returns
     -------
@@ -503,30 +527,72 @@ class AccountingStore(BaseModel):
 
 
 def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
+    """Derive this user's stable internal id for the account natural-keyed `account_id`.
+
+    Returns
+    -------
+    uuid.UUID
+    """
     return derive_id(user_id, "accounts", account_id)
 
 
 def _category_id(user_id: uuid.UUID, category_id: str | None) -> uuid.UUID | None:
+    """Derive this user's stable internal id for `category_id`, or `None` if `category_id` is `None`.
+
+    Returns
+    -------
+    uuid.UUID or None
+    """
     return derive_id(user_id, "categories", category_id) if category_id is not None else None
 
 
 def _goal_id(user_id: uuid.UUID, goal_id: str) -> uuid.UUID:
+    """Derive this user's stable internal id for the goal natural-keyed `goal_id`.
+
+    Returns
+    -------
+    uuid.UUID
+    """
     return derive_id(user_id, "goals", goal_id)
 
 
 def _tag_id(user_id: uuid.UUID, tag_id: str) -> uuid.UUID:
+    """Derive this user's stable internal id for the tag natural-keyed `tag_id`.
+
+    Returns
+    -------
+    uuid.UUID
+    """
     return derive_id(user_id, "tags", tag_id)
 
 
 def _transaction_id(user_id: uuid.UUID, transaction_id: str) -> uuid.UUID:
+    """Derive this user's stable internal id for the transaction natural-keyed `transaction_id`.
+
+    Returns
+    -------
+    uuid.UUID
+    """
     return derive_id(user_id, "transactions", transaction_id)
 
 
 def _posting_id(user_id: uuid.UUID, posting_id: str) -> uuid.UUID:
+    """Derive this user's stable internal id for the posting natural-keyed `posting_id`.
+
+    Returns
+    -------
+    uuid.UUID
+    """
     return derive_id(user_id, "postings", posting_id)
 
 
 def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUID, str]) -> Account:
+    """Convert one persisted `Account` row back into its pydantic model, using natural keys.
+
+    Returns
+    -------
+    Account
+    """
     return Account(
         account_id=row.natural_key,
         name=row.name,
@@ -543,6 +609,12 @@ def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUI
 
 
 def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.UUID, str]) -> Category:
+    """Convert one persisted `Category` row back into its pydantic model, using natural keys.
+
+    Returns
+    -------
+    Category
+    """
     return Category(
         category_id=row.natural_key,
         name=row.name,
@@ -559,6 +631,12 @@ def _rule_from_row(
     account_natural_key_by_id: dict[uuid.UUID, str],
     category_natural_key_by_id: dict[uuid.UUID, str],
 ) -> TransferRule:
+    """Convert one persisted `TransferRule` row back into its pydantic model, using natural keys.
+
+    Returns
+    -------
+    TransferRule
+    """
     return TransferRule(
         rule_id=row.natural_key,
         description_contains=row.description_contains,
@@ -575,6 +653,12 @@ def _rule_from_row(
 
 
 def _pattern_from_row(row: adb.CategoryPattern, category_natural_key_by_id: dict[uuid.UUID, str]) -> CategoryPattern:
+    """Convert one persisted `CategoryPattern` row back into its pydantic model, using natural keys.
+
+    Returns
+    -------
+    CategoryPattern
+    """
     return CategoryPattern(
         pattern_id=row.natural_key,
         description_contains=row.description_contains,
@@ -590,6 +674,12 @@ def _split_from_rows(
     legs: Iterable[adb.PostingSplitLeg],
     category_natural_key_by_id: dict[uuid.UUID, str],
 ) -> PostingSplit:
+    """Convert one posting's persisted split-leg rows back into a `PostingSplit`, using natural keys.
+
+    Returns
+    -------
+    PostingSplit
+    """
     ordered = sorted(legs, key=lambda leg: leg.ordinal)
     return PostingSplit(
         posting_id=posting_natural_key,
@@ -610,6 +700,12 @@ def _split_from_rows(
 def _merge_from_rows(
     row: adb.PostingMerge, duplicate_ids: list[uuid.UUID], transaction_natural_key_by_id: dict[uuid.UUID, str]
 ) -> PostingMerge:
+    """Convert one persisted `PostingMerge` row back into its pydantic model, using natural keys.
+
+    Returns
+    -------
+    PostingMerge
+    """
     return PostingMerge(
         merge_id=row.natural_key,
         kept_transaction_id=transaction_natural_key_by_id[row.kept_transaction_id],
@@ -855,6 +951,12 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
 
 
 def _group_by[T, K](rows: Iterable[T], key: Callable[[T], K]) -> dict[K, list[T]]:
+    """Group `rows` into lists keyed by `key(row)`, preserving each group's original order.
+
+    Returns
+    -------
+    dict[K, list[T]]
+    """
     grouped: dict[K, list[T]] = {}
     for row in rows:
         grouped.setdefault(key(row), []).append(row)

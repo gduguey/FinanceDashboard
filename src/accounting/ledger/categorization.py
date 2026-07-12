@@ -30,6 +30,12 @@ _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per tra
 
 
 def _matching_rule(rules: list[TransferRule], description: str, account_id: str) -> TransferRule | None:
+    """Find the highest-priority active rule whose `description_contains` matches, scoped to `account_id` if set.
+
+    Returns
+    -------
+    TransferRule or None
+    """
     lowered = description.lower()
     for rule in sorted(rules, key=lambda r: r.priority):
         if not rule.active:

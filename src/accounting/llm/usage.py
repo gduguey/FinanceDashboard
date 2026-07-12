@@ -46,6 +46,12 @@ class ProviderUsage(BaseModel):
 
 
 def _current_period_start(period: ResetPeriod, now: datetime) -> datetime:
+    """Return the start of `now`'s current tracking period — midnight for daily, the 1st for monthly.
+
+    Returns
+    -------
+    datetime.datetime
+    """
     # Naive, like every other timestamp this app stores in Postgres (see
     # `trades.config.TimezoneConfig`'s own docstring on the same
     # convention) — `period_start` round-trips through a plain (non-tz)
@@ -158,6 +164,7 @@ class TrackedProvider:
     """Wraps an `LLMProvider`, recording every call's outcome to the `llm_usage` table before returning/re-raising."""
 
     def __init__(self, inner: LLMProvider, name: str, session: Session, user_id: uuid.UUID) -> None:
+        """Wrap `inner`, tracking its calls under `name` for `user_id`."""
         self._inner = inner
         self._name = name
         self._session = session

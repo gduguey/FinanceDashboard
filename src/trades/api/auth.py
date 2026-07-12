@@ -61,6 +61,12 @@ class ClerkAuthSettings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def _options() -> AuthenticateRequestOptions:
+    """Build (once) Clerk's request-authentication options from `CLERK_SECRET_KEY`.
+
+    Returns
+    -------
+    AuthenticateRequestOptions
+    """
     # secret_key has no default (see ClerkAuthSettings) — pydantic-settings fills it from
     # CLERK_SECRET_KEY at runtime, but mypy has no pydantic plugin configured here to know
     # that, so it sees a required constructor argument never passed.

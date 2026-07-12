@@ -172,6 +172,17 @@ class TimezoneConfig(BaseModel):
     @field_validator("local_zone")
     @classmethod
     def _validate_zone_name(cls, value: str) -> str:
+        """Reject a `local_zone` that isn't a real IANA timezone name.
+
+        Returns
+        -------
+        str
+
+        Raises
+        ------
+        ValueError
+            If `value` isn't a known IANA timezone name.
+        """
         try:
             ZoneInfo(value)
         except ZoneInfoNotFoundError as error:

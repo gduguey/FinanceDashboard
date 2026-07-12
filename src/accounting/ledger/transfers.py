@@ -1,13 +1,12 @@
 """Suggest — never apply — internal transfers a rule doesn't already catch.
 
-The generalized fallback `ACCOUNTING_PLAN.md` describes: two postings, on
-two different real accounts, still pointing at a placeholder counterparty,
-whose amounts are equal and opposite within a short window of each other,
-are very likely one transfer between those two accounts. A heuristic match
-like this can be wrong (two unrelated $20 charges a day apart), so it is
-only ever surfaced as a suggestion for a human — or a new rule — to
-confirm, never auto-applied the way `ledger.categorization.apply_rules`
-applies an exact rule match.
+The generalized fallback: two postings, on two different real accounts,
+still pointing at a placeholder counterparty, whose amounts are equal and
+opposite within a short window of each other, are very likely one transfer
+between those two accounts. A heuristic match like this can be wrong (two
+unrelated $20 charges a day apart), so it is only ever surfaced as a
+suggestion for a human — or a new rule — to confirm, never auto-applied
+the way `ledger.categorization.apply_rules` applies an exact rule match.
 """
 
 from __future__ import annotations
