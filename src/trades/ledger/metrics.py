@@ -150,9 +150,21 @@ def xirr(dates: Sequence[date], amounts: Sequence[float], config: AppConfig) -> 
     years = np.array([(d - first_date).days / config.returns.days_per_year for d in dates], dtype=float)
 
     def npv(rate: float) -> float:
+        """Net present value of every cashflow at `rate`, which XIRR is the root of.
+
+        Returns
+        -------
+        float
+        """
         return float(np.sum(amounts_arr / (1 + rate) ** years))
 
     def npv_derivative(rate: float) -> float:
+        """`npv`'s derivative with respect to `rate`, for Newton's method.
+
+        Returns
+        -------
+        float
+        """
         return float(np.sum(-years * amounts_arr / (1 + rate) ** (years + 1)))
 
     tolerance = config.returns.xirr_tolerance
@@ -170,6 +182,17 @@ def xirr(dates: Sequence[date], amounts: Sequence[float], config: AppConfig) -> 
 
 
 def _bisect_xirr(npv: Callable[[float], float], tolerance: float, max_iterations: int) -> float:
+    """Fall back to bisection to find XIRR's root when Newton's method fails to converge.
+
+    Returns
+    -------
+    float
+
+    Raises
+    ------
+    ValueError
+        If the NPV doesn't change sign across the search bracket.
+    """
     lo, hi = _XIRR_BISECTION_BRACKET
     npv_lo, npv_hi = npv(lo), npv(hi)
     if npv_lo * npv_hi > 0:

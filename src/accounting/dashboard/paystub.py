@@ -1,10 +1,9 @@
 """Match a parsed paystub's deposits against the real bank postings that arrived on/near pay day.
 
 Never forces a split that doesn't add up — an unmatched deposit is
-reported, not silently guessed at, per `ACCOUNTING_PLAN.md` Phase 9: the
-whole point of reconciling is to catch a paystub whose numbers don't
-actually correspond to what landed in the bank, not to paper over that
-with an assumption.
+reported, not silently guessed at: the whole point of reconciling is to
+catch a paystub whose numbers don't actually correspond to what landed in
+the bank, not to paper over that with an assumption.
 """
 
 from __future__ import annotations

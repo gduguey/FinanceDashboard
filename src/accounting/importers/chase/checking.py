@@ -21,8 +21,7 @@ def standardize_chase_checking(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map Chase checking export rows onto postings against `account_id`.
 
     Every row's counterparty is one of the two uncategorized placeholders,
-    chosen by sign, exactly as `ACCOUNTING_PLAN.md` Phase 1 specifies —
-    no rule matching, no transfer detection here.
+    chosen by sign — no rule matching, no transfer detection here.
 
     Parameters
     ----------

@@ -35,6 +35,12 @@ _BACKUP_KEY = "hysa_rates.csv"
 
 
 def _cache_path(config: AppConfig) -> Path:
+    """Where the cached HYSA rate history CSV lives on disk.
+
+    Returns
+    -------
+    Path
+    """
     return config.hysa_rates.cache_dir / "rates.csv"
 
 

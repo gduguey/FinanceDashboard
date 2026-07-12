@@ -181,6 +181,12 @@ async def post_import(  # noqa: PLR0913
 
 
 def _read_category_overrides(raw: str | None) -> CategoryOverrides | None:
+    """Parse a JSON-encoded `CanonicalCategoryOverridesRequest` form field, or `None` if it wasn't sent.
+
+    Returns
+    -------
+    CategoryOverrides or None
+    """
     if not raw:
         return None
     parsed = CanonicalCategoryOverridesRequest.model_validate_json(raw)
@@ -334,6 +340,12 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
 
 
 def _match_response(match: CategorizationMatchData) -> CategorizationMatch:
+    """Convert one internal `CategorizationMatch` dataclass into its API response model.
+
+    Returns
+    -------
+    CategorizationMatch
+    """
     return CategorizationMatch(**vars(match))
 
 

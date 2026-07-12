@@ -57,10 +57,22 @@ _WORD_MATCH_THRESHOLD = 0.7
 
 
 def _tokenize(description: str) -> list[str]:
+    """Split a description into lowercase words.
+
+    Returns
+    -------
+    list[str]
+    """
     return _WORD_PATTERN.findall(description.lower())
 
 
 def _words_match(word: str, other: str) -> bool:
+    """Whether two words are the same, or close enough (fuzzy ratio) to count as the same.
+
+    Returns
+    -------
+    bool
+    """
     return word == other or SequenceMatcher(None, word, other).ratio() >= _WORD_MATCH_THRESHOLD
 
 
@@ -91,10 +103,22 @@ def _description_containment(file_description: str, posting_description: str) ->
 
 
 def _date_closeness(days_apart: float, window_days: int) -> float:
+    """Score how close two dates are, from `1.0` (same day) to `0.0` (at or beyond `window_days` apart).
+
+    Returns
+    -------
+    float
+    """
     return max(0.0, 1 - abs(days_apart) / window_days)
 
 
 def _category_name(category_id: str | None, categories: dict[str, Category]) -> str | None:
+    """Look up `category_id`'s display name, or `None` if it's unset or unknown.
+
+    Returns
+    -------
+    str or None
+    """
     if category_id is None:
         return None
     category = categories.get(category_id)

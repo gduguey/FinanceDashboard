@@ -50,16 +50,34 @@ well short of a week so ordinary incremental efficiency is barely affected.
 
 
 def _cache_path(symbol: str, cache_dir: Path, *, adjusted: bool) -> Path:
+    """Where `symbol`'s cached price CSV lives on disk (a separate file for raw vs. adjusted).
+
+    Returns
+    -------
+    Path
+    """
     suffix = ".adjusted" if adjusted else ""
     return cache_dir / f"{symbol.upper()}{suffix}.csv"
 
 
 def _backup_key(symbol: str, *, adjusted: bool) -> str:
+    """`symbol`'s cache-backup key, matching `_cache_path`'s own raw-vs-adjusted naming.
+
+    Returns
+    -------
+    str
+    """
     suffix = ".adjusted" if adjusted else ""
     return f"prices/{symbol.upper()}{suffix}.csv"
 
 
 def _to_unix_seconds(value: date) -> int:
+    """Convert a date (midnight UTC) to Unix seconds, for Yahoo Finance's chart API.
+
+    Returns
+    -------
+    int
+    """
     return int(datetime.combine(value, datetime.min.time(), tzinfo=UTC).timestamp())
 
 

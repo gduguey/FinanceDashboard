@@ -333,6 +333,12 @@ def spend_curve_vs_average(
     month_start = month.replace(day=1)
 
     def _cumulative_by_day(period_start: date, period_end: date) -> dict[int, float]:
+        """Sum this period's spend day by day, keyed by day-of-month, running-total-so-far.
+
+        Returns
+        -------
+        dict[int, float]
+        """
         daily = (
             legs
             .filter((pl.col("posted_at").dt.date() >= period_start) & (pl.col("posted_at").dt.date() <= period_end))

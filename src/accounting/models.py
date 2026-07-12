@@ -5,10 +5,11 @@ immutable row of an append-only record, field names doubling as column
 names. Where the investing ledger's rows are self-contained facts about one
 symbol, a posting is only ever half of an economic event — it always has at
 least one sibling posting (sharing `transaction_id`) whose amounts, once
-converted to a common currency, sum to zero. See `ACCOUNTING_PLAN.md` for
-why that invariant is enforced by callers rather than by a single-row model,
-and why a transaction can have more than two postings (a paycheck landing in
-two accounts at once, split further into wage and reimbursement legs).
+converted to a common currency, sum to zero. That invariant is enforced by
+callers (see `docs/accounting/architecture.md`'s "Invariant" section), not
+by a single-row model, since a transaction can have more than two postings
+(a paycheck landing in two accounts at once, split further into wage and
+reimbursement legs).
 """
 
 from __future__ import annotations

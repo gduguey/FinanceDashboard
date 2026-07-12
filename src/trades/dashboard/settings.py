@@ -140,6 +140,12 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
         fixed_rate = settings.hysa_fixed_rate_pct / 100
 
         def fixed(_day: date) -> float:
+            """Return the user's configured fixed override rate.
+
+            Returns
+            -------
+            float
+            """
             return fixed_rate
 
         return fixed
@@ -148,6 +154,12 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
     history = hysa_rates_module.load_hysa_rates_cache(config)
 
     def rate(day: date) -> float:
+        """Return the chosen bank's published rate on `day`, falling back to the configured default.
+
+        Returns
+        -------
+        float
+        """
         apy_pct = hysa_rates_module.rate_as_of(history, bank_id, day)
         return apy_pct / 100 if apy_pct is not None else config.returns.hysa_annual_rate
 

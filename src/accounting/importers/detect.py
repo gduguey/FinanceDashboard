@@ -1,9 +1,9 @@
 """Guess which bank, account, and account number a CSV export belongs to.
 
-Every known export shape is structurally distinct (see `ACCOUNTING_PLAN.md`
-Part 5, Phase 1), so a header match alone identifies the bank and account
-kind for most formats; the account number then comes from the filename,
-which every one of those exports embeds somewhere. SoFi's newer, wider CSV
+Every known export shape is structurally distinct, so a header match alone
+identifies the bank and account kind for most formats; the account number
+then comes from the filename, which every one of those exports embeds
+somewhere. SoFi's newer, wider CSV
 shape (`importers.sofi.csv`) is the one exception — it names its account in
 the `Account Name` *column*, not the filename, so detecting it needs a
 peek at the first data row too. A guess is only ever a starting point for
@@ -49,6 +49,12 @@ class DetectedAccount:
 
 
 def _sofi_kind(filename: str) -> Literal["checking", "savings"] | None:
+    """Guess whether a SoFi export filename is for checking or savings.
+
+    Returns
+    -------
+    "checking", "savings", or None
+    """
     lower = filename.lower()
     if "saving" in lower:
         return "savings"
@@ -58,6 +64,12 @@ def _sofi_kind(filename: str) -> Literal["checking", "savings"] | None:
 
 
 def _detect_chase(header_tuple: tuple[str, ...], filename: str) -> DetectedAccount | None:
+    """Detect a Chase checking or credit-card export from its exact header and account number in the filename.
+
+    Returns
+    -------
+    DetectedAccount or None
+    """
     kind: Literal["credit_card", "checking"]
     label: str
     if header_tuple == _CHASE_CREDIT_CARD_HEADER:
@@ -74,6 +86,12 @@ def _detect_chase(header_tuple: tuple[str, ...], filename: str) -> DetectedAccou
 
 
 def _detect_sofi(header_tuple: tuple[str, ...], filename: str) -> DetectedAccount | None:
+    """Detect a SoFi checking or savings export from its exact header and account number in the filename.
+
+    Returns
+    -------
+    DetectedAccount or None
+    """
     if header_tuple != _SOFI_HEADER:
         return None
     kind = _sofi_kind(filename)
@@ -85,6 +103,12 @@ def _detect_sofi(header_tuple: tuple[str, ...], filename: str) -> DetectedAccoun
 
 
 def _detect_sofi_csv(header_tuple: tuple[str, ...], first_data_row: dict[str, str] | None) -> DetectedAccount | None:
+    """Detect SoFi's newer, wider CSV export, whose account name lives in a data column, not the filename.
+
+    Returns
+    -------
+    DetectedAccount or None
+    """
     if header_tuple != _SOFI_CSV_HEADER or first_data_row is None:
         return None
     account_name = first_data_row.get("Account Name", "")

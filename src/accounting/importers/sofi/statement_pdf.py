@@ -90,17 +90,35 @@ class ParsedStatement:
 
 
 def _extract_page_texts(pdf_bytes: bytes) -> list[str]:
+    """Extract each page's raw text from the statement PDF, via `pdfplumber`.
+
+    Returns
+    -------
+    list[str]
+    """
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         return [page.extract_text() or "" for page in pdf.pages]
 
 
 def _extract_apys(text: str) -> dict[str, float]:
+    """Find every account's published APY block, keyed by its `sofi:{kind}:{last4}` account id.
+
+    Returns
+    -------
+    dict[str, float]
+    """
     return {
         f"sofi:{match.group(1).lower()}:{match.group(2)}": float(match.group(3)) for match in _APY_BLOCK.finditer(text)
     }
 
 
 def _split_type_and_description(body: str) -> tuple[str, str]:
+    """Split one transaction line into its known type prefix (or "Other") and the remaining description.
+
+    Returns
+    -------
+    tuple[str, str]
+    """
     for type_value in _TYPES_BY_LENGTH_DESC:
         prefix = f"{type_value} "
         if body.startswith(prefix):
@@ -109,16 +127,34 @@ def _split_type_and_description(body: str) -> tuple[str, str]:
 
 
 def _parse_statement_date(month: str, day: str, year: str) -> datetime:
+    """Parse a statement's `Mon D YYYY`-shaped date parts into a `datetime`.
+
+    Returns
+    -------
+    datetime.datetime
+    """
     return datetime.strptime(f"{month} {day} {year}", "%b %d %Y")  # noqa: DTZ007  (a statement date has no timezone)
 
 
 def _header_indices(lines: list[str]) -> list[int]:
+    """Find every line index that's immediately followed by the transaction table's column header.
+
+    Returns
+    -------
+    list[int]
+    """
     return [i for i in range(len(lines) - 1) if lines[i + 1].strip() == _COLUMNS_LINE]
 
 
 def _discover_checking_and_savings_accounts(
     lines: list[str], header_indices: list[int], apys: dict[str, float]
 ) -> dict[str, Account]:
+    """Build an `Account` for every checking/savings section header found, tagged with its own APY.
+
+    Returns
+    -------
+    dict[str, Account]
+    """
     accounts: dict[str, Account] = {}
     for i in header_indices:
         match = _ACCOUNT_HEADER.match(lines[i].strip())
@@ -138,6 +174,12 @@ def _discover_checking_and_savings_accounts(
 
 
 def _section_rows(section_text: str, account_id: str) -> list[ParsedRow]:
+    """Parse every transaction row within one account's own section of the statement.
+
+    Returns
+    -------
+    list[ParsedRow]
+    """
     rows: list[ParsedRow] = []
     for row_match in _ROW.finditer(section_text):
         source_type, description = _split_type_and_description(row_match.group("body").strip())
@@ -159,6 +201,12 @@ def _section_rows(section_text: str, account_id: str) -> list[ParsedRow]:
 def _section_account_id_and_new_vault(
     header: str, savings_account_id: str, savings_apy: float
 ) -> tuple[str, Account | None]:
+    """Resolve one section header to its account id — a real checking/savings account, or a newly-discovered Vault.
+
+    Returns
+    -------
+    tuple[str, Account or None]
+    """
     match = _ACCOUNT_HEADER.match(header)
     if match is not None:
         return f"sofi:{match.group(1).lower()}:{match.group(2)}", None

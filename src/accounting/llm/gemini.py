@@ -11,6 +11,7 @@ class GeminiProvider:
     """Wraps `google.genai.Client` behind the shared `LLMProvider.complete` interface — the default provider."""
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
+        """Bind this provider to one API key and model."""
         self._api_key = api_key
         self._model = model
 

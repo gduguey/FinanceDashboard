@@ -57,6 +57,12 @@ def month_bounds(month: str) -> tuple[date, date]:
 
 
 def _previous_month(month: str) -> str:
+    """Return the `"YYYY-MM"` immediately before `month`.
+
+    Returns
+    -------
+    str
+    """
     start, _ = month_bounds(month)
     previous = start - timedelta(days=1)
     return previous.strftime("%Y-%m")

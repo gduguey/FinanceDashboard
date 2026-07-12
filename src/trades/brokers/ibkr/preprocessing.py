@@ -39,10 +39,22 @@ _DIVIDEND_INCOME_TYPES = {
 
 
 def _empty_ledger() -> pl.DataFrame:
+    """Return an empty frame shaped like `LedgerEvent.polars_schema`.
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     return pl.DataFrame(schema=LedgerEvent.polars_schema)
 
 
 def _events_to_frame(events: list[LedgerEvent]) -> pl.DataFrame:
+    """Convert validated `LedgerEvent` models into a sorted polars DataFrame.
+
+    Returns
+    -------
+    polars.DataFrame
+    """
     if not events:
         return _empty_ledger()
     frame = pl.DataFrame([event.model_dump() for event in events], schema=LedgerEvent.polars_schema)
@@ -50,6 +62,12 @@ def _events_to_frame(events: list[LedgerEvent]) -> pl.DataFrame:
 
 
 def _trade_meta(row: dict[str, object]) -> dict[str, str]:
+    """Build one BUY/SELL event's `meta` dict from its raw IBKR trade row.
+
+    Returns
+    -------
+    dict[str, str]
+    """
     meta = {"transaction_id": str(row["transaction_id"]), "trade_id": str(row["trade_id"])}
     if row["notes"]:
         meta["notes"] = str(row["notes"])
@@ -136,6 +154,12 @@ def _standardize_ibkr_trades(ibkr_trades: pl.DataFrame, config: AppConfig) -> pl
 
 
 def _cash_transaction_meta(row: dict[str, object]) -> dict[str, str]:
+    """Build one cash event's `meta` dict from its raw IBKR cash-transaction row.
+
+    Returns
+    -------
+    dict[str, str]
+    """
     meta = {
         "transaction_id": str(row["transaction_id"]),
         "type": str(row["type"]),

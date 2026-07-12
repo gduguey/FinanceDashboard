@@ -100,6 +100,12 @@ def _client(credentials: CacheBackupR2Credentials) -> Any:  # noqa: ANN401 — b
 
 
 def _local_backup_path(backup_key: str) -> Path:
+    """Where `backup_key`'s local-disk backup copy lives, when R2 isn't configured.
+
+    Returns
+    -------
+    Path
+    """
     return _LOCAL_BACKUP_ROOT / backup_key
 
 

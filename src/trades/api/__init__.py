@@ -1,3 +1,5 @@
+"""Re-exports `app` (the one FastAPI instance) and module-under-test targets tests monkeypatch directly."""
+
 from trades.api.api import app
 from trades.api.api_models import SyncProgress
 from trades.api.dependencies import main

@@ -162,6 +162,12 @@ def post_category_rename(
     if id_remap:
 
         def remap(category_id: str | None) -> str | None:
+            """Look up `category_id`'s new id, or leave it unchanged if it wasn't merged away.
+
+            Returns
+            -------
+            str or None
+            """
             return id_remap.get(category_id, category_id) if category_id is not None else None
 
         overrides = load_overrides(session, user_id)

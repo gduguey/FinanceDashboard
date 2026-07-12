@@ -34,6 +34,12 @@ _BACKUP_KEY = "cpi.csv"
 
 
 def _cache_path(config: AppConfig) -> Path:
+    """Where this CPI series' cached CSV lives on disk.
+
+    Returns
+    -------
+    Path
+    """
     return config.cpi.cache_dir / f"{config.cpi.series_id}.csv"
 
 

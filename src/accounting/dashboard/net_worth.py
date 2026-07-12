@@ -1,11 +1,11 @@
 """Net worth: every real account's balance, grouped into assets and liabilities, plus manually-added assets.
 
-Mirrors Maybe's `BalanceSheet` (see `ACCOUNTING_PLAN.md` Part 1) without
-copying its code: accounts are grouped by classification rather than kept
-as one flat list, and the one figure this module cannot compute itself —
-what the tracked investment portfolio is worth — is passed in by the
-caller rather than fetched here, keeping the only coupling between the two
-packages one-directional and explicit (see `api.py`).
+Mirrors Maybe's `BalanceSheet` without copying its code: accounts are
+grouped by classification rather than kept as one flat list, and the one
+figure this module cannot compute itself — what the tracked investment
+portfolio is worth — is passed in by the caller rather than fetched here,
+keeping the only coupling between the two packages one-directional and
+explicit (see `api/routers/dashboard.py`).
 
 Every account and manually-added asset keeps its own native currency in
 `AccountBalanceRow`/`OtherAsset` — only the aggregate totals convert into
@@ -120,9 +120,21 @@ def net_worth_summary(
     opening_balances = opening_balances or {}
 
     def is_trades_linked(account: Account) -> bool:
+        """Whether this account's value is pulled live from the tracked `trades` portfolio.
+
+        Returns
+        -------
+        bool
+        """
         return account.kind == "external_investment" and account.external_ref == "trades"
 
     def base_balance(account: Account) -> float:
+        """Return this account's balance in its own native currency, before display-currency conversion.
+
+        Returns
+        -------
+        float
+        """
         if is_trades_linked(account):
             return external_investment_value_usd or 0.0
         balance = balance_by_account.get(account.account_id, 0.0)
@@ -149,6 +161,12 @@ def net_worth_summary(
     ]
 
     def to_display(amount: float, currency: CurrencyCode) -> float:
+        """Convert `amount` from `currency` into the requested display currency.
+
+        Returns
+        -------
+        float
+        """
         return convert(amount, currency, display.code, display.rates_to_base)
 
     assets = sum(to_display(row.balance, row.currency) for row in rows if row.kind not in _LIABILITY_KINDS)
