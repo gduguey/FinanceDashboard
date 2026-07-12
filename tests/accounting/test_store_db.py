@@ -13,6 +13,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 import accounting.db as adb
 import db.models
 from db.base import derive_id
@@ -291,3 +294,122 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
     assert reloaded.recurring_additions[0].value == 50
     assert reloaded.withdrawal_priorities[0].goal_id == "g1"
     assert reloaded.dismissed_suggestions["ds1"].kind == "duplicate"
+
+
+def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "accounts": {
+                **store.accounts,
+                "checking:test": Account(
+                    account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD"
+                ),
+                "employer:eqore": Account(
+                    account_id="employer:eqore", name="Eqore", kind="income_source", institution="x", currency="USD"
+                ),
+            },
+            "rules": [
+                TransferRule(
+                    rule_id="r1",
+                    description_contains="payroll",
+                    account_id="checking:test",
+                    counterparty_account_id="employer:eqore",
+                    priority=1,
+                )
+            ],
+        }
+    )
+    save_store(store, db_session, user_id=test_user_id)
+    reloaded = load_store(db_session, user_id=test_user_id)
+
+    rule = reloaded.rules[0]
+    assert rule.account_id == "checking:test"
+    assert rule.counterparty_account_id == "employer:eqore"
+
+
+def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "rules": [
+                TransferRule(
+                    rule_id="r1",
+                    description_contains="payroll",
+                    counterparty_account_id="does-not-exist",
+                )
+            ],
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "goal_contributions": {
+                "gc1": GoalContribution(
+                    contribution_id="gc1", goal_id="does-not-exist", date=datetime(2026, 1, 5), amount=100
+                )
+            }
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_recurring_addition_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "recurring_additions": [
+                RecurringAddition(
+                    addition_id="ra1",
+                    goal_id="does-not-exist",
+                    start_date=datetime(2026, 1, 1).date(),
+                    frequency="monthly",
+                    mode="fixed_amount",
+                    value=50,
+                )
+            ]
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_withdrawal_priority_entry_referencing_a_nonexistent_goal_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(update={"withdrawal_priorities": [WithdrawalPriorityEntry(goal_id="does-not-exist")]})
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_posting_budget_id_round_trips_a_real_budget_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={"budgets": [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)]}
+    )
+    save_store(store, db_session, user_id=test_user_id)
+
+    posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
+    posting_row.budget_id = derive_id(test_user_id, "budgets", "b1")
+    db_session.commit()
+
+    reloaded_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
+    assert reloaded_row.budget_id == derive_id(test_user_id, "budgets", "b1")
+
+
+def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
+    posting_row.budget_id = derive_id(test_user_id, "budgets", "does-not-exist")
+    with pytest.raises(IntegrityError):
+        db_session.commit()

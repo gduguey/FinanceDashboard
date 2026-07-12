@@ -110,10 +110,14 @@ class Transaction(Base):
 class Posting(Base):
     """One leg of one economic event — one row, like `trades.db.LedgerEvent`.
 
-    `budget_id` deliberately has no foreign key to `budgets` — same
-    "forward reference, no existence check" reasoning as
-    `TransferRule.account_id` — so it stays a bare nullable string (a
-    budget's own `natural_key`), not a derived FK column.
+    `budget_id` is a real foreign key into `budgets`, like `category_id`/
+    `subcategory_id` — a posting can only ever be attributed to a budget
+    that already exists. Nothing in the live app sets this to a non-null
+    value today (see `importers.ingest.load_ledger`/`_write_ledger`, the
+    only place this column is read or written), but it's kept a real FK
+    for the same reason every other natural-key reference in this schema
+    is, and so it's ready to use without a follow-up migration if a caller
+    eventually needs it.
     """
 
     __tablename__ = "postings"
@@ -139,7 +143,9 @@ class Posting(Base):
     subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    budget_id: Mapped[str | None] = mapped_column(default=None)
+    budget_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.budgets.id"), default=None
+    )
     description: Mapped[str] = mapped_column(default="")
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 

@@ -44,12 +44,12 @@ class Goal(Base):
 class GoalContribution(Base):
     """One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
 
-    `goal_id` deliberately has no foreign key to `goals` — like
-    `TransferRule.account_id`, `PUT /goal-contributions` replaces its
-    whole list wholesale with no server-side existence check today (see
-    `api.put_goal_contributions`), so enforcing one here would reject
-    requests the app itself has always accepted. Stays a bare string
-    holding the goal's `natural_key` directly.
+    `goal_id` is a real foreign key into `goals` — a contribution can only
+    ever be recorded against a goal that already exists; create the goal
+    first (see `Goal`), then record contributions against it. `PUT
+    /goal-contributions` still replaces the whole list wholesale (see
+    `api.put_goal_contributions`), but every entry in that list must now
+    name a goal that's actually there.
     """
 
     __tablename__ = "goal_contributions"
@@ -63,7 +63,7 @@ class GoalContribution(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
-    goal_id: Mapped[str]
+    goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))
     date: Mapped[datetime]
     amount: Mapped[float] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")
@@ -78,9 +78,9 @@ class GoalContribution(Base):
 class RecurringAddition(Base):
     """One ordered rule for automatically allocating unallocated money into a goal on a recurring schedule.
 
-    `goal_id` has no foreign key to `goals` — see `GoalContribution`'s own
-    docstring; `PUT /recurring-additions` is the same "replace the whole
-    list, no existence check" shape.
+    `goal_id` is a real foreign key into `goals` — see `GoalContribution`'s
+    own docstring; `PUT /recurring-additions` is the same "replace the
+    whole list, every entry must name a goal that already exists" shape.
     """
 
     __tablename__ = "recurring_additions"
@@ -95,7 +95,7 @@ class RecurringAddition(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
-    goal_id: Mapped[str]
+    goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))
     start_date: Mapped[date]
     frequency: Mapped[str]
     end_date: Mapped[date | None] = mapped_column(default=None)
@@ -108,9 +108,14 @@ class RecurringAddition(Base):
 class WithdrawalPriorityEntry(Base):
     """One goal's place in the order goals are drawn down from when unallocated money goes negative.
 
-    `goal_id` has no foreign key to `goals` — see `GoalContribution`'s own
-    docstring; `PUT /withdrawal-priorities` is the same "replace the whole
-    list, no existence check" shape.
+    `goal_id` is a real foreign key into `goals` — see `GoalContribution`'s
+    own docstring; `PUT /withdrawal-priorities` is the same "replace the
+    whole list, every entry must name a goal that already exists" shape.
+
+    Purely an ordering — the withdrawal automation itself
+    (`ledger.goal_automations.run_withdrawal_automation`) is event-driven
+    (triggered whenever unallocated dips below zero), not scheduled, so
+    there's no schedule field here the way `RecurringAddition` has one.
     """
 
     __tablename__ = "withdrawal_priority_entries"
@@ -121,5 +126,5 @@ class WithdrawalPriorityEntry(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    goal_id: Mapped[str]
+    goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))
     priority: Mapped[int] = mapped_column(default=0)
