@@ -1,4 +1,3 @@
-import { UserButton } from '@clerk/react'
 import {
   ArrowRightLeft,
   BarChart3,
@@ -22,6 +21,7 @@ import {
 } from 'lucide-react'
 import { type ComponentType, useEffect, useState } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
+import { SidebarAccountMenu } from '@/components/layout/SidebarAccountMenu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useOnboardingProgress } from '@/hooks/useOnboardingProgress'
 import { useIbkrConnectionStatus } from '@/hooks/usePortfolioData'
@@ -216,9 +216,8 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-screen w-56 shrink-0 flex-col border-r border-border bg-white">
-      <div className="flex items-center justify-between px-5 py-6">
+      <div className="px-5 py-6">
         <span className="text-sm font-semibold tracking-tight text-foreground">Finance Dashboard</span>
-        <UserButton />
       </div>
       <nav className="flex flex-col gap-0.5 px-3">
         <OnboardingNavItem />
@@ -247,6 +246,10 @@ export function Sidebar() {
       <nav className="flex flex-col gap-0.5 border-t border-border px-3 py-3">
         <NavLinks items={BOTTOM_ITEMS} />
       </nav>
+
+      <div className="border-t border-border p-2">
+        <SidebarAccountMenu />
+      </div>
     </aside>
   )
 }
