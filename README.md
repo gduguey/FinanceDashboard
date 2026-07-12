@@ -79,7 +79,7 @@ of text editors, or `nano .env` from a terminal) with this line, using the
 same password you picked in step 1:
 
 ```
-DATABASE_URL=postgresql://finance:changeme123@localhost:5432/finance
+DATABASE_URL=postgresql+psycopg://finance:changeme123@localhost:5432/finance
 ```
 
 **3. Add a second line to that same `.env` file** — a second, more
@@ -88,7 +88,7 @@ restricted database user the running app actually connects as day to day
 Pick any password for it, different from step 1's:
 
 ```
-DATABASE_URL_APP=postgresql://app_runtime:another-password-here@localhost:5432/finance
+DATABASE_URL_APP=postgresql+psycopg://app_runtime:another-password-here@localhost:5432/finance
 ```
 
 **4. Generate an encryption key** (encrypts broker/API credentials before
@@ -151,23 +151,23 @@ of the five are left unset, archiving falls back to local disk under
 
 ## Keeping the data fresh
 
-- **Trade/cash ledger** — lives in Postgres, refreshed by clicking
-  **Sync** in the web dashboard, which pulls the latest IBKR history.
+- **Trade/cash ledger** — lives in Postgres, per user, refreshed by
+  clicking **Sync** in the web dashboard, which pulls that user's latest
+  IBKR history. This is the only manually-triggered piece.
 - `data/trades/prices/` — daily close prices per symbol, pulled from
-  Yahoo Finance, cached on disk.
-- `data/trades/cpi/` — CPI index from FRED, cached on disk.
+  Yahoo Finance, cached on disk. Shared across every user, refreshed by a
+  standalone cron job (`trades.market_data.price_sync`) several times a
+  day — not by clicking Sync.
+- `data/trades/cpi/` — CPI index from FRED, cached on disk. Shared,
+  refreshed daily by a standalone cron job (`trades.market_data.daily_sync`).
 - `data/trades/hysa_rates/` — HYSA APY history from apyarchives.com,
-  cached on disk.
+  cached on disk. Shared, refreshed by that same daily cron job.
 
-Refresh all four in one action by clicking **Sync** in the web
-dashboard. Individually, `cpi_sync.ipynb` and `hysa_sync.ipynb` (see
-Option A below) refresh their own caches standalone; `ibkr_sync.ipynb`
-and `prices_sync.ipynb` don't run standalone today — use the **Sync**
-button in the web dashboard for those two instead.
-
-Run this regularly if you're actively trading — IBKR's Flex Query is
-scoped to a rolling window on their side, so a sync you skip for too long
-can leave a permanent gap
+Clicking **Sync** in the web dashboard only pulls that one signed-in
+user's IBKR history — the three cache refreshes above run on their own
+schedule regardless of whether anyone clicks Sync. Run Sync regularly if
+you're actively trading — IBKR's Flex Query is scoped to a rolling window
+on their side, so a sync you skip for too long can leave a permanent gap
 ([docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) covers
 backfilling one if it happens).
 
@@ -177,10 +177,12 @@ backfilling one if it happens).
 uv run jupyter lab
 ```
 
-Open `portfolio.ipynb` for analysis — it reads the ledger straight from
-Postgres, so it needs the `.env` file from "Setting up Postgres" above to
-already exist. See "Keeping the data fresh" above for which sync
-notebooks run standalone.
+**Currently broken.** `portfolio.ipynb`/`prices_sync.ipynb` still call
+`trades.brokers.ibkr.main.load_ledger(config)`, a single-argument,
+config-based signature from before this app's Postgres/multi-user
+migration — `load_ledger` now takes `(session, user_id)` instead. These
+notebooks need updating to open a session and pass a real user id before
+Option A is usable again; until then, use Option B.
 
 ## Option B: the web dashboard
 
@@ -197,11 +199,17 @@ npm run dev
 ```
 
 Open **http://localhost:5173**. The dev server proxies `/api/*` to the
-FastAPI server on :8000, so no CORS setup is needed. The **Settings**
-page is where you add/verify/delete broker credentials; the **Sync**
-button in the page header pulls the latest IBKR history into Postgres
-and refreshes every symbol's price cache plus CPI and HYSA rates, then
-the whole page refreshes with the new numbers.
+FastAPI server on :8000, so no CORS setup is needed. Every route is
+gated behind Clerk sign-in (`CLERK_PUBLISHABLE_KEY`/`CLERK_SECRET_KEY` —
+see [docs/architecture.md](docs/architecture.md) and, if present on this
+machine, `docs/server-setup/clerk-authentication.md`); sign-up is
+invite-only, so the first account has to be created directly in the
+Clerk Dashboard. Once signed in, the **Settings** page is where you
+add/verify/delete your own broker credentials; the **Sync** button in the
+page header pulls your latest IBKR history into Postgres, then the whole
+page refreshes with the new numbers. Price/CPI/HYSA-rate caches are
+shared across every user and refresh on their own cron schedule, not from
+this button — see "Keeping the data fresh" above.
 
 To kill a running API server:
 
@@ -237,14 +245,15 @@ this machine only since some of those files hold live credentials.
 src/trades/
   config.py           every tunable parameter, as fields on frozen config objects
   models.py           pydantic schemas — canonical column names live here once
-  api/                FastAPI app + routers (dashboard, market_data, settings, sync)
+  api/                the one FastAPI app; auth.py/webhooks.py (Clerk session
+                      verification and invite provisioning) plus routers/
+                      (dashboard, market_data, settings, sync)
   dashboard/           API-facing aggregation (composes ledger + market_data)
   ledger/              replay, lots, metrics, NAV, counterfactuals, taxes
   market_data/         prices, CPI, HYSA rates, symbol search
   brokers/ibkr/        IBKR Flex Web Service -> ledger
   broker_credentials.py  per-user, per-broker credentials, encrypted in Postgres
   db/                  SQLAlchemy models/queries for the `trades` schema
-  visualization.py     Plotly charts for the notebook
 src/accounting/
   config.py           accounting-specific tunables (store/ledger/overrides paths)
   models.py           pydantic schemas — Account, Posting, Category, TransferRule, …
@@ -297,9 +306,10 @@ adding a new data source or broker.
 ## Dev
 
 ```bash
-uv run pytest              # requires the `api` extra installed (see Setup) for tests/test_api.py
+uv run pytest              # requires the `api` extra installed (see Setup) for tests/*/api/test_api.py
 uv run ruff check .
-uv run --with mypy mypy    # trades, accounting, and db are fully typed and mypy-clean (see pyproject.toml)
+uv run ruff format .
+uv run mypy                # trades, accounting, and db are fully typed and mypy-clean (see pyproject.toml)
 
 cd web && npm run build    # typechecks + production-builds the frontend
 cd web && npm run lint

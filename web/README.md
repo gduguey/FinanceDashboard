@@ -26,10 +26,11 @@ The alternative — **server-side rendering (SSR)**, as in Next.js or
 TanStack Start — runs your React code on a live, long-running Node.js
 process that renders real HTML per request. That buys you fast first-paint
 and good SEO for a public, anonymous-visitor site. Neither applies here:
-this is a private, authenticated dashboard with one user who loads it
-repeatedly, so a second always-on process (with its own memory budget and
-crash recovery, alongside Postgres and the Python API) would be pure cost
-with no corresponding benefit. See
+this is a private, Clerk-authenticated, multi-user dashboard with no
+anonymous visitors and no SEO surface at all, so a second always-on
+process (with its own memory budget and crash recovery, alongside
+Postgres and the Python API) would be pure cost with no corresponding
+benefit. See
 [`docs/app-stack/ssr-vs-spa.md`](../docs/app-stack/ssr-vs-spa.md) for the
 fuller argument, if that file exists in your checkout (it's a personal,
 uncommitted note — not guaranteed to be there).

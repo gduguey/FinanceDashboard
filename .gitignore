@@ -40,11 +40,7 @@ docs/server-setup/
 docs/app-stack/
 
 # Personal planning notes, never meant to be committed
-NEW_TASKS.md
-NEXT_STEPS.md
-ACCOUNTING_PLAN.md
-MIGRATION_TRADES.md
-MIGRATION_ACCOUNTING.md
+archive/
 
 .agents/
 skills-lock.json

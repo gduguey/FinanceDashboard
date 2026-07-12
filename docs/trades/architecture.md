@@ -9,12 +9,14 @@ walking that history forward.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Front ends                                                     │
-│  web/ (React)          notebooks/ (Jupyter + Plotly)            │
+│  Front end                                                      │
+│  web/ (React) — notebooks/ (Jupyter + Plotly) currently broken, │
+│  see README.md's "Option A"                                     │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ reads cached data, calls same modules
+                             │
 ┌────────────────────────────▼────────────────────────────────────┐
-│  trades/api.py          JSON endpoints (web only)               │
+│  trades/api/            FastAPI app: auth.py/webhooks.py         │
+│                          (Clerk) + routers/ (JSON endpoints)      │
 │  trades/dashboard/      aggregates ledger + market data         │
 └────────────────────────────┬────────────────────────────────────┘
                              │
@@ -23,18 +25,19 @@ walking that history forward.
 ┌───────▼───────┐   ┌────────▼────────┐   ┌───────▼────────┐
 │  ledger/      │   │  market_data/   │   │  brokers/ibkr/ │
 │  replay, lots │   │  prices, CPI,   │   │  Flex API sync │
-│  metrics, nav │   │  HYSA rates     │   │  → ledger.csv  │
-│  taxes, cf    │   │                 │   │                │
+│  metrics, nav │   │  HYSA rates     │   │  → Postgres    │
+│  taxes, cf    │   │  (data/, cache) │   │  ledger_events │
 └───────────────┘   └─────────────────┘   └────────────────┘
         │                    │                    │
         └────────────────────┼────────────────────┘
                              │
-                    data/  (gitignored)
+              Postgres (ledger, per-user settings/secrets)
+              + data/ (gitignored — shared price/CPI/HYSA caches only)
 ```
 
-Both the web dashboard and the notebook read from the same on-disk cache
-under `data/` and call the same `trades.*` modules. Neither front end owns
-the logic.
+The web dashboard reads the per-user ledger from Postgres and the shared
+price/CPI/HYSA caches from `data/`, both through the same `trades.*`
+modules the API calls.
 
 ## Module map
 
@@ -42,8 +45,9 @@ the logic.
 src/trades/
   config.py           every tunable parameter, as fields on frozen config objects
   models.py           pydantic schemas — canonical column names live here once
-  credentials.py      IBKR credential override (Settings page), resolved with
-                       `.env` as fallback — see `resolve_ibkr_credentials`
+  broker_credentials.py  per-user, per-broker credentials, encrypted in Postgres
+                       (generic over broker; `brokers/ibkr/credentials.py` is the
+                       IBKR-specific adapter over it)
   dashboard/          API-facing aggregation (composes ledger + market_data)
     settings.py       user-editable settings (allocation targets, tax toggles)
     valuation.py      price lookup wiring, daily portfolio values
@@ -67,14 +71,17 @@ src/trades/
     symbol_search.py  live Yahoo symbol search (not cached)
   brokers/
     ibkr/             IBKR Flex Web Service → ledger
-      api.py          network + XML parsing
+      api.py          network + XML parsing; save_raw_statement archives
+                       every fetch verbatim before anything is parsed
+      credentials.py  the IBKR-specific adapter over broker_credentials.py
       models.py       pydantic schemas for IBKR's raw XML shapes
       preprocessing.py  IBKR rows → LedgerEvent
-      main.py         sync, rebuild, load ledger cache
-  api.py              FastAPI JSON layer — the app's only FastAPI instance;
+      main.py         sync, rebuild, load/write the Postgres-backed ledger
+  api/                the one FastAPI app; auth.py/webhooks.py (Clerk
+                       session verification and invite provisioning) plus
+                       routers/ (dashboard, market_data, settings, sync);
                        also mounts `accounting.api`'s router (see
                        `/docs/architecture.md` at the repo root)
-  visualization.py    Plotly charts for the notebook
 ```
 
 Deep dives by topic:
@@ -96,7 +103,7 @@ If you add a broker, API, or file format that overlaps with an existing
 concept:
 
 - **Don't let native field names leak past the reader module.** Everything
-  downstream (`ledger/`, `dashboard/`, `api.py`) stays ignorant of which
+  downstream (`ledger/`, `dashboard/`, `api/`) stays ignorant of which
   broker or API anything came from.
 - **The canonical name is declared once** on the pydantic model in
   `models.py` (e.g. `LedgerEvent`). A model's field names *are* its column
@@ -112,9 +119,11 @@ See [ledger.md](ledger.md) for the concrete IBKR example.
 When caching fetched external data:
 
 1. Save the **raw response verbatim**, timestamped, never overwritten
-   (see `brokers/ibkr/api.py`'s `raw_statements/`).
-2. Treat derived files (`ledger.csv`, price CSVs) as **disposable caches**
-   — cheap to delete and regenerate.
+   (see `brokers/ibkr/api.py`'s `save_raw_statement`, under
+   `raw_statements/`).
+2. Treat derived data (the Postgres-backed ledger, price CSVs) as
+   **disposable caches** — cheap to delete and regenerate
+   (`rebuild_from_raw_statements`).
 
 Atomic writes (temp file + rename) protect against crashes, not logic bugs
 that overwrite good data with wrong-but-complete results. IBKR's Flex Query
@@ -125,11 +134,11 @@ has a limited retrieval window; a bad overwrite may not be re-fetchable.
 | Layer | I/O? | Examples |
 |-------|------|----------|
 | `ledger/*`, `dashboard/*` | No | replay, metrics, chart series |
-| `market_data/*`, `brokers/*` | Yes | fetch, parse, cache |
-| `api.py` | Reads cache; sync endpoint writes | JSON serialization only |
+| `market_data/*`, `brokers/*` | Yes | fetch, parse, cache, persist to Postgres |
+| `api/` | Reads/writes Postgres via the layers above | JSON serialization + Clerk auth |
 
 `dashboard/` composes `ledger.*` and `market_data.*` into the exact shapes
-the API serves. `api.py` itself does no aggregation.
+the API serves. `api/` itself does no aggregation.
 
 ## Configuration
 
@@ -142,9 +151,7 @@ A missing input is an error, not a silent fallback: if a price is
 unavailable, the function raises rather than dropping the row.
 
 User-editable dashboard settings (target allocation, tax regime, benchmark
-override) live in a separate JSON file managed by
-`dashboard/settings.py` — they describe preferences, not things that
-happened in the account.
+override) are per-user, in Postgres — see "Data layout" below.
 
 ## Validation boundary
 
@@ -160,23 +167,29 @@ of the pipeline.
 ## Data layout
 
 ```
-data/
+data/                     (gitignored) — shared, global caches only; nothing
+                           per-user lives here
   prices/
     {SYMBOL}.csv              raw daily close
     {SYMBOL}.adjusted.csv     dividend/split-adjusted close
   cpi/{series_id}.csv         CPI index (re-fetched whole each update)
   hysa_rates/rates.csv        HYSA APY history (re-fetched whole each update)
   brokers/ibkr/
-    raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
-    ledger.csv                       rebuildable cache from raw_statements/
+    raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten —
+                                      on R2 (if configured) this same archive is
+                                      keyed by `statements/{user_id}/ibkr/...`;
+                                      the local-disk fallback used here is not
+                                      currently per-user-scoped
 ```
 
-User-editable dashboard preferences (target allocation, HYSA/benchmark
-overrides, tax settings) live in Postgres, in `trades.dashboard_settings`
-(one row per user — see `trades.dashboard.settings.load_settings`/
-`save_settings`), not under `data/`.
+The ledger itself (every synced IBKR event), broker connections/credentials,
+and user-editable dashboard preferences (target allocation, HYSA/benchmark
+overrides, tax settings) are all per-user, in Postgres — never under
+`data/` (`trades.brokers.ibkr.main.load_ledger`/`_write_ledger`,
+`trades.broker_credentials`, `trades.dashboard.settings.load_settings`/
+`save_settings`).
 
-`.env` (IBKR credentials) and everything under `data/` are gitignored.
+`.env` and everything under `data/` are gitignored.
 
 ## Guidance for AI assistants
 

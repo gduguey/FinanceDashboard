@@ -167,5 +167,6 @@ Write the test before the implementation: drop a real (or realistically
 shaped, anonymized) sample of the new CSV into a test fixture, assert the
 resulting postings' amounts, dates, and placeholder counterparties are
 correct, watch it fail against a standardizer that doesn't exist yet, then
-write the standardizer to make it pass. `tests/test_accounting_importers.py`
-has one such test per existing institution/kind pair to copy the shape of.
+write the standardizer to make it pass.
+`tests/accounting/importers/test_bank_importers.py` has one such test per
+existing institution/kind pair to copy the shape of.

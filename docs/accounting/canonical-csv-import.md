@@ -77,5 +77,7 @@ categories); `importers.ingest.ingest_canonical_csv` is the layer that
 archives the raw file, calls it, persists the new categories into the
 store, and merges the postings into the ledger — mirroring `ingest_csv`'s
 archive-then-merge shape, but also touching the category store, which
-`ingest_csv` never needs to. `POST /api/accounting/import/canonical` is the
-one API endpoint for this whole path.
+`ingest_csv` never needs to. Two API endpoints cover this path:
+`POST /api/accounting/import/canonical/preview` parses without persisting
+anything (for previewing which categories a file would create before
+committing), and `POST /api/accounting/import/canonical` actually imports.

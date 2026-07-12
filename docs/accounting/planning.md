@@ -68,8 +68,9 @@ list of entries rather than any stored running total.
 Two independent, optional automations build on top of the contribution
 model — both only ever write ordinary, dated `GoalContribution` rows; the
 decision logic (`ledger.goal_automations`) is pure and separate from the
-part that actually persists a row (`api.post_run_recurring_additions`/
-`api.post_run_withdrawal_automation`), the same decide/apply split
+part that actually persists a row
+(`api.routers.goals.post_run_recurring_additions`/
+`post_run_withdrawal_automation`), the same decide/apply split
 `dashboard.paystub.propose_posting_splits` uses for paystub splits.
 
 - **Recurring additions** (`accounting.models.RecurringAddition`) — an
