@@ -7,7 +7,7 @@ import uuid
 from sqlalchemy import Engine, text
 
 import db.session as session_module
-from db.current_user import DEFAULT_USER_ID
+from tests.conftest import DEFAULT_USER_ID
 
 
 def test_get_db_sets_the_current_user_id_session_variable(monkeypatch, _db_engine: Engine) -> None:  # noqa: PT019 — needs the fixture's returned Engine, not just its setup side effect

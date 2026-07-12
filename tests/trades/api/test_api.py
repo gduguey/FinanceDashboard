@@ -1,4 +1,5 @@
 import io
+import uuid
 import zipfile
 from datetime import UTC, date, datetime
 
@@ -7,8 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import db.models as dbm
-from db.current_user import DEFAULT_USER_ID
+from db.current_user import get_current_user_id
 from db.session import get_db
+from tests.conftest import DEFAULT_USER_ID
 from trades import api as trades_api
 from trades.brokers.ibkr.credentials import save_ibkr_credentials
 from trades.brokers.ibkr.main import IbkrSyncResult, _write_ledger
@@ -57,9 +59,10 @@ LEDGER_ROWS = [
 def _db_for_api(db_session):
     """Route every request the `TestClient` makes through this test's own rolled-back session.
 
-    See `tests/test_accounting_api.py`'s fixture of the same name — every
-    trades route defaults to `db.current_user.DEFAULT_USER_ID` (no login
-    flow yet), so the one `User` row FK-satisfying `ledger_events`/
+    See `tests/accounting/api/test_api.py`'s `_db_for_api` fixture of the
+    same name — `tests/conftest.py`'s `_bypass_clerk_auth_by_default`
+    overrides `get_current_user_id` to `DEFAULT_USER_ID` for every test by
+    default, so the one `User` row FK-satisfying `ledger_events`/
     `broker_connections` has to exist under that exact id.
     """
     db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
@@ -87,9 +90,7 @@ def isolated_config(tmp_path, monkeypatch, db_session):
         hysa_rates={"cache_dir": tmp_path / "hysa_rates"},
     )
     monkeypatch.setattr(trades_api.app.state, "config", config)
-    monkeypatch.setattr(
-        trades_api.app.state, "sync_progress", trades_api.SyncProgress(step="Idle", percent=0.0, done=True)
-    )
+    monkeypatch.setattr(trades_api.app.state, "sync_progress", {})
 
     _write_ledger(pl.DataFrame(LEDGER_ROWS, schema=LedgerEvent.polars_schema), db_session, user_id=DEFAULT_USER_ID)
     price_history = pl.DataFrame({
@@ -549,3 +550,41 @@ def test_sync_reports_a_failed_step_when_ibkr_fails(client, db_session, monkeypa
     # leg is what failed.
     progress = client.get("/api/sync/progress").json()
     assert progress == {"step": "Done", "percent": 100.0, "done": True, "error": None}
+
+
+def test_sync_progress_is_not_shared_between_users(client, monkeypatch) -> None:
+    """Regression test: `app.state.sync_progress` used to be one shared value for every user.
+
+    A user who never synced must never see another user's step/percent —
+    see `trades.api.routers.sync`'s per-user `_sync_locks`/`sync_progress` design.
+    """
+    monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
+    monkeypatch.setenv("IBKR_QUERY_ID", "12345")
+
+    def fake_sync(credentials, config, session, user_id, on_progress=None):
+        raw_dir = config.ibkr.raw_statement_dir
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
+        return IbkrSyncResult(
+            pulled_at=datetime(2026, 1, 4),
+            statement_from_date=date(2026, 1, 4),
+            statement_to_date=date(2026, 1, 4),
+            new_event_count=0,
+            total_event_count=3,
+        )
+
+    monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
+
+    # DEFAULT_USER_ID (the client fixture's own identity) runs a sync to completion.
+    client.post("/api/sync")
+    assert client.get("/api/sync/progress").json()["step"] == "Done"
+
+    # A second, different user who never synced must still see "Idle" — not
+    # DEFAULT_USER_ID's "Done", and not DEFAULT_USER_ID's percent/error either.
+    other_user_id = uuid.uuid4()
+    trades_api.app.dependency_overrides[get_current_user_id] = lambda: other_user_id
+    try:
+        progress = client.get("/api/sync/progress").json()
+    finally:
+        trades_api.app.dependency_overrides[get_current_user_id] = lambda: DEFAULT_USER_ID
+    assert progress == {"step": "Idle", "percent": 0.0, "done": True, "error": None}

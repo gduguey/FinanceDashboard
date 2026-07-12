@@ -1,7 +1,7 @@
 import io
 import uuid
 import zipfile
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -13,12 +13,14 @@ from accounting import api as accounting_api
 from accounting.api.routers import imports as accounting_imports_router
 from accounting.api.routers import llm as accounting_llm_router
 from accounting.config import AccountingConfig
+from accounting.db.llm import LLMUsage
 from accounting.importers import ingest as ingest_module
-from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
 from accounting.market_data import exchange_rates
+from accounting.models import Posting
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
-from db.current_user import DEFAULT_USER_ID, get_current_user_id
+from db.current_user import get_current_user_id
 from db.session import get_db
+from tests.conftest import DEFAULT_USER_ID
 from trades import api as trades_api
 from trades.config import AppConfig
 
@@ -1034,15 +1036,26 @@ def test_llm_usage_reflects_a_configured_key_and_a_tracked_failure(client, db_se
 
     monkeypatch.setattr(accounting_llm_router, "resolve_llm_credentials", lambda session, user_id: _FakeCredentials())
 
-    from accounting.llm.usage import record_call  # noqa: PLC0415
-
-    record_call("gemini", db_session, DEFAULT_USER_ID, error="429 RESOURCE_EXHAUSTED")
+    # Seeded directly as a row, not via `accounting.llm.usage.record_call` — this
+    # test is checking that GET /llm-usage reports whatever's persisted, not
+    # exercising record_call's own increment/freeze logic (see
+    # tests/accounting/llm/test_usage.py for that).
+    today_utc_midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    db_session.add(
+        LLMUsage(
+            user_id=DEFAULT_USER_ID,
+            provider="gemini",
+            period_start=today_utc_midnight,
+            used_count=0,
+            is_limited=True,
+            last_error="429 RESOURCE_EXHAUSTED",
+        )
+    )
+    db_session.commit()
 
     body = client.get("/api/accounting/llm-usage").json()
     assert body["gemini"] == {
         "configured": True,
-        # A failed call freezes the counter rather than incrementing it —
-        # see test_accounting_llm_usage.py's record_call tests.
         "used_count": 0,
         "period": "daily",
         "is_limited": True,
@@ -2400,33 +2413,45 @@ def test_put_simulator_scenarios_persists(client) -> None:
     assert store["simulator_scenarios"][0]["name"] == "Base case"
 
 
-def test_interest_summary_reports_savings_interest_earned(client, monkeypatch) -> None:
-    statement_text = (
-        "Savings Account - 3680\n"
-        "DATE TYPE DESCRIPTION AMOUNT BALANCE\n"
-        "Apr 30, 2026 Interest Earned Interest earned $7.70 $107.70\n"
-        "Transaction ID: 50-1\n"
+def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "sofi:savings:3680",
+            "name": "SoFi Savings",
+            "kind": "savings",
+            "institution": "SoFi",
+            "currency": "USD",
+        },
     )
-    monkeypatch.setattr(
-        ingest_module,
-        "standardize_sofi_statement_pdf",
-        lambda _pdf_bytes: standardize_sofi_statement_text(statement_text),
+    # Seeded directly as a posting, not via `importers.sofi.statement_pdf`'s
+    # real PDF/text parser — this test is checking that the interest-summary
+    # endpoint correctly aggregates an already-categorized "Interest Earned"
+    # posting, not exercising SoFi statement parsing (see
+    # tests/accounting/importers/sofi/test_statement_pdf.py for that).
+    interest_posting = Posting(
+        posting_id="p1",
+        transaction_id="t1",
+        account_id="sofi:savings:3680",
+        posted_at=datetime(2026, 4, 30),
+        amount=7.70,
+        currency="USD",
+        category_id="income:interest-earned",
+        subcategory_id=None,
+        tag_ids=[],
+        description="Interest earned",
+        meta={},
     )
-    # New PDF imports are retired (see `importers.sofi.statement_pdf`'s
-    # docstring) — archive the raw PDF directly, the way an old import
-    # would have, and let a rebuild re-derive it instead.
-    pdf_dir = accounting_api.state.config.raw_statement_dir / "SoFi" / "statement_pdf"
-    pdf_dir.mkdir(parents=True, exist_ok=True)
-    (pdf_dir / "statement.pdf").write_bytes(b"%PDF-fake")
-    client.post("/api/accounting/rebuild")
+    frame = pl.DataFrame([interest_posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    ingest_module._write_ledger(frame, db_session, user_id=DEFAULT_USER_ID)
+
     response = client.get("/api/accounting/interest-summary", params={"as_of": "2026-04-30"})
     assert response.status_code == 200
     rows = response.json()
     savings_row = next(row for row in rows if row["account_id"] == "sofi:savings:3680")
     assert savings_row["interest_earned_this_year"] == pytest.approx(7.70)
-    # The fake statement has only this one row, so the ledger-derived balance
-    # is the interest posting alone — not the statement's own BALANCE column,
-    # which would need an earlier deposit row this fixture doesn't include.
+    # The seeded ledger has only this one posting, so the account's
+    # running balance is the interest posting alone.
     assert savings_row["current_balance"] == pytest.approx(7.70)
 
 

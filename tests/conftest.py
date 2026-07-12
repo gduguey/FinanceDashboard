@@ -34,10 +34,19 @@ from sqlalchemy.orm import Session
 import db.models
 import db.session as session_module
 from db.base import Base
-from db.settings import TestDatabaseSettings
+from db.settings import AppRuntimeDatabaseSettings, DatabaseSettings, TestDatabaseSettings
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+"""Not tied to any real account — a stable, arbitrary id for tests and fixtures to seed a `User` row under.
+
+Lives here rather than in `db.current_user` because it's a test-only
+concept: no production code path ever assumes a single fixed identity (see
+that module's own docstring) — every real request resolves its acting
+user fresh, from that user's own verified session.
+"""
 
 # `accounting` and `trades` are independent packages (see docs/architecture.md:
 # deleting either one should never break the other's tests) — guarded rather than
@@ -52,7 +61,7 @@ try:
     import trades.api as trades_api
     import trades.db  # noqa: F401  (registers trades.* tables on Base.metadata)
     import trades.utils.statement_archive as trades_storage
-    from db.current_user import DEFAULT_USER_ID, get_current_user_id
+    from db.current_user import get_current_user_id
     from trades.api.auth import require_clerk_session
 except ModuleNotFoundError:
     trades_storage = None
@@ -152,6 +161,17 @@ def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     instead of failing. With both gone, that failure mode becomes a loud
     `ValidationError` (missing required field) instead.
 
+    `monkeypatch.delenv` alone only strips real environment variables —
+    it does NOT stop `DatabaseSettings`/`AppRuntimeDatabaseSettings` from
+    still finding a real `DATABASE_URL`/`DATABASE_URL_APP` in the `.env`
+    *file* on disk (both classes read `_REPO_ROOT / ".env"` as a fallback
+    whenever the env var itself is absent) — confirmed the hard way,
+    the same class of gap `_no_r2_by_default` already guards against for
+    R2. So this also blanks out `env_file` on both classes' own
+    `model_config` for the whole test run: with neither a real env var nor
+    a real `.env` file to fall back to, any code path that constructs
+    either of them for real has nothing left to silently succeed with.
+
     `get_engine`'s own `@lru_cache` is cleared both before and after —
     confirmed the hard way: it caches process-wide, for the whole pytest
     run, not per-test. If anything anywhere calls it even once before this
@@ -166,6 +186,8 @@ def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_get_engine_cache()
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL_APP", raising=False)
+    monkeypatch.setitem(DatabaseSettings.model_config, "env_file", None)
+    monkeypatch.setitem(AppRuntimeDatabaseSettings.model_config, "env_file", None)
     yield
     _clear_get_engine_cache()
 

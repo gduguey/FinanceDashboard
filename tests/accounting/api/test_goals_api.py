@@ -9,8 +9,8 @@ from accounting import api as accounting_api
 from accounting.config import AccountingConfig
 from accounting.market_data import exchange_rates
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
-from db.current_user import DEFAULT_USER_ID
 from db.session import get_db
+from tests.conftest import DEFAULT_USER_ID
 from trades import api as trades_api
 
 CHECKING_CSV = (

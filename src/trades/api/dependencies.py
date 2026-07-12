@@ -27,7 +27,12 @@ if TYPE_CHECKING:
 
 app = FastAPI(title="Investments API")
 app.state.config = AppConfig()
-app.state.sync_progress = SyncProgress(step="Idle", percent=0.0, done=True)
+app.state.sync_progress = {}
+"""`dict[uuid.UUID, SyncProgress]` — each user's own sync progress, keyed by
+their own id. Per-user rather than one shared value: two different people
+syncing around the same time must never see each other's step/percent/error
+(see `_report_sync_progress` and `trades.api.routers.sync.get_sync_progress`).
+A user absent from this dict has simply never triggered a sync yet."""
 
 
 def _config() -> AppConfig:
@@ -45,8 +50,11 @@ def _config() -> AppConfig:
     return cast("AppConfig", app.state.config)
 
 
-def _report_sync_progress(step: str, percent: float) -> None:
-    app.state.sync_progress = SyncProgress(step=step, percent=percent, done=False)
+def _report_sync_progress(user_id: uuid.UUID, step: str, percent: float) -> None:
+    """Record `user_id`'s current sync step and progress, readable via `GET /api/sync/progress`."""
+    cast("dict[uuid.UUID, SyncProgress]", app.state.sync_progress)[user_id] = SyncProgress(
+        step=step, percent=percent, done=False
+    )
 
 
 def _load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
@@ -77,6 +85,12 @@ def _load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
 
 
 def _first_event_date(ledger: pl.DataFrame) -> date:
+    """Return the date of the ledger's earliest event.
+
+    Returns
+    -------
+    datetime.date
+    """
     return cast("date", ledger["event_datetime"].dt.date().min())
 
 
@@ -100,6 +114,12 @@ def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
 
 
 def _last_synced_iso(user_id: uuid.UUID) -> str | None:
+    """Return this user's most recent IBKR sync time, in the display timezone, or `None` if they've never synced.
+
+    Returns
+    -------
+    str or None
+    """
     config = _config()
     last_synced = ibkr_api.last_synced_at(config, user_id)
     return _to_display_zone(last_synced, config).isoformat() if last_synced else None

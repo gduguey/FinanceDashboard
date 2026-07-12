@@ -15,7 +15,7 @@ for, and the exact commands for the scenarios you'll actually run into.
 | `session.py` | Builds the one shared connection pool (`get_engine`) and hands each web request its own database session (`get_db`), tagged with which user is making the request. |
 | `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus `derive_id`/`natural_keys_by_id`, a shared helper for turning a human-chosen string into a stable internal id. |
 | `models.py` | The three tables that live outside any one module's own schema: `users`, `user_secrets`, and `external_identities`. |
-| `current_user.py` | Which user is making the current request — a placeholder name FastAPI resolves to the real Clerk-session-derived identity at runtime; see "Which user is making this request" below for exactly how. Also `DEFAULT_USER_ID`, a fixed, arbitrary UUID used only as a test fixture — not tied to any real account. |
+| `current_user.py` | Which user is making the current request — a placeholder name FastAPI resolves to the real Clerk-session-derived identity at runtime; see "Which user is making this request" below for exactly how. Deliberately has no `DEFAULT_USER_ID` or any other fallback identity — that's a test-only concept, defined in `tests/conftest.py` instead. |
 | `external_identities.py` | `lookup_user_id`/`link_identity` — the only place a `(provider, external id)` pair is ever read or written; see "The two tables here" below. |
 | `encryption.py` | Encrypts/decrypts anything stored in `user_secrets.ciphertext`. |
 | `secrets.py` | `get_secret`/`set_secret`/`delete_secret` — the only way any code in this repo reads or writes a credential. |
@@ -154,9 +154,11 @@ pattern out of habit rather than for a reason that actually applies.
   user. Deliberately **excluded from Row-Level Security** (unlike every
   other table below) — a session-scoped policy here would block the very
   lookup this table exists to do, since the user id being searched for
-  isn't known yet at the point this table needs to be queried. It holds no
-  financial data, only an identity mapping, so skipping row-level
-  isolation here is a narrow, deliberate trade-off, not an oversight.
+  isn't known yet at the point this table needs to be queried (see "Why
+  `external_identities` can't have RLS" below for the concrete
+  walkthrough). It holds no financial data, only an identity mapping, so
+  skipping row-level isolation here is a narrow, deliberate trade-off, not
+  an oversight.
   Reassigning someone's account after they're deleted and re-invited in
   Clerk (their Clerk id changes, their internal `users.id` shouldn't) is a
   single-row update here, never a migration touching every other table.
@@ -201,15 +203,27 @@ worse than refusing to start, so it's not allowed to happen silently.
 
 ## Row-Level Security (RLS): the actual backstop
 
-Every user-owned table gets a Postgres policy (added by the
-`817ace9deb09` migration) roughly equivalent to:
+RLS is **opt-in per table**, not a database-wide switch. The
+`817ace9deb09` migration has a plain list, `_USER_SCOPED_TABLES` — every
+`(schema, table, ownership_column)` that should be isolated by user —
+covering `users`, `user_secrets`, every `accounting.*` table,
+`broker_connections`, `ledger_events`, and so on. Its `upgrade()` just
+loops over that list and runs this on each one:
 
 ```sql
 ALTER TABLE some_table ENABLE ROW LEVEL SECURITY;
 ALTER TABLE some_table FORCE ROW LEVEL SECURITY;
 CREATE POLICY user_isolation ON some_table
-  USING (user_id = current_setting('app.current_user_id', true)::uuid);
+  USING (user_id = current_setting('app.current_user_id', true)::uuid)
+  WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
 ```
+
+A table gets this protection by being added to `_USER_SCOPED_TABLES` —
+there's no separate "disable RLS" command anywhere; a table simply never
+gets it if it's never added to that list. `external_identities` is the
+one deliberate case of that (see "The three tables here" above, and "Why
+`external_identities` can't have RLS" below) — everything else this app
+owns is in the list.
 
 This means: even if a query somewhere in the code forgot its own
 `WHERE user_id = ...` filter, Postgres itself still refuses to return
@@ -291,6 +305,77 @@ fails loudly and immediately — every request erroring out — rather than
 silently resolving to nothing or to the wrong person. If step 3's
 override line were ever accidentally deleted, this design means the app
 breaks obviously, on the first request, instead of quietly misbehaving.
+
+## How a new user gets provisioned — the actual trace, step by step
+
+The sign-in trace above assumes Bob's `users`/`external_identities` rows
+already exist. Here's how they get created in the first place, the one
+time it happens — say, Alice invites a new person, Carol:
+
+1. Alice sends Carol an invite from the Clerk Dashboard (or
+   `clerk api /invitations`).
+2. Carol clicks the email link and finishes signing up — entirely on
+   Clerk's own servers; this app is never involved yet.
+3. The moment Carol's account is created, Clerk calls this app directly:
+   `POST /api/webhooks/clerk`, carrying Carol's new Clerk id
+   (`user_...`) and her email. This is the one route in the app *not*
+   gated by a Clerk session (`trades.api.api` mounts it separately) —
+   Clerk's servers are calling it directly, so there's no session to
+   check. Authenticity instead comes from a Svix-signed payload,
+   verified against `CLERK_WEBHOOK_SIGNING_SECRET`.
+4. `trades.api.webhooks._provision_user` checks `external_identities`
+   first: "is there already a row for this Clerk id?" — guards against
+   Clerk redelivering the same event later and provisioning Carol twice.
+5. If no row exists yet: generate a brand-new random UUID, insert a
+   `users` row under that id with Carol's email, and insert one row into
+   `external_identities` linking `("clerk", Carol's Clerk id)` to that
+   new `users.id`.
+
+Nothing else happens at signup — no other table is touched. From this
+point on, every one of Carol's requests follows the sign-in trace above,
+step 3 of which is the read side of the exact row step 5 here writes.
+
+One consequence worth knowing: if Carol is later deleted in Clerk and
+re-invited under the same email, she gets a **new** Clerk id, but step 4
+only checks by Clerk id — so a naive re-provisioning would create a
+second, disconnected `users` row, orphaning anything tied to the first
+one. That's not automatic today (nothing currently listens for Clerk's
+`user.deleted` event) — see
+`docs/server-setup/clerk-authentication.md`'s "Managing users" section
+for the manual step this requires (reassigning her existing
+`external_identities` row to the new Clerk id is a single-row update,
+never a migration touching every other table, which is the whole reason
+this table exists as a separate mapping instead of a column on `users`).
+
+## Why `external_identities` can't have RLS
+
+Look at step 3 of the sign-in trace above: `resolve_current_user_id`
+queries `external_identities` for Bob's Clerk id *before* it knows Bob's
+internal `user_id` — finding that id is the whole point of the query.
+
+If `external_identities` had the same RLS policy every other table gets,
+Postgres would silently rewrite that query to also require
+`AND user_id = current_setting('app.current_user_id', true)::uuid` — RLS
+bolts that filter onto every query against the table, regardless of what
+was actually asked for. But `app.current_user_id` hasn't been set yet at
+this point in the request — setting it is literally the *next* step,
+using the answer this query is trying to produce. The added filter would
+compare against nothing (or a stale leftover value from a previous
+request on a pooled connection, if `get_db` somehow didn't reset it), the
+real row would get filtered out, and the lookup would come back empty —
+not because Bob has no account, but because the query asked "give me my
+own row" before anyone knew who "my" was. Every request would then hit
+step 3's 401 ("no account found for this session yet"), for every real,
+already-provisioned user, forever.
+
+So `external_identities` is simply never added to `817ace9deb09`'s
+`_USER_SCOPED_TABLES` list (see "Row-Level Security" above) — there's no
+special "turn RLS off" command involved, it's protected the way any table
+not in that list is: not at all, by omission. That's an acceptable,
+deliberate trade-off specifically *because* this table holds no financial
+data, only an identity mapping (`provider`, `external_id`, `user_id`) —
+every other table this app owns, which does hold real user data, stays in
+the list.
 
 ## Encryption: what's protected, and how
 

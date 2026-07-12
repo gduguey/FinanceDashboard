@@ -24,9 +24,29 @@ from trades.utils.statement_archive import StatementArchive
 
 router = APIRouter()
 
-# Lock to prevent concurrent syncs: /api/sync writes to the ledger, so
-# concurrent requests would step on each other's writes.
-_sync_lock = Lock()
+# One lock per user, created on first use — not a single shared lock.
+# /api/sync writes only to that user's own ledger rows, so two different
+# users syncing at the same time never touch the same data and must never
+# block each other; the same user opening two tabs and clicking Sync twice
+# still needs serializing against their own concurrent writes, which is
+# what each user's own lock is for. `_sync_locks_guard` protects the dict
+# itself from a create-race between two concurrent first-ever requests for
+# a user who has no lock yet — it is never held for the sync itself.
+_sync_locks: dict[uuid.UUID, Lock] = {}
+_sync_locks_guard = Lock()
+
+
+def _lock_for_user(user_id: uuid.UUID) -> Lock:
+    """Return this user's own sync lock, creating it on first use.
+
+    Returns
+    -------
+    threading.Lock
+    """
+    with _sync_locks_guard:
+        if user_id not in _sync_locks:
+            _sync_locks[user_id] = Lock()
+        return _sync_locks[user_id]
 
 
 @router.get("/api/statements/export")
@@ -53,8 +73,8 @@ def get_statements_export(user_id: Annotated[uuid.UUID, Depends(get_current_user
 
 
 @router.get("/api/sync/progress")
-def get_sync_progress() -> SyncProgress:
-    """Return the current (or most recently finished) sync's progress.
+def get_sync_progress(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> SyncProgress:
+    """Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
 
     Polled by the frontend's progress bar while a sync is running.
     `POST /api/sync` runs in FastAPI's thread pool (it's a plain `def`,
@@ -64,9 +84,11 @@ def get_sync_progress() -> SyncProgress:
     Returns
     -------
     SyncProgress
-        `step`, `percent`, `done`, `error`.
+        `step`, `percent`, `done`, `error` — `"Idle"`/`0.0`/`True`/`None`
+        if this user has never triggered a sync.
     """
-    return cast("SyncProgress", app.state.sync_progress)
+    sync_progress_by_user = cast("dict[uuid.UUID, SyncProgress]", app.state.sync_progress)
+    return sync_progress_by_user.get(user_id, SyncProgress(step="Idle", percent=0.0, done=True))
 
 
 def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncResult:
@@ -86,11 +108,15 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
     """
     steps: list[SyncStep] = []
 
-    _report_sync_progress("Connecting to IBKR", 0.0)
+    def on_progress(step: str, percent: float) -> None:
+        """Report this sync's progress under the acting user's own id."""
+        _report_sync_progress(user_id, step, percent)
+
+    on_progress("Connecting to IBKR", 0.0)
     sync_result = None
     try:
         credentials = resolve_ibkr_credentials(session, user_id)
-        sync_result = main.sync_ibkr_account(credentials, config, session, user_id, on_progress=_report_sync_progress)
+        sync_result = main.sync_ibkr_account(credentials, config, session, user_id, on_progress=on_progress)
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=True))
     except requests.exceptions.RequestException:
         # Not str(error): a request-level failure's own message includes the
@@ -125,13 +151,16 @@ def sync(
     """Pull the latest IBKR statement into the ledger.
 
     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
-    here — they run on their own cron schedule instead. Reports progress
-    to `app.state.sync_progress` throughout, readable via `GET
-    /api/sync/progress` — the IBKR pull can take a while, so a bare
-    spinner isn't good enough feedback.
+    here — they run on their own cron schedule instead. Reports progress to
+    this user's own entry in `app.state.sync_progress` throughout, readable
+    via `GET /api/sync/progress` — the IBKR pull can take a while, so a
+    bare spinner isn't good enough feedback.
 
-    Concurrent requests are serialized by a lock to prevent ledger
-    corruption from simultaneous writes.
+    Concurrent requests for the *same* user are serialized by that user's
+    own lock, to prevent ledger corruption from simultaneous writes — see
+    `_lock_for_user`. Two different users syncing at the same time never
+    wait on each other: their syncs write to different, non-overlapping
+    ledger rows.
 
     Returns
     -------
@@ -139,15 +168,18 @@ def sync(
         `synced_at`, `new_event_count`, `total_event_count`, and `steps`
         — the one IBKR leg's own `label`/`ok`/`error`.
     """
-    with _sync_lock:
+    sync_progress_by_user = cast("dict[uuid.UUID, SyncProgress]", app.state.sync_progress)
+    with _lock_for_user(user_id):
         try:
             result = _run_sync(_config(), session, user_id)
         except Exception as error:
             # Only reachable for something outside every leg's own
             # try/except in _run_sync — each expected failure mode is
             # already caught there and reported per-step instead.
-            app.state.sync_progress = SyncProgress(step="Sync failed", percent=100.0, done=True, error=str(error))
+            sync_progress_by_user[user_id] = SyncProgress(
+                step="Sync failed", percent=100.0, done=True, error=str(error)
+            )
             raise
 
-        app.state.sync_progress = SyncProgress(step="Done", percent=100.0, done=True)
+        sync_progress_by_user[user_id] = SyncProgress(step="Done", percent=100.0, done=True)
         return result

@@ -4,7 +4,7 @@ import polars as pl
 import pytest
 
 from trades.config import AppConfig
-from trades.ledger.lots import ClosedLot, Lot, closed_lots_to_frame, lots_to_frame
+from trades.ledger.lots import ClosedLot, Lot
 from trades.ledger.metrics import lot_returns, max_drawdown, realized_gain_total, symbol_metrics, unrealized_gain, xirr
 from trades.ledger.replay import replay_ledger
 
@@ -39,7 +39,20 @@ def _ledger(*events: dict) -> pl.DataFrame:
 
 
 def _open_lots(*lots: Lot) -> pl.DataFrame:
-    return lots_to_frame(list(lots))
+    # Built directly against `Lot.polars_schema` (a fixed data shape, not
+    # production logic) rather than calling `lots.lots_to_frame` — this file
+    # tests `trades.ledger.metrics`, and shouldn't break for reasons that
+    # belong to `trades.ledger.lots` instead.
+    if not lots:
+        return pl.DataFrame(schema=Lot.polars_schema)
+    return pl.DataFrame([vars(lot) for lot in lots], schema=Lot.polars_schema)
+
+
+def _closed_lots(*lots: ClosedLot) -> pl.DataFrame:
+    # See `_open_lots`'s own comment.
+    if not lots:
+        return pl.DataFrame(schema=ClosedLot.polars_schema)
+    return pl.DataFrame([vars(lot) for lot in lots], schema=ClosedLot.polars_schema)
 
 
 def _lot(
@@ -169,12 +182,12 @@ def _closed_lot(lot_id: str, realized_gain: float, symbol: str = "VOO") -> Close
 
 
 def test_realized_gain_total_sums_closed_lots() -> None:
-    closed = closed_lots_to_frame([_closed_lot("1", 20.0), _closed_lot("2", -5.0)])
+    closed = _closed_lots(_closed_lot("1", 20.0), _closed_lot("2", -5.0))
     assert realized_gain_total(closed) == pytest.approx(15.0)
 
 
 def test_realized_gain_total_of_no_closed_lots_is_zero() -> None:
-    assert realized_gain_total(closed_lots_to_frame([])) == pytest.approx(0.0)
+    assert realized_gain_total(_closed_lots()) == pytest.approx(0.0)
 
 
 def test_unrealized_gain_sums_price_appreciation_across_open_lots() -> None:
@@ -200,7 +213,7 @@ def test_unrealized_gain_excludes_dividends_by_default() -> None:
 
 
 def test_unrealized_gain_of_no_open_lots_is_zero() -> None:
-    assert unrealized_gain(lots_to_frame([]), lambda symbol, as_of: 100.0, as_of=date(2026, 1, 1)) == pytest.approx(0.0)
+    assert unrealized_gain(_open_lots(), lambda symbol, as_of: 100.0, as_of=date(2026, 1, 1)) == pytest.approx(0.0)
 
 
 def test_unrealized_gain_raises_on_missing_price() -> None:
