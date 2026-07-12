@@ -1,4 +1,5 @@
 import io
+import uuid
 import zipfile
 from datetime import date, timedelta
 
@@ -16,7 +17,7 @@ from accounting.importers import ingest as ingest_module
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
 from accounting.market_data import exchange_rates
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
-from db.current_user import DEFAULT_USER_ID
+from db.current_user import DEFAULT_USER_ID, get_current_user_id
 from db.session import get_db
 from trades import api as trades_api
 from trades.config import AppConfig
@@ -37,11 +38,14 @@ def isolated_accounting_config(tmp_path, monkeypatch):
 def _db_for_api(db_session):
     """Route every request the `TestClient` makes through this test's own rolled-back session.
 
-    Every accounting route defaults to `db.current_user.DEFAULT_USER_ID`
-    (there's no login flow yet — see `accounting.store.load_store`), so the
-    one `User` row FK-satisfying every table has to exist under that exact
-    id, not a random `test_user_id` (that fixture is for tests that call
-    store/ledger functions directly with an explicit `user_id`).
+    `tests/conftest.py`'s `_bypass_clerk_auth_by_default` overrides
+    `get_current_user_id` to `DEFAULT_USER_ID` for every test by default, so
+    the one `User` row FK-satisfying every table has to exist under that
+    exact id, not a random `test_user_id` (that fixture is for tests that
+    call store/ledger functions directly with an explicit `user_id`). A test
+    that needs a second, genuinely distinct user overrides
+    `get_current_user_id` again locally — see
+    `test_accounts_are_isolated_between_users`.
     """
     db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
     db_session.commit()
@@ -1827,6 +1831,47 @@ def test_post_account_creates_a_new_account(client) -> None:
         },
     )
     assert response.status_code == 200
+    assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
+
+
+def test_accounts_are_isolated_between_users(client, db_session) -> None:
+    """Proof that `store.py`'s account CRUD is genuinely per-user, not a shared global store.
+
+    Regression test for the FK-violation/cross-user-leak sweep: before every
+    endpoint threaded a real `user_id` through `load_store`/`save_store`,
+    this router had no way to keep two users' accounts apart at all.
+    """
+    other_user_id = uuid.uuid4()
+    db_session.add(dbm.User(id=other_user_id, email="other@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.commit()
+
+    account = {
+        "account_id": "bnp:checking:0001",
+        "name": "BNP Checking",
+        "kind": "checking",
+        "institution": "BNP",
+        "currency": "EUR",
+    }
+    response = client.post("/api/accounting/accounts", json=account)
+    assert response.status_code == 200
+    assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
+
+    trades_api.app.dependency_overrides[get_current_user_id] = lambda: other_user_id
+    try:
+        # The first user's account must not be visible to the second user...
+        other_store = client.get("/api/accounting/store").json()
+        assert "bnp:checking:0001" not in other_store["accounts"]
+
+        # ...and the second user must be free to register their own account
+        # under the exact same id, with no conflict against the first user's.
+        response = client.post("/api/accounting/accounts", json=account)
+        assert response.status_code == 200
+        assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
+    finally:
+        trades_api.app.dependency_overrides[get_current_user_id] = lambda: DEFAULT_USER_ID
+
+    # Back as the first user, their own account is unaffected by the second
+    # user's same-id account, and still the only one they can see.
     assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
 
 

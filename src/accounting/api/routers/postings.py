@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import uuid
 import zipfile
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -31,14 +32,17 @@ from accounting.ledger.pending import resolve_pending_suggestion
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
 from accounting.models import DismissedSuggestion, ManualOverride, Posting, PostingMerge, PostingSplit, PostingSplitLeg
 from accounting.store import load_overrides, load_store, save_overrides, save_store
-from accounting.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
+from accounting.utils.statement_archive import StatementArchive
+from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
 
 
 @router.get("/postings")
-def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[PostingRow]:
+def get_postings(
+    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
+) -> list[PostingRow]:
     """Return every posting, resolved against the current rules and manual overrides.
 
     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
@@ -54,13 +58,13 @@ def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[PostingRo
     list[PostingRow]
         One row per posting.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
-    overrides = load_overrides(session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    overrides = load_overrides(session, user_id)
     # Recomputed from the raw ledger rather than threaded through
     # `_resolved_postings_and_store`'s return value — that function's
     # signature is shared by every other endpoint in this module, and this
     # is purely a display concern only `get_postings` needs.
-    raw = load_ledger(session)
+    raw = load_ledger(session, user_id)
     resolved_by_rule = resolved_transfer_rule_ids_by_transaction(raw, store.rules, store.accounts)
     rows = postings.to_dicts()
     for row in rows:
@@ -72,7 +76,9 @@ def get_postings(session: Annotated[Session, Depends(get_db)]) -> list[PostingRo
 
 
 @router.get("/ledger/export")
-def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[Posting]:
+def get_ledger_export(
+    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
+) -> list[Posting]:
     """Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
 
     Returns
@@ -82,11 +88,11 @@ def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[Post
         the same data after every rule/override/split/merge is applied on
         top — what the Transactions page actually shows.
     """
-    return [Posting(**row) for row in load_ledger(session).to_dicts()]
+    return [Posting(**row) for row in load_ledger(session, user_id).to_dicts()]
 
 
 @router.get("/statements/export")
-def get_statements_export() -> Response:
+def get_statements_export(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Response:
     """Zip every raw statement archived from an import (CSV or PDF, verbatim as uploaded) for download.
 
     Returns
@@ -96,7 +102,7 @@ def get_statements_export() -> Response:
         nothing has been imported yet.
     """
     buffer = io.BytesIO()
-    archive = StatementArchive(state.config.raw_statement_dir, f"statements/{DEFAULT_USER_ID}")
+    archive = StatementArchive(state.config.raw_statement_dir, f"statements/{user_id}")
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for relative_path, data in archive.read_all():
             zip_file.writestr(relative_path, data)
@@ -110,7 +116,10 @@ def get_statements_export() -> Response:
 
 @router.put("/postings/{posting_id}/override")
 def put_posting_override(
-    posting_id: str, override: ManualOverride, session: Annotated[Session, Depends(get_db)]
+    posting_id: str,
+    override: ManualOverride,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ManualOverride:
     """Upsert one posting's manual override, merging into any override already stored for it.
 
@@ -128,14 +137,14 @@ def put_posting_override(
     ManualOverride
         The override just persisted, merged with any prior one.
     """
-    overrides = load_overrides(session)
+    overrides = load_overrides(session, user_id)
     existing = overrides.get(posting_id)
     if existing is not None:
         merged = existing.model_dump()
         merged.update(override.model_dump(include=override.model_fields_set))
         override = ManualOverride(**merged)
     overrides[posting_id] = override
-    save_overrides(overrides, session)
+    save_overrides(overrides, session, user_id)
     return override
 
 
@@ -161,7 +170,10 @@ def _current_amount_for_split(postings: pl.DataFrame, posting_id: str) -> float 
 
 @router.put("/postings/{posting_id}/split")
 def put_posting_split(
-    posting_id: str, legs: list[PostingSplitLeg], session: Annotated[Session, Depends(get_db)]
+    posting_id: str,
+    legs: list[PostingSplitLeg],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> PostingSplit:
     """Split one posting into several independently-categorized legs, e.g. a paycheck into wage + reimbursement.
 
@@ -180,7 +192,7 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -191,28 +203,34 @@ def put_posting_split(
         )
     split = PostingSplit(posting_id=posting_id, legs=legs)
     store = store.model_copy(update={"posting_splits": {**store.posting_splits, posting_id: split}})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return split
 
 
 @router.delete("/postings/{posting_id}/split")
-def delete_posting_split(posting_id: str, session: Annotated[Session, Depends(get_db)]) -> PostingIdResponse:
+def delete_posting_split(
+    posting_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> PostingIdResponse:
     """Undo a posting split, restoring the single original posting.
 
     Returns
     -------
     PostingIdResponse
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     remaining = {pid: split for pid, split in store.posting_splits.items() if pid != posting_id}
     store = store.model_copy(update={"posting_splits": remaining})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return PostingIdResponse(posting_id=posting_id)
 
 
 @router.put("/posting-merges")
 def put_posting_merges(
-    merges: dict[str, PostingMerge], session: Annotated[Session, Depends(get_db)]
+    merges: dict[str, PostingMerge],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> dict[str, PostingMerge]:
     """Replace the whole posting-merge map, keyed by `merge_id`.
 
@@ -221,15 +239,17 @@ def put_posting_merges(
     dict[str, PostingMerge]
         The merges just persisted.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     store = store.model_copy(update={"posting_merges": merges})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return store.posting_merges
 
 
 @router.post("/postings/validate-pending")
 def post_validate_pending(
-    payload: ValidatePendingRequest, session: Annotated[Session, Depends(get_db)]
+    payload: ValidatePendingRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ValidatePendingResult:
     """Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
 
@@ -243,7 +263,7 @@ def post_validate_pending(
     -------
     ValidatePendingResult
     """
-    overrides = load_overrides(session)
+    overrides = load_overrides(session, user_id)
     accepted = reverted = 0
     for posting_id in payload.posting_ids:
         existing = overrides.get(posting_id)
@@ -258,7 +278,7 @@ def post_validate_pending(
             del overrides[posting_id]
         else:
             overrides[posting_id] = resolved
-    save_overrides(overrides, session)
+    save_overrides(overrides, session, user_id)
     return ValidatePendingResult(accepted=accepted, reverted=reverted)
 
 
@@ -290,7 +310,10 @@ def _duplicate_suggestion_id(group: DuplicateGroupData) -> str:
 
 @router.get("/transfer-suggestions")
 def get_transfer_suggestions(
-    *, window_days: int = 3, session: Annotated[Session, Depends(get_db)]
+    *,
+    window_days: int = 3,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[TransferSuggestion]:
     """Suggest likely internal transfers no rule has already resolved.
 
@@ -309,7 +332,7 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `POST /dismissed-suggestions`).
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     rows = find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
     return [
         TransferSuggestion(**row, suggestion_id=_transfer_suggestion_id(row))
@@ -320,7 +343,10 @@ def get_transfer_suggestions(
 
 @router.get("/duplicate-suggestions")
 def get_duplicate_suggestions(
-    *, window_days: int = 3, session: Annotated[Session, Depends(get_db)]
+    *,
+    window_days: int = 3,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[DuplicateGroup]:
     """Suggest likely duplicate transactions no merge decision has already resolved.
 
@@ -336,7 +362,7 @@ def get_duplicate_suggestions(
         Each carries a `suggestion_id` for dismissing it. Excludes any
         group already dismissed (see `POST /dismissed-suggestions`).
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     groups = find_duplicate_candidates(postings, window_days=window_days)
     return [
         DuplicateGroup(**asdict(group), suggestion_id=_duplicate_suggestion_id(group))
@@ -346,20 +372,24 @@ def get_duplicate_suggestions(
 
 
 @router.get("/dismissed-suggestions")
-def get_dismissed_suggestions(session: Annotated[Session, Depends(get_db)]) -> list[DismissedSuggestion]:
+def get_dismissed_suggestions(
+    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
+) -> list[DismissedSuggestion]:
     """List every archived (dismissed) suggestion, most recently dismissed first.
 
     Returns
     -------
     list[DismissedSuggestion]
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     return sorted(store.dismissed_suggestions.values(), key=lambda entry: entry.dismissed_at, reverse=True)
 
 
 @router.post("/dismissed-suggestions")
 def post_dismissed_suggestion(
-    request: DismissSuggestionRequest, session: Annotated[Session, Depends(get_db)]
+    request: DismissSuggestionRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> DismissedSuggestion:
     """Archive a suggestion so it stops being proposed, without discarding it.
 
@@ -368,7 +398,7 @@ def post_dismissed_suggestion(
     DismissedSuggestion
         The archived entry just persisted.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     entry = DismissedSuggestion(
         suggestion_id=request.suggestion_id,
         kind=request.kind,
@@ -378,13 +408,15 @@ def post_dismissed_suggestion(
     store = store.model_copy(
         update={"dismissed_suggestions": {**store.dismissed_suggestions, entry.suggestion_id: entry}}
     )
-    save_store(store, session)
+    save_store(store, session, user_id)
     return entry
 
 
 @router.delete("/dismissed-suggestions/{suggestion_id}")
 def delete_dismissed_suggestion(
-    suggestion_id: str, session: Annotated[Session, Depends(get_db)]
+    suggestion_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> SuggestionIdResponse:
     """Restore a dismissed suggestion so it can be proposed again.
 
@@ -398,10 +430,10 @@ def delete_dismissed_suggestion(
     HTTPException
         404 if no archived entry has this id.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     if suggestion_id not in store.dismissed_suggestions:
         raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
     remaining = {key: value for key, value in store.dismissed_suggestions.items() if key != suggestion_id}
     store = store.model_copy(update={"dismissed_suggestions": remaining})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return SuggestionIdResponse(suggestion_id=suggestion_id)

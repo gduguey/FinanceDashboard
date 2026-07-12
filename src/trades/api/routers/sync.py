@@ -20,7 +20,7 @@ from trades.api.dependencies import _config, _last_synced_iso, _report_sync_prog
 from trades.brokers.ibkr import main
 from trades.brokers.ibkr.credentials import BROKER_DISPLAY_NAME, resolve_ibkr_credentials
 from trades.config import AppConfig
-from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
+from trades.utils.statement_archive import StatementArchive
 
 router = APIRouter()
 
@@ -30,7 +30,7 @@ _sync_lock = Lock()
 
 
 @router.get("/api/statements/export")
-def get_statements_export() -> Response:
+def get_statements_export(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Response:
     """Zip every raw Flex statement archived from a sync (verbatim XML, as received) for download.
 
     Returns
@@ -40,7 +40,7 @@ def get_statements_export() -> Response:
         nothing has ever been synced.
     """
     buffer = io.BytesIO()
-    archive = StatementArchive(_config().ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    archive = StatementArchive(_config().ibkr.raw_statement_dir, f"statements/{user_id}/ibkr")
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for relative_path, data in archive.read_all():
             zip_file.writestr(relative_path, data)
@@ -90,7 +90,7 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
     sync_result = None
     try:
         credentials = resolve_ibkr_credentials(session, user_id)
-        sync_result = main.sync_ibkr_account(credentials, config, session, on_progress=_report_sync_progress)
+        sync_result = main.sync_ibkr_account(credentials, config, session, user_id, on_progress=_report_sync_progress)
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=True))
     except requests.exceptions.RequestException:
         # Not str(error): a request-level failure's own message includes the
@@ -107,10 +107,10 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
         # IBKR itself never produced a fresh count — fall back to whatever
         # the ledger already holds from a previous sync.
         new_event_count = 0
-        total_event_count = main.load_ledger(session).height
+        total_event_count = main.load_ledger(session, user_id).height
 
     return SyncResult(
-        synced_at=_last_synced_iso(),
+        synced_at=_last_synced_iso(user_id),
         new_event_count=new_event_count,
         total_event_count=total_event_count,
         steps=steps,

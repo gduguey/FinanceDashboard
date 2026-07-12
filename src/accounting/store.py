@@ -42,7 +42,6 @@ from accounting.models import (
     WithdrawalPriorityEntry,
 )
 from db.base import derive_id, natural_keys_by_id
-from db.current_user import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
     import uuid
@@ -247,7 +246,7 @@ def plan_category_rename(
     top-level merge, each of the renamed category's own subcategories
     either merges into a same-named one already under the target, or is
     simply reparented under it; its "Other" catch-all (if any) always maps
-    onto the target's own "Other" id, since `normalize_categories` (run at
+    onto the target's own "Other" id, since `normalize_categories` (run a
     the end here) guarantees that id exists post-merge whenever there was
     a real subcategory to reparent or merge.
 
@@ -619,7 +618,7 @@ def _merge_from_rows(
     )
 
 
-def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> AccountingStore:  # noqa: PLR0914 (one local per AccountingStore field being loaded — splitting this up would just add indirection)
+def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa: PLR0914 (one local per AccountingStore field being loaded — splitting this up would just add indirection)
     """Read the persisted accounting store, seeding sensible defaults the first time.
 
     A brand-new user has no rows yet, but still needs the two uncategorized
@@ -635,10 +634,7 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
     session
         An open database session.
     user_id
-        Whose store to load. Defaults to the single seeded user — this app
-        has no login flow yet, so every caller today implicitly means "the
-        one user"; a caller resolving a real logged-in user later just
-        passes `user_id` explicitly, no other change required.
+        Whose store to load.
 
     Returns
     -------
@@ -896,7 +892,7 @@ def _upsert_and_prune(
         ).delete(synchronize_session=False)
 
 
-def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> None:
+def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> None:
     """Persist the accounting store, overwriting whatever was saved before.
 
     `Account`/`Category`/`Tag` are upserted and pruned (see
@@ -918,8 +914,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     session
         An open database session; `session.commit()` is called on success.
     user_id
-        Whose store this is. See `load_store` for why it defaults rather
-        than being required.
+        Whose store this is.
     """
     session.query(adb.PostingSplitLeg).filter_by(user_id=user_id).delete()
     session.query(adb.PostingSplit).filter_by(user_id=user_id).delete()
@@ -1266,7 +1261,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
     session.commit()
 
 
-def load_overrides(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> dict[str, ManualOverride]:
+def load_overrides(session: Session, user_id: uuid.UUID) -> dict[str, ManualOverride]:
     """Read every persisted manual per-posting override.
 
     Merges `PostingOverride` (persistent corrections) and
@@ -1280,7 +1275,7 @@ def load_overrides(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> di
     session
         An open database session.
     user_id
-        Whose overrides to load. See `load_store` for why it defaults.
+        Whose overrides to load.
 
     Returns
     -------
@@ -1340,9 +1335,7 @@ def load_overrides(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> di
     return overrides
 
 
-def save_overrides(
-    overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
-) -> None:
+def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID) -> None:
     """Persist every manual per-posting override, overwriting whatever was saved before.
 
     Writes a `PostingOverride` row only when at least one actual
@@ -1358,7 +1351,7 @@ def save_overrides(
     session
         An open database session; `session.commit()` is called on success.
     user_id
-        Whose overrides these are. See `load_store` for why it defaults.
+        Whose overrides these are.
     """
     session.query(adb.PostingOverride).filter_by(user_id=user_id).delete()
     session.query(adb.PostingPendingSuggestion).filter_by(user_id=user_id).delete()

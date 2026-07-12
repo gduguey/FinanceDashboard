@@ -9,7 +9,7 @@ without a circular import back through the module that imports them.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fastapi import HTTPException
@@ -29,6 +29,9 @@ from accounting.market_data import exchange_rates
 from accounting.models import CurrencyCode
 from accounting.store import AccountingStore, load_overrides, load_store
 
+if TYPE_CHECKING:
+    import uuid
+
 
 class _State:
     """Everything a running server needs, held off the shared `app` object so tests can swap it per-test."""
@@ -40,7 +43,11 @@ class _State:
 state = _State()
 
 
-def _resolved_postings_and_store(config: AccountingConfig, session: Session) -> tuple[Any, Any]:  # noqa: ARG001
+def _resolved_postings_and_store(
+    config: AccountingConfig,  # noqa: ARG001
+    session: Session,
+    user_id: uuid.UUID,
+) -> tuple[Any, Any]:
     """Load the raw ledger and resolve it against the current rules and manual overrides.
 
     A rule only ever repoints a posting at an account that already exists
@@ -55,11 +62,11 @@ def _resolved_postings_and_store(config: AccountingConfig, session: Session) -> 
     tuple[polars.DataFrame, accounting.store.AccountingStore]
         The fully resolved postings, and the current store.
     """
-    raw = load_ledger(session)
-    store = load_store(session)
+    raw = load_ledger(session, user_id)
+    store = load_store(session, user_id)
     resolved = apply_rules(raw, store.rules, store.accounts)
     resolved = apply_posting_splits(resolved, store.posting_splits)
-    overrides = load_overrides(session)
+    overrides = load_overrides(session, user_id)
     resolved = apply_manual_overrides(resolved, overrides)
     resolved = apply_posting_merges(resolved, store.posting_merges)
     if store.manual_transfers:
@@ -68,7 +75,9 @@ def _resolved_postings_and_store(config: AccountingConfig, session: Session) -> 
     return resolved, store
 
 
-def _resolved_postings_for_aggregation(config: AccountingConfig, session: Session) -> tuple[Any, Any]:
+def _resolved_postings_for_aggregation(
+    config: AccountingConfig, session: Session, user_id: uuid.UUID
+) -> tuple[Any, Any]:
     """Like `_resolved_postings_and_store`, but clears category/subcategory for unconfirmed suggestions.
 
     A pending AI/pattern suggestion is applied optimistically everywhere
@@ -85,8 +94,8 @@ def _resolved_postings_for_aggregation(config: AccountingConfig, session: Sessio
         The resolved postings (with any pending posting's category/subcategory
         nulled out), and the current store.
     """
-    postings, store = _resolved_postings_and_store(config, session)
-    overrides = load_overrides(session)
+    postings, store = _resolved_postings_and_store(config, session, user_id)
+    overrides = load_overrides(session, user_id)
     pending_ids = [posting_id for posting_id, override in overrides.items() if override.pending_source is not None]
     if not pending_ids:
         return postings, store
@@ -95,7 +104,12 @@ def _resolved_postings_for_aggregation(config: AccountingConfig, session: Sessio
     return postings.with_columns(category_id=cleared, subcategory_id=cleared_sub), store
 
 
-def _account_has_postings(account_id: str, config: AccountingConfig, session: Session) -> bool:  # noqa: ARG001
+def _account_has_postings(
+    account_id: str,
+    config: AccountingConfig,  # noqa: ARG001
+    session: Session,
+    user_id: uuid.UUID,
+) -> bool:
     """Check whether any imported posting has ever been assigned to this account.
 
     Used to enforce the accounts-CRUD rule: an account's institution,
@@ -108,7 +122,7 @@ def _account_has_postings(account_id: str, config: AccountingConfig, session: Se
     bool
         `True` if at least one posting in the raw ledger references this account.
     """
-    ledger = load_ledger(session)
+    ledger = load_ledger(session, user_id)
     if ledger.is_empty():
         return False
     return bool(ledger.filter(pl.col("account_id") == account_id).height > 0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
@@ -57,6 +58,7 @@ from accounting.importers.ingest import (
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
 from accounting.models import Account, CurrencyCode, PostingSplitLeg
 from accounting.store import load_store, save_store
+from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
@@ -92,7 +94,7 @@ def get_supported_import_kinds() -> list[SupportedImportKind]:
 
 
 @router.get("/sync-status")
-def get_sync_status() -> SyncStatus:
+def get_sync_status(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> SyncStatus:
     """When a bank statement was most recently imported, across every institution and account.
 
     Returns
@@ -100,7 +102,7 @@ def get_sync_status() -> SyncStatus:
     SyncStatus
         `last_import_at` is `None` if nothing has ever been imported.
     """
-    return SyncStatus(last_import_at=last_import_at(state.config))
+    return SyncStatus(last_import_at=last_import_at(state.config, user_id))
 
 
 @router.post("/import")
@@ -114,6 +116,7 @@ async def post_import(  # noqa: PLR0913
     parent_account_id: Annotated[str | None, Form()] = None,
     *,
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ImportResult:
     """Register the account if it's new, then archive and import the uploaded CSV.
 
@@ -126,7 +129,7 @@ async def post_import(  # noqa: PLR0913
     HTTPException
         400 if no importer exists for this institution/account-kind combination.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     if account_id not in store.accounts:
         account_kind_literal: Any = account_kind
         new_account = Account(
@@ -138,7 +141,7 @@ async def post_import(  # noqa: PLR0913
             parent_account_id=parent_account_id,
         )
         store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
-        save_store(store, session)
+        save_store(store, session, user_id)
 
     # Try multiple encodings to handle files from different sources
     # (e.g., Excel exports on different systems use different encodings).
@@ -165,7 +168,7 @@ async def post_import(  # noqa: PLR0913
         raise HTTPException(status_code=400, detail=message)
 
     try:
-        result = ingest_csv(csv_text, institution, account_kind, account_id, state.config, session)
+        result = ingest_csv(csv_text, institution, account_kind, account_id, state.config, session, user_id)
     except UnsupportedImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -193,6 +196,7 @@ async def post_canonical_import_preview(
     date_order: Annotated[str, Form()] = "MDY",
     *,
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CanonicalImportPreview:
     """Parse a canonical CSV/Excel file without persisting anything, to preview which categories it would create.
 
@@ -213,7 +217,7 @@ async def post_canonical_import_preview(
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     try:
@@ -245,6 +249,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     category_overrides: Annotated[str | None, Form()] = None,
     *,
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CanonicalImportResult:
     """Register the account if it's new, then import the file through the canonical fallback parser.
 
@@ -271,7 +276,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
         columns are supported, and (when the column separator couldn't be
         guessed) asks the user to pick one and retry with `separator` set.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     if account_id not in store.accounts:
         account_kind_literal: Any = account_kind
         new_account = Account(
@@ -283,7 +288,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
             parent_account_id=parent_account_id,
         )
         store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
-        save_store(store, session)
+        save_store(store, session, user_id)
 
     date_order_literal = cast("DateOrder", date_order)
     overrides = _read_category_overrides(category_overrides)
@@ -295,6 +300,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
                 account_id,
                 state.config,
                 session,
+                user_id,
                 date_order=date_order_literal,
                 category_overrides=overrides,
             )
@@ -310,6 +316,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
                 account_id,
                 state.config,
                 session,
+                user_id,
                 separator=separator,
                 date_order=date_order_literal,
                 category_overrides=overrides,
@@ -339,6 +346,7 @@ async def post_categorize_from_file_preview(
     window_days: Annotated[int, Form()] = 5,
     *,
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CategorizeFromFilePreview:
     """Match a categorized personal file against the ledger without persisting anything.
 
@@ -372,8 +380,8 @@ async def post_categorize_from_file_preview(
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session)
-    ledger = load_ledger(session)
+    store = load_store(session, user_id)
+    ledger = load_ledger(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     ids = [account_id.strip() for account_id in account_ids.split(",") if account_id.strip()] if account_ids else None
@@ -409,6 +417,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     category_overrides: Annotated[str | None, Form()] = None,
     *,
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CategorizeFromFileApplyResult:
     """Re-match the file (stateless, same as `post_canonical_import`'s preview/confirm split) and apply confirmed rows.
 
@@ -445,8 +454,8 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session)
-    ledger = load_ledger(session)
+    store = load_store(session, user_id)
+    ledger = load_ledger(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     ids = [account_id.strip() for account_id in account_ids.split(",") if account_id.strip()] if account_ids else None
@@ -468,7 +477,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
 
     if preview.new_categories:
         store = store.model_copy(update={"categories": {**store.categories, **preview.new_categories}})
-        save_store(store, session)
+        save_store(store, session, user_id)
 
     wanted_row_numbers = set(json.loads(confirmed_row_numbers))
     to_apply = [
@@ -480,7 +489,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
         for match in preview.matches
         if match.row_number in wanted_row_numbers and match.posting_id is not None
     ]
-    updated_count = apply_categorize_from_file(session, to_apply)
+    updated_count = apply_categorize_from_file(session, to_apply, user_id)
 
     return CategorizeFromFileApplyResult(
         updated_posting_count=updated_count, new_categories=list(preview.new_categories.values())
@@ -489,7 +498,9 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
 
 @router.post("/import/paystub")
 async def post_paystub_reconciliation(
-    file: UploadFile, session: Annotated[Session, Depends(get_db)]
+    file: UploadFile,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> PaystubReconciliationResult:
     """Parse a paystub PDF and reconcile its deposits against real bank postings near pay day.
 
@@ -519,7 +530,7 @@ async def post_paystub_reconciliation(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     result = reconcile_earnings_statement(statement, postings, store.accounts)
     proposed_splits = propose_posting_splits(statement, result.matches)
     return PaystubReconciliationResult(
@@ -547,7 +558,9 @@ async def post_paystub_reconciliation(
 
 
 @router.post("/rebuild")
-def post_rebuild(session: Annotated[Session, Depends(get_db)]) -> RebuildResult:
+def post_rebuild(
+    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
+) -> RebuildResult:
     """Recompute the whole posting ledger from every archived raw CSV.
 
     Returns
@@ -560,7 +573,7 @@ def post_rebuild(session: Annotated[Session, Depends(get_db)]) -> RebuildResult:
         404 if nothing has ever been imported.
     """
     try:
-        ledger = rebuild_from_raw_statements(state.config, session)
+        ledger = rebuild_from_raw_statements(state.config, session, user_id)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return RebuildResult(total_posting_count=len(ledger))

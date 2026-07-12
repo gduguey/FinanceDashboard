@@ -30,7 +30,6 @@ from accounting.importers.canonical.csv import (
 )
 from accounting.models import ManualOverride
 from accounting.store import load_overrides, save_overrides
-from db.current_user import DEFAULT_USER_ID
 
 if TYPE_CHECKING:
     import uuid
@@ -278,9 +277,7 @@ class ConfirmedCategorization:
     subcategory_id: str | None
 
 
-def apply_categorize_from_file(
-    session: Session, confirmed: list[ConfirmedCategorization], user_id: uuid.UUID = DEFAULT_USER_ID
-) -> int:
+def apply_categorize_from_file(session: Session, confirmed: list[ConfirmedCategorization], user_id: uuid.UUID) -> int:
     """Set category/subcategory on every confirmed posting, through the same override a hand edit would make.
 
     Uses `ManualOverride`'s usual field-level merge (see `api.put_posting_override`) — an entry with only
@@ -295,7 +292,7 @@ def apply_categorize_from_file(
         Every match the caller has reviewed and wants applied — typically a subset of
         `CategorizeFromFilePreview.matches`, with unmatched or rejected rows filtered out first.
     user_id
-        Whose overrides these are. See `accounting.store.load_store` for why it defaults.
+        Whose overrides these are.
 
     Returns
     -------

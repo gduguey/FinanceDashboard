@@ -236,6 +236,7 @@ def _stage_and_save_pending_suggestion(
     subcategory_id: str | None,
     source: PendingSuggestionSource,
     session: Session,
+    user_id: uuid.UUID,
 ) -> CategorySuggestionResult:
     """Stage a not-yet-confirmed suggestion as a pending override, snapshotting the posting's current category.
 
@@ -248,7 +249,7 @@ def _stage_and_save_pending_suggestion(
     CategorySuggestionResult
         `applied` is always `True`.
     """
-    overrides = load_overrides(session)
+    overrides = load_overrides(session, user_id)
     staged = stage_pending_suggestion(
         existing=overrides.get(posting_id),
         category_id=category_id,
@@ -258,7 +259,7 @@ def _stage_and_save_pending_suggestion(
         previous_subcategory_id=target_row["subcategory_id"],
     )
     overrides[posting_id] = staged
-    save_overrides(overrides, session)
+    save_overrides(overrides, session, user_id)
     return CategorySuggestionResult(category_id=category_id, subcategory_id=subcategory_id, applied=True)
 
 
@@ -302,7 +303,7 @@ def post_ai_suggest_category(
     HTTPException
         404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -325,12 +326,18 @@ def post_ai_suggest_category(
     if lock_category_id is not None and category_id != lock_category_id:
         return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
 
-    return _stage_and_save_pending_suggestion(posting_id, target_row, category_id, subcategory_id, "ai", session)
+    return _stage_and_save_pending_suggestion(
+        posting_id, target_row, category_id, subcategory_id, "ai", session, user_id
+    )
 
 
 @router.post("/postings/{posting_id}/pattern-suggest-category")
 def post_pattern_suggest_category(
-    posting_id: str, *, lock_category_id: str | None = None, session: Annotated[Session, Depends(get_db)]
+    posting_id: str,
+    *,
+    lock_category_id: str | None = None,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CategorySuggestionResult:
     """Suggest a category for one posting from a user-maintained `CategoryPattern` description match.
 
@@ -359,7 +366,7 @@ def post_pattern_suggest_category(
     HTTPException
         404 if the posting doesn't exist.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -372,13 +379,15 @@ def post_pattern_suggest_category(
         return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
 
     return _stage_and_save_pending_suggestion(
-        posting_id, target_row, pattern.category_id, pattern.subcategory_id, "pattern", session
+        posting_id, target_row, pattern.category_id, pattern.subcategory_id, "pattern", session, user_id
     )
 
 
 @router.post("/postings/pattern-suggest-category/bulk")
 def post_pattern_suggest_category_bulk(
-    payload: PatternSuggestBulkRequest, session: Annotated[Session, Depends(get_db)]
+    payload: PatternSuggestBulkRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> BulkSuggestResult:
     """Suggest categories for many postings at once from category-pattern matches, in one ledger load.
 
@@ -406,7 +415,7 @@ def post_pattern_suggest_category_bulk(
     BulkSuggestResult
         How many postings got a staged suggestion.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
     if targets.is_empty():
         return BulkSuggestResult(applied=0)
@@ -416,7 +425,7 @@ def post_pattern_suggest_category_bulk(
         return BulkSuggestResult(applied=0)
 
     target_rows = {row["posting_id"]: row for row in targets.to_dicts()}
-    overrides = load_overrides(session)
+    overrides = load_overrides(session, user_id)
     applied = 0
     for match in matches.iter_rows(named=True):
         target_row = target_rows[match["posting_id"]]
@@ -432,5 +441,5 @@ def post_pattern_suggest_category_bulk(
         )
         overrides[match["posting_id"]] = staged
         applied += 1
-    save_overrides(overrides, session)
+    save_overrides(overrides, session, user_id)
     return BulkSuggestResult(applied=applied)
