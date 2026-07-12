@@ -26,18 +26,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi import Depends
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from accounting.api import router as accounting_router
+from trades.api.auth import require_clerk_session
 from trades.api.dependencies import app
 from trades.api.routers import dashboard, market_data, settings, sync
 
-app.include_router(accounting_router)
-app.include_router(dashboard.router)
-app.include_router(settings.router)
-app.include_router(market_data.router)
-app.include_router(sync.router)
+# Every `/api/...` route across both modules requires a valid Clerk session
+# (see trades.api.auth) — applied here, at the one place that wires routers
+# onto `app`, rather than on each router individually, so a new router can
+# never be mounted unprotected by omission.
+_authenticated = [Depends(require_clerk_session)]
+app.include_router(accounting_router, dependencies=_authenticated)
+app.include_router(dashboard.router, dependencies=_authenticated)
+app.include_router(settings.router, dependencies=_authenticated)
+app.include_router(market_data.router, dependencies=_authenticated)
+app.include_router(sync.router, dependencies=_authenticated)
 
 # Same layout in the Docker image (built by the frontend-builder stage into
 # web/dist/) and in a local dev checkout (built by hand via `npm run build`)

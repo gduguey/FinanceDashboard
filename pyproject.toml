@@ -22,7 +22,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "alembic>=1.13",
-    "cryptography>=49.0.0",
+    "cryptography>=45.0.0,<49.0.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +30,7 @@ api = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
+    "clerk-backend-api>=6.0.1",
 ]
 llm = [
     "google-genai>=1.0",

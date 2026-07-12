@@ -1,3 +1,4 @@
+import { UserButton } from '@clerk/react'
 import {
   ArrowRightLeft,
   BarChart3,
@@ -215,8 +216,9 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-screen w-56 shrink-0 flex-col border-r border-border bg-white">
-      <div className="px-5 py-6">
+      <div className="flex items-center justify-between px-5 py-6">
         <span className="text-sm font-semibold tracking-tight text-foreground">Finance Dashboard</span>
+        <UserButton />
       </div>
       <nav className="flex flex-col gap-0.5 px-3">
         <OnboardingNavItem />

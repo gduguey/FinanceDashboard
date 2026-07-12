@@ -2,6 +2,7 @@ import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react
 import type { ComponentType, ReactNode } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
+import { AuthGate } from '@/components/layout/AuthGate'
 import { ErrorBoundary } from '@/components/layout/ErrorBoundary'
 import { OnboardingModal } from '@/components/layout/OnboardingModal'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -75,10 +76,12 @@ function AppShell() {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider delay={200}>
-        <AppShell />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <AuthGate>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delay={200}>
+          <AppShell />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </AuthGate>
   )
 }

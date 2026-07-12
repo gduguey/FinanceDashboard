@@ -45,3 +45,6 @@ NEXT_STEPS.md
 ACCOUNTING_PLAN.md
 MIGRATION_TRADES.md
 MIGRATION_ACCOUNTING.md
+
+.agents/
+skills-lock.json
