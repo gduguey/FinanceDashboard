@@ -14,16 +14,21 @@ never makes a network call of its own, and a signing-key rotation on
 Clerk's side is picked up automatically rather than requiring a manual
 update here.
 
-This app is single-user (see `db.current_user`): `require_clerk_session`
-only proves a request carries a session token this Clerk application
-itself issued — it does not identify *which* Clerk user, since there is
-never more than one. Restricting who can obtain that token in the first
-place (i.e. who Clerk lets sign up at all) is configured in the Clerk
-Dashboard, deliberately outside this app's own code.
+`require_clerk_session` only proves a request carries a session token this
+Clerk application itself issued. `resolve_current_user_id` goes one step
+further and identifies *which* Clerk user, via a real lookup —
+`db.external_identities.lookup_user_id` — against the row
+`trades.api.webhooks` creates when that person first signs up. Restricting
+who can obtain a session token in the first place (i.e. who Clerk lets
+sign up at all) is configured in the Clerk Dashboard, deliberately outside
+this app's own code — this file only ever asks "is this session real" and
+"which of our own users does it belong to," never "should this person be
+allowed to exist."
 """
 
 from __future__ import annotations
 
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
@@ -31,6 +36,9 @@ from clerk_backend_api import AuthenticateRequestOptions, authenticate_request
 from fastapi import HTTPException, Request
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from db.external_identities import lookup_user_id
+from db.session import session_factory
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -83,3 +91,44 @@ def require_clerk_session(request: Request) -> None:
     """
     if not authenticate_request(request, _options()).is_signed_in:
         raise HTTPException(status_code=401, detail="Invalid or expired session.")
+
+
+def resolve_current_user_id(request: Request) -> uuid.UUID:
+    """FastAPI dependency: the internal user id for whoever's Clerk session this request carries.
+
+    Verifies the session independently of `require_clerk_session` (both
+    are cheap — Clerk's own signing key is cached in memory, see
+    `_options` — rather than threading a result between them, which would
+    reintroduce the sibling-dependency ordering problem `db.session.get_db`'s
+    own docstring documents empirically confirming unreliable). Installed
+    as `db.current_user.get_current_user_id`'s override in `trades.api.api`,
+    so `get_db`'s own `Depends(get_current_user_id)` resolves through here
+    in the real app.
+
+    Parameters
+    ----------
+    request
+        The incoming request; only its headers are read.
+
+    Returns
+    -------
+    uuid.UUID
+        This app's internal id for the Clerk user this session belongs to.
+
+    Raises
+    ------
+    HTTPException
+        401 under the same conditions as `require_clerk_session`, or if
+        this Clerk session is genuinely valid but no `users` row is linked
+        to it yet — normally only a brief race right after sign-up, before
+        `trades.api.webhooks` has processed the `user.created` event.
+    """
+    state = authenticate_request(request, _options())
+    if not state.is_signed_in or state.payload is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session.")
+    clerk_user_id = state.payload["sub"]
+    with session_factory()() as session:
+        user_id = lookup_user_id(session, "clerk", clerk_user_id)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="No account found for this session yet.")
+    return user_id

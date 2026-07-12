@@ -25,8 +25,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
+from sqlalchemy import Engine
 
+import db.session as session_module
 import trades.api as trades_api
+from db.external_identities import link_identity
+from db.models import User
 from trades.api import auth
 
 
@@ -122,6 +126,84 @@ class TestRequireClerkSession:
         token = _sign(private_key, _valid_claims(), kid=str(uuid.uuid4()))
         with pytest.raises(HTTPException) as exc_info:
             auth.require_clerk_session(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+        assert exc_info.value.status_code == 401
+
+
+class TestResolveCurrentUserId:
+    """`resolve_current_user_id` now does a real database lookup (`db.external_identities`), not a formula.
+
+    So, unlike `TestRequireClerkSession` above, these tests need a real
+    (test) database — `_use_test_engine` points `db.session.get_engine` at
+    it, the same fix `tests/db/test_session.py` established. Setup writes
+    go through `session_scope` (genuinely committed), not the `db_session`
+    fixture (savepoint-scoped, invisible to `resolve_current_user_id`'s
+    own separately-opened session) — cleaned up explicitly afterward
+    instead of relying on an automatic rollback.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _use_test_engine(self, monkeypatch: pytest.MonkeyPatch, _db_engine: Engine) -> None:
+        monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+
+    @staticmethod
+    def _provision(user_id: uuid.UUID, clerk_user_id: str) -> None:
+        with session_module.session_scope(user_id) as session:
+            session.add(User(id=user_id, email=f"{user_id}@example.com", hashed_password="unset"))  # noqa: S106
+            link_identity(session, user_id, "clerk", clerk_user_id)
+            session.commit()
+
+    @staticmethod
+    def _deprovision(user_id: uuid.UUID) -> None:
+        with session_module.session_scope(user_id) as session:
+            session.query(User).filter_by(id=user_id).delete()
+            session.commit()
+
+    def test_resolves_to_the_linked_user_for_the_token_s_sub_claim(
+        self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str
+    ) -> None:
+        private_key, _ = keypair
+        user_id = uuid.uuid4()
+        self._provision(user_id, "user_some_invited_person")
+        try:
+            token = _sign(private_key, _valid_claims(sub="user_some_invited_person"), kid)
+            resolved = auth.resolve_current_user_id(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+            assert resolved == user_id
+        finally:
+            self._deprovision(user_id)
+
+    def test_two_different_clerk_users_resolve_to_two_different_ids(
+        self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str
+    ) -> None:
+        private_key, _ = keypair
+        user_a, user_b = uuid.uuid4(), uuid.uuid4()
+        self._provision(user_a, "user_a")
+        self._provision(user_b, "user_b")
+        try:
+            token_a = _sign(private_key, _valid_claims(sub="user_a"), kid)
+            token_b = _sign(private_key, _valid_claims(sub="user_b"), kid)
+            resolved_a = auth.resolve_current_user_id(_FakeRequest(headers={"Authorization": f"Bearer {token_a}"}))
+            resolved_b = auth.resolve_current_user_id(_FakeRequest(headers={"Authorization": f"Bearer {token_b}"}))
+            assert resolved_a == user_a
+            assert resolved_b == user_b
+        finally:
+            self._deprovision(user_a)
+            self._deprovision(user_b)
+
+    def test_rejects_an_invalid_token_the_same_way_as_require_clerk_session(self, kid: str) -> None:
+        forged_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        token = _sign(forged_key, _valid_claims(), kid)
+        with pytest.raises(HTTPException) as exc_info:
+            auth.resolve_current_user_id(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+        assert exc_info.value.status_code == 401
+
+    def test_rejects_a_valid_session_for_a_clerk_account_with_no_linked_user(
+        self, keypair: tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey], kid: str
+    ) -> None:
+        """A genuinely valid Clerk session, but no `users` row links to it yet (e.g. the webhook hasn't run)."""
+        private_key, _ = keypair
+        token = _sign(private_key, _valid_claims(sub="user_never_provisioned"), kid)
+        with pytest.raises(HTTPException) as exc_info:
+            auth.resolve_current_user_id(_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
         assert exc_info.value.status_code == 401
 
 

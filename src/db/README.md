@@ -14,8 +14,9 @@ for, and the exact commands for the scenarios you'll actually run into.
 | `settings.py` | Where the two Postgres connection strings come from (`DATABASE_URL`, `DATABASE_URL_APP`) — see "Two roles" below. |
 | `session.py` | Builds the one shared connection pool (`get_engine`) and hands each web request its own database session (`get_db`), tagged with which user is making the request. |
 | `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus `derive_id`/`natural_keys_by_id`, a shared helper for turning a human-chosen string into a stable internal id. |
-| `models.py` | The two tables that live outside any one module's own schema: `users` and `user_secrets`. |
-| `current_user.py` | Which user is making the current request. Today there's only one person using this app and no login page yet, so this always returns the same fixed id — swapping in real login later only means changing this one function. |
+| `models.py` | The three tables that live outside any one module's own schema: `users`, `user_secrets`, and `external_identities`. |
+| `current_user.py` | Which user is making the current request — a placeholder name FastAPI resolves to the real Clerk-session-derived identity at runtime; see "Which user is making this request" below for exactly how. Also `DEFAULT_USER_ID`, a fixed, arbitrary UUID used only as a test fixture — not tied to any real account. |
+| `external_identities.py` | `lookup_user_id`/`link_identity` — the only place a `(provider, external id)` pair is ever read or written; see "The two tables here" below. |
 | `encryption.py` | Encrypts/decrypts anything stored in `user_secrets.ciphertext`. |
 | `secrets.py` | `get_secret`/`set_secret`/`delete_secret` — the only way any code in this repo reads or writes a credential. |
 | `backup.py` | Dumps the whole database and uploads it somewhere durable. |
@@ -130,14 +131,35 @@ one's identity — so a surrogate id would just be one more column with no
 job to do. Using `derive_id` here would be following the majority
 pattern out of habit rather than for a reason that actually applies.
 
-## The two tables here: `users` and `user_secrets`
+## The three tables here: `users`, `user_secrets`, and `external_identities`
 
-- **`users`** — one row per person using the app. Right now there's
-  exactly one user (`current_user.DEFAULT_USER_ID`) and no real login —
-  every other table's `user_id` column already foreign-keys to this table,
-  so adding real authentication later is wiring a login page on top of a
-  table that already has the columns it needs (`hashed_password`,
-  `is_active`, `is_superuser`, `is_verified`), not a schema change.
+- **`users`** — one row per person using the app, created automatically
+  (via `trades.api.webhooks`) the moment someone accepts a Clerk invite —
+  every other table's `user_id` column foreign-keys to this table. Just
+  `id` (a random UUID, unrelated to anything Clerk-specific) and `email`.
+  `users` deliberately knows nothing about Clerk, or any other identity
+  provider — that mapping lives in `external_identities` instead (below),
+  so this core table (and everything foreign-keyed to it) stays usable
+  even if this app ever swaps identity providers.
+  `hashed_password`/`is_active`/`is_superuser`/`is_verified` are
+  vestigial — kept only because this table was originally shaped to match
+  what a different auth library expected, before Clerk became this app's
+  real identity provider; nothing reads them anymore.
+- **`external_identities`** — one row per `(provider, external_id)` pair,
+  e.g. `("clerk", "user_2abc...")`, pointing at the `users.id` it belongs
+  to. This is the *only* place any code in this app is allowed to know a
+  specific identity provider's own id format exists — `trades/api/auth.py`
+  reads it on every request (see "Which user is making this request"
+  below), `trades/api/webhooks.py` writes it once per newly provisioned
+  user. Deliberately **excluded from Row-Level Security** (unlike every
+  other table below) — a session-scoped policy here would block the very
+  lookup this table exists to do, since the user id being searched for
+  isn't known yet at the point this table needs to be queried. It holds no
+  financial data, only an identity mapping, so skipping row-level
+  isolation here is a narrow, deliberate trade-off, not an oversight.
+  Reassigning someone's account after they're deleted and re-invited in
+  Clerk (their Clerk id changes, their internal `users.id` shouldn't) is a
+  single-row update here, never a migration touching every other table.
 - **`user_secrets`** — one row per `(user_id, key)` pair: a broker token,
   an LLM API key, whatever comes next. `key` is a caller-chosen name like
   `"broker:ibkr"` or `"llm:gemini"`; `kind` groups secrets by shape
@@ -197,12 +219,12 @@ independent layer, not just the application's own filtering.
 For this to mean anything, Postgres has to know *which* user is making the
 current request. `db.session.get_db` (the FastAPI dependency every route
 uses to get a database session) sets that, once, right at the start of
-every request:
+every request — see the next section for exactly where that id comes from:
 
 ```python
 session.execute(
     text("SELECT set_config('app.current_user_id', :user_id, true)"),
-    {"user_id": str(get_current_user_id())},
+    {"user_id": str(user_id)},
 )
 ```
 
@@ -210,6 +232,65 @@ The `true` third argument (`is_local`) scopes this to the current
 transaction only — it's automatically forgotten the moment the request's
 transaction ends, so it can never leak into a pooled connection's next,
 unrelated request.
+
+## Which user is making this request — the actual trace, step by step
+
+`db.current_user.get_current_user_id` is a **name**, not really a
+function meant to run — its own body just raises an error
+unconditionally. Nothing in the real, running app ever actually executes
+that body. Concretely, here's what happens for one real request — say,
+Bob (a real invited user) loads the dashboard, which calls
+`GET /api/overview`:
+
+1. The endpoint declares it needs two things, both *by name*, not by
+   calling anything directly:
+   ```python
+   def get_overview(
+       session: Annotated[Session, Depends(get_db)],
+       user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+       ...
+   ```
+2. To build `session`, FastAPI has to run `get_db` first — but `get_db`
+   *itself* asks for a `user_id`, via that same name:
+   ```python
+   def get_db(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Iterator[Session]:
+   ```
+   So before `get_db` can even start, FastAPI has to resolve
+   `get_current_user_id` first.
+3. Here's the swap that decides what actually runs — set once, when the
+   app starts (`trades/api/api.py`):
+   ```python
+   app.dependency_overrides[get_current_user_id] = resolve_current_user_id
+   ```
+   This says: "wherever anyone asks for `get_current_user_id`, hand them
+   `resolve_current_user_id` instead." That's the function that actually
+   runs — it lives in `trades/api/auth.py` (the one file in this repo
+   that's allowed to know Clerk exists at all). It checks Bob's login token
+   is real (its own signature, expiry, everything Clerk's SDK verifies),
+   pulls Bob's Clerk id (`user_...`) out of the now-trusted token, and
+   opens its own database session to look that id up in
+   `external_identities` (`db.external_identities.lookup_user_id`) — a
+   **real lookup, not a computed formula**. `external_identities` is the
+   one table in this schema deliberately excluded from the RLS policy
+   described above, precisely so this lookup can run *before* Bob's
+   internal id is known — the chicken-and-egg problem a `users`-table
+   lookup would otherwise hit (RLS on `users` would block the very
+   `WHERE ... = Bob's id` query trying to discover what Bob's id is). If
+   no row matches (a Clerk session for someone who was never provisioned —
+   see the webhook in `docs/server-setup/clerk-authentication.md`), the
+   request is rejected with 401 rather than falling back to anyone else's
+   id.
+4. That id flows back into `get_db`, which uses it to set
+   `app.current_user_id` (the RLS section above) before handing back a
+   working session.
+5. Only now does the actual endpoint body run, with `session` already
+   scoped to Bob and `user_id` set to Bob's own id.
+
+The placeholder body (the one that raises) exists so a *missing* swap
+fails loudly and immediately — every request erroring out — rather than
+silently resolving to nothing or to the wrong person. If step 3's
+override line were ever accidentally deleted, this design means the app
+breaks obviously, on the first request, instead of quietly misbehaving.
 
 ## Encryption: what's protected, and how
 

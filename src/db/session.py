@@ -7,10 +7,12 @@ makes concurrent requests safe against Postgres, not anything session-level.
 
 from __future__ import annotations
 
+import uuid  # noqa: TC003 — get_db's own Depends(get_current_user_id) needs uuid.UUID resolvable at runtime
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from fastapi import Depends
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -18,7 +20,6 @@ from db.current_user import get_current_user_id
 from db.settings import AppRuntimeDatabaseSettings
 
 if TYPE_CHECKING:
-    import uuid
     from collections.abc import Iterator
 
 
@@ -83,7 +84,7 @@ def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
         yield session
 
 
-def get_db() -> Iterator[Session]:
+def get_db(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Iterator[Session]:
     """FastAPI dependency yielding one `Session` per request.
 
     Sets the Postgres session variable every Row-Level Security policy
@@ -94,6 +95,18 @@ def get_db() -> Iterator[Session]:
     the moment this request's transaction ends, never leaking into a
     pooled connection's next, unrelated request.
 
+    `user_id` is resolved through `Depends(get_current_user_id)` rather
+    than called as a plain function specifically so it's a real parent
+    dependency of this one in FastAPI's own dependency graph — a *sibling*
+    dependency (e.g. one merely listed via a router's own `dependencies=`)
+    has no guaranteed order relative to this one, empirically confirmed
+    unreliable; a parent dependency's own sub-dependencies are always
+    resolved first. `trades.api.api` overrides `get_current_user_id`
+    itself (its own body always raises — see that function's docstring)
+    with the real Clerk-session resolver, so this never touches Clerk
+    directly and stays usable by any test that overrides `get_db` itself,
+    same as before.
+
     Callers are responsible for calling `session.commit()` themselves after
     a successful write — this dependency only guarantees the session is
     closed afterward, and rolled back automatically if the request raised.
@@ -102,5 +115,5 @@ def get_db() -> Iterator[Session]:
     ------
     Session
     """
-    with session_scope(get_current_user_id()) as session:
+    with session_scope(user_id) as session:
         yield session

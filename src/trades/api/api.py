@@ -31,9 +31,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from accounting.api import router as accounting_router
-from trades.api.auth import require_clerk_session
+from db.current_user import get_current_user_id
+from trades.api.auth import require_clerk_session, resolve_current_user_id
 from trades.api.dependencies import app
 from trades.api.routers import dashboard, market_data, settings, sync
+from trades.api.webhooks import router as webhooks_router
 
 # Every `/api/...` route across both modules requires a valid Clerk session
 # (see trades.api.auth) — applied here, at the one place that wires routers
@@ -45,6 +47,16 @@ app.include_router(dashboard.router, dependencies=_authenticated)
 app.include_router(settings.router, dependencies=_authenticated)
 app.include_router(market_data.router, dependencies=_authenticated)
 app.include_router(sync.router, dependencies=_authenticated)
+
+# Deliberately unauthenticated — see trades.api.webhooks' own docstring for
+# why (Clerk's own servers call this, never a signed-in browser).
+app.include_router(webhooks_router)
+
+# db.current_user.get_current_user_id's own body always raises (see its
+# docstring) — this override is what makes db.session.get_db actually
+# resolve the real, Clerk-session-derived user for every request, without
+# db or db.session ever importing anything Clerk-specific themselves.
+app.dependency_overrides[get_current_user_id] = resolve_current_user_id
 
 # Same layout in the Docker image (built by the frontend-builder stage into
 # web/dist/) and in a local dev checkout (built by hand via `npm run build`)
