@@ -131,6 +131,7 @@ def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.Da
         tag_ids_by_posting[posting_tag.posting_id].append(posting_tag.tag_id)
         tag_ids.add(posting_tag.tag_id)
     tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, tag_ids)
+    budget_natural_key_by_id = natural_keys_by_id(session, adb.Budget, user_id, [row.budget_id for row in rows])
 
     records = [
         {
@@ -144,7 +145,7 @@ def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.Da
             "subcategory_id": category_natural_key_by_id.get(row.subcategory_id)
             if row.subcategory_id is not None
             else None,
-            "budget_id": row.budget_id,
+            "budget_id": budget_natural_key_by_id.get(row.budget_id) if row.budget_id is not None else None,
             "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(row.id, [])],
             "description": row.description,
             "meta": row.meta,
@@ -204,7 +205,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = D
                 subcategory_id=derive_id(user_id, "categories", row["subcategory_id"])
                 if row["subcategory_id"] is not None
                 else None,
-                budget_id=row["budget_id"],
+                budget_id=derive_id(user_id, "budgets", row["budget_id"]) if row["budget_id"] is not None else None,
                 description=row["description"],
                 meta=row["meta"],
             )

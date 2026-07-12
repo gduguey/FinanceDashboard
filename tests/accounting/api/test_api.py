@@ -1422,6 +1422,19 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
     assert payroll["resolved_by_transfer_rule_id"] is None
 
+    # `counterparty_account_id` is now a real foreign key into `accounts` (see
+    # `accounting.db.automation.TransferRule`) — the account it names must already
+    # exist, unlike before when a rule could forward-reference one created later.
+    client.post(
+        "/api/accounting/accounts",
+        json={
+            "account_id": "employer:eqore",
+            "name": "EQORE",
+            "kind": "income_source",
+            "institution": "internal",
+            "currency": "USD",
+        },
+    )
     client.put(
         "/api/accounting/transfer-rules",
         json=[
@@ -1434,21 +1447,33 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
             }
         ],
     )
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "employer:eqore",
-            "name": "EQORE",
-            "kind": "income_source",
-            "institution": "internal",
-            "currency": "USD",
-        },
-    )
 
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
     assert updated_payroll["resolved_by_transfer_rule_id"] == "payroll-rule"
     assert updated_payroll["category_id"] == "income:salary"
+
+
+def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:
+    """`counterparty_account_id` is a real foreign key now (see `accounting.db.automation.TransferRule`) —
+    a rule naming an account that doesn't exist can no longer be silently accepted. No new API-level
+    validation was added for this (see CLAUDE.md/the task this implements), so it surfaces exactly like
+    every other foreign-key violation in this app: an unhandled `IntegrityError` propagating out of the
+    route as a 500, not a clean 4xx.
+    """
+    client = TestClient(trades_api.app, raise_server_exceptions=False)
+    response = client.put(
+        "/api/accounting/transfer-rules",
+        json=[
+            {
+                "rule_id": "payroll-rule",
+                "description_contains": "PAYROLL",
+                "counterparty_account_id": "does-not-exist",
+                "priority": 0,
+            }
+        ],
+    )
+    assert response.status_code == 500
 
 
 def test_put_categories_replaces_the_whole_tree(client) -> None:

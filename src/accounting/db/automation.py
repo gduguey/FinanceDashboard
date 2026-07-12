@@ -15,17 +15,14 @@ from db.base import Base
 class TransferRule(Base):
     """A user-maintained trigger/action pair for automatically resolving a posting's counterparty and category.
 
-    `account_id`/`counterparty_account_id` deliberately have no foreign key
-    to `accounts`, unlike `category_id`/`subcategory_id`: the UI supports
-    creating a rule that names a counterparty account (e.g.
-    `"employer:eqore"`) *before* that account exists yet, matched against
-    postings only once both the rule and the account are eventually there
-    (see `ledger.categorization.apply_rules`) — a real, intentional forward
-    reference that may span separate requests entirely, which even a
-    `DEFERRABLE` constraint can't accommodate (that only reorders checks
-    within one transaction, not across two). So these two stay bare
-    strings holding an account's `natural_key` directly, never a derived
-    FK column.
+    `account_id`/`counterparty_account_id` are real foreign keys into
+    `accounts`, exactly like `category_id`/`subcategory_id` — a rule can
+    only ever name an account (real or virtual) that already exists.
+    Creating a rule for a counterparty that doesn't exist yet requires
+    creating that account first (see `Account`), the same way a rule's
+    category must already exist; there is no forward-reference case left
+    to accommodate (see migration that introduced this constraint for the
+    rationale behind dropping the old, unenforced string columns).
     """
 
     __tablename__ = "transfer_rules"
@@ -38,14 +35,18 @@ class TransferRule(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     description_contains: Mapped[str]
-    account_id: Mapped[str | None] = mapped_column(default=None)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"), default=None
+    )
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
     subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    counterparty_account_id: Mapped[str | None] = mapped_column(default=None)
+    counterparty_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"), default=None
+    )
     priority: Mapped[int] = mapped_column(default=0)
     description: Mapped[str] = mapped_column(default="")
     active: Mapped[bool] = mapped_column(default=True)
