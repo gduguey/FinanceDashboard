@@ -111,6 +111,28 @@ def test_goals_summary_reports_balance_and_unallocated(client) -> None:
     assert summary["unallocated"] == pytest.approx(2500.0)
 
 
+def test_put_goal_contributions_referencing_a_nonexistent_goal_fails() -> None:
+    """`goal_id` is a real foreign key now (see `accounting.db.goals.GoalContribution`) — a contribution
+    naming a goal that doesn't exist can no longer be silently accepted. No new API-level validation was
+    added for this, so it surfaces exactly like every other foreign-key violation in this app: an
+    unhandled `IntegrityError` propagating out of the route as a 500, not a clean 4xx.
+    """
+    client = TestClient(trades_api.app, raise_server_exceptions=False)
+    response = client.put(
+        "/api/accounting/goal-contributions",
+        json={
+            "c1": {
+                "contribution_id": "c1",
+                "goal_id": "does-not-exist",
+                "date": "2026-06-10T00:00:00",
+                "amount": 500.0,
+                "currency": "USD",
+            }
+        },
+    )
+    assert response.status_code == 500
+
+
 def test_goals_summary_converts_into_the_requested_display_currency(client, monkeypatch) -> None:
     monkeypatch.setattr(
         exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _fake_rate_history()
@@ -252,6 +274,7 @@ def test_run_recurring_additions_stops_after_the_end_date(client) -> None:
 
 
 def test_put_recurring_additions_still_accepts_the_legacy_schedule_day_of_month(client) -> None:
+    _create_goal(client)
     response = client.put(
         "/api/accounting/recurring-additions",
         json=[

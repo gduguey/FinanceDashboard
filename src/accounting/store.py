@@ -511,6 +511,10 @@ def _category_id(user_id: uuid.UUID, category_id: str | None) -> uuid.UUID | Non
     return derive_id(user_id, "categories", category_id) if category_id is not None else None
 
 
+def _goal_id(user_id: uuid.UUID, goal_id: str) -> uuid.UUID:
+    return derive_id(user_id, "goals", goal_id)
+
+
 def _tag_id(user_id: uuid.UUID, tag_id: str) -> uuid.UUID:
     return derive_id(user_id, "tags", tag_id)
 
@@ -551,14 +555,20 @@ def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.
     )
 
 
-def _rule_from_row(row: adb.TransferRule, category_natural_key_by_id: dict[uuid.UUID, str]) -> TransferRule:
+def _rule_from_row(
+    row: adb.TransferRule,
+    account_natural_key_by_id: dict[uuid.UUID, str],
+    category_natural_key_by_id: dict[uuid.UUID, str],
+) -> TransferRule:
     return TransferRule(
         rule_id=row.natural_key,
         description_contains=row.description_contains,
-        account_id=row.account_id,
+        account_id=account_natural_key_by_id.get(row.account_id) if row.account_id is not None else None,
         category_id=category_natural_key_by_id.get(row.category_id) if row.category_id is not None else None,
         subcategory_id=category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None,
-        counterparty_account_id=row.counterparty_account_id,
+        counterparty_account_id=account_natural_key_by_id.get(row.counterparty_account_id)
+        if row.counterparty_account_id is not None
+        else None,
         priority=row.priority,
         description=row.description,
         active=row.active,
@@ -652,7 +662,7 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
         for row in session.query(adb.Tag).filter_by(user_id=user_id)
     }
     rules = [
-        _rule_from_row(row, category_natural_key_by_id)
+        _rule_from_row(row, account_natural_key_by_id, category_natural_key_by_id)
         for row in session.query(adb.TransferRule).filter_by(user_id=user_id)
     ]
     category_patterns = {
@@ -763,6 +773,8 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
         )
         for row in merge_rows
     }
+    goal_rows = list(session.query(adb.Goal).filter_by(user_id=user_id))
+    goal_natural_key_by_id = {row.id: row.natural_key for row in goal_rows}
     goals = {
         row.natural_key: Goal(
             goal_id=row.natural_key,
@@ -773,12 +785,12 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
             color=row.color,
             created_at=row.created_at,
         )
-        for row in session.query(adb.Goal).filter_by(user_id=user_id)
+        for row in goal_rows
     }
     goal_contributions = {
         row.natural_key: GoalContribution(
             contribution_id=row.natural_key,
-            goal_id=row.goal_id,
+            goal_id=goal_natural_key_by_id[row.goal_id],
             date=row.date,
             amount=row.amount,
             currency=row.currency,  # type: ignore[arg-type]
@@ -794,7 +806,7 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
     recurring_additions = [
         RecurringAddition(
             addition_id=row.natural_key,
-            goal_id=row.goal_id,
+            goal_id=goal_natural_key_by_id[row.goal_id],
             start_date=row.start_date,
             frequency=row.frequency,  # type: ignore[arg-type]
             end_date=row.end_date,
@@ -806,7 +818,7 @@ def load_store(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> Accoun
         for row in session.query(adb.RecurringAddition).filter_by(user_id=user_id)
     ]
     withdrawal_priorities = [
-        WithdrawalPriorityEntry(goal_id=row.goal_id, priority=row.priority)
+        WithdrawalPriorityEntry(goal_id=goal_natural_key_by_id[row.goal_id], priority=row.priority)
         for row in session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id)
     ]
     dismissed_suggestions = {
@@ -1075,10 +1087,12 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
             user_id=user_id,
             natural_key=rule.rule_id,
             description_contains=rule.description_contains,
-            account_id=rule.account_id,
+            account_id=_account_id(user_id, rule.account_id) if rule.account_id is not None else None,
             category_id=_category_id(user_id, rule.category_id),
             subcategory_id=_category_id(user_id, rule.subcategory_id),
-            counterparty_account_id=rule.counterparty_account_id,
+            counterparty_account_id=_account_id(user_id, rule.counterparty_account_id)
+            if rule.counterparty_account_id is not None
+            else None,
             priority=rule.priority,
             description=rule.description,
             active=rule.active,
@@ -1155,7 +1169,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
         adb.WithdrawalPriorityEntry(
             id=derive_id(user_id, "withdrawal_priority_entries", entry.goal_id),
             user_id=user_id,
-            goal_id=entry.goal_id,
+            goal_id=_goal_id(user_id, entry.goal_id),
             priority=entry.priority,
         )
         for entry in store.withdrawal_priorities
@@ -1165,7 +1179,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
             id=derive_id(user_id, "recurring_additions", addition.addition_id),
             user_id=user_id,
             natural_key=addition.addition_id,
-            goal_id=addition.goal_id,
+            goal_id=_goal_id(user_id, addition.goal_id),
             start_date=addition.start_date,
             frequency=addition.frequency,
             end_date=addition.end_date,
@@ -1181,7 +1195,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID = DE
             id=derive_id(user_id, "goal_contributions", contribution.contribution_id),
             user_id=user_id,
             natural_key=contribution.contribution_id,
-            goal_id=contribution.goal_id,
+            goal_id=_goal_id(user_id, contribution.goal_id),
             date=contribution.date,
             amount=contribution.amount,
             currency=contribution.currency,
