@@ -5,6 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { AccountingPage } from '@/pages/AccountingPage'
 import { BudgetPage } from '@/pages/BudgetPage'
 import { GoalsPage } from '@/pages/GoalsPage'
+import { GuidePage } from '@/pages/GuidePage'
 import { ImportPage } from '@/pages/ImportPage'
 import { InvestmentsPage } from '@/pages/InvestmentsPage'
 import { NetWorthPage } from '@/pages/NetWorthPage'
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/goals" element={<GoalsPage />} />
             <Route path="/import" element={<ImportPage />} />
             <Route path="/simulator" element={<SimulatorPage />} />
+            <Route path="/guide" element={<GuidePage />} />
           </Routes>
         </div>
       </TooltipProvider>

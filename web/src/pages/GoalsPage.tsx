@@ -1,20 +1,22 @@
-import { useEffect, useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MonthSelect } from '@/components/accounting/MonthSelect'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
 import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
 import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
-import { ManualContributionForm } from '@/components/goals/ManualContributionForm'
 import { ContributionLedgerTable } from '@/components/goals/ContributionLedgerTable'
 import { colorForIndex } from '@/lib/colors'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrency, formatDate } from '@/lib/format'
 import { usePersistedState } from '@/hooks/usePersistedState'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
   useGoalsSummary,
@@ -39,6 +41,7 @@ function monthBounds(month: string): { start: string; end: string; dayBeforeStar
 
 function GoalListSection({ goals }: { goals: Record<string, import('@/types/accounting').Goal> }) {
   const setGoals = useSetGoals()
+  const [expandedGoalId, setExpandedGoalId] = useState<string | null>(null)
   const goalList = Object.values(goals).sort((a, b) => a.created_at.localeCompare(b.created_at))
 
   function update(goalId: string, patch: Partial<import('@/types/accounting').Goal>) {
@@ -47,6 +50,7 @@ function GoalListSection({ goals }: { goals: Record<string, import('@/types/acco
   function remove(goalId: string) {
     const { [goalId]: _removed, ...rest } = goals
     setGoals.mutate(rest)
+    if (expandedGoalId === goalId) setExpandedGoalId(null)
   }
   function add() {
     const goalId = `goal:${Date.now()}`
@@ -64,54 +68,121 @@ function GoalListSection({ goals }: { goals: Record<string, import('@/types/acco
         created_at: new Date().toISOString(),
       },
     })
+    setExpandedGoalId(goalId)
   }
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Goals</CardTitle>
+        <CardAction>
+          <Button variant="outline" size="icon" onClick={add} title="Add goal">
+            <Plus className="size-4" />
+          </Button>
+        </CardAction>
       </CardHeader>
-      <CardContent className="space-y-2">
-        {goalList.map((goal) => (
-          <div key={goal.goal_id} className="flex flex-wrap items-center gap-2 rounded-md border p-2">
-            <span className="size-3 shrink-0 rounded-full" style={{ backgroundColor: goal.color }} />
-            <Input
-              className="h-7 w-40 text-sm"
-              defaultValue={goal.name}
-              onBlur={(event) => event.target.value !== goal.name && update(goal.goal_id, { name: event.target.value })}
-            />
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              Target
-              <Input
-                type="number"
-                className="h-7 w-28 text-xs"
-                defaultValue={goal.target_amount}
-                onBlur={(event) => update(goal.goal_id, { target_amount: Number(event.target.value) })}
-              />
-            </label>
-            <label className="flex items-center gap-1 text-xs text-muted-foreground">
-              By
-              <Input
-                type="date"
-                className="h-7 w-36 text-xs"
-                defaultValue={goal.target_date.slice(0, 10)}
-                onBlur={(event) => update(goal.goal_id, { target_date: new Date(event.target.value).toISOString() })}
-              />
-            </label>
-            <input
-              type="color"
-              className="h-7 w-8 shrink-0 cursor-pointer rounded border"
-              value={goal.color}
-              onChange={(event) => update(goal.goal_id, { color: event.target.value })}
-            />
-            <Button variant="ghost" size="icon" className="ml-auto" onClick={() => remove(goal.goal_id)}>
-              <Trash2 className="size-3.5 text-muted-foreground" />
-            </Button>
-          </div>
-        ))}
-        <Button variant="outline" size="sm" onClick={add}>
-          + Add goal
-        </Button>
+      <CardContent>
+        {goalList.length === 0 ? (
+          <p className="py-4 text-center text-sm text-muted-foreground">No goals yet — add one to get started.</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-6" />
+                <TableHead>Name</TableHead>
+                <TableHead className="text-right">Target</TableHead>
+                <TableHead>By</TableHead>
+                <TableHead className="w-10" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {goalList.map((goal) => {
+                const expanded = expandedGoalId === goal.goal_id
+                return (
+                  <Fragment key={goal.goal_id}>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => setExpandedGoalId(expanded ? null : goal.goal_id)}
+                    >
+                      <TableCell>
+                        {expanded ? (
+                          <ChevronDown className="size-3.5 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="size-3.5 text-muted-foreground" />
+                        )}
+                      </TableCell>
+                      <TableCell className="font-medium">
+                        <span className="flex items-center gap-2">
+                          <span className="size-3 shrink-0 rounded-full" style={{ backgroundColor: goal.color }} />
+                          {goal.name}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(goal.target_amount, goal.target_currency)}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">{formatDate(goal.target_date)}</TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            remove(goal.goal_id)
+                          }}
+                        >
+                          <Trash2 className="size-3.5 text-muted-foreground" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                    {expanded && (
+                      <TableRow className="bg-muted/30 hover:bg-muted/30">
+                        <TableCell colSpan={5}>
+                          <div className="flex flex-wrap items-end gap-3 py-1" onClick={(event) => event.stopPropagation()}>
+                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              Name
+                              <Input
+                                className="h-7 w-40 text-sm"
+                                defaultValue={goal.name}
+                                onBlur={(event) => event.target.value !== goal.name && update(goal.goal_id, { name: event.target.value })}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              Target amount
+                              <Input
+                                type="number"
+                                className="h-7 w-28 text-xs"
+                                defaultValue={goal.target_amount}
+                                onBlur={(event) => update(goal.goal_id, { target_amount: Number(event.target.value) })}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              Target date
+                              <Input
+                                type="date"
+                                className="h-7 w-36 text-xs"
+                                defaultValue={goal.target_date.slice(0, 10)}
+                                onBlur={(event) => update(goal.goal_id, { target_date: new Date(event.target.value).toISOString() })}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              Color
+                              <input
+                                type="color"
+                                className="h-7 w-12 cursor-pointer rounded border"
+                                value={goal.color}
+                                onChange={(event) => update(goal.goal_id, { color: event.target.value })}
+                              />
+                            </label>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </TableBody>
+          </Table>
+        )}
       </CardContent>
     </Card>
   )
@@ -119,8 +190,10 @@ function GoalListSection({ goals }: { goals: Record<string, import('@/types/acco
 
 export function GoalsPage() {
   const { data: store, isLoading } = useAccountingStore()
+  const { displayCurrency } = useDisplayCurrency()
   const [mode, setMode] = usePersistedState<ViewMode>('accounting.goals.view-mode', 'all_time')
   const [month, setMonth] = usePersistedState('accounting.goals.month', currentMonth())
+  const [pageTab, setPageTab] = usePersistedState('accounting.goals.page-tab', 'overview')
   const [selectedGoalId, setSelectedGoalId] = useState<string | null>(null)
   const runRecurringAdditions = useRunRecurringAdditions()
   const runWithdrawalAutomation = useRunWithdrawalAutomation()
@@ -136,9 +209,9 @@ export function GoalsPage() {
   }, [])
 
   const { end, dayBeforeStart } = monthBounds(month)
-  const allTimeSummary = useGoalsSummary()
-  const monthEndSummary = useGoalsSummary(end)
-  const monthStartSummary = useGoalsSummary(dayBeforeStart)
+  const allTimeSummary = useGoalsSummary(undefined, displayCurrency)
+  const monthEndSummary = useGoalsSummary(end, displayCurrency)
+  const monthStartSummary = useGoalsSummary(dayBeforeStart, displayCurrency)
 
   if (isLoading || !store) {
     return (
@@ -189,71 +262,80 @@ export function GoalsPage() {
         <div className="flex items-center gap-3">
           {unallocatedNow < 0 && (
             <span className="rounded-md bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive">
-              Unallocated is negative ({formatCurrency(unallocatedNow, 'USD')}) — goals couldn't fully cover a shortfall
+              Unallocated is negative ({formatCurrency(unallocatedNow, displayCurrency)}) — goals couldn't fully cover a shortfall
             </span>
           )}
           <span className="text-sm text-muted-foreground">
-            Unallocated: <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, 'USD')}</span>
+            Unallocated: <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
           </span>
+          <DisplayCurrencyToggle />
         </div>
       </div>
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
-        <GoalListSection goals={store.goals} />
+        <Tabs value={pageTab} onValueChange={setPageTab}>
+          <TabsList>
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="automations">Automations</TabsTrigger>
+          </TabsList>
+          <TabsContent value="overview" className="space-y-6">
+            <GoalListSection goals={store.goals} />
 
-        <div className="flex items-center gap-3">
-          <Select value={mode} onValueChange={(value) => value && setMode(value as ViewMode)}>
-            <SelectTrigger size="sm" className="min-w-40">
-              <SelectValue items={{ all_time: 'All-time (balances)', per_month: 'Per-month (flow)' }} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all_time">All-time (balances)</SelectItem>
-              <SelectItem value="per_month">Per-month (flow)</SelectItem>
-            </SelectContent>
-          </Select>
-          {mode === 'per_month' && (
-            <MonthSelect
-              value={month}
-              onChange={setMonth}
-              months={[...new Set(contributionList.map((c) => c.date.slice(0, 7)))].sort().reverse()}
+            <div className="flex items-center gap-3">
+              <Select value={mode} onValueChange={(value) => value && setMode(value as ViewMode)}>
+                <SelectTrigger size="sm" className="min-w-40">
+                  <SelectValue items={{ all_time: 'All-time (balances)', per_month: 'Per-month (flow)' }} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all_time">All-time (balances)</SelectItem>
+                  <SelectItem value="per_month">Per-month (flow)</SelectItem>
+                </SelectContent>
+              </Select>
+              {mode === 'per_month' && (
+                <MonthSelect
+                  value={month}
+                  onChange={setMonth}
+                  months={[...new Set(contributionList.map((c) => c.date.slice(0, 7)))].sort().reverse()}
+                />
+              )}
+            </div>
+
+            <GoalsOverviewCharts
+              goals={goalList}
+              balances={mode === 'all_time' ? stockBalances : flowBalances}
+              unallocated={mode === 'all_time' ? stockUnallocated : flowUnallocated}
+              targets={mode === 'all_time' ? allTimeTargets : monthlyLinearTargets}
+              mode={mode}
+              displayCurrency={displayCurrency}
             />
-          )}
-        </div>
 
-        <GoalsOverviewCharts
-          goals={goalList}
-          balances={mode === 'all_time' ? stockBalances : flowBalances}
-          unallocated={mode === 'all_time' ? stockUnallocated : flowUnallocated}
-          targets={mode === 'all_time' ? allTimeTargets : monthlyLinearTargets}
-          mode={mode}
-        />
+            {goalList.length > 0 && (
+              <Tabs value={selectedGoal?.goal_id} onValueChange={setSelectedGoalId}>
+                <TabsList>
+                  {goalList.map((goal) => (
+                    <TabsTrigger key={goal.goal_id} value={goal.goal_id}>
+                      {goal.name}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+                {goalList.map((goal) => (
+                  <TabsContent key={goal.goal_id} value={goal.goal_id}>
+                    <GoalDetailChart goal={goal} contributions={contributionList} />
+                  </TabsContent>
+                ))}
+              </Tabs>
+            )}
 
-        {goalList.length > 0 && (
-          <Tabs value={selectedGoal?.goal_id} onValueChange={setSelectedGoalId}>
-            <TabsList>
-              {goalList.map((goal) => (
-                <TabsTrigger key={goal.goal_id} value={goal.goal_id}>
-                  {goal.name}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            {goalList.map((goal) => (
-              <TabsContent key={goal.goal_id} value={goal.goal_id}>
-                <GoalDetailChart goal={goal} contributions={contributionList} />
-              </TabsContent>
-            ))}
-          </Tabs>
-        )}
-
-        <ManualContributionForm goals={store.goals} contributions={store.goal_contributions} />
-
-        <GoalAutomationsPanel
-          goals={store.goals}
-          recurringAdditions={store.recurring_additions}
-          withdrawalPriorities={store.withdrawal_priorities}
-        />
-
-        <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />
+            <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />
+          </TabsContent>
+          <TabsContent value="automations">
+            <GoalAutomationsPanel
+              goals={store.goals}
+              recurringAdditions={store.recurring_additions}
+              withdrawalPriorities={store.withdrawal_priorities}
+            />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )

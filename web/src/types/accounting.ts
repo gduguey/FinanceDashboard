@@ -44,7 +44,7 @@ export interface Tag {
   name: string
 }
 
-export interface Rule {
+export interface TransferRule {
   rule_id: string
   description_contains: string
   account_id: string | null
@@ -117,11 +117,14 @@ export interface GoalContribution {
 }
 
 export type RecurringAdditionMode = 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+export type RecurringAdditionFrequency = 'daily' | 'weekly' | 'biweekly' | 'monthly'
 
 export interface RecurringAddition {
   addition_id: string
   goal_id: string
-  schedule_day_of_month: number
+  start_date: string
+  frequency: RecurringAdditionFrequency
+  end_date: string | null
   mode: RecurringAdditionMode
   value: number
   currency: CurrencyCode
@@ -185,7 +188,7 @@ export interface Posting {
   meta: Record<string, string>
   pending_source: PendingSuggestionSource | null
   pending_selected: boolean
-  resolved_by_rule_id: string | null
+  resolved_by_transfer_rule_id: string | null
 }
 
 export interface CategoryPattern {
@@ -263,7 +266,7 @@ export interface AccountingStore {
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
-  rules: Rule[]
+  transfer_rules: TransferRule[]
   category_patterns: Record<string, CategoryPattern>
   other_assets: OtherAsset[]
   opening_balances: Record<string, OpeningBalance>
@@ -306,12 +309,6 @@ export interface DetectedAccount {
 
 export interface ImportResult {
   account_id: string
-  new_posting_count: number
-  total_posting_count: number
-}
-
-export interface SofiStatementImportResult {
-  account_ids: string[]
   new_posting_count: number
   total_posting_count: number
 }

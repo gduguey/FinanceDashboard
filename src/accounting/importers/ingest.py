@@ -17,8 +17,7 @@ import polars as pl
 
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
-from accounting.importers.sofi.checking import standardize_sofi_checking
-from accounting.importers.sofi.savings import standardize_sofi_savings
+from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
 from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_pdf
 from accounting.models import Posting
 from accounting.store import load_store, save_store
@@ -37,7 +36,7 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("SoFi", "checking"): standardize_sofi_checking,
     ("SoFi", "savings"): standardize_sofi_savings,
     # A vault's raw CSV is structurally identical to the newer SoFi
-    # savings/checking export (see `importers.sofi.csv_v2`) — registered
+    # savings/checking export (see `importers.sofi.csv`) — registered
     # separately only because `account_kind` for a vault account is
     # itself `"vault"`, not `"savings"`.
     ("SoFi", "vault"): standardize_sofi_savings,
@@ -214,52 +213,6 @@ def ingest_csv(
     )
 
 
-@dataclass(frozen=True)
-class SofiStatementIngestResult:
-    """What happened when one SoFi monthly statement PDF was ingested."""
-
-    account_ids: list[str]
-    new_posting_count: int
-    total_posting_count: int
-
-
-def ingest_sofi_statement_pdf(pdf_bytes: bytes, config: AccountingConfig) -> SofiStatementIngestResult:
-    """Archive one uploaded SoFi statement PDF, standardize it, and merge the result into the ledger.
-
-    Unlike `ingest_csv`, one PDF describes several accounts at once
-    (checking, savings, every vault) — every account it names is
-    registered or refreshed via `_merge_discovered_accounts` as part of
-    this call, rather than by the caller beforehand.
-
-    Parameters
-    ----------
-    pdf_bytes
-        The raw PDF file contents, exactly as uploaded.
-    config
-        Application configuration; `config.raw_statement_dir` and `config.ledger_csv_path` are used.
-
-    Returns
-    -------
-    SofiStatementIngestResult
-        Every account id the statement described, and how many postings were newly added.
-    """
-    path = _raw_statement_path("SoFi", _SOFI_STATEMENT_PDF_ACCOUNT_KIND, config, suffix="pdf")
-    path.write_bytes(pdf_bytes)
-
-    new_postings, discovered_accounts = standardize_sofi_statement_pdf(pdf_bytes)
-    _merge_discovered_accounts(discovered_accounts, config)
-
-    existing = load_ledger(config)
-    merged = _merge_ledger(existing, new_postings)
-    _write_ledger(merged, config)
-
-    return SofiStatementIngestResult(
-        account_ids=sorted(discovered_accounts),
-        new_posting_count=len(merged) - len(existing),
-        total_posting_count=len(merged),
-    )
-
-
 def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
     """Recompute the whole ledger from every archived raw CSV.
 
@@ -303,6 +256,12 @@ def rebuild_from_raw_statements(config: AccountingConfig) -> pl.DataFrame:
             raise UnsupportedImportError(message)
         frames.append(standardizer(path.read_text(encoding="utf-8"), account_id))
 
+    # New statement-PDF imports are retired (SoFi CSV now covers checking,
+    # savings, and vaults — see `importers.sofi.csv`) — there is no upload
+    # path left that writes into `pdf_paths` going forward. But any PDF
+    # archived by a past import still needs to be re-derived here, or a
+    # rebuild would silently drop those postings and orphan their
+    # categorization (see `models.ManualOverride`, keyed by posting_id).
     discovered_accounts: dict[str, Account] = {}
     for path in pdf_paths:
         pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(path.read_bytes())

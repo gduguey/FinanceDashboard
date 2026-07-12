@@ -12,16 +12,18 @@ import { CategorySelect, SubcategorySelect } from '@/components/accounting/Categ
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import {
   useAiSuggestCategory,
   useDeletePostingSplit,
   usePatternSuggestCategory,
+  usePatternSuggestCategoryBulk,
   useSetPostingOverride,
   useValidatePending,
 } from '@/hooks/useAccountingData'
-import type { Account, Category, ManualOverride, Posting, Rule, Tag } from '@/types/accounting'
+import type { Account, Category, ManualOverride, Posting, Tag, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
 // real one — a table row with `p-2 text-sm` cells lands around here.
@@ -54,7 +56,16 @@ function categoriesWithSubcategories(categories: Record<string, Category>): Set<
 // picked too — otherwise a row would leave "Needs categorizing" the
 // instant a category is chosen, before there's ever a chance to also pick
 // a subcategory for it.
-function needsCategorizing(posting: Posting, withSubcategories: Set<string>): boolean {
+//
+// A posting that isn't a real income/expense leg (i.e. an internal
+// transfer between two of your own accounts) is never categorizable at
+// all, so it never needs categorizing. And a posting still carrying an
+// unconfirmed AI/pattern suggestion (`pending_source !== null`) stays in
+// "Needs categorizing" even though it already has a category/subcategory
+// filled in — it isn't truly categorized until the suggestion is validated.
+function needsCategorizing(posting: Posting, withSubcategories: Set<string>, isRealIncomeExpense: boolean): boolean {
+  if (!isRealIncomeExpense) return false
+  if (posting.pending_source !== null) return true
   if (posting.category_id === null) return true
   return withSubcategories.has(posting.category_id) && posting.subcategory_id === null
 }
@@ -163,6 +174,7 @@ interface TransactionRowProps {
   posting: Posting
   accountName: string
   resolvedByRuleLabel: string | null
+  isRealIncomeExpense: boolean
   categories: Record<string, Category>
   tags: Record<string, Tag>
   withSubcategories: Set<string>
@@ -187,6 +199,7 @@ const TransactionRow = memo(function TransactionRow({
   posting,
   accountName,
   resolvedByRuleLabel,
+  isRealIncomeExpense,
   categories,
   tags,
   withSubcategories,
@@ -228,34 +241,44 @@ const TransactionRow = memo(function TransactionRow({
       <TableCell className="max-w-xs truncate">{posting.description}</TableCell>
       <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, posting.currency)}</TableCell>
       <TableCell>
-        <CategorySelect
-          categories={categories}
-          classification={posting.amount >= 0 ? 'income' : 'expense'}
-          value={posting.category_id}
-          onChange={(categoryId) =>
-            // Changing category always clears subcategory — it's a child
-            // of the OLD category, never carried over. A category with
-            // subcategories stays in "Needs categorizing" until one is
-            // picked too (see `needsCategorizing`), so this row
-            // deliberately doesn't disappear yet.
-            onOverride(posting.posting_id, { category_id: categoryId, subcategory_id: null })
-          }
-        />
+        {isRealIncomeExpense ? (
+          <CategorySelect
+            categories={categories}
+            classification={posting.amount >= 0 ? 'income' : 'expense'}
+            value={posting.category_id}
+            onChange={(categoryId) =>
+              // Changing category always clears subcategory — it's a child
+              // of the OLD category, never carried over. A category with
+              // subcategories stays in "Needs categorizing" until one is
+              // picked too (see `needsCategorizing`), so this row
+              // deliberately doesn't disappear yet.
+              onOverride(posting.posting_id, { category_id: categoryId, subcategory_id: null })
+            }
+          />
+        ) : (
+          <span className="text-xs text-muted-foreground" title="A transfer between two of your own accounts is never categorized">
+            Transfer
+          </span>
+        )}
       </TableCell>
       <TableCell>
-        <SubcategorySelect
-          categories={categories}
-          categoryId={posting.category_id}
-          value={posting.subcategory_id}
-          onChange={(subcategoryId) => onOverride(posting.posting_id, { subcategory_id: subcategoryId })}
-        />
+        {isRealIncomeExpense ? (
+          <SubcategorySelect
+            categories={categories}
+            categoryId={posting.category_id}
+            value={posting.subcategory_id}
+            onChange={(subcategoryId) => onOverride(posting.posting_id, { subcategory_id: subcategoryId })}
+          />
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
       </TableCell>
       <TableCell>
         <TagsCell tagIds={posting.tag_ids} tags={tags} onChange={(tagIds) => onOverride(posting.posting_id, { tag_ids: tagIds })} />
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-0.5">
-          {needsCategorizing(posting, withSubcategories) && (
+          {needsCategorizing(posting, withSubcategories, isRealIncomeExpense) && (
             <Button
               variant="ghost"
               size="icon"
@@ -296,7 +319,7 @@ function TransactionsTable({
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
-  rules: Rule[]
+  rules: TransferRule[]
   onlyUncategorized: boolean
 }) {
   const [filters, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
@@ -305,11 +328,11 @@ function TransactionsTable({
   const [bulkSuggesting, setBulkSuggesting] = useState(false)
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
   const [bulkPatternSuggesting, setBulkPatternSuggesting] = useState(false)
-  const [bulkPatternProgress, setBulkPatternProgress] = useState<{ done: number; total: number } | null>(null)
   const setOverride = useSetPostingOverride()
   const deleteSplit = useDeletePostingSplit()
   const aiSuggest = useAiSuggestCategory()
   const patternSuggest = usePatternSuggestCategory()
+  const patternSuggestBulk = usePatternSuggestCategoryBulk()
   const validatePending = useValidatePending()
 
   const runAiSuggest = useCallback(
@@ -346,35 +369,16 @@ function TransactionsTable({
     setBulkProgress(null)
   }
 
-  const runPatternSuggest = useCallback(
-    async (posting: Posting) => {
-      const postingId = posting.posting_id
-      try {
-        const result = await patternSuggest.mutateAsync({ postingId, lockCategoryId: posting.category_id })
-        setSuggestMessages((prev) => {
-          if (!result.applied) return { ...prev, [postingId]: 'No matching pattern' }
-          const { [postingId]: _removed, ...rest } = prev
-          return rest
-        })
-      } catch (error) {
-        setSuggestMessages((prev) => ({
-          ...prev,
-          [postingId]: error instanceof Error ? error.message : 'Pattern suggestion failed',
-        }))
-      }
-    },
-    [patternSuggest],
-  )
-
+  // The backend matches every target posting in a single vectorized pass
+  // (see `ledger.patterns.match_patterns_bulk`) — one request regardless
+  // of how many postings are targeted, instead of one request per posting.
   async function runBulkPatternSuggest(targets: Posting[]) {
     setBulkPatternSuggesting(true)
-    setBulkPatternProgress({ done: 0, total: targets.length })
-    for (const [index, posting] of targets.entries()) {
-      await runPatternSuggest(posting)
-      setBulkPatternProgress({ done: index + 1, total: targets.length })
+    try {
+      await patternSuggestBulk.mutateAsync(targets.map((posting) => posting.posting_id))
+    } finally {
+      setBulkPatternSuggesting(false)
     }
-    setBulkPatternSuggesting(false)
-    setBulkPatternProgress(null)
   }
 
   const handleOverride = useCallback(
@@ -441,11 +445,15 @@ function TransactionsTable({
     () => new Map(rules.map((rule) => [rule.rule_id, rule.description || rule.description_contains])),
     [rules],
   )
+  // Computed from the full, unscoped `postings` prop (not `filtered`/`sorted`)
+  // — an account filter could otherwise split a transfer pair apart and make
+  // sibling-detection wrong. See `postingClassification.ts`.
+  const realIds = useMemo(() => realIncomeExpensePostingIds(postings, accounts), [postings, accounts])
 
   const filtered = useMemo(() => {
     return postings
       .filter((posting) => !PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id))
-      .filter((posting) => !onlyUncategorized || needsCategorizing(posting, withSubcategories))
+      .filter((posting) => !onlyUncategorized || needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id)))
       .filter((posting) => posting.description.toLowerCase().includes(filters.search.toLowerCase()))
       .filter((posting) => matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude))
       .filter((posting) => {
@@ -468,12 +476,12 @@ function TransactionsTable({
           filters.pendingFilter === CONFIRMED ? posting.pending_source === null : posting.pending_source === filters.pendingFilter
         return matchesFilter(actual, filters.pendingFilter, filters.pendingExclude)
       })
-  }, [postings, filters, onlyUncategorized, withSubcategories])
+  }, [postings, filters, onlyUncategorized, withSubcategories, realIds])
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'posted_at')
   const bulkTargets = useMemo(
-    () => filtered.filter((posting) => needsCategorizing(posting, withSubcategories)),
-    [filtered, withSubcategories],
+    () => filtered.filter((posting) => needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id))),
+    [filtered, withSubcategories, realIds],
   )
   const pendingInView = useMemo(() => sorted.filter((posting) => posting.pending_source !== null), [sorted])
   const allPendingSelected = pendingInView.length > 0 && pendingInView.every((posting) => posting.pending_selected)
@@ -523,9 +531,7 @@ function TransactionsTable({
           {bulkTargets.length > 0 && (
             <Button variant="outline" size="sm" disabled={bulkPatternSuggesting} onClick={() => runBulkPatternSuggest(bulkTargets)}>
               <Sparkles className="size-3.5" />
-              {bulkPatternProgress
-                ? `Suggesting ${bulkPatternProgress.done}/${bulkPatternProgress.total}…`
-                : `Run pattern suggestions (${bulkTargets.length})`}
+              {bulkPatternSuggesting ? 'Matching patterns…' : `Run pattern suggestions (${bulkTargets.length})`}
             </Button>
           )}
           {pendingInView.length > 0 && (
@@ -661,8 +667,9 @@ function TransactionsTable({
                       posting={posting}
                       accountName={accounts[posting.account_id]?.name ?? posting.account_id}
                       resolvedByRuleLabel={
-                        posting.resolved_by_rule_id ? (ruleLabelById.get(posting.resolved_by_rule_id) ?? posting.resolved_by_rule_id) : null
+                        posting.resolved_by_transfer_rule_id ? (ruleLabelById.get(posting.resolved_by_transfer_rule_id) ?? posting.resolved_by_transfer_rule_id) : null
                       }
+                      isRealIncomeExpense={realIds.has(posting.posting_id)}
                       categories={categories}
                       tags={tags}
                       withSubcategories={withSubcategories}
@@ -702,11 +709,14 @@ export function TransactionsTab({
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
-  rules: Rule[]
+  rules: TransferRule[]
 }) {
   const withSubcategories = useMemo(() => categoriesWithSubcategories(categories), [categories])
+  const realIds = useMemo(() => realIncomeExpensePostingIds(postings, accounts), [postings, accounts])
   const needsCategorizingCount = postings.filter(
-    (posting) => !PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id) && needsCategorizing(posting, withSubcategories),
+    (posting) =>
+      !PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id) &&
+      needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id)),
   ).length
 
   return (

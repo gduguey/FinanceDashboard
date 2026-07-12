@@ -34,7 +34,7 @@ def test_get_store_seeds_default_categories_and_placeholder_accounts(client) -> 
     body = client.get("/api/accounting/store").json()
     assert "expense:food-drink" in body["categories"]
     assert "uncategorized:expense" in body["accounts"]
-    assert body["rules"] == []
+    assert body["transfer_rules"] == []
 
 
 def test_detect_returns_a_guess_for_a_known_shape(client) -> None:
@@ -583,6 +583,79 @@ def test_pattern_suggest_category_returns_unapplied_when_nothing_matches(client)
     assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
 
 
+def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_one_call(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    card_payment = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] < 0)
+
+    client.put(
+        "/api/accounting/category-patterns",
+        json={
+            "p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"},
+            "p2": {"pattern_id": "p2", "description_contains": "Chase card", "category_id": "expense:admin-fees"},
+        },
+    )
+
+    response = client.post(
+        "/api/accounting/postings/pattern-suggest-category/bulk",
+        json={"posting_ids": [payroll["posting_id"], card_payment["posting_id"]]},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"applied": 2}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    updated_card = next(p for p in updated if p["posting_id"] == card_payment["posting_id"])
+    assert updated_payroll["category_id"] == "income:salary"
+    assert updated_payroll["pending_source"] == "pattern"
+    assert updated_card["category_id"] == "expense:admin-fees"
+    assert updated_card["pending_source"] == "pattern"
+
+
+def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_disagrees(client) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    client.put(
+        f"/api/accounting/postings/{payroll['posting_id']}/override",
+        json={"category_id": "income:bonus"},
+    )
+
+    client.put(
+        "/api/accounting/category-patterns",
+        json={"p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"}},
+    )
+
+    response = client.post(
+        "/api/accounting/postings/pattern-suggest-category/bulk", json={"posting_ids": [payroll["posting_id"]]}
+    )
+    assert response.json() == {"applied": 0}
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
+    assert updated_payroll["category_id"] == "income:bonus"
+    assert updated_payroll["pending_source"] is None
+
+
 def test_put_category_patterns_persists_and_is_returned_by_store(client) -> None:
     response = client.put(
         "/api/accounting/category-patterns",
@@ -666,7 +739,7 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
         },
     )
     client.put(
-        "/api/accounting/rules",
+        "/api/accounting/transfer-rules",
         json=[
             {
                 "rule_id": "interactive-brokers-transfer",
@@ -781,10 +854,10 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
     )
     postings = client.get("/api/accounting/postings").json()
     payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
-    assert payroll["resolved_by_rule_id"] is None
+    assert payroll["resolved_by_transfer_rule_id"] is None
 
     client.put(
-        "/api/accounting/rules",
+        "/api/accounting/transfer-rules",
         json=[
             {
                 "rule_id": "payroll-rule",
@@ -808,7 +881,7 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
 
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
-    assert updated_payroll["resolved_by_rule_id"] == "payroll-rule"
+    assert updated_payroll["resolved_by_transfer_rule_id"] == "payroll-rule"
     assert updated_payroll["category_id"] == "income:salary"
 
 
@@ -1258,28 +1331,40 @@ def test_category_totals_buckets_uncategorized_payroll_as_income(client) -> None
     assert income_row["amount"] == pytest.approx(1500.0)
 
 
-def test_import_sofi_statement_pdf_registers_every_account_it_describes(client, monkeypatch) -> None:
-    statement_text = (
-        "Savings Account - 3680\n"
-        "DATE TYPE DESCRIPTION AMOUNT BALANCE\n"
-        "Apr 30, 2026 Interest Earned Interest earned $7.70 $7.70\n"
-        "Transaction ID: 50-1\n"
+def test_category_totals_excludes_unconfirmed_pending_suggestions(client, monkeypatch) -> None:
+    client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": "chase:checking:9579",
+            "account_name": "Chase Checking (...9579)",
+        },
     )
-    monkeypatch.setattr(
-        ingest_module,
-        "standardize_sofi_statement_pdf",
-        lambda _pdf_bytes: standardize_sofi_statement_text(statement_text),
-    )
-    response = client.post(
-        "/api/accounting/import/sofi-statement-pdf", files={"file": ("statement.pdf", b"%PDF-fake", "application/pdf")}
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["account_ids"] == ["sofi:savings:3680"]
-    assert body["new_posting_count"] == 2
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
 
-    store = client.get("/api/accounting/store").json()
-    assert store["accounts"]["sofi:savings:3680"]["meta"]["apy_pct"] == "0.0"
+    fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
+    monkeypatch.setattr(accounting_api, "_llm_providers", lambda: [_FakeLLMProvider(fake_response)])
+    client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
+
+    response = client.get(
+        "/api/accounting/income-statement/category-totals", params={"start": "2026-06-01", "end": "2026-06-30"}
+    )
+    totals = response.json()
+    assert all(row["category_id"] != "income:salary" for row in totals)
+    income_row = next(row for row in totals if row["classification"] == "income")
+    assert income_row["category_name"] == "Uncategorized"
+    assert income_row["amount"] == pytest.approx(1500.0)
+
+    client.post("/api/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]})
+    response = client.get(
+        "/api/accounting/income-statement/category-totals", params={"start": "2026-06-01", "end": "2026-06-30"}
+    )
+    totals = response.json()
+    salary_row = next(row for row in totals if row["category_id"] == "income:salary")
+    assert salary_row["amount"] == pytest.approx(1500.0)
 
 
 def test_get_simulator_projection_computes_compound_growth(client) -> None:
@@ -1324,9 +1409,13 @@ def test_interest_summary_reports_savings_interest_earned(client, monkeypatch) -
         "standardize_sofi_statement_pdf",
         lambda _pdf_bytes: standardize_sofi_statement_text(statement_text),
     )
-    client.post(
-        "/api/accounting/import/sofi-statement-pdf", files={"file": ("statement.pdf", b"%PDF-fake", "application/pdf")}
-    )
+    # New PDF imports are retired (see `importers.sofi.statement_pdf`'s
+    # docstring) — archive the raw PDF directly, the way an old import
+    # would have, and let a rebuild re-derive it instead.
+    pdf_dir = accounting_api.state.config.raw_statement_dir / "SoFi" / "statement_pdf"
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    (pdf_dir / "statement.pdf").write_bytes(b"%PDF-fake")
+    client.post("/api/accounting/rebuild")
     response = client.get("/api/accounting/interest-summary", params={"as_of": "2026-04-30"})
     assert response.status_code == 200
     rows = response.json()

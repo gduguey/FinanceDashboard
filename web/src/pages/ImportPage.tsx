@@ -6,13 +6,7 @@ import { AccountsManagementTable } from '@/components/accounting/AccountsManagem
 import { PaystubReconciliationCard } from '@/components/accounting/PaystubReconciliationCard'
 import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
 import { accountingApi } from '@/lib/accountingApi'
-import {
-  useAccountingStore,
-  useImportCsv,
-  useImportSofiStatementPdf,
-  usePostings,
-  useRebuildLedger,
-} from '@/hooks/useAccountingData'
+import { useAccountingStore, useImportCsv, usePostings, useRebuildLedger } from '@/hooks/useAccountingData'
 import type { Account, CurrencyCode } from '@/types/accounting'
 
 const MAX_FILES_PER_DROP = 8
@@ -34,15 +28,7 @@ interface PendingCsvImport {
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
-interface PendingPdfImport {
-  key: string
-  kind: 'pdf'
-  file: File
-  status: 'pending' | 'importing' | 'done' | 'error'
-  message?: string
-}
-
-type PendingImport = PendingCsvImport | PendingPdfImport
+type PendingImport = PendingCsvImport
 
 function readFirstLines(file: File, count: number): Promise<string[]> {
   return new Promise((resolve, reject) => {
@@ -55,15 +41,12 @@ function readFirstLines(file: File, count: number): Promise<string[]> {
 
 // Drag-and-drop peeks only at each CSV's header row to guess the bank/account
 // (see accounting.importers.detect) — the full file is only read once the
-// user confirms, so a bulk drop of several files stays instant. PDFs (SoFi
-// monthly statements) need no detection at all — the statement itself names
-// every account it describes, so they default straight to the PDF importer.
+// user confirms, so a bulk drop of several files stays instant.
 export function ImportPage() {
   const [pending, setPending] = useState<PendingImport[]>([])
   const { data: store } = useAccountingStore()
   const { data: postings } = usePostings()
   const importCsv = useImportCsv()
-  const importSofiPdf = useImportSofiStatementPdf()
   const rebuild = useRebuildLedger()
 
   const handleFiles = useCallback(
@@ -72,9 +55,6 @@ export function ImportPage() {
       const entries = await Promise.all(
         accepted.map(async (file): Promise<PendingImport> => {
           const key = `${file.name}-${file.size}-${Math.random()}`
-          if (file.name.toLowerCase().endsWith('.pdf')) {
-            return { key, kind: 'pdf', file, status: 'pending' }
-          }
           const [headerLine, firstDataLine] = await readFirstLines(file, 2)
           const header = (headerLine ?? '').split(',').map((column) => column.trim())
           const firstDataRow = firstDataLine
@@ -135,16 +115,6 @@ export function ImportPage() {
     }
   }
 
-  async function confirmPdfImport(entry: PendingPdfImport) {
-    updateEntry(entry.key, { status: 'importing' })
-    try {
-      const result = await importSofiPdf.mutateAsync(entry.file)
-      updateEntry(entry.key, { status: 'done', message: `${result.new_posting_count} new postings across ${result.account_ids.length} accounts` })
-    } catch (error) {
-      updateEntry(entry.key, { status: 'error', message: error instanceof Error ? error.message : 'Import failed' })
-    }
-  }
-
   const registeredAccounts = store ? Object.values(store.accounts).filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id)) : []
   const institutions = [
     ...new Set([
@@ -173,12 +143,12 @@ export function ImportPage() {
           }}
         >
           <Upload className="size-6 text-muted-foreground/60" />
-          Drag and drop up to {MAX_FILES_PER_DROP} bank CSV exports or SoFi statement PDFs here
+          Drag and drop up to {MAX_FILES_PER_DROP} bank CSV exports here
           <label className="cursor-pointer text-primary underline-offset-4 hover:underline">
             or browse
             <input
               type="file"
-              accept=".csv,.CSV,.pdf,.PDF"
+              accept=".csv,.CSV"
               multiple
               className="hidden"
               onChange={(event) => {
@@ -189,150 +159,120 @@ export function ImportPage() {
           </label>
         </div>
 
-        {pending.map((entry) =>
-          entry.kind === 'pdf' ? (
-            <div key={entry.key} className="relative flex flex-wrap items-center gap-3 rounded-lg border border-border p-4">
-              <button
-                type="button"
-                onClick={() => dismissEntry(entry.key)}
-                disabled={entry.status === 'importing'}
-                className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-                title="Abandon this import"
-              >
-                <X className="size-3.5" />
-              </button>
-              <div className="min-w-0 flex-1 text-sm font-medium text-foreground">{entry.file.name}</div>
-              <span className="text-xs text-muted-foreground">SoFi monthly statement — checking, savings, and every vault</span>
-              <Button size="sm" disabled={entry.status === 'importing' || entry.status === 'done'} onClick={() => confirmPdfImport(entry)}>
-                Import
-              </Button>
-              {entry.status === 'importing' && <LoadingProgressBar step="Parsing statement and merging into the ledger…" />}
-              {entry.status === 'done' && (
-                <span className="flex items-center gap-1 text-xs text-emerald-600">
-                  <CheckCircle2 className="size-3.5" /> {entry.message}
-                </span>
-              )}
-              {entry.status === 'error' && (
-                <span className="flex items-center gap-1 text-xs text-destructive">
-                  <XCircle className="size-3.5" /> {entry.message}
-                </span>
-              )}
-            </div>
-          ) : (
-            <div key={entry.key} className="relative flex flex-wrap items-end gap-3 rounded-lg border border-border p-4">
-              <button
-                type="button"
-                onClick={() => dismissEntry(entry.key)}
-                disabled={entry.status === 'importing'}
-                className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
-                title="Abandon this import"
-              >
-                <X className="size-3.5" />
-              </button>
-              <div className="min-w-0 flex-1 basis-full text-sm font-medium text-foreground">{entry.file.name}</div>
+        {pending.map((entry) => (
+          <div key={entry.key} className="relative flex flex-wrap items-end gap-3 rounded-lg border border-border p-4">
+            <button
+              type="button"
+              onClick={() => dismissEntry(entry.key)}
+              disabled={entry.status === 'importing'}
+              className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+              title="Abandon this import"
+            >
+              <X className="size-3.5" />
+            </button>
+            <div className="min-w-0 flex-1 basis-full text-sm font-medium text-foreground">{entry.file.name}</div>
 
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Institution
-                <Select
-                  value={entry.institution}
-                  onValueChange={(institution) =>
-                    institution &&
-                    updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '', isNewAccount: false })
-                  }
-                >
-                  <SelectTrigger size="sm" className="w-36">
-                    <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {institutions.map((institution) => (
-                      <SelectItem key={institution} value={institution}>
-                        {institution}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Account name
-                <Select
-                  value={entry.accountId}
-                  onValueChange={(accountId) => {
-                    const account = accountId ? store?.accounts[accountId] : undefined
-                    if (account) {
-                      updateEntry(entry.key, {
-                        accountId: account.account_id,
-                        accountKind: account.kind,
-                        name: account.name,
-                        currency: account.currency,
-                        parentAccountId: account.parent_account_id,
-                        isNewAccount: false,
-                      })
-                    }
-                  }}
-                  disabled={!entry.institution}
-                >
-                  <SelectTrigger size="sm" className="w-52">
-                    <SelectValue
-                      placeholder="Choose an account…"
-                      items={{
-                        ...Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name])),
-                        ...(entry.isNewAccount ? { [entry.accountId]: `${entry.name} (new)` } : {}),
-                      }}
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {entry.isNewAccount && (
-                      <SelectItem value={entry.accountId}>{entry.name} (new)</SelectItem>
-                    )}
-                    {accountsForInstitution(entry.institution).map((account) => (
-                      <SelectItem key={account.account_id} value={account.account_id}>
-                        {account.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-
-              <Button
-                size="sm"
-                disabled={
-                  entry.status === 'importing' ||
-                  entry.status === 'done' ||
-                  !entry.institution ||
-                  !entry.accountKind ||
-                  !entry.accountId
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Institution
+              <Select
+                value={entry.institution}
+                onValueChange={(institution) =>
+                  institution &&
+                  updateEntry(entry.key, { institution, accountId: '', accountKind: '', name: '', isNewAccount: false })
                 }
-                onClick={() => confirmCsvImport(entry)}
               >
-                Import
-              </Button>
-              {entry.status === 'importing' && <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />}
+                <SelectTrigger size="sm" className="w-36">
+                  <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
+                </SelectTrigger>
+                <SelectContent>
+                  {institutions.map((institution) => (
+                    <SelectItem key={institution} value={institution}>
+                      {institution}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
 
-              {entry.isNewAccount && (
-                <p className="basis-full text-xs text-muted-foreground">
-                  This account isn't registered yet — importing will create "{entry.name}" automatically.
-                </p>
-              )}
-              {entry.institution && !entry.isNewAccount && accountsForInstitution(entry.institution).length === 0 ? (
-                <p className="basis-full text-xs text-amber-600">
-                  No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
-                </p>
-              ) : null}
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Account name
+              <Select
+                value={entry.accountId}
+                onValueChange={(accountId) => {
+                  const account = accountId ? store?.accounts[accountId] : undefined
+                  if (account) {
+                    updateEntry(entry.key, {
+                      accountId: account.account_id,
+                      accountKind: account.kind,
+                      name: account.name,
+                      currency: account.currency,
+                      parentAccountId: account.parent_account_id,
+                      isNewAccount: false,
+                    })
+                  }
+                }}
+                disabled={!entry.institution}
+              >
+                <SelectTrigger size="sm" className="w-52">
+                  <SelectValue
+                    placeholder="Choose an account…"
+                    items={{
+                      ...Object.fromEntries(accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name])),
+                      ...(entry.isNewAccount ? { [entry.accountId]: `${entry.name} (new)` } : {}),
+                    }}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {entry.isNewAccount && (
+                    <SelectItem value={entry.accountId}>{entry.name} (new)</SelectItem>
+                  )}
+                  {accountsForInstitution(entry.institution).map((account) => (
+                    <SelectItem key={account.account_id} value={account.account_id}>
+                      {account.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
 
-              {entry.status === 'done' && (
-                <span className="flex items-center gap-1 text-xs text-emerald-600">
-                  <CheckCircle2 className="size-3.5" /> {entry.message}
-                </span>
-              )}
-              {entry.status === 'error' && (
-                <span className="flex items-center gap-1 text-xs text-destructive">
-                  <XCircle className="size-3.5" /> {entry.message}
-                </span>
-              )}
-            </div>
-          ),
-        )}
+            <Button
+              size="sm"
+              disabled={
+                entry.status === 'importing' ||
+                entry.status === 'done' ||
+                !entry.institution ||
+                !entry.accountKind ||
+                !entry.accountId
+              }
+              onClick={() => confirmCsvImport(entry)}
+            >
+              Import
+            </Button>
+            {entry.status === 'importing' && <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />}
+
+            {entry.isNewAccount && (
+              <p className="basis-full text-xs text-muted-foreground">
+                This account isn't registered yet — importing will create "{entry.name}" automatically.
+              </p>
+            )}
+            {entry.institution && !entry.isNewAccount && accountsForInstitution(entry.institution).length === 0 ? (
+              <p className="basis-full text-xs text-amber-600">
+                No {entry.institution} accounts registered yet — add one below first, then come back to pick it here.
+              </p>
+            ) : null}
+
+            {entry.status === 'done' && (
+              <span className="flex items-center gap-1 text-xs text-emerald-600">
+                <CheckCircle2 className="size-3.5" /> {entry.message}
+              </span>
+            )}
+            {entry.status === 'error' && (
+              <span className="flex items-center gap-1 text-xs text-destructive">
+                <XCircle className="size-3.5" /> {entry.message}
+              </span>
+            )}
+          </div>
+        ))}
 
         <div className="flex flex-col items-center gap-2 border-t border-border pt-6">
           <Button variant="outline" size="sm" onClick={() => rebuild.mutate()} disabled={rebuild.isPending}>

@@ -31,9 +31,9 @@ from accounting.models import (
     OtherAsset,
     PostingSplit,
     RecurringAddition,
-    Rule,
     SimulatorScenario,
     Tag,
+    TransferRule,
     WithdrawalPriorityEntry,
 )
 from trades.utils.io_utils import write_json_atomic
@@ -221,7 +221,7 @@ class AccountingStore(BaseModel):
     accounts: dict[str, Account] = Field(default_factory=dict)
     categories: dict[str, Category] = Field(default_factory=dict)
     tags: dict[str, Tag] = Field(default_factory=dict)
-    rules: list[Rule] = Field(default_factory=list)
+    rules: list[TransferRule] = Field(default_factory=list)
     category_patterns: dict[str, CategoryPattern] = Field(default_factory=dict)
     other_assets: list[OtherAsset] = Field(default_factory=list)
     opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)

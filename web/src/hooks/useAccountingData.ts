@@ -14,9 +14,9 @@ import type {
   OtherAsset,
   PostingSplitLeg,
   RecurringAddition,
-  Rule,
   SimulatorScenario,
   Tag,
+  TransferRule,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
@@ -263,10 +263,10 @@ export function useSetTags() {
   })
 }
 
-export function useSetRules() {
+export function useSetTransferRules() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (rules: Rule[]) => accountingApi.putRules(rules),
+    mutationFn: (rules: TransferRule[]) => accountingApi.putTransferRules(rules),
     onSuccess: invalidate,
   })
 }
@@ -345,14 +345,6 @@ export function useImportCsv() {
   })
 }
 
-export function useImportSofiStatementPdf() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (file: File) => accountingApi.importSofiStatementPdf(file),
-    onSuccess: invalidate,
-  })
-}
-
 // Read-only — reconciliation applies nothing, so no cache invalidation on success.
 export function useImportPaystub() {
   return useMutation({ mutationFn: (file: File) => accountingApi.importPaystub(file) })
@@ -407,6 +399,14 @@ export function usePatternSuggestCategory() {
   })
 }
 
+export function usePatternSuggestCategoryBulk() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (postingIds: string[]) => accountingApi.patternSuggestCategoryBulk(postingIds),
+    onSuccess: invalidate,
+  })
+}
+
 export function useValidatePending() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -455,8 +455,11 @@ export function useSetWithdrawalPriorities() {
   })
 }
 
-export const useGoalsSummary = (asOf?: string) =>
-  useQuery({ queryKey: ['accounting', 'goals-summary', asOf ?? {}], queryFn: () => accountingApi.goalsSummary(asOf) })
+export const useGoalsSummary = (asOf?: string, displayCurrency?: string) =>
+  useQuery({
+    queryKey: ['accounting', 'goals-summary', asOf ?? {}, displayCurrency ?? {}],
+    queryFn: () => accountingApi.goalsSummary(asOf, displayCurrency),
+  })
 
 export function useRunRecurringAdditions() {
   const invalidate = useInvalidateAccounting()

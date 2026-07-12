@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from accounting.dashboard.income_statement import net_income_expense_total
+from accounting.ledger.currency import DisplayCurrency
 
 if TYPE_CHECKING:
     from datetime import date
@@ -54,7 +55,40 @@ def contributions_to_frame(contributions: dict[str, GoalContribution]) -> pl.Dat
     return pl.DataFrame([c.model_dump() for c in contributions.values()], schema=CONTRIBUTION_SCHEMA).sort("date")
 
 
-def goal_balance(contributions: pl.DataFrame, goal_id: str, as_of: date) -> float:
+def _converted_amount(frame: pl.DataFrame, display: DisplayCurrency) -> pl.Series:
+    """Build the `amount` series for `frame`, converted from its own `currency` column into `display.code`.
+
+    Mirrors `dashboard.income_statement._real_income_expense_legs`'s own
+    rate-table join — a contribution keeps its own currency at rest (see
+    `models.GoalContribution`) exactly like a posting does, so converting
+    it for aggregation here never mutates the persisted row.
+
+    Parameters
+    ----------
+    frame
+        Any frame with `amount` and `currency` columns — a contributions frame here.
+    display
+        The currency (and rate) every row's amount is converted into.
+
+    Returns
+    -------
+    polars.Series
+        `amount`, converted into `display.code`.
+    """
+    rate_table = pl.DataFrame(
+        {"currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
+        schema={"currency": pl.Utf8, "rate_to_base": pl.Float64},
+    )
+    rate = frame.select("currency").join(rate_table, on="currency", how="left")["rate_to_base"]
+    return pl.Series("amount", frame["amount"] * rate / display.rates_to_base[display.code])
+
+
+def goal_balance(
+    contributions: pl.DataFrame,
+    goal_id: str,
+    as_of: date,
+    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
+) -> float:
     """Return the goal's running balance at `as_of` — the sum of its own contributions up to and including that day.
 
     Parameters
@@ -65,6 +99,8 @@ def goal_balance(contributions: pl.DataFrame, goal_id: str, as_of: date) -> floa
         Which goal to sum.
     as_of
         Last day to include, inclusive.
+    display
+        The currency (and rate) every contribution's amount is converted into before summing.
 
     Returns
     -------
@@ -74,10 +110,15 @@ def goal_balance(contributions: pl.DataFrame, goal_id: str, as_of: date) -> floa
     legs = contributions.filter((pl.col("goal_id") == goal_id) & (pl.col("date").dt.date() <= as_of))
     if legs.is_empty():
         return 0.0
-    return float(legs["amount"].sum())
+    return float(_converted_amount(legs, display).sum())
 
 
-def all_goal_balances(contributions: pl.DataFrame, goal_ids: list[str], as_of: date) -> dict[str, float]:
+def all_goal_balances(
+    contributions: pl.DataFrame,
+    goal_ids: list[str],
+    as_of: date,
+    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
+) -> dict[str, float]:
     """`goal_balance` for every id in `goal_ids` at once.
 
     Parameters
@@ -88,17 +129,23 @@ def all_goal_balances(contributions: pl.DataFrame, goal_ids: list[str], as_of: d
         Every goal to report a balance for.
     as_of
         Last day to include, inclusive.
+    display
+        The currency (and rate) every contribution's amount is converted into before summing.
 
     Returns
     -------
     dict[str, float]
         One entry per id in `goal_ids`, `0.0` for a goal with no contributions yet.
     """
-    return {goal_id: goal_balance(contributions, goal_id, as_of) for goal_id in goal_ids}
+    return {goal_id: goal_balance(contributions, goal_id, as_of, display) for goal_id in goal_ids}
 
 
 def unallocated_balance(
-    postings: pl.DataFrame, accounts: dict[str, Account], contributions: pl.DataFrame, as_of: date
+    postings: pl.DataFrame,
+    accounts: dict[str, Account],
+    contributions: pl.DataFrame,
+    as_of: date,
+    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
 ) -> float:
     """Money that's neither gone toward a real expense nor been earmarked into any goal yet, as of `as_of`.
 
@@ -115,12 +162,14 @@ def unallocated_balance(
         As `contributions_to_frame` returns.
     as_of
         Last day to include, inclusive.
+    display
+        The currency (and rate) every posting/contribution's amount is converted into before summing.
 
     Returns
     -------
     float
     """
-    net_income = net_income_expense_total(postings, accounts, as_of)
+    net_income = net_income_expense_total(postings, accounts, as_of, display)
     dated = contributions.filter(pl.col("date").dt.date() <= as_of)
-    total_contributed = 0.0 if dated.is_empty() else float(dated["amount"].sum())
+    total_contributed = 0.0 if dated.is_empty() else float(_converted_amount(dated, display).sum())
     return net_income - total_contributed

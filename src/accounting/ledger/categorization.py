@@ -3,11 +3,11 @@
 Phase 1's importers deliberately leave every posting's counterparty
 pointed at one of the two uncategorized placeholders (see
 `accounting.importers.common`). This module is what repoints those
-placeholders at the real counterparty — a `Rule` match against an
+placeholders at the real counterparty — a `TransferRule` match against an
 already-known account — and sets a category on the real leg when a rule
 says to. A rule never fabricates a counterparty account out of its own
 fields; it only ever repoints a posting at an account that already exists
-in the store (see `Rule`). Nothing here mutates the ledger cache on disk;
+in the store (see `TransferRule`). Nothing here mutates the ledger cache on disk;
 it is applied fresh every time postings are read, so a manual correction
 (see `ManualOverride`) applied afterward is never at risk of being
 clobbered by re-running a rule.
@@ -23,13 +23,13 @@ from accounting.models import Account, ManualOverride, Posting, PostingSplit
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
-    from accounting.models import Rule
+    from accounting.models import TransferRule
 
 _PLACEHOLDER_ACCOUNT_IDS = {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID}
 _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per transaction
 
 
-def _matching_rule(rules: list[Rule], description: str, account_id: str) -> Rule | None:
+def _matching_rule(rules: list[TransferRule], description: str, account_id: str) -> TransferRule | None:
     lowered = description.lower()
     for rule in sorted(rules, key=lambda r: r.priority):
         if rule.description_contains.lower() not in lowered:
@@ -40,7 +40,7 @@ def _matching_rule(rules: list[Rule], description: str, account_id: str) -> Rule
     return None
 
 
-def apply_rules(postings: pl.DataFrame, rules: list[Rule], accounts: dict[str, Account]) -> pl.DataFrame:
+def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dict[str, Account]) -> pl.DataFrame:
     """Repoint every placeholder counterparty a matching rule resolves, and set categories.
 
     Only ever touches a transaction with exactly two postings, one of
@@ -99,14 +99,14 @@ def apply_rules(postings: pl.DataFrame, rules: list[Rule], accounts: dict[str, A
     )
 
 
-def resolved_rule_ids_by_transaction(
-    postings: pl.DataFrame, rules: list[Rule], accounts: dict[str, Account]
+def resolved_transfer_rule_ids_by_transaction(
+    postings: pl.DataFrame, rules: list[TransferRule], accounts: dict[str, Account]
 ) -> dict[str, str]:
     """Report which rule (if any) would resolve each transaction's placeholder counterparty — for traceability only.
 
     Mirrors `apply_rules`'s own matching exactly, without mutating
     anything, so a posting can show *which* rule set its counterparty and
-    category (see `api.get_postings`'s `resolved_by_rule_id` field). A
+    category (see `api.get_postings`'s `resolved_by_transfer_rule_id` field). A
     rule is applied fresh from the raw ledger every time postings are
     read (see this module's docstring) — so if that rule is later
     deleted, the transaction reverts to its unresolved, placeholder-counterparty

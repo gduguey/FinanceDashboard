@@ -28,7 +28,6 @@ from accounting.importers.detect import detect_bank_account
 from accounting.importers.ingest import (
     UnsupportedImportError,
     ingest_csv,
-    ingest_sofi_statement_pdf,
     load_ledger,
     rebuild_from_raw_statements,
     supported_import_kinds,
@@ -38,11 +37,15 @@ from accounting.ledger.categorization import (
     apply_manual_overrides,
     apply_posting_splits,
     apply_rules,
-    resolved_rule_ids_by_transaction,
+    resolved_transfer_rule_ids_by_transaction,
 )
 from accounting.ledger.currency import DisplayCurrency, convert
-from accounting.ledger.goal_automations import run_recurring_additions, run_withdrawal_automation
-from accounting.ledger.patterns import matching_pattern
+from accounting.ledger.goal_automations import (
+    next_recurring_occurrence,
+    run_recurring_additions,
+    run_withdrawal_automation,
+)
+from accounting.ledger.patterns import match_patterns_bulk, matching_pattern
 from accounting.ledger.pending import resolve_pending_suggestion, stage_pending_suggestion
 from accounting.ledger.replay import account_balances_over_time
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
@@ -73,9 +76,9 @@ from accounting.models import (
     PostingSplit,
     PostingSplitLeg,
     RecurringAddition,
-    Rule,
     SimulatorScenario,
     Tag,
+    TransferRule,
     WithdrawalPriorityEntry,
 )
 from accounting.store import (
@@ -123,6 +126,33 @@ def _resolved_postings_and_store(config: AccountingConfig) -> tuple[Any, Any]:
     return resolved, store
 
 
+def _resolved_postings_for_aggregation(config: AccountingConfig) -> tuple[Any, Any]:
+    """Like `_resolved_postings_and_store`, but clears category/subcategory for unconfirmed suggestions.
+
+    A pending AI/pattern suggestion is applied optimistically everywhere
+    else (see `ledger.pending`) so its category shows up immediately in the
+    transaction table for review — but a chart, income statement, or
+    budget shouldn't count it until it's actually been validated. Without
+    this, `category_totals`/`monthly_income_expense`/`spend_curve_vs_average`/
+    the budget endpoints would bucket a still-pending posting under its
+    suggested category rather than leaving it in "Uncategorized".
+
+    Returns
+    -------
+    tuple[polars.DataFrame, accounting.store.AccountingStore]
+        The resolved postings (with any pending posting's category/subcategory
+        nulled out), and the current store.
+    """
+    postings, store = _resolved_postings_and_store(config)
+    overrides = load_overrides(config)
+    pending_ids = [posting_id for posting_id, override in overrides.items() if override.pending_source is not None]
+    if not pending_ids:
+        return postings, store
+    cleared = pl.when(pl.col("posting_id").is_in(pending_ids)).then(None).otherwise(pl.col("category_id"))
+    cleared_sub = pl.when(pl.col("posting_id").is_in(pending_ids)).then(None).otherwise(pl.col("subcategory_id"))
+    return postings.with_columns(category_id=cleared, subcategory_id=cleared_sub), store
+
+
 def _account_has_postings(account_id: str, config: AccountingConfig) -> bool:
     """Check whether any imported posting has ever been assigned to this account.
 
@@ -157,7 +187,7 @@ def get_store() -> dict[str, Any]:
         "accounts": {account_id: account.model_dump(mode="json") for account_id, account in store.accounts.items()},
         "categories": {cat_id: category.model_dump(mode="json") for cat_id, category in store.categories.items()},
         "tags": {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()},
-        "rules": [rule.model_dump(mode="json") for rule in store.rules],
+        "transfer_rules": [rule.model_dump(mode="json") for rule in store.rules],
         "other_assets": [asset.model_dump(mode="json") for asset in store.other_assets],
         "opening_balances": {
             account_id: balance.model_dump(mode="json") for account_id, balance in store.opening_balances.items()
@@ -197,10 +227,11 @@ def _display_currency(
     """Build a `DisplayCurrency` from the cached exchange-rate history's smoothed rate as of a date.
 
     Only ever requires history for the currencies actually in play —
-    `code` itself, plus every account's and other-asset's own currency
-    when `store` is given — never every `CurrencyCode` this app could
-    theoretically support, so a store with no EUR accounts yet isn't
-    blocked from a USD-only net worth just because EUR was never synced.
+    `code` itself, plus every account's, other-asset's, and goal
+    contribution's own currency when `store` is given — never every
+    `CurrencyCode` this app could theoretically support, so a store with
+    no EUR accounts yet isn't blocked from a USD-only net worth just
+    because EUR was never synced.
 
     Parameters
     ----------
@@ -226,6 +257,7 @@ def _display_currency(
     if store is not None:
         needed.update(account.currency for account in store.accounts.values())
         needed.update(asset.currency for asset in store.other_assets)
+        needed.update(contribution.currency for contribution in store.goal_contributions.values())
     history = exchange_rates.load_rate_history(state.config)
     try:
         rates = exchange_rates.current_rates_to_base(history, as_of or datetime.now(tz=UTC).date(), needed)
@@ -331,14 +363,14 @@ def put_tags(tags: dict[str, Tag]) -> dict[str, Any]:
     return {tag_id: tag.model_dump(mode="json") for tag_id, tag in store.tags.items()}
 
 
-@router.put("/rules")
-def put_rules(rules: list[Rule]) -> list[dict[str, Any]]:
-    """Replace the whole rule list.
+@router.put("/transfer-rules")
+def put_transfer_rules(rules: list[TransferRule]) -> list[dict[str, Any]]:
+    """Replace the whole transfer-rule list.
 
     Returns
     -------
     list[dict[str, Any]]
-        The rules just persisted.
+        The transfer rules just persisted.
     """
     store = load_store(state.config)
     store = store.model_copy(update={"rules": rules})
@@ -348,7 +380,7 @@ def put_rules(rules: list[Rule]) -> list[dict[str, Any]]:
 
 @router.put("/category-patterns")
 def put_category_patterns(category_patterns: dict[str, CategoryPattern]) -> dict[str, Any]:
-    """Replace the whole category-pattern list — the description-match suggestion source, distinct from `Rule`.
+    """Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
 
     Returns
     -------
@@ -678,37 +710,6 @@ async def post_import(
     }
 
 
-@router.post("/import/sofi-statement-pdf")
-async def post_sofi_statement_pdf(file: UploadFile) -> dict[str, Any]:
-    """Archive and import a SoFi monthly statement PDF — checking, savings, and every vault in one file.
-
-    SoFi Vaults have no CSV export; their interest and transfers only ever
-    show up here. Registers or refreshes every account the statement
-    describes itself — unlike `post_import`, no institution/account-kind/
-    account-id form fields are needed from the caller.
-
-    Returns
-    -------
-    dict[str, Any]
-        `account_ids`, `new_posting_count`, `total_posting_count`.
-
-    Raises
-    ------
-    HTTPException
-        400 if the PDF has no recognizable SoFi savings account section.
-    """
-    pdf_bytes = await file.read()
-    try:
-        result = ingest_sofi_statement_pdf(pdf_bytes, state.config)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    return {
-        "account_ids": result.account_ids,
-        "new_posting_count": result.new_posting_count,
-        "total_posting_count": result.total_posting_count,
-    }
-
-
 @router.post("/import/paystub")
 async def post_paystub_reconciliation(file: UploadFile) -> dict[str, Any]:
     """Parse a paystub PDF and reconcile its deposits against real bank postings near pay day.
@@ -797,9 +798,9 @@ def get_postings() -> list[dict[str, Any]]:
     `None`) and `pending_selected` — an automated categorizer's
     not-yet-confirmed suggestion, and whether it's currently checked for
     the next "validate selection" action (see `ledger.pending`) — and
-    `resolved_by_rule_id`, naming which `Rule` (if any) resolved this
+    `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any) resolved this
     posting's transaction, purely for display (see
-    `ledger.categorization.resolved_rule_ids_by_transaction`).
+    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`).
 
     Returns
     -------
@@ -813,13 +814,13 @@ def get_postings() -> list[dict[str, Any]]:
     # signature is shared by every other endpoint in this module, and this
     # is purely a display concern only `get_postings` needs.
     raw = load_ledger(state.config)
-    resolved_by_rule = resolved_rule_ids_by_transaction(raw, store.rules, store.accounts)
+    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(raw, store.rules, store.accounts)
     rows = postings.to_dicts()
     for row in rows:
         override = overrides.get(row["posting_id"])
         row["pending_source"] = override.pending_source if override is not None else None
         row["pending_selected"] = override.pending_selected if override is not None else True
-        row["resolved_by_rule_id"] = resolved_by_rule.get(row["transaction_id"])
+        row["resolved_by_transfer_rule_id"] = resolved_by_rule.get(row["transaction_id"])
     return rows
 
 
@@ -1147,6 +1148,70 @@ def post_pattern_suggest_category(posting_id: str, lock_category_id: str | None 
     )
 
 
+class PatternSuggestBulkRequest(BaseModel):
+    """Which postings to run category-pattern matching over, in one call."""
+
+    posting_ids: list[str]
+
+
+@router.post("/postings/pattern-suggest-category/bulk")
+def post_pattern_suggest_category_bulk(payload: PatternSuggestBulkRequest) -> dict[str, Any]:
+    """Suggest categories for many postings at once from category-pattern matches, in one ledger load.
+
+    The bulk counterpart to `post_pattern_suggest_category` — that
+    endpoint reloads and re-resolves the entire ledger on every single
+    call, which is fine for one posting but made the "run pattern
+    suggestions" bulk action take minutes over a few hundred rows (each
+    one its own full reload). This loads everything exactly once and
+    matches every posting in a single vectorized pass (see
+    `ledger.patterns.match_patterns_bulk`) instead of looping over
+    postings to match them one at a time.
+
+    A posting that already has a category only gets a pattern match if
+    the pattern's own category agrees with it — the same guarantee
+    `post_pattern_suggest_category`'s `lock_category_id` gives, using each
+    posting's own current category as its lock.
+
+    Parameters
+    ----------
+    payload
+        The postings to suggest categories for.
+
+    Returns
+    -------
+    dict[str, Any]
+        `{"applied": int}` — how many postings got a staged suggestion.
+    """
+    postings, store = _resolved_postings_and_store(state.config)
+    targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
+    if targets.is_empty():
+        return {"applied": 0}
+
+    matches = match_patterns_bulk(store.category_patterns, targets.select("posting_id", "description"))
+    if matches.is_empty():
+        return {"applied": 0}
+
+    target_rows = {row["posting_id"]: row for row in targets.to_dicts()}
+    overrides = load_overrides(state.config)
+    applied = 0
+    for match in matches.iter_rows(named=True):
+        target_row = target_rows[match["posting_id"]]
+        if target_row["category_id"] is not None and target_row["category_id"] != match["category_id"]:
+            continue
+        staged = stage_pending_suggestion(
+            existing=overrides.get(match["posting_id"]),
+            category_id=match["category_id"],
+            subcategory_id=match["subcategory_id"],
+            source="pattern",
+            previous_category_id=target_row["category_id"],
+            previous_subcategory_id=target_row["subcategory_id"],
+        )
+        overrides[match["posting_id"]] = staged
+        applied += 1
+    save_overrides(overrides, state.config)
+    return {"applied": applied}
+
+
 class ValidatePendingRequest(BaseModel):
     """Which postings' pending suggestions to resolve — always exactly the caller's current filtered view."""
 
@@ -1203,7 +1268,7 @@ def get_transfer_suggestions(window_days: int = 3) -> list[dict[str, Any]]:
     list[dict[str, Any]]
         One dict per candidate pair — see `ledger.transfers.find_unmatched_transfer_candidates`.
         Each carries both sides' own `description`, for the caller to
-        propose a `Rule` from — never applied automatically.
+        propose a `TransferRule` from — never applied automatically.
     """
     postings, _store = _resolved_postings_and_store(state.config)
     return find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
@@ -1430,7 +1495,7 @@ def get_category_totals(
     list[dict[str, Any]]
         See `dashboard.income_statement.category_totals`.
     """
-    postings, store = _resolved_postings_and_store(state.config)
+    postings, store = _resolved_postings_for_aggregation(state.config)
     parsed_account_ids = account_ids.split(",") if account_ids else None
     totals = income_statement.category_totals(
         postings,
@@ -1453,7 +1518,7 @@ def get_monthly_income_expense(start: date, end: date, display_currency: Currenc
     list[dict[str, Any]]
         See `dashboard.income_statement.monthly_income_expense`.
     """
-    postings, store = _resolved_postings_and_store(state.config)
+    postings, store = _resolved_postings_for_aggregation(state.config)
     return income_statement.monthly_income_expense(
         postings, store.accounts, start, end, _display_currency(display_currency, store)
     ).to_dicts()
@@ -1470,7 +1535,7 @@ def get_spend_curve(
     list[dict[str, Any]]
         See `dashboard.income_statement.spend_curve_vs_average`.
     """
-    postings, store = _resolved_postings_and_store(state.config)
+    postings, store = _resolved_postings_for_aggregation(state.config)
     return income_statement.spend_curve_vs_average(
         postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
     ).to_dicts()
@@ -1492,7 +1557,7 @@ def get_budget_comparison(month: str, display_currency: CurrencyCode = "USD") ->
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
-    postings, store = _resolved_postings_and_store(state.config)
+    postings, store = _resolved_postings_for_aggregation(state.config)
     rows = budgets.budget_comparison(
         postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
     )
@@ -1517,7 +1582,7 @@ def get_suggested_budget_amount(
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
-    postings, store = _resolved_postings_and_store(state.config)
+    postings, store = _resolved_postings_for_aggregation(state.config)
     amount = budgets.suggested_budget_amount(
         postings, store.accounts, category_id, month, lookback_months, _display_currency(display_currency, store)
     )
@@ -1601,7 +1666,7 @@ def put_withdrawal_priorities(priorities: list[WithdrawalPriorityEntry]) -> list
 
 
 @router.get("/goals/summary")
-def get_goals_summary(as_of: date | None = None) -> dict[str, Any]:
+def get_goals_summary(as_of: date | None = None, display_currency: CurrencyCode = "USD") -> dict[str, Any]:
     """Every goal's balance, plus unallocated money, as of `as_of` (today if omitted).
 
     Both are always recomputed fresh from postings and contributions —
@@ -1614,9 +1679,10 @@ def get_goals_summary(as_of: date | None = None) -> dict[str, Any]:
     """
     postings, store = _resolved_postings_and_store(state.config)
     as_of_date = as_of or datetime.now(UTC).date()
+    display = _display_currency(display_currency, store, as_of_date)
     contributions = contributions_to_frame(store.goal_contributions)
-    balances = all_goal_balances(contributions, list(store.goals.keys()), as_of_date)
-    unallocated = unallocated_balance(postings, store.accounts, contributions, as_of_date)
+    balances = all_goal_balances(contributions, list(store.goals.keys()), as_of_date, display)
+    unallocated = unallocated_balance(postings, store.accounts, contributions, as_of_date, display)
     return {"balances": balances, "unallocated": unallocated}
 
 
@@ -1637,15 +1703,16 @@ def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
 
 @router.post("/goals/run-recurring-additions")
 def post_run_recurring_additions(as_of: date | None = None) -> list[dict[str, Any]]:
-    """Run every recurring addition whose scheduled day has passed this month and hasn't already run.
+    """Run every recurring addition whose most recent scheduled occurrence hasn't already run.
 
-    Idempotent by construction: each addition due this month writes a
+    Idempotent by construction: each addition's occurrence writes a
     contribution under a deterministic id
-    (`f"auto:{addition_id}:{year}-{month:02d}"`); calling this again the
-    same month is a no-op for any addition that id already exists for.
-    There is no background scheduler in this app — this is meant to be
-    called when the Goals page loads, which is the natural moment a user
-    would notice a change anyway.
+    (`f"auto:{addition_id}:{occurrence.isoformat()}"`, see
+    `ledger.goal_automations.next_recurring_occurrence`); calling this
+    again before the next occurrence is a no-op for any addition that id
+    already exists for. There is no background scheduler in this app —
+    this is meant to be called when the Goals page loads, which is the
+    natural moment a user would notice a change anyway.
 
     Returns
     -------
@@ -1656,12 +1723,16 @@ def post_run_recurring_additions(as_of: date | None = None) -> list[dict[str, An
     as_of_date = as_of or datetime.now(UTC).date()
     existing_ids = set(store.goal_contributions.keys())
 
-    due = [
-        addition
-        for addition in store.recurring_additions
-        if as_of_date.day >= addition.schedule_day_of_month
-        and f"auto:{addition.addition_id}:{as_of_date.year}-{as_of_date.month:02d}" not in existing_ids
-    ]
+    occurrences: dict[str, date] = {}
+    for addition in store.recurring_additions:
+        occurrence = next_recurring_occurrence(addition, as_of_date)
+        if occurrence is None:
+            continue
+        if f"auto:{addition.addition_id}:{occurrence.isoformat()}" in existing_ids:
+            continue
+        occurrences[addition.addition_id] = occurrence
+
+    due = [addition for addition in store.recurring_additions if addition.addition_id in occurrences]
     if not due:
         return []
 
@@ -1669,17 +1740,16 @@ def post_run_recurring_additions(as_of: date | None = None) -> list[dict[str, An
     unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
     funded = run_recurring_additions(due, unallocated)
 
-    scheduled_dates = {addition.addition_id: addition.schedule_day_of_month for addition in due}
     by_goal_addition = {addition.goal_id: addition for addition in due}
     new_contributions: dict[str, GoalContribution] = {}
     for goal_id, amount in funded:
         addition = by_goal_addition[goal_id]
-        contribution_id = f"auto:{addition.addition_id}:{as_of_date.year}-{as_of_date.month:02d}"
-        scheduled_day = scheduled_dates[addition.addition_id]
+        occurrence = occurrences[addition.addition_id]
+        contribution_id = f"auto:{addition.addition_id}:{occurrence.isoformat()}"
         new_contributions[contribution_id] = GoalContribution(
             contribution_id=contribution_id,
             goal_id=goal_id,
-            date=datetime(as_of_date.year, as_of_date.month, scheduled_day),  # noqa: DTZ001  (ledger dates are naive)
+            date=datetime.combine(occurrence, datetime.min.time()),
             amount=amount,
             currency=addition.currency,
             note="Recurring addition",

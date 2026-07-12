@@ -7,8 +7,7 @@ import { LlmUsageBanner } from '@/components/accounting/LlmUsageBanner'
 import { TransactionsTab } from '@/components/accounting/TransactionsTab'
 import { CategoriesTab } from '@/components/accounting/CategoriesTab'
 import { TagsTab } from '@/components/accounting/TagsTab'
-import { RulesTab } from '@/components/accounting/RulesTab'
-import { CategoryPatternsTab } from '@/components/accounting/CategoryPatternsTab'
+import { TransferRulesTab } from '@/components/accounting/TransferRulesTab'
 import { TransferSuggestionsPanel } from '@/components/accounting/TransferSuggestionsPanel'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
@@ -38,8 +37,7 @@ export function AccountingPage() {
               <TabsTrigger value="transactions">Transactions</TabsTrigger>
               <TabsTrigger value="categories">Categories</TabsTrigger>
               <TabsTrigger value="tags">Tags</TabsTrigger>
-              <TabsTrigger value="rules">Rules</TabsTrigger>
-              <TabsTrigger value="category-patterns">Category patterns</TabsTrigger>
+              <TabsTrigger value="transfer-rules">Transfer rules</TabsTrigger>
             </TabsList>
 
             <TabsContent value="dashboard">
@@ -55,30 +53,26 @@ export function AccountingPage() {
 
             <TabsContent value="transactions" className="space-y-6">
               <LlmUsageBanner />
-              <TransferSuggestionsPanel accounts={store.accounts} rules={store.rules} />
+              <TransferSuggestionsPanel accounts={store.accounts} rules={store.transfer_rules} />
               <TransactionsTab
                 postings={postings ?? []}
                 accounts={store.accounts}
                 categories={store.categories}
                 tags={store.tags}
-                rules={store.rules}
+                rules={store.transfer_rules}
               />
             </TabsContent>
 
             <TabsContent value="categories">
-              <CategoriesTab categories={store.categories} />
+              <CategoriesTab categories={store.categories} patterns={store.category_patterns} />
             </TabsContent>
 
             <TabsContent value="tags">
               <TagsTab tags={store.tags} />
             </TabsContent>
 
-            <TabsContent value="rules">
-              <RulesTab rules={store.rules} accounts={store.accounts} />
-            </TabsContent>
-
-            <TabsContent value="category-patterns">
-              <CategoryPatternsTab patterns={store.category_patterns} categories={store.categories} />
+            <TabsContent value="transfer-rules">
+              <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} />
             </TabsContent>
           </Tabs>
         )}

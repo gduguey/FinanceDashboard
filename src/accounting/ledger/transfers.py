@@ -46,7 +46,7 @@ def find_unmatched_transfer_candidates(postings: pl.DataFrame, window_days: int 
         `other_account_id`, `other_posting_id`, `other_posted_at`,
         `other_description`, `amount` — one row per candidate pair,
         `amount` signed from `account_id`'s side. The two description
-        columns are for the caller to propose a `Rule` from (see
+        columns are for the caller to propose a `TransferRule` from (see
         `api.get_transfer_suggestions`), never read by the matching itself.
     """
     unresolved_transaction_ids = (

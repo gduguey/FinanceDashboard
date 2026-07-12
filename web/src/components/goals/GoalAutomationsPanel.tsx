@@ -5,12 +5,29 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useSetRecurringAdditions, useSetWithdrawalPriorities } from '@/hooks/useAccountingData'
-import type { Goal, RecurringAddition, RecurringAdditionMode, WithdrawalPriorityEntry } from '@/types/accounting'
+import type {
+  Goal,
+  RecurringAddition,
+  RecurringAdditionFrequency,
+  RecurringAdditionMode,
+  WithdrawalPriorityEntry,
+} from '@/types/accounting'
 
 const MODE_LABELS: Record<RecurringAdditionMode, string> = {
   fixed_amount: 'Fixed amount',
   percent_of_unallocated: '% of unallocated',
   remainder: 'Remainder (whatever is left)',
+}
+
+const FREQUENCY_LABELS: Record<RecurringAdditionFrequency, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  biweekly: 'Biweekly',
+  monthly: 'Monthly',
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 // Native HTML5 drag-and-drop for row reordering — no extra dependency
@@ -60,14 +77,15 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
 
   function add() {
     if (goalList.length === 0) return
-    const hasRemainder = ordered.some((a) => a.mode === 'remainder')
     persist([
       ...ordered,
       {
         addition_id: `addition:${Date.now()}`,
         goal_id: goalList[0].goal_id,
-        schedule_day_of_month: 1,
-        mode: hasRemainder ? 'fixed_amount' : 'fixed_amount',
+        start_date: today(),
+        frequency: 'monthly',
+        end_date: null,
+        mode: 'fixed_amount',
         value: 0,
         currency: 'USD',
         priority: ordered.length,
@@ -80,8 +98,8 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
       <CardHeader>
         <CardTitle>Recurring additions</CardTitle>
         <CardDescription>
-          Run in this order on their scheduled day each month — a fixed-amount row funded first can leave less for a
-          lower one. Drag to reorder; only the bottom row may be "Remainder".
+          Run in this order whenever each one's schedule is due — a fixed-amount row funded first can leave less for
+          a lower one. Drag to reorder; only the bottom row may be "Remainder".
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -110,14 +128,36 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
                 </SelectContent>
               </Select>
               <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                Day
+                Starting
                 <Input
-                  type="number"
-                  min={1}
-                  max={28}
-                  className="w-16"
-                  value={addition.schedule_day_of_month}
-                  onChange={(event) => update(addition.addition_id, { schedule_day_of_month: Number(event.target.value) })}
+                  type="date"
+                  className="w-36"
+                  value={addition.start_date}
+                  onChange={(event) => update(addition.addition_id, { start_date: event.target.value })}
+                />
+              </label>
+              <Select
+                value={addition.frequency}
+                onValueChange={(value) => value && update(addition.addition_id, { frequency: value as RecurringAdditionFrequency })}
+              >
+                <SelectTrigger size="sm" className="min-w-28">
+                  <SelectValue items={FREQUENCY_LABELS} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.entries(FREQUENCY_LABELS) as [RecurringAdditionFrequency, string][]).map(([frequency, label]) => (
+                    <SelectItem key={frequency} value={frequency}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                Until (optional)
+                <Input
+                  type="date"
+                  className="w-36"
+                  value={addition.end_date ?? ''}
+                  onChange={(event) => update(addition.addition_id, { end_date: event.target.value || null })}
                 />
               </label>
               <Select

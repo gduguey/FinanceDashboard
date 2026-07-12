@@ -40,7 +40,7 @@ def stage_pending_suggestion(
         The posting's fully-resolved category/subcategory *before* this
         suggestion — snapshotted here (rather than recomputed later) so
         rejection can restore them exactly, even when the previous value
-        came from a `Rule` rather than a prior override.
+        came from a `TransferRule` rather than a prior override.
 
     Returns
     -------

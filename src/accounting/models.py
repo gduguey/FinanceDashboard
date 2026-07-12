@@ -13,11 +13,11 @@ two accounts at once, split further into wage and reimbursement legs).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import ClassVar, Literal
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AccountKind = Literal[
     "checking",
@@ -148,8 +148,13 @@ class Tag(BaseModel):
     name: str = Field(min_length=1)
 
 
-class Rule(BaseModel):
+class TransferRule(BaseModel):
     """A user-maintained trigger/action pair for automatically resolving a posting's counterparty and category.
+
+    Named specifically for what it's for — linking two of your own
+    accounts together as an internal transfer — to avoid reading as the
+    same thing as a `CategoryPattern` below, which only ever suggests a
+    category and never resolves a counterparty.
 
     Every field on the trigger side must match for the rule to apply
     (`description_contains` is a case-insensitive substring check;
@@ -182,14 +187,14 @@ class Rule(BaseModel):
 class CategoryPattern(BaseModel):
     """A user-maintained description-match pattern that *suggests* a category — never applies one silently.
 
-    Deliberately distinct from `Rule`: a `Rule` resolves a posting's
-    counterparty/category automatically as part of every ledger read, with
-    no confirmation step. A `CategoryPattern` only ever produces a
+    Deliberately distinct from `TransferRule`: a `TransferRule` resolves a
+    posting's counterparty/category automatically as part of every ledger
+    read, with no confirmation step. A `CategoryPattern` only ever produces a
     suggestion the user must explicitly accept or reject (see
     `ledger.pending`, `pending_source="pattern"` on `ManualOverride`) —
     the same confirm-before-it-sticks flow an AI suggestion goes through,
     just keyed off an explicit substring match instead of an LLM call.
-    `priority` breaks ties the same way `Rule.priority` does: the lowest
+    `priority` breaks ties the same way `TransferRule.priority` does: the lowest
     number wins.
     """
 
@@ -352,10 +357,11 @@ class GoalContribution(BaseModel):
 
 
 RecurringAdditionMode = Literal["fixed_amount", "percent_of_unallocated", "remainder"]
+RecurringAdditionFrequency = Literal["daily", "weekly", "biweekly", "monthly"]
 
 
 class RecurringAddition(BaseModel):
-    """One ordered rule for automatically allocating unallocated money into a goal on a monthly schedule.
+    """One ordered rule for automatically allocating unallocated money into a goal on a recurring schedule.
 
     `priority` is the manually-set execution order (lowest first) the
     Goals page's drag-and-drop reorders — a `fixed_amount` row funded
@@ -363,20 +369,52 @@ class RecurringAddition(BaseModel):
     unallocated money runs out; see `ledger.goal_automations.run_recurring_additions`.
     `mode="remainder"` ("whatever's left after all the others") is only
     ever valid on the single lowest-priority row — enforced by the API
-    that persists this list, not by this model. `schedule_day_of_month`
-    is capped at 28 so every month actually has that day, rather than
-    silently skipping February on a day-30 schedule.
+    that persists this list, not by this model.
+
+    The schedule itself is `start_date` + `frequency`, optionally bounded
+    by `end_date` — see `ledger.goal_automations.next_recurring_occurrence`
+    for how a due date is derived from these. For `frequency="monthly"`,
+    the day of month is `start_date`'s own day, capped at 28 so every
+    month actually has that day rather than silently skipping February on
+    a day-30 schedule.
     """
 
     model_config = ConfigDict(frozen=True)
 
     addition_id: str = Field(min_length=1)
     goal_id: str = Field(min_length=1)
-    schedule_day_of_month: int = Field(ge=1, le=28)
+    start_date: date
+    frequency: RecurringAdditionFrequency
+    end_date: date | None = None
     mode: RecurringAdditionMode
     value: float = 0.0
     currency: CurrencyCode = "USD"
     priority: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_schedule_day_of_month(cls, data: object) -> object:
+        """Translate the old `schedule_day_of_month`-only schedule onto the new fields, in place.
+
+        The old model had no `start_date` at all — a day-of-month rule
+        applied retroactively to any month once persisted. `date(2000, 1,
+        day)` reproduces that same unlimited-lookback behavior under the
+        new model rather than inventing a start date that would silently
+        stop a rule the user already had running. Without this, loading a
+        `store.json` written before this schedule redesign would fail
+        validation outright the next time the app starts.
+
+        Returns
+        -------
+        object
+            `data`, migrated onto the new schedule fields if it was in the old shape; unchanged otherwise.
+        """
+        if isinstance(data, dict) and "schedule_day_of_month" in data and "frequency" not in data:
+            data = dict(data)
+            day = data.pop("schedule_day_of_month")
+            data["frequency"] = "monthly"
+            data.setdefault("start_date", date(2000, 1, min(int(day), 28)))
+        return data
 
 
 class WithdrawalPriorityEntry(BaseModel):

@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, goal_balance, unallocated_balance
+from accounting.ledger.currency import DisplayCurrency
 from accounting.models import Account, GoalContribution, Posting
 
 SCHEMA = Posting.polars_schema
@@ -49,9 +50,15 @@ def _posting(posting_id: str, transaction_id: str, account_id: str, amount: floa
     }
 
 
-def _contribution(contribution_id: str, goal_id: str, amount: float, date_str: str) -> GoalContribution:
+def _contribution(
+    contribution_id: str, goal_id: str, amount: float, date_str: str, currency: str = "USD"
+) -> GoalContribution:
     return GoalContribution(
-        contribution_id=contribution_id, goal_id=goal_id, date=datetime.fromisoformat(date_str), amount=amount
+        contribution_id=contribution_id,
+        goal_id=goal_id,
+        date=datetime.fromisoformat(date_str),
+        amount=amount,
+        currency=currency,
     )
 
 
@@ -113,3 +120,46 @@ def test_unallocated_balance_with_no_contributions_yet_equals_net_income() -> No
     )
     contributions = contributions_to_frame({})
     assert unallocated_balance(postings, ACCOUNTS, contributions, date(2026, 6, 30)) == pytest.approx(3000.0)
+
+
+_EUR_DISPLAY = DisplayCurrency(code="EUR", rates_to_base={"USD": 1.0, "EUR": 2.0})
+
+
+def test_goal_balance_converts_contributions_into_the_display_currency() -> None:
+    contributions = contributions_to_frame({
+        "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01", currency="USD"),
+    })
+    # 1 EUR = 2 USD, so 500 USD converts to 250 EUR.
+    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30), display=_EUR_DISPLAY) == pytest.approx(
+        250.0
+    )
+
+
+def test_goal_balance_defaults_to_usd_when_no_display_currency_given() -> None:
+    contributions = contributions_to_frame({"c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01")})
+    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30)) == pytest.approx(500.0)
+
+
+def test_all_goal_balances_converts_every_goal_into_the_display_currency() -> None:
+    contributions = contributions_to_frame({
+        "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01", currency="USD"),
+        "c2": _contribution("c2", "vacation", 100.0, "2026-06-01", currency="EUR"),
+    })
+    balances = all_goal_balances(contributions, ["emergency-fund", "vacation"], date(2026, 6, 30), display=_EUR_DISPLAY)
+    assert balances == {"emergency-fund": pytest.approx(250.0), "vacation": pytest.approx(100.0)}
+
+
+def test_unallocated_balance_converts_contributions_into_the_display_currency() -> None:
+    postings = pl.DataFrame(
+        [
+            _posting("p1", "t1", "chase:checking:9579", 3000.0, "2026-06-01"),
+            _posting("p2", "t1", "uncategorized:income", -3000.0, "2026-06-01"),
+        ],
+        schema=SCHEMA,
+    )
+    contributions = contributions_to_frame({
+        "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-10", currency="USD")
+    })
+    # 3000 USD income -> 1500 EUR, minus 500 USD (-> 250 EUR) contributed = 1250 EUR left unallocated.
+    result = unallocated_balance(postings, ACCOUNTS, contributions, date(2026, 6, 30), display=_EUR_DISPLAY)
+    assert result == pytest.approx(1250.0)

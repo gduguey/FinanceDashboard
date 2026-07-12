@@ -1,143 +1,231 @@
 # Accounting architecture
 
 `accounting` tracks day-to-day cash accounts — checking, savings, credit
-cards, SoFi Vaults — the same way `trades` tracks a brokerage account:
-**store what happened, replay everything else.** An append-only ledger of
-`Posting` rows is the only source of truth; account balances, net worth,
-and the income statement are all derived by walking that history forward.
+cards, named sub-balances like SoFi Vaults — the same way `trades` tracks a
+brokerage account: **store what happened, replay everything else.** Every
+account balance, every net worth figure, every income/expense total, every
+budget's actual spend, and every goal's balance is *recomputed* from one
+append-only record every time it's asked for — nothing is a separately
+maintained running total that could silently drift out of sync with the
+history it's supposed to summarize.
 
 It shares the same FastAPI process and React frontend as `trades` (see
 `accounting/api.py`'s router, mounted by `trades/api.py`), but the two
 packages are otherwise independent — `accounting` may read `trades` (net
-worth needs the tracked portfolio's value), never the reverse.
+worth needs the tracked brokerage portfolio's value), never the reverse.
 
-For the full design rationale, the Firefly III/Maybe research behind it,
-and the phased build order, see `ACCOUNTING_PLAN.md` in the repo root —
-this doc describes the module map and conventions as actually built, not
-the plan.
+For the plain-language, feature-by-feature walkthrough meant for someone
+using the app rather than reading its code, see the in-app Guide page
+(`web/src/pages/GuidePage.tsx`, linked from the sidebar). This document is
+the technical counterpart: the vocabulary, the schema, and the module
+layout, for someone reading or extending the code itself.
 
-## How the pieces fit together
+## Vocabulary
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Front end: web/ (React) — same dev server as trades            │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ reads cached data, calls same modules
-┌────────────────────────────▼────────────────────────────────────┐
-│  accounting/api.py       JSON endpoints, router mounted onto     │
-│                          trades.api's app                        │
-│  accounting/dashboard/   net worth, income statement             │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-┌───────▼───────┐   ┌────────▼────────┐   ┌───────▼────────┐
-│  ledger/      │   │  importers/     │   │  trades/        │
-│  replay,      │   │  Chase/SoFi     │   │  (read-only,    │
-│  categorize,  │   │  CSV + PDF →    │   │  external_      │
-│  currency,    │   │  postings       │   │  investment     │
-│  transfers    │   │                 │   │  balance only)  │
-└───────────────┘   └─────────────────┘   └────────────────┘
-        │                    │
-        └────────────────────┼───────────────┐
-                             │                │
-                    data/accounting/  (gitignored)
-```
+These words recur throughout the codebase and the rest of this document —
+worth pinning down precisely once, here, rather than re-explaining in every
+file that uses them.
+
+- **Ledger** — the complete, append-only record of every posting ever
+  produced from every CSV or statement ever imported. It is the *only*
+  place data is durably written to as a fact; every other number the app
+  shows is derived from it on demand, never cached as its own source of
+  truth.
+- **Transaction** — one real-world economic event: a paycheck landing, a
+  card swipe, a transfer between two of your own accounts. A transaction
+  is never stored as a single row — it exists only as the group of
+  postings that share one `transaction_id`.
+- **Posting** — one row of one transaction: one account, one signed
+  amount, one date, optionally a category/subcategory/tags. `amount` is
+  always signed from *that posting's own account's* point of view —
+  positive means money arrived in that account, negative means it left.
+  This is the atomic, immutable unit everything else in this module is
+  built from (`accounting.models.Posting`).
+- **Leg** — an informal synonym for one posting, used when talking about
+  it as one side of its transaction ("the checking leg," "the credit-card
+  leg" of the same transfer). It isn't a distinct type in the code — it's
+  the same `Posting`, just described relative to the transaction it
+  belongs to.
+- **Replay** — recomputing a result by walking through the ledger's
+  history in order, instead of reading a value that was stored ahead of
+  time. An account's current balance, for instance, is never a stored
+  field — it's "sum every posting on this account, in date order, up to
+  now," recomputed fresh on every request (see `ledger/replay.py`).
+- **No I/O (pure domain logic)** — code that only transforms data already
+  in memory (a `polars.DataFrame`, a list of pydantic models) and never
+  itself reads or writes a file, calls a network request, or touches the
+  filesystem/database. Everything under `ledger/` and `dashboard/` is
+  written this way deliberately: it can be tested by handing it plain
+  in-memory data and checking what comes back, with no setup or teardown
+  of any real file or service. Anything that *does* need to touch disk or
+  the network — reading an uploaded CSV, fetching an exchange rate, calling
+  an LLM — is confined to `importers/`, `market_data/`, `llm/`, and the
+  handful of `load_*`/`save_*` functions in `store.py`, which pure logic
+  never calls directly (it's handed already-loaded data instead).
+- **Rule** vs. **category pattern** — two different, easily-confused
+  mechanisms, covered in full in `categorization.md`. In short: a `Rule`
+  resolves a posting's *counterparty account* (and optionally its
+  category) automatically, with no confirmation step, every time the
+  ledger is read. A category pattern only ever *suggests* a category —
+  nothing changes until a human applies and validates the suggestion.
+
+## The canonical schema
+
+A transaction is a set of `Posting` rows whose amounts sum to exactly zero,
+per currency. Two postings — one negative, one positive — is the ordinary
+case (a plain expense or a plain transfer), but nothing in the schema
+requires exactly two; any number ≥ 2 is valid, which is what makes
+splitting one deposit into several categorized pieces possible (see
+`categorization.md`).
+
+Every withdrawal or deposit needs a counterparty. When the real
+counterparty isn't known yet, an importer points a posting at one of two
+virtual placeholder accounts:
+
+| account_id | kind | name |
+|---|---|---|
+| `uncategorized:expense` | `expense_payee` | Uncategorized Expense |
+| `uncategorized:income` | `income_source` | Uncategorized Income |
+
+`ledger.categorization.apply_rules` repoints that placeholder at the real
+counterparty — a named vault, a `Rule` match, a detected internal transfer
+— every time postings are read, never baked into the ledger cache. A
+manual correction (`ManualOverride`) is layered on top of that, also
+applied fresh on every read, so it can never be silently clobbered by
+re-running a rule or re-importing a statement.
+
+**Why this matters for every income/expense chart:** a posting only ever
+counts as real income or a real expense — as opposed to an internal
+transfer between two accounts you hold — when its transaction's sibling
+leg is *still* on one of the two virtual placeholder accounts above (see
+`dashboard.income_statement._real_income_expense_legs`). The instant a
+rule repoints that placeholder at a real account, the transaction becomes,
+structurally, a transfer — and every income/expense/budget/goal
+computation correctly stops counting it, with no separate "is this a
+transfer" flag to maintain by hand.
+
+### Invariant
+
+For every `transaction_id`, `Σ postings.amount` converted to one currency
+must equal zero. This is enforced by construction — every importer emits
+balanced pairs via `importers.common.posting_pair`, and every split
+(`ledger.categorization.apply_posting_splits`) is validated against the
+original posting's amount before being written — never checked after the
+fact as a data-quality pass.
 
 ## Module map
 
 ```
 src/accounting/
-  config.py             AccountingConfig — store/ledger/overrides paths
-  models.py             pydantic schemas — Account, Posting, Category, Tag,
-                         Rule, OtherAsset, Currency — canonical, once
-  store.py              persisted accounts/categories/tags/rules/other-assets
+  config.py             AccountingConfig — every on-disk path, derived from one data_dir
+  models.py             pydantic schemas — Account, Posting, Category, Tag, Rule,
+                         CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
+                         Currency — canonical, declared once
+  store.py              persisted accounts/categories/tags/rules/goals/budgets/etc.
                          (store.json) — seeded defaults, not fetched data
+
   ledger/               pure domain logic, no I/O
-    replay.py             postings → account balances as of any date
-    categorization.py     rule matching + vault/internal-transfer detection,
+    replay.py             postings -> account balances as of any date
+    categorization.py     rule matching + vault/internal-transfer detection;
                            repoints placeholder counterparties, sets categories
-    currency.py            convert() between the two supported currencies
-    transfers.py           unmatched-internal-transfer suggestions
-  dashboard/            API-facing aggregation
+    patterns.py            CategoryPattern description-match suggestion logic
+    pending.py              accept/reject lifecycle for a not-yet-confirmed
+                            AI/pattern category suggestion
+    currency.py             convert() between any two supported currencies
+    transfers.py            unmatched-internal-transfer suggestions
+    goal_automations.py     recurring-addition and withdrawal-automation math —
+                            decides amounts only, never writes anything itself
+
+  dashboard/            API-facing aggregation, one file per concern
     net_worth.py           assets/liabilities/net worth, in a display currency
     income_statement.py    category/subcategory totals, monthly income vs.
                             expense, a spend-curve-vs-average series
+    budgets.py              budget vs. actual comparison
+    interest.py             realized-interest tracking + projection
+    simulator.py            compound-interest what-if projection
+    paystub.py              paystub-to-bank-deposit reconciliation + proposed splits
+    goals.py                goal balance / unallocated-money derivation
+
   importers/            I/O — the only layer that knows a bank's native format
     common.py              shared RawLeg/posting_pair/row_hash helpers
-    detect.py              header/filename fingerprint → bank + account guess
-    ingest.py              archive raw, standardize, merge into the ledger;
+    detect.py               header/filename fingerprint -> bank + account guess
+    ingest.py               archive raw, standardize, merge into the ledger;
                             rebuild_from_raw_statements recomputes it all
-    chase/                 checking.py, credit_card.py
-    sofi/                  checking.py, savings.py (CSV); statement_pdf.py
-                            (monthly statement PDF — checking + savings +
-                            every Vault in one file, the only source for
-                            Vault transactions and interest)
+    paystub.py              PDF text extraction -> structured EarningsStatement
+    chase/                  checking.py, credit_card.py
+    sofi/                   checking.py, savings.py (CSV, both formats);
+                            statement_pdf.py (monthly PDF — checking + savings +
+                            every Vault in one file, the only source for Vault
+                            transactions and interest)
+
+  market_data/
+    exchange_rates.py      fetches + caches daily FX history, computes a
+                           smoothed rate — see currency-handling.md
+
+  llm/                   pluggable AI-categorization provider layer
+    provider.py             provider interface + fallback-across-providers logic
+    gemini.py, mistral.py    concrete providers
+    categorize.py            prompt building + response validation
+    settings.py              provider credentials
+    usage.py                 per-provider call-count/rate-limit tracking
+
   api.py                 FastAPI JSON layer, mounted onto trades.api's app
-data/accounting/
+
+data/accounting/         (gitignored)
   raw_statements/{institution}/{account_id}/{timestamp}.csv   verbatim, never overwritten
   raw_statements/SoFi/statement_pdf/{timestamp}.pdf            verbatim, never overwritten
-  ledger.csv             disposable cache, rebuildable from raw_statements/
-  store.json             accounts, categories, tags, rules, other assets, eur_usd_rate
-  manual_overrides.json  per-posting user edits, always applied after rules
+  exchange_rates/raw/{timestamp}.json                          verbatim, never overwritten
+  exchange_rates/rates.csv                                     disposable cache, rebuildable
+  ledger.csv                                                    disposable cache, rebuildable
+  store.json                accounts, categories, tags, rules, patterns, goals, budgets, ...
+  manual_overrides.json     per-posting user edits, always applied after rules
+  llm_usage.json            per-provider call-count / rate-limit state
 ```
 
-## The canonical schema
+## Categorization, planning, and everything past the ledger
 
-A `Transaction` is a set of `Posting` rows whose amounts sum to zero (per
-currency) — two postings is the common case (an expense or a transfer), but
-the schema doesn't assume exactly two. Every posting is signed from its own
-account's point of view: positive means money arrived, negative means it
-left. See `accounting.models.Posting`'s docstring for the full field list.
+Everything above this line is the shared foundation every page in the app
+reads from. What's built on top of it is covered in its own documents,
+since each is a substantial topic on its own:
 
-Every withdrawal or deposit needs a counterparty; when the real one isn't
-known yet, an importer points it at one of two placeholder accounts
-(`uncategorized:expense`/`uncategorized:income` — see `store.py`).
-`ledger.categorization.apply_rules` repoints that placeholder at the real
-counterparty — a vault, a `Rule` match, a SoFi internal checking↔savings
-transfer — every time postings are read, never baked into the ledger cache,
-so a manual correction is never at risk of being clobbered by re-running a
-rule.
+- **`categorization.md`** — categories, tags, rules vs. category patterns
+  vs. AI suggestions, the accept/reject ("pending") lifecycle those two
+  suggestion sources share, auto-detected transfer suggestions, and
+  transaction splitting.
+- **`planning.md`** — budgets and goals: how each is laid over the same
+  categorized postings without maintaining any separate copy of them.
+- **`currency-handling.md`** — how multi-currency conversion works, and
+  exactly what's required to add a new supported currency.
+- **`adding-accounts.md`** — what's involved in teaching the app to read a
+  new bank's export format.
 
-### Invariant
+## The accounting/trades coupling
 
-For every `transaction_id`, `Σ postings.amount` converted to one currency
-must equal zero. This is enforced by construction in
-`importers.common.posting_pair` (every importer emits balanced pairs), not
-checked after the fact.
-
-## Multi-currency
-
-Two currencies are supported, `USD` and `EUR` (`accounting.models.CurrencyCode`).
-Every account, posting, and manually-added asset keeps its own native
-currency — nothing is ever silently converted at write time. Conversion
-only happens where amounts are aggregated across accounts (`dashboard.net_worth`,
-`dashboard.income_statement`), using one stored `eur_usd_rate` on the store
-(`ledger.currency.convert`) and a per-request `display_currency` — never a
-live-fetched rate.
-
-## Double-booking: importers de-duplicate, categorization repoints
-
-Some sources record the same real-world transfer on both sides — SoFi's
-statement PDF shows a vault's own "Deposit From savings balance" mirroring
-the savings account's "Withdrawal To X Vault", and Chase's credit card CSV
-shows a "Payment Thank You" row mirroring the checking account's payment.
-The fix in both cases is the same: the importer drops the mirrored,
-non-authoritative side at parse time (see `importers.sofi.statement_pdf`'s
-module docstring), keeping exactly one row per real event for
-`ledger.categorization` to repoint.
+The SoFi savings export shows money leaving to a brokerage
+("INTERACTIVE BROK ... DIRECT_PAY"). Rather than tracking brokerage detail
+twice, that posting's counterparty is a placeholder account
+(`kind="external_investment"`) whose balance is *never* computed by
+replaying postings — `dashboard.net_worth` instead reads that value live
+from `trades.dashboard.overview_cards()`. This is the one explicit,
+one-directional coupling between the two modules: accounting reads trades,
+trades never reads accounting.
 
 ## Core conventions
 
-This module follows the same two standing rules as `trades` — see
-`AGENTS.md`/`CLAUDE.md` and `docs/trades/architecture.md`:
+Two standing rules shape almost every change to this module:
 
-- **New data source → canonical schema, always.** A bank's native
-  vocabulary (SoFi's `TYPE` column, Chase's `Type`/`Category` columns)
-  never leaks past the importer that reads it — see `standardize_sofi_statement_pdf`
-  for the concrete example.
-- **Cache raw, derive everything else.** Every uploaded CSV or PDF is
-  archived verbatim, timestamped, never overwritten, before anything is
-  parsed. `ledger.csv` and `store.json`'s auto-vivified accounts are
-  disposable caches, rebuildable from `raw_statements/` via
-  `importers.ingest.rebuild_from_raw_statements`.
+- **A new data source always maps onto the canonical schema — never the
+  reverse.** A bank's native column names and codes (SoFi's `TYPE` column,
+  Chase's `Type`/`Category` columns) are never allowed to leak past the
+  importer that reads them. Each source gets its own
+  `standardize_{source}_...` function that maps its shape onto
+  `accounting.models`' fields, validated through the matching pydantic
+  model before anything downstream sees it. See `adding-accounts.md` for
+  the concrete steps.
+- **Cache raw, derive everything else.** Every uploaded CSV or PDF, and
+  every fetched exchange-rate response, is archived verbatim and
+  timestamped — never overwritten — before anything is parsed from it.
+  `ledger.csv`, `exchange_rates/rates.csv`, and `store.json`'s
+  auto-registered accounts are all disposable caches, rebuildable from
+  those raw archives (`importers.ingest.rebuild_from_raw_statements`),
+  never the only copy of anything that happened.

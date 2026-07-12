@@ -1,14 +1,27 @@
+from datetime import date, timedelta
+
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
 from accounting import api as accounting_api
 from accounting.config import AccountingConfig
+from accounting.market_data import exchange_rates
+from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
 from trades import api as trades_api
 
 CHECKING_CSV = (
     "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
     "CREDIT,06/01/2026,SOME EMPLOYER PAYROLL PPD ID: 1234567890,3000.00,ACH_CREDIT,4000.00,,\n"
 )
+
+
+def _fake_rate_history() -> pl.DataFrame:
+    today = date.today()
+    return pl.DataFrame(
+        {"date": [today - timedelta(days=1), today], "currency": ["EUR", "EUR"], "rate_to_base": [1.9, 2.1]},
+        schema=RATE_HISTORY_SCHEMA,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +92,32 @@ def test_goals_summary_reports_balance_and_unallocated(client) -> None:
     assert summary["unallocated"] == pytest.approx(2500.0)
 
 
+def test_goals_summary_converts_into_the_requested_display_currency(client, monkeypatch) -> None:
+    monkeypatch.setattr(
+        exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _fake_rate_history()
+    )
+    client.post("/api/accounting/sync-exchange-rates")
+    _import_checking(client)
+    _create_goal(client)
+    client.put(
+        "/api/accounting/goal-contributions",
+        json={
+            "c1": {
+                "contribution_id": "c1",
+                "goal_id": "emergency-fund",
+                "date": f"{date.today().isoformat()}T00:00:00",
+                "amount": 500.0,
+                "currency": "USD",
+            }
+        },
+    )
+    summary = client.get("/api/accounting/goals/summary", params={"display_currency": "EUR"}).json()
+    # 1 EUR = 2 USD (smoothed), so 500 USD converts to 250 EUR.
+    assert summary["balances"]["emergency-fund"] == pytest.approx(250.0)
+    # 3000 USD income -> 1500 EUR, minus 250 EUR contributed = 1250 EUR unallocated.
+    assert summary["unallocated"] == pytest.approx(1250.0)
+
+
 def test_run_recurring_additions_writes_a_contribution_once_due(client) -> None:
     _import_checking(client)
     _create_goal(client)
@@ -88,7 +127,8 @@ def test_run_recurring_additions_writes_a_contribution_once_due(client) -> None:
             {
                 "addition_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
-                "schedule_day_of_month": 5,
+                "start_date": "2026-01-05",
+                "frequency": "monthly",
                 "mode": "fixed_amount",
                 "value": 500.0,
                 "currency": "USD",
@@ -117,7 +157,8 @@ def test_run_recurring_additions_is_idempotent_within_the_same_month(client) -> 
             {
                 "addition_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
-                "schedule_day_of_month": 5,
+                "start_date": "2026-01-05",
+                "frequency": "monthly",
                 "mode": "fixed_amount",
                 "value": 500.0,
                 "currency": "USD",
@@ -131,6 +172,85 @@ def test_run_recurring_additions_is_idempotent_within_the_same_month(client) -> 
 
     summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)  # not double-funded
+
+
+def test_run_recurring_additions_supports_a_weekly_schedule(client) -> None:
+    _import_checking(client)
+    _create_goal(client)
+    client.put(
+        "/api/accounting/recurring-additions",
+        json=[
+            {
+                "addition_id": "auto:emergency-fund",
+                "goal_id": "emergency-fund",
+                "start_date": "2026-06-01",
+                "frequency": "weekly",
+                "mode": "fixed_amount",
+                "value": 100.0,
+                "currency": "USD",
+                "priority": 0,
+            }
+        ],
+    )
+    first = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-01"})
+    assert len(first.json()) == 1
+    # Same week — already funded, so a second call the same week is a no-op...
+    same_week = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-05"})
+    assert same_week.json() == []
+    # ...but the next week's occurrence is a brand-new, separately-funded contribution.
+    next_week = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-08"})
+    assert len(next_week.json()) == 1
+
+    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    assert summary["balances"]["emergency-fund"] == pytest.approx(200.0)
+
+
+def test_run_recurring_additions_stops_after_the_end_date(client) -> None:
+    _import_checking(client)
+    _create_goal(client)
+    client.put(
+        "/api/accounting/recurring-additions",
+        json=[
+            {
+                "addition_id": "auto:emergency-fund",
+                "goal_id": "emergency-fund",
+                "start_date": "2026-06-01",
+                "frequency": "daily",
+                "end_date": "2026-06-03",
+                "mode": "fixed_amount",
+                "value": 50.0,
+                "currency": "USD",
+                "priority": 0,
+            }
+        ],
+    )
+    client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-03"})
+    past_end = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
+    assert past_end.json() == []  # already funded through the end date — nothing new to add
+
+    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    assert summary["balances"]["emergency-fund"] == pytest.approx(50.0)
+
+
+def test_put_recurring_additions_still_accepts_the_legacy_schedule_day_of_month(client) -> None:
+    response = client.put(
+        "/api/accounting/recurring-additions",
+        json=[
+            {
+                "addition_id": "auto:emergency-fund",
+                "goal_id": "emergency-fund",
+                "schedule_day_of_month": 5,
+                "mode": "fixed_amount",
+                "value": 500.0,
+                "currency": "USD",
+                "priority": 0,
+            }
+        ],
+    )
+    assert response.status_code == 200
+    saved = response.json()[0]
+    assert saved["frequency"] == "monthly"
+    assert saved["start_date"] == "2000-01-05"
 
 
 _BIG_EXPENSE_CSV = (

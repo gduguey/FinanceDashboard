@@ -8,9 +8,9 @@ from accounting.ledger.categorization import (
     apply_manual_overrides,
     apply_posting_splits,
     apply_rules,
-    resolved_rule_ids_by_transaction,
+    resolved_transfer_rule_ids_by_transaction,
 )
-from accounting.models import Account, ManualOverride, PostingSplit, PostingSplitLeg, Rule
+from accounting.models import Account, ManualOverride, PostingSplit, PostingSplitLeg, TransferRule
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 
@@ -35,7 +35,7 @@ EQORE_ACCOUNT = Account(
     institution="external",
     currency="USD",
 )
-EQORE_RULE = Rule(
+EQORE_RULE = TransferRule(
     rule_id="eqore-payroll",
     description_contains="EQORE Inc.",
     counterparty_account_id="employer:eqore",
@@ -74,7 +74,7 @@ def test_apply_rules_repoints_a_transfer_to_a_pre_created_vault_account() -> Non
         currency="USD",
         parent_account_id="sofi:savings:3680",
     )
-    vault_rule = Rule(
+    vault_rule = TransferRule(
         rule_id="travel-vault", description_contains="Travel Vault", counterparty_account_id=vault.account_id
     )
     postings = postings_to_frame(
@@ -93,7 +93,7 @@ def test_apply_rules_respects_a_rule_scoped_to_one_account() -> None:
         institution="Chase",
         currency="USD",
     )
-    scoped_rule = Rule(
+    scoped_rule = TransferRule(
         rule_id="chase-card-payoff",
         description_contains="Payment to Chase card ending in 8235",
         account_id="chase:checking:9579",
@@ -194,22 +194,22 @@ def test_apply_posting_splits_legs_are_independently_overridable() -> None:
     assert row["category_id"] == "income:bonus"
 
 
-def test_resolved_rule_ids_by_transaction_names_the_rule_that_resolved_a_transaction() -> None:
+def test_resolved_transfer_rule_ids_by_transaction_names_the_rule_that_resolved_a_transaction() -> None:
     postings = postings_to_frame(
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
     )
-    resolved_by = resolved_rule_ids_by_transaction(
+    resolved_by = resolved_transfer_rule_ids_by_transaction(
         postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
     )
     transaction_id = postings.row(0, named=True)["transaction_id"]
     assert resolved_by == {transaction_id: "eqore-payroll"}
 
 
-def test_resolved_rule_ids_by_transaction_omits_transactions_no_rule_matched() -> None:
+def test_resolved_transfer_rule_ids_by_transaction_omits_transactions_no_rule_matched() -> None:
     postings = postings_to_frame(
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "Some unrelated deposit"))
     )
-    resolved_by = resolved_rule_ids_by_transaction(
+    resolved_by = resolved_transfer_rule_ids_by_transaction(
         postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
     )
     assert resolved_by == {}
