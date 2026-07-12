@@ -4,7 +4,7 @@ import polars as pl
 import pytest
 
 from trades.config import AppConfig
-from trades.ledger.lots import ClosedLot, Lot, closed_lots_to_frame, lots_to_frame
+from trades.ledger.lots import ClosedLot, Lot
 from trades.ledger.taxes import (
     after_tax_rate_lookup,
     annual_tax_report,
@@ -42,7 +42,13 @@ def _closed_lot(
 
 
 def _closed_lots(*lots: ClosedLot) -> pl.DataFrame:
-    return closed_lots_to_frame(list(lots))
+    # Built directly against `ClosedLot.polars_schema` (a fixed data shape, not
+    # production logic) rather than calling `lots.closed_lots_to_frame` — this
+    # file tests `trades.ledger.taxes`, and shouldn't break for reasons that
+    # belong to `trades.ledger.lots` instead.
+    if not lots:
+        return pl.DataFrame(schema=ClosedLot.polars_schema)
+    return pl.DataFrame([vars(lot) for lot in lots], schema=ClosedLot.polars_schema)
 
 
 def _lot(lot_id: str, opened_at: str, symbol: str = "VOO", shares: float = 1.0, cost_per_share: float = 100.0) -> Lot:
@@ -56,7 +62,11 @@ def _lot(lot_id: str, opened_at: str, symbol: str = "VOO", shares: float = 1.0, 
 
 
 def _open_lots(*lots: Lot) -> pl.DataFrame:
-    return lots_to_frame(list(lots))
+    # See `_closed_lots`'s own comment — built directly against `Lot.polars_schema`
+    # rather than calling `lots.lots_to_frame`.
+    if not lots:
+        return pl.DataFrame(schema=Lot.polars_schema)
+    return pl.DataFrame([vars(lot) for lot in lots], schema=Lot.polars_schema)
 
 
 def _event(

@@ -125,6 +125,12 @@ class _FakeMaintenanceEngine:
 
 def _patch_maintenance_engine(monkeypatch: pytest.MonkeyPatch, executed: list[str]) -> None:
     monkeypatch.setattr(backup_module, "create_engine", lambda *args, **kwargs: _FakeMaintenanceEngine(executed))
+    # A placeholder, not the real value used below — `DatabaseSettings.__init__` still validates
+    # that *some* DATABASE_URL is present (env var or `.env` file) before the property override
+    # two lines down replaces every instance's `.database_url` outright; with conftest.py's
+    # `_no_real_database_by_default` blanking `env_file` for the whole suite, this env var is the
+    # only thing standing between construction and a ValidationError — never the real `.env` file.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://placeholder/placeholder")
     monkeypatch.setattr(
         backup_module.DatabaseSettings,
         "database_url",
@@ -207,6 +213,10 @@ def _real_postgres_reachable() -> bool:
 @pytest.mark.skipif(not _real_postgres_reachable(), reason="No reachable local Postgres for this integration test")
 def test_verify_backup_restorable_against_real_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     real_test_database_url = TestDatabaseSettings().database_url
+    # See `_patch_maintenance_engine`'s own comment — a placeholder, just to get
+    # `DatabaseSettings.__init__` past its own required-field check; the property
+    # override below is what every caller actually reads.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://placeholder/placeholder")
     monkeypatch.setattr(
         backup_module.DatabaseSettings,
         "database_url",
@@ -315,6 +325,8 @@ def test_prune_old_backups_deletes_nothing_when_fewer_r2_objects_than_retention_
 
 def test_run_backup_verifies_before_uploading_then_prunes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backup_module, "run_pg_dump", lambda database_url: b"dump-bytes")
+    # See `_patch_maintenance_engine`'s own comment on why this placeholder env var is needed.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://placeholder/placeholder")
     monkeypatch.setattr(
         backup_module.DatabaseSettings, "database_url", property(lambda self: "postgresql://x/y"), raising=False
     )
@@ -346,6 +358,8 @@ def test_run_backup_verifies_before_uploading_then_prunes(monkeypatch: pytest.Mo
 
 def test_run_backup_does_not_upload_or_prune_when_verification_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backup_module, "run_pg_dump", lambda database_url: b"dump-bytes")
+    # See `_patch_maintenance_engine`'s own comment on why this placeholder env var is needed.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://placeholder/placeholder")
     monkeypatch.setattr(
         backup_module.DatabaseSettings, "database_url", property(lambda self: "postgresql://x/y"), raising=False
     )

@@ -26,25 +26,10 @@ from botocore.exceptions import ClientError
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from db.current_user import DEFAULT_USER_ID as _DEFAULT_USER_ID
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-
-DEFAULT_USER_ID = str(_DEFAULT_USER_ID)
-"""Placeholder owner id prefixed onto every R2 object key (`statements/<user_id>/...`).
-
-There is no login flow yet, so every statement in this single-user
-deployment is archived under the one seeded `db.models.User` row's id
-(`db.current_user.DEFAULT_USER_ID`) — the same id every Postgres-backed
-row in this app defaults to today. Once a real login flow exists, every
-call site that constructs a `StatementArchive` is the thing that needs to
-start passing the authenticated request's actual `current_user.id` here
-instead — the key layout already assumes that shape, so nothing about
-where objects live in the bucket has to change.
-"""
 
 
 @dataclass(frozen=True)
@@ -145,8 +130,9 @@ class StatementArchive:
         local_root
             Where files live on disk when R2 isn't configured.
         remote_prefix
-            The R2 key prefix files live under when it is (see
-            `DEFAULT_USER_ID` — always starts with `statements/<user_id>`).
+            The R2 key prefix files live under when it is — always starts
+            with `statements/<user_id>`, the real acting user's id (see
+            callers in `trades.brokers.ibkr.main`/`.api`).
         credentials
             R2 credentials to use; defaults to `get_r2_credentials()`.
         """
@@ -204,6 +190,12 @@ class StatementArchive:
         return self._boto_client
 
     def _key(self, relative_path: str) -> str:
+        """Build `relative_path`'s full R2 object key, under this archive's own prefix.
+
+        Returns
+        -------
+        str
+        """
         return f"{self.remote_prefix}/{relative_path}"
 
     def exists(self, relative_path: str) -> bool:

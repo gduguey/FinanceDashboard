@@ -65,10 +65,14 @@ def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
     set the `app.current_user_id` session variable every RLS policy checks
     — but takes the acting user explicitly rather than through
     `get_current_user_id()`, since a cron script or CLI entrypoint has no
-    "current request" to read that from. Callers running outside a
-    request (e.g. `python -m` scripts on a schedule) pass
-    `db.current_user.DEFAULT_USER_ID` explicitly, the same convention
-    `db.backup`/`trades.utils.statement_archive` already use.
+    "current request" to read that from. Every caller outside a request
+    passes a real, specific user id it already has in hand — e.g.
+    `trades.market_data.price_sync` loops over every real user id (read via
+    the superuser role, the same way `db.backup` bypasses RLS) and opens
+    one of these per user; `trades.api.webhooks` passes the fresh id it
+    just generated for a newly provisioned user. `tests.conftest`'s
+    `DEFAULT_USER_ID` — a stable, arbitrary test-fixture id, never a real
+    user — is a test-only concept and never appears here.
 
     Parameters
     ----------
