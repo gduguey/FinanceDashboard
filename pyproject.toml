@@ -31,6 +31,7 @@ api = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
     "clerk-backend-api>=6.0.1",
+    "svix>=1.96.1",
 ]
 llm = [
     "google-genai>=1.0",

@@ -1,7 +1,7 @@
-"""`users` and `user_secrets` — the two tables shared by `accounting` and `trades`.
+"""`users`, `external_identities`, and `user_secrets` — the tables shared by `accounting` and `trades`.
 
-See `db/__init__.py` for why these two, and only these two, live outside
-either module's own schema.
+See `db/__init__.py` for why these, and only these, live outside either
+module's own schema.
 """
 
 from __future__ import annotations
@@ -19,19 +19,50 @@ from db.base import Base
 class User(Base):
     """One person using this app. Every other table's `user_id` foreign-keys here.
 
-    Shaped to match what `fastapi-users` expects, so adding real
-    authentication later needs no schema change — only wiring a login flow
-    on top of a table that already has the columns it needs.
+    Knows nothing about Clerk, or any other identity provider, on purpose
+    — see `db.external_identities` for where that mapping actually lives,
+    and its own docstring for why it's a separate table rather than a
+    column here. `hashed_password`/`is_active`/`is_superuser`/`is_verified`
+    are vestigial, kept only because this table was originally shaped to
+    match what a different auth library expected, from before Clerk became
+    this app's real identity provider — nothing reads them anymore.
+
+    `email` is deliberately **not** unique: it's display information, not
+    a lookup key (`external_identities` is the real identity link) —
+    deleting someone in Clerk and re-inviting the same address creates a
+    second, unrelated row with the same email rather than colliding with
+    the first one's now-orphaned data. See `trades.api.webhooks`.
     """
 
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(unique=True)
+    email: Mapped[str]
     hashed_password: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True)
     is_superuser: Mapped[bool] = mapped_column(default=False)
     is_verified: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class ExternalIdentity(Base):
+    """Links one identity-provider account to a row in `users` — see `db.external_identities`.
+
+    `(provider, external_id)` is the primary key: one external account
+    links to exactly one internal user. Deliberately excluded from Row-
+    Level Security (migration `817ace9deb09`'s `_USER_SCOPED_TABLES` never
+    lists this table) — it holds no financial data, only an identity
+    mapping, and it's the one place a lookup has to work *before* the
+    caller already knows which user is asking, which RLS would otherwise
+    block. See `db.external_identities`'s own module docstring for the
+    full reasoning.
+    """
+
+    __tablename__ = "external_identities"
+
+    provider: Mapped[str] = mapped_column(primary_key=True)
+    external_id: Mapped[str] = mapped_column(primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

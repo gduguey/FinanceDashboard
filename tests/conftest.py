@@ -32,6 +32,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session
 
 import db.models
+import db.session as session_module
 from db.base import Base
 from db.settings import TestDatabaseSettings
 
@@ -51,6 +52,7 @@ try:
     import trades.api as trades_api
     import trades.db  # noqa: F401  (registers trades.* tables on Base.metadata)
     import trades.utils.statement_archive as trades_storage
+    from db.current_user import DEFAULT_USER_ID, get_current_user_id
     from trades.api.auth import require_clerk_session
 except ModuleNotFoundError:
     trades_storage = None
@@ -84,13 +86,25 @@ def _bypass_clerk_auth_by_default() -> Iterator[None]:
     exercise `require_clerk_session` itself (see
     `tests/trades/api/test_auth.py`) calls it directly instead of going
     through `TestClient`, so this override never masks that behavior.
+
+    Also overrides `get_current_user_id` to `DEFAULT_USER_ID` — even
+    though `_db_for_api`'s own `get_db` override never actually calls it,
+    FastAPI still resolves `get_db`'s *original* sub-dependency tree
+    (built from its real signature at route-registration time) before
+    substituting the overridden callable, so `get_current_user_id`'s
+    un-overridden body (which always raises, see its own docstring) would
+    otherwise still run and fail every request — confirmed empirically,
+    overriding `get_db` alone does not skip resolving its declared
+    sub-dependencies.
     """
     if trades_api is None:
         yield
         return
     trades_api.app.dependency_overrides[require_clerk_session] = lambda: None
+    trades_api.app.dependency_overrides[get_current_user_id] = lambda: DEFAULT_USER_ID
     yield
     trades_api.app.dependency_overrides.pop(require_clerk_session, None)
+    trades_api.app.dependency_overrides.pop(get_current_user_id, None)
 
 
 _TEST_SECRETS_ENCRYPTION_KEY = Fernet.generate_key().decode()
@@ -111,6 +125,19 @@ def _fixed_secrets_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_SECRETS_ENCRYPTION_KEYS_PREVIOUS", raising=False)
 
 
+def _clear_get_engine_cache() -> None:
+    """Clear `get_engine`'s `@lru_cache`, if it's still the real decorated function.
+
+    Some tests (e.g. `tests/db/test_session.py`) monkeypatch
+    `session_module.get_engine` to a plain lambda for their own duration —
+    which has no `cache_clear` at all — so this is a no-op rather than an
+    `AttributeError` for those, regardless of fixture teardown ordering.
+    """
+    cache_clear = getattr(session_module.get_engine, "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip `DATABASE_URL`/`DATABASE_URL_APP` (the real dev database) from every test's environment.
@@ -124,9 +151,23 @@ def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     would otherwise silently connect to and mutate the real dev database
     instead of failing. With both gone, that failure mode becomes a loud
     `ValidationError` (missing required field) instead.
+
+    `get_engine`'s own `@lru_cache` is cleared both before and after —
+    confirmed the hard way: it caches process-wide, for the whole pytest
+    run, not per-test. If anything anywhere calls it even once before this
+    fixture's env-stripping takes effect for that call, the *real* engine
+    it builds stays cached and silently keeps working for every later
+    test, regardless of what this fixture strips from `os.environ` after
+    that point — turning this fixture's entire protection into a no-op for
+    the rest of the run. Clearing the cache on both sides of every single
+    test closes that gap: no cached engine can ever outlive the test that
+    (validly or not) constructed it.
     """
+    _clear_get_engine_cache()
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL_APP", raising=False)
+    yield
+    _clear_get_engine_cache()
 
 
 @pytest.fixture(scope="session")

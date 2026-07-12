@@ -72,6 +72,22 @@ do natively (generated route trees, typed dynamic segments, pathless
 layout routes) — we don't have any of those features, just the "folder
 shape = URL shape" convention, layered on top of plain `react-router-dom`.
 
+### Why there's no `_authed/`-style folder for auth
+
+Apps built on TanStack Router/Next.js often put a pathless layout route
+(e.g. `_authed.tsx` wrapping an `_authed/` folder) above every gated page,
+with the public landing page as a sibling outside it — folder nesting
+doubles as layout composition there, and their landing route renders for
+both signed-in and signed-out visitors (real public marketing content).
+Our routing has no nesting/layout concept at all (see above — one file is
+always one flat page), and every page here requires auth, with no public
+content to split out. So instead `AuthGate` (`components/layout/AuthGate.tsx`)
+wraps the *entire* app above `<Routes>`, in `main.tsx` — not a route at
+all, just whatever renders in place of any URL while signed out. Since it
+never touches the URL, a signed-out visit to e.g. `/net-worth` still shows
+that page immediately once signed in, with no redirect-back bookkeeping
+needed.
+
 The backend's `src/trades/api/routers/` and `src/accounting/api/routers/`
 are a different, unrelated kind of "router" — FastAPI `APIRouter`s that
 group HTTP endpoints by domain (`dashboard.py`, `settings.py`, `store.py`,
