@@ -47,4 +47,5 @@ function Button({
   return <ButtonPrimitive data-slot="button" className={cn(buttonVariants({ variant, size, className }))} {...props} />
 }
 
+// biome-ignore lint/style/useComponentExportOnlyModules: shadcn/ui generated file — component + its cva variants is the standard shape
 export { Button, buttonVariants }
