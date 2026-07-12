@@ -458,7 +458,7 @@ def test_ledger_export_returns_every_row(client) -> None:
 def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_session, monkeypatch) -> None:
     save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
 
-    def fake_sync(credentials, config, session, on_progress=None):
+    def fake_sync(credentials, config, session, user_id, on_progress=None):
         raw_dir = config.ibkr.raw_statement_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
@@ -501,7 +501,7 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
     monkeypatch.setenv("IBKR_FLEX_WEB_SERVICE_TOKEN", "test-token")
     monkeypatch.setenv("IBKR_QUERY_ID", "12345")
 
-    def fake_sync(credentials, config, session, on_progress=None):
+    def fake_sync(credentials, config, session, user_id, on_progress=None):
         raw_dir = config.ibkr.raw_statement_dir
         raw_dir.mkdir(parents=True, exist_ok=True)
         (raw_dir / "20260104T000000.xml").write_text("<FlexQueryResponse />", encoding="utf-8")
@@ -529,7 +529,7 @@ def test_sync_reports_a_failed_step_when_ibkr_fails(client, db_session, monkeypa
     """
     save_ibkr_credentials(db_session, DEFAULT_USER_ID, token="test-token", query_id="12345")  # noqa: S106
 
-    def failing_sync(credentials, config, session, on_progress=None):
+    def failing_sync(credentials, config, session, user_id, on_progress=None):
         message = "IBKR Flex API error 1018: too many requests"
         raise ValueError(message)
 

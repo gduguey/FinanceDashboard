@@ -64,7 +64,9 @@ def get_simulator_projection(
     return [ProjectionPoint(**vars(point)) for point in points]
 
 
-def _external_investment_values_usd(dates: list[date], session: Session) -> dict[date, float] | None:
+def _external_investment_values_usd(
+    dates: list[date], session: Session, user_id: uuid.UUID
+) -> dict[date, float] | None:
     """Look up the tracked investment portfolio's value as of each requested date, from `trades`'s own ledger.
 
     Imported lazily, and reads the *running* `trades.api` app's own
@@ -91,6 +93,8 @@ def _external_investment_values_usd(dates: list[date], session: Session) -> dict
         Every date a value is needed for.
     session
         An open database session.
+    user_id
+        Whose trades ledger to read.
 
     Returns
     -------
@@ -103,7 +107,7 @@ def _external_investment_values_usd(dates: list[date], session: Session) -> dict
     from trades.dashboard.valuation import daily_portfolio_values, make_price_lookup  # noqa: PLC0415
 
     trades_config = trades_api.app.state.config
-    ledger = trades_main.load_ledger(session)
+    ledger = trades_main.load_ledger(session, user_id)
     if ledger.is_empty():
         return None
     first_event_date = cast("date", ledger["event_datetime"].dt.date().min())
@@ -154,7 +158,7 @@ def get_interest_summary(
     -------
     list[InterestAccountRow]
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     rows = interest.interest_summary(
         postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of, session, user_id)
@@ -164,7 +168,11 @@ def get_interest_summary(
 
 @router.get("/net-worth")
 def get_net_worth(
-    *, as_of: date | None = None, display_currency: CurrencyCode = "USD", session: Annotated[Session, Depends(get_db)]
+    *,
+    as_of: date | None = None,
+    display_currency: CurrencyCode = "USD",
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> NetWorthSummary:
     """Return the full net-worth view: every account's balance, grouped, plus manually-added assets.
 
@@ -172,13 +180,15 @@ def get_net_worth(
     -------
     NetWorthSummary
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     has_external_investment = any(
         account.kind == "external_investment" and account.external_ref == "trades"
         for account in store.accounts.values()
     )
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
-    external_values = _external_investment_values_usd([resolved_as_of], session) if has_external_investment else None
+    external_values = (
+        _external_investment_values_usd([resolved_as_of], session, user_id) if has_external_investment else None
+    )
     summary = net_worth_summary(
         postings,
         store.accounts,
@@ -208,6 +218,7 @@ def get_net_worth_history(
     interval_days: int = 1,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[NetWorthHistoryPoint]:
     """Return net worth as of a regularly-spaced series of dates, for a history chart.
 
@@ -221,13 +232,13 @@ def get_net_worth_history(
     list[NetWorthHistoryPoint]
         Oldest first.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     has_external_investment = any(
         account.kind == "external_investment" and account.external_ref == "trades"
         for account in store.accounts.values()
     )
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
-    external_values = _external_investment_values_usd(dates, session) if has_external_investment else None
+    external_values = _external_investment_values_usd(dates, session, user_id) if has_external_investment else None
     return [
         NetWorthHistoryPoint(
             date=day,
@@ -253,6 +264,7 @@ def get_net_worth_history_by_account(
     interval_days: int = 1,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[NetWorthHistoryByAccountPoint]:
     """Return every real account's own balance as of a regularly-spaced series of dates.
 
@@ -266,7 +278,7 @@ def get_net_worth_history_by_account(
     list[NetWorthHistoryByAccountPoint]
         `balance` already converted into `display_currency`.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     real_accounts = {
         account_id: account
@@ -276,7 +288,7 @@ def get_net_worth_history_by_account(
     has_external_investment = any(
         account.kind == "external_investment" and account.external_ref == "trades" for account in real_accounts.values()
     )
-    external_values = _external_investment_values_usd(dates, session) if has_external_investment else None
+    external_values = _external_investment_values_usd(dates, session, user_id) if has_external_investment else None
 
     balances = cast("pl.DataFrame", account_balances_over_time(postings, dates))
     balance_lookup = {(row["account_id"], row["date"]): row["balance"] for row in balances.to_dicts()}
@@ -312,6 +324,7 @@ def get_category_totals(
     tag_id: str | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[CategoryTotalRow]:
     """Sum real income/expense postings by classification, category, and subcategory.
 
@@ -319,7 +332,7 @@ def get_category_totals(
     -------
     list[CategoryTotalRow]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
     parsed_account_ids = account_ids.split(",") if account_ids else None
     totals = collect_if_lazy(
         income_statement.category_totals(
@@ -342,6 +355,7 @@ def get_monthly_income_expense(
     *,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[MonthlyIncomeExpenseRow]:
     """Sum real income and real expense per calendar month.
 
@@ -349,7 +363,7 @@ def get_monthly_income_expense(
     -------
     list[MonthlyIncomeExpenseRow]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
     rows = collect_if_lazy(
         income_statement.monthly_income_expense(
             postings, store.accounts, start, end, _display_currency(display_currency, store)
@@ -365,6 +379,7 @@ def get_spend_curve(
     lookback_months: int = 3,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[SpendCurvePoint]:
     """Cumulative daily spend through one month, next to the average of the prior months.
 
@@ -372,7 +387,7 @@ def get_spend_curve(
     -------
     list[SpendCurvePoint]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
     rows = collect_if_lazy(
         income_statement.spend_curve_vs_average(
             postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
@@ -387,6 +402,7 @@ def get_budget_comparison(
     *,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[BudgetComparisonRow]:
     """Every category budgeted for one month, actual spend next to the target.
 
@@ -401,7 +417,7 @@ def get_budget_comparison(
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
-    postings, store = _resolved_postings_for_aggregation(state.config, session)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
     rows = budgets.budget_comparison(
         postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
     )
@@ -417,6 +433,7 @@ def get_suggested_budget_amount(
     subcategory_id: str | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> SuggestedBudgetAmount:
     """Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
 
@@ -431,7 +448,7 @@ def get_suggested_budget_amount(
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
-    postings, store = _resolved_postings_for_aggregation(state.config, session)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
     amount = budgets.suggested_budget_amount(
         postings,
         store.accounts,

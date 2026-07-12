@@ -78,13 +78,13 @@ def get_overview(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     try:
         cards = dashboard.overview_cards(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return Overview(**asdict(cards), last_synced_at=_last_synced_iso())
+    return Overview(**asdict(cards), last_synced_at=_last_synced_iso(user_id))
 
 
 @router.get("/api/chart/dollar")
@@ -106,7 +106,7 @@ def get_dollar_chart(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
@@ -139,7 +139,7 @@ def get_growth_of_100_chart(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
@@ -174,7 +174,7 @@ def get_cash_history(
     HTTPException
         Via `_load_ledger`, if no ledger is cached yet (404).
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     config = _config()
     settings = dashboard.load_settings(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
@@ -211,7 +211,7 @@ def get_cash_sitting(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     config = _config()
     settings = dashboard.load_settings(session, user_id)
     today = datetime.now(tz=UTC).date()
@@ -227,7 +227,10 @@ def get_cash_sitting(
 
 @router.get("/api/chart/monthly-pnl")
 def get_monthly_pnl(
-    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[MonthlyPnlRow]:
     """Return each month's value change split into contributions and market gain.
 
@@ -241,7 +244,7 @@ def get_monthly_pnl(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         rows = dashboard.monthly_pnl(ledger, _config(), range_start, range_end)
@@ -252,7 +255,10 @@ def get_monthly_pnl(
 
 @router.get("/api/chart/monthly-pnl/by-symbol")
 def get_monthly_pnl_by_symbol(
-    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    start: date | None = None,
+    end: date | None = None,
 ) -> list[MonthlyPnlBySymbolRow]:
     """Return each month's value change split into contributions and market gain, per symbol.
 
@@ -266,7 +272,7 @@ def get_monthly_pnl_by_symbol(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         rows = dashboard.monthly_pnl_by_symbol(ledger, _config(), range_start, range_end)
@@ -293,7 +299,7 @@ def get_allocation(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     try:
         rows = dashboard.allocation_view(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
@@ -327,7 +333,7 @@ def get_tax_report(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     try:
         summary = dashboard.tax_summary(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
@@ -365,7 +371,7 @@ def get_lots(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     settings = dashboard.load_settings(session, user_id)
     try:
         table = dashboard.lots_table(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
@@ -380,7 +386,10 @@ def get_lots(
 
 @router.get("/api/risk")
 def get_risk(
-    session: Annotated[Session, Depends(get_db)], start: date | None = None, end: date | None = None
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    start: date | None = None,
+    end: date | None = None,
 ) -> RiskStat:
     """Return the largest peak-to-trough NAV decline over a window.
 
@@ -394,7 +403,7 @@ def get_risk(
     HTTPException
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     range_start, range_end = _chart_range(ledger, start, end)
     try:
         return RiskStat(max_drawdown_pct=dashboard.risk_stat(ledger, _config(), range_start, range_end))
@@ -416,7 +425,7 @@ def get_data_quality(
     """
     config = _config()
     settings = dashboard.load_settings(session, user_id)
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     held_and_benchmark = {*ledger["symbol"].unique().to_list(), dashboard.resolved_benchmark_symbol(config, settings)}
     symbols = sorted(held_and_benchmark - {config.ledger.cash_symbol})
     rows = dashboard.data_quality(symbols, config)
@@ -424,7 +433,9 @@ def get_data_quality(
 
 
 @router.get("/api/ledger/export")
-def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[LedgerEvent]:
+def get_ledger_export(
+    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
+) -> list[LedgerEvent]:
     """Export the full ledger, for the user's own backup.
 
     Returns
@@ -432,4 +443,4 @@ def get_ledger_export(session: Annotated[Session, Depends(get_db)]) -> list[Ledg
     list[LedgerEvent]
         Every ledger row.
     """
-    return [LedgerEvent(**row) for row in _load_ledger(session).to_dicts()]
+    return [LedgerEvent(**row) for row in _load_ledger(session, user_id).to_dicts()]

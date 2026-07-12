@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
@@ -23,13 +24,18 @@ from accounting.ledger.goal_automations import (
 )
 from accounting.models import CurrencyCode, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
 from accounting.store import load_store, save_store
+from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
 
 
 @router.put("/goals")
-def put_goals(goals: dict[str, Goal], session: Annotated[Session, Depends(get_db)]) -> dict[str, Goal]:
+def put_goals(
+    goals: dict[str, Goal],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, Goal]:
     """Replace the whole goal list.
 
     Returns
@@ -37,15 +43,17 @@ def put_goals(goals: dict[str, Goal], session: Annotated[Session, Depends(get_db
     dict[str, Goal]
         The goals just persisted, keyed by `goal_id`.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     store = store.model_copy(update={"goals": goals})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return store.goals
 
 
 @router.put("/goal-contributions")
 def put_goal_contributions(
-    contributions: dict[str, GoalContribution], session: Annotated[Session, Depends(get_db)]
+    contributions: dict[str, GoalContribution],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> dict[str, GoalContribution]:
     """Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
 
@@ -54,15 +62,17 @@ def put_goal_contributions(
     dict[str, GoalContribution]
         The contributions just persisted, keyed by `contribution_id`.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     store = store.model_copy(update={"goal_contributions": contributions})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return store.goal_contributions
 
 
 @router.put("/recurring-additions")
 def put_recurring_additions(
-    additions: list[RecurringAddition], session: Annotated[Session, Depends(get_db)]
+    additions: list[RecurringAddition],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[RecurringAddition]:
     """Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
 
@@ -81,15 +91,17 @@ def put_recurring_additions(
         raise HTTPException(status_code=400, detail="Only one recurring addition may use mode='remainder'")
     if remainder_additions and remainder_additions[0].priority != max((a.priority for a in additions), default=0):
         raise HTTPException(status_code=400, detail="A 'remainder' addition must be the lowest-priority row")
-    store = load_store(session)
+    store = load_store(session, user_id)
     store = store.model_copy(update={"recurring_additions": additions})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return store.recurring_additions
 
 
 @router.put("/withdrawal-priorities")
 def put_withdrawal_priorities(
-    priorities: list[WithdrawalPriorityEntry], session: Annotated[Session, Depends(get_db)]
+    priorities: list[WithdrawalPriorityEntry],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[WithdrawalPriorityEntry]:
     """Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
 
@@ -98,9 +110,9 @@ def put_withdrawal_priorities(
     list[WithdrawalPriorityEntry]
         The priorities just persisted.
     """
-    store = load_store(session)
+    store = load_store(session, user_id)
     store = store.model_copy(update={"withdrawal_priorities": priorities})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return store.withdrawal_priorities
 
 
@@ -110,6 +122,7 @@ def get_goals_summary(
     as_of: date | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> GoalsSummary:
     """Every goal's balance, plus unallocated money, as of `as_of` (today if omitted).
 
@@ -120,7 +133,7 @@ def get_goals_summary(
     -------
     GoalsSummary
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     display = _display_currency(display_currency, store, as_of_date)
     contributions = contributions_to_frame(store.goal_contributions)
@@ -146,7 +159,10 @@ def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
 
 @router.post("/goals/run-recurring-additions")
 def post_run_recurring_additions(
-    *, as_of: date | None = None, session: Annotated[Session, Depends(get_db)]
+    *,
+    as_of: date | None = None,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[GoalContribution]:
     """Run every recurring addition whose most recent scheduled occurrence hasn't already run.
 
@@ -164,7 +180,7 @@ def post_run_recurring_additions(
     list[GoalContribution]
         The new contributions just written (empty if nothing was due).
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     existing_ids = set(store.goal_contributions.keys())
 
@@ -202,13 +218,16 @@ def post_run_recurring_additions(
         )
 
     store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
-    save_store(store, session)
+    save_store(store, session, user_id)
     return list(new_contributions.values())
 
 
 @router.post("/goals/run-withdrawal-automation")
 def post_run_withdrawal_automation(
-    *, as_of: date | None = None, session: Annotated[Session, Depends(get_db)]
+    *,
+    as_of: date | None = None,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> WithdrawalAutomationResult:
     """If unallocated money is negative as of today, draw down goals (by withdrawal priority) to cover it.
 
@@ -225,7 +244,7 @@ def post_run_withdrawal_automation(
         The contributions just written, and however much of the shortfall
         (if any) no goal had enough left to cover.
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     contributions_frame = contributions_to_frame(store.goal_contributions)
     unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
@@ -251,7 +270,7 @@ def post_run_withdrawal_automation(
         )
 
     store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
-    save_store(store, session)
+    save_store(store, session, user_id)
     remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
     return WithdrawalAutomationResult(
         withdrawals=list(new_contributions.values()), remaining_shortfall=remaining_shortfall
@@ -260,7 +279,9 @@ def post_run_withdrawal_automation(
 
 @router.post("/goals/simulate-contribution")
 def post_simulate_contribution(
-    payload: SimulateContributionRequest, session: Annotated[Session, Depends(get_db)]
+    payload: SimulateContributionRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> SimulateContributionResult:
     """Check a proposed manual contribution against unallocated money, and project the next automation run.
 
@@ -276,7 +297,7 @@ def post_simulate_contribution(
         running once more, with this contribution already applied, so the
         user can see if it sets up a shortfall soon after (non-blocking).
     """
-    postings, store = _resolved_postings_and_store(state.config, session)
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
     contributions_frame = contributions_to_frame(store.goal_contributions)
     unallocated_as_of_date = unallocated_balance(postings, store.accounts, contributions_frame, payload.date)
     exceeds_unallocated = payload.amount > unallocated_as_of_date

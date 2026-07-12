@@ -17,9 +17,10 @@ import requests
 from defusedxml import ElementTree
 
 from trades.brokers.ibkr.models import IbkrCashTransaction, IbkrTrade, parse_ibkr_datetime
-from trades.utils.statement_archive import DEFAULT_USER_ID, StatementArchive
+from trades.utils.statement_archive import StatementArchive
 
 if TYPE_CHECKING:
+    import uuid
     from collections.abc import Callable
     from datetime import date
 
@@ -206,7 +207,7 @@ def parse_statement(xml_text: str) -> ParsedStatement:
     )
 
 
-def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) -> None:
+def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig, user_id: uuid.UUID) -> None:
     """Archive the exact bytes IBKR returned, before any parsing is attempted.
 
     Written to R2 (`statements/<user_id>/ibkr/...`) when configured, else to
@@ -227,8 +228,10 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
         `models.py`'s storage convention).
     config
         Application configuration; `config.ibkr.raw_statement_dir` is read.
+    user_id
+        Whose sync this statement was archived from.
     """
-    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{user_id}/ibkr")
     data = xml_text.encode("utf-8")
     suffix = 0
     while True:
@@ -240,13 +243,15 @@ def save_raw_statement(xml_text: str, received_at: datetime, config: AppConfig) 
         suffix += 1
 
 
-def last_synced_at(config: AppConfig) -> datetime | None:
+def last_synced_at(config: AppConfig, user_id: uuid.UUID) -> datetime | None:
     """Look up the naive-UTC time of the most recent sync.
 
     Parameters
     ----------
     config
         Application configuration; `config.ibkr.raw_statement_dir` is read.
+    user_id
+        Whose most recent sync to look up.
 
     Returns
     -------
@@ -254,7 +259,7 @@ def last_synced_at(config: AppConfig) -> datetime | None:
         The receive time of the most recently archived raw statement, or
         None if nothing has ever been synced.
     """
-    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{DEFAULT_USER_ID}/ibkr")
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{user_id}/ibkr")
     relative_paths = archive.list_relative_paths("*.xml")
     if not relative_paths:
         return None

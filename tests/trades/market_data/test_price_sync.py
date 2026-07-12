@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from contextlib import contextmanager
 from datetime import date, datetime
 
@@ -12,6 +13,9 @@ from trades import dashboard
 from trades.brokers.ibkr import main
 from trades.config import AppConfig
 from trades.market_data import price_sync, prices
+
+_USER_A = uuid.uuid4()
+_USER_B = uuid.uuid4()
 
 
 def _config(tmp_path) -> AppConfig:
@@ -29,12 +33,21 @@ def _fake_session_scope(monkeypatch):
     monkeypatch.setattr(price_sync, "session_scope", _fake_scope)
 
 
+@pytest.fixture(autouse=True)
+def _one_fake_user(monkeypatch):
+    """Most tests below only care about the single-user aggregation logic — one fixed id is enough.
+
+    `test_...aggregates_across_every_real_user...` overrides this with two.
+    """
+    monkeypatch.setattr(price_sync, "_all_user_ids", lambda: [_USER_A])
+
+
 def test_held_symbols_excludes_the_cash_symbol_and_includes_the_benchmark(tmp_path, monkeypatch) -> None:
     ledger = pl.DataFrame({
         "event_datetime": [datetime(2026, 1, 1), datetime(2026, 1, 2), datetime(2026, 1, 3)],
         "symbol": ["CASH", "AAPL", "MSFT"],
     })
-    monkeypatch.setattr(main, "load_ledger", lambda session: ledger)
+    monkeypatch.setattr(main, "load_ledger", lambda session, user_id: ledger)
     monkeypatch.setattr(dashboard, "load_settings", lambda session, user_id: dashboard.DashboardSettings())
     monkeypatch.setattr(dashboard, "resolved_benchmark_symbol", lambda config, settings: "VOO")
 
@@ -57,7 +70,7 @@ def test_held_symbols_excludes_the_cash_symbol_and_includes_the_benchmark(tmp_pa
 
 
 def test_empty_ledger_uses_today_as_since_and_no_held_symbols(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(main, "load_ledger", lambda session: pl.DataFrame(schema={"symbol": pl.Utf8}))
+    monkeypatch.setattr(main, "load_ledger", lambda session, user_id: pl.DataFrame(schema={"symbol": pl.Utf8}))
     monkeypatch.setattr(dashboard, "load_settings", lambda session, user_id: dashboard.DashboardSettings())
     monkeypatch.setattr(dashboard, "resolved_benchmark_symbol", lambda config, settings: "VOO")
 
@@ -77,7 +90,7 @@ def test_empty_ledger_uses_today_as_since_and_no_held_symbols(tmp_path, monkeypa
 
 def test_returns_the_refreshed_symbol_list(tmp_path, monkeypatch) -> None:
     ledger = pl.DataFrame({"event_datetime": [datetime(2026, 1, 1)], "symbol": ["AAPL"]})
-    monkeypatch.setattr(main, "load_ledger", lambda session: ledger)
+    monkeypatch.setattr(main, "load_ledger", lambda session, user_id: ledger)
     monkeypatch.setattr(dashboard, "load_settings", lambda session, user_id: dashboard.DashboardSettings())
     monkeypatch.setattr(dashboard, "resolved_benchmark_symbol", lambda config, settings: "VOO")
     monkeypatch.setattr(prices, "update_price_caches", lambda symbols, since, as_of, config: {})
@@ -95,7 +108,7 @@ def test_refreshes_adjusted_history_for_every_held_and_benchmark_symbol_not_just
     # cache fresh), every held symbol also needs its adjusted-close cache
     # refreshed for its own counterfactual comparisons.
     ledger = pl.DataFrame({"event_datetime": [datetime(2026, 1, 1)], "symbol": ["AAPL"]})
-    monkeypatch.setattr(main, "load_ledger", lambda session: ledger)
+    monkeypatch.setattr(main, "load_ledger", lambda session, user_id: ledger)
     monkeypatch.setattr(dashboard, "load_settings", lambda session, user_id: dashboard.DashboardSettings())
     monkeypatch.setattr(dashboard, "resolved_benchmark_symbol", lambda config, settings: "VOO")
     monkeypatch.setattr(prices, "update_price_caches", lambda symbols, since, as_of, config: {})
@@ -110,3 +123,30 @@ def test_refreshes_adjusted_history_for_every_held_and_benchmark_symbol_not_just
     price_sync.run_price_sync(_config(tmp_path))
 
     assert adjusted_calls == [["AAPL", "VOO"]]
+
+
+def test_aggregates_held_and_benchmark_symbols_across_every_real_user(tmp_path, monkeypatch) -> None:
+    """The actual multi-user fix: two different users' portfolios both contribute to what gets refreshed."""
+    monkeypatch.setattr(price_sync, "_all_user_ids", lambda: [_USER_A, _USER_B])
+
+    ledgers = {
+        _USER_A: pl.DataFrame({"event_datetime": [datetime(2026, 1, 2)], "symbol": ["AAPL"]}),
+        _USER_B: pl.DataFrame({"event_datetime": [datetime(2026, 1, 1)], "symbol": ["TSLA"]}),
+    }
+    benchmarks = {_USER_A: "VOO", _USER_B: "SPY"}
+
+    monkeypatch.setattr(main, "load_ledger", lambda session, user_id: ledgers[user_id])
+    monkeypatch.setattr(dashboard, "load_settings", lambda session, user_id: user_id)
+    monkeypatch.setattr(dashboard, "resolved_benchmark_symbol", lambda config, settings: benchmarks[settings])
+
+    raw_calls = []
+    monkeypatch.setattr(
+        prices, "update_price_caches", lambda symbols, since, as_of, config: raw_calls.append((symbols, since))
+    )
+    monkeypatch.setattr(prices, "refresh_adjusted_price_histories", lambda symbols, since, as_of, config: None)
+
+    symbols = price_sync.run_price_sync(_config(tmp_path))
+
+    assert symbols == ["AAPL", "SPY", "TSLA", "VOO"]
+    # The earlier of the two users' first-event dates wins, so neither user's history is truncated.
+    assert raw_calls == [(["AAPL", "SPY", "TSLA", "VOO"], date(2026, 1, 1))]

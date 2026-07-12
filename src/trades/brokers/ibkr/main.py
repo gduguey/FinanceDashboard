@@ -10,11 +10,9 @@ import polars as pl
 
 import trades.db as tdb
 from db.base import derive_id
-from db.current_user import DEFAULT_USER_ID
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
 from trades.models import LedgerEvent
-from trades.utils.statement_archive import DEFAULT_USER_ID as ARCHIVE_DEFAULT_USER_ID
 from trades.utils.statement_archive import StatementArchive
 
 if TYPE_CHECKING:
@@ -65,7 +63,7 @@ id chosen at connection-creation time instead of a constant.
 """
 
 
-def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.DataFrame:
+def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
     """Load the full event ledger.
 
     Parameters
@@ -73,9 +71,7 @@ def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.Da
     session
         An open database session.
     user_id
-        Whose ledger to load. Defaults to the single seeded user — see
-        `accounting.store.load_store` for why every caller today can leave
-        this at its default.
+        Whose ledger to load.
 
     Returns
     -------
@@ -110,7 +106,7 @@ def load_ledger(session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> pl.Da
     return pl.DataFrame(records, schema=LedgerEvent.polars_schema).sort("event_datetime", "symbol", "event_id")
 
 
-def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID) -> None:
+def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) -> None:
     """Persist the full event ledger, overwriting whatever was saved before.
 
     Unlike `accounting.importers.ingest._write_ledger`, this is a plain
@@ -125,7 +121,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID = D
     session
         An open database session; `session.commit()` is called on success.
     user_id
-        Whose ledger this is. See `load_ledger` for why it defaults.
+        Whose ledger this is.
     """
     connection_id = derive_id(user_id, "broker_connections", _DEFAULT_CONNECTION_ID)
     session.merge(
@@ -170,7 +166,7 @@ def sync_ibkr_account(
     credentials: IbkrFlexCredentials,
     config: AppConfig,
     session: Session,
-    user_id: uuid.UUID = DEFAULT_USER_ID,
+    user_id: uuid.UUID,
     on_progress: Callable[[str, float], None] | None = None,
 ) -> IbkrSyncResult:
     """Pull the configured Flex Query once and bring the local ledger cache in sync.
@@ -190,7 +186,7 @@ def sync_ibkr_account(
     session
         An open database session.
     user_id
-        Whose ledger this is. See `load_ledger` for why it defaults.
+        Whose ledger this is.
     on_progress
         Called with a short step description and a 0-100 percentage as the
         pull proceeds, for a live sync-progress display. Optional.
@@ -208,7 +204,7 @@ def sync_ibkr_account(
     xml_text = fetch_flex_statement(credentials, config, on_progress)
     if on_progress:
         on_progress("Parsing statement", 45.0)
-    save_raw_statement(xml_text, datetime.now(UTC).replace(tzinfo=None), config)
+    save_raw_statement(xml_text, datetime.now(UTC).replace(tzinfo=None), config, user_id)
     statement = parse_statement(xml_text)
 
     existing_ledger = load_ledger(session, user_id=user_id)
@@ -236,13 +232,11 @@ def sync_ibkr_account(
     )
 
 
-def rebuild_from_raw_statements(
-    config: AppConfig, session: Session, user_id: uuid.UUID = DEFAULT_USER_ID
-) -> IbkrSyncResult:
+def rebuild_from_raw_statements(config: AppConfig, session: Session, user_id: uuid.UUID) -> IbkrSyncResult:
     """Recompute the ledger from every archived raw statement.
 
     Discards whatever ledger is currently persisted. Use this to recover if
-    the derived ledger is ever wrong or corrupted. Does not gap-check: it
+    the derived ledger is ever wrong or corrupted. Does not gap-check: i
     faithfully reconstructs from whatever was archived, which is the same
     coverage `sync_ibkr_account` already verified as gap-free when each
     statement was originally fetched.
@@ -254,7 +248,7 @@ def rebuild_from_raw_statements(
     session
         An open database session.
     user_id
-        Whose ledger this is. See `load_ledger` for why it defaults.
+        Whose ledger this is.
 
     Returns
     -------
@@ -266,7 +260,7 @@ def rebuild_from_raw_statements(
     FileNotFoundError
         If no raw statements have ever been archived.
     """
-    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{ARCHIVE_DEFAULT_USER_ID}/ibkr")
+    archive = StatementArchive(config.ibkr.raw_statement_dir, f"statements/{user_id}/ibkr")
     relative_paths = archive.list_relative_paths("*.xml")
     if not relative_paths:
         message = (

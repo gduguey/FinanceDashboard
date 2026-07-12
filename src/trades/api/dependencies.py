@@ -21,6 +21,8 @@ from trades.brokers.ibkr import main
 from trades.config import AppConfig
 
 if TYPE_CHECKING:
+    import uuid
+
     import polars as pl
 
 app = FastAPI(title="Investments API")
@@ -47,13 +49,15 @@ def _report_sync_progress(step: str, percent: float) -> None:
     app.state.sync_progress = SyncProgress(step=step, percent=percent, done=False)
 
 
-def _load_ledger(session: Session) -> pl.DataFrame:
+def _load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
     """Load the cached ledger. Read-only — never touches the network.
 
     Parameters
     ----------
     session
         An open database session.
+    user_id
+        Whose ledger to load.
 
     Returns
     -------
@@ -65,7 +69,7 @@ def _load_ledger(session: Session) -> pl.DataFrame:
     HTTPException
         If no ledger has been cached yet (404).
     """
-    ledger = main.load_ledger(session)
+    ledger = main.load_ledger(session, user_id)
     if ledger.is_empty():
         message = "No ledger cached yet. Hit Sync to pull it from IBKR."
         raise HTTPException(status_code=404, detail=message)
@@ -95,7 +99,7 @@ def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
     return value.replace(tzinfo=UTC).astimezone(ZoneInfo(config.timezone.local_zone))
 
 
-def _last_synced_iso() -> str | None:
+def _last_synced_iso(user_id: uuid.UUID) -> str | None:
     config = _config()
-    last_synced = ibkr_api.last_synced_at(config)
+    last_synced = ibkr_api.last_synced_at(config, user_id)
     return _to_display_zone(last_synced, config).isoformat() if last_synced else None

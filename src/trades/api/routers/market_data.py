@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from db.current_user import get_current_user_id
 from db.session import get_db
 from trades.api.api_models import HysaBank, HysaRatePoint, HysaRates, SymbolPriceStatus, SymbolSearchResult
 from trades.api.dependencies import _config, _first_event_date, _load_ledger
@@ -54,7 +56,11 @@ def get_symbol_search(q: str) -> list[SymbolSearchResult]:
 
 
 @router.post("/api/symbols/{symbol}/ensure-priced")
-def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db)]) -> SymbolPriceStatus:
+def ensure_symbol_priced(
+    symbol: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> SymbolPriceStatus:
     """Refresh one symbol's price cache if it isn't already current, without a full sync.
 
     Lets picking a new benchmark symbol take effect immediately —
@@ -73,7 +79,7 @@ def ensure_symbol_priced(symbol: str, session: Annotated[Session, Depends(get_db
         404 if no ledger is cached yet; 422 if Yahoo Finance has no data for `symbol`.
     """
     config = _config()
-    ledger = _load_ledger(session)
+    ledger = _load_ledger(session, user_id)
     first_event = _first_event_date(ledger)
     today = datetime.now(tz=UTC).date()
 
