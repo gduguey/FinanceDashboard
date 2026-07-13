@@ -16,7 +16,6 @@ import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import (
@@ -42,7 +41,7 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
-from db.base import derive_id, natural_keys_by_id
+from db.base import VersionConflictError, check_and_bump_version, derive_id, get_version, natural_keys_by_id
 
 if TYPE_CHECKING:
     import uuid
@@ -1220,15 +1219,15 @@ def _upsert_and_prune(
         ).delete(synchronize_session=False)
 
 
-class StoreVersionConflictError(Exception):
-    """Raised by `save_store` when the caller's remembered version no longer matches what's persisted.
+# A thin, accounting-flavored name for the shared primitive in `db.base` —
+# every call site here and in `accounting.api` was written against this
+# name before the same mechanism was generalized for `trades.dashboard.
+# settings` to reuse (see `db.base.VersionConflictError`'s own docstring);
+# keeping the alias means neither those call sites nor the tests that
+# import it by this name needed to change when the logic moved.
+StoreVersionConflictError = VersionConflictError
 
-    Means someone else's save — another browser tab, another device, or
-    just an earlier request from the same tab — landed since the caller
-    last loaded this data. Mapped to an HTTP 409 by a global exception
-    handler (`trades.api.api`), not caught anywhere in `accounting.api`
-    itself, so no router needs its own try/except for it.
-    """
+_STORE_VERSION_TABLE = "accounting.store_versions"
 
 
 def get_store_version(session: Session, user_id: uuid.UUID) -> int:
@@ -1246,8 +1245,7 @@ def get_store_version(session: Session, user_id: uuid.UUID) -> int:
     int
         `0` if this user has never saved anything yet (no row exists).
     """
-    row = session.query(adb.StoreVersion).filter_by(user_id=user_id).one_or_none()
-    return row.version if row is not None else 0
+    return get_version(session, _STORE_VERSION_TABLE, user_id)
 
 
 def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
@@ -1259,16 +1257,9 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
     `X-Expected-Store-Version` header — rather than taking it as a
     parameter here, so every one of `save_store`'s call sites gets this
     check for free without threading a version through each of them
-    individually. `None` (no header sent, e.g. an older client) skips the
-    check but still bumps: a real change always has to be visible to a
-    version-aware caller later, even if this particular caller didn't opt
-    into checking itself.
-
-    The check-and-bump happens as one atomic SQL statement (an upsert with
-    a conditional `WHERE` on the update branch), not a separate read then
-    write — a read-then-write here would leave a race window where two
-    concurrent saves could both read the same "current" version and both
-    proceed.
+    individually. See `db.base.check_and_bump_version` for the actual
+    atomic check-and-bump mechanics and the `None`-skips-the-check
+    behavior, shared verbatim with `trades.dashboard.settings.save_settings`.
 
     Parameters
     ----------
@@ -1276,35 +1267,9 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
         An open database session.
     user_id
         Whose store this is.
-
-    Raises
-    ------
-    StoreVersionConflictError
-        If an expected version was given and no longer matches what's
-        actually stored.
     """
     expected_version = session.info.get("expected_store_version")
-    result = session.execute(
-        text(
-            """
-            INSERT INTO accounting.store_versions (user_id, version)
-            VALUES (:user_id, 1)
-            ON CONFLICT (user_id) DO UPDATE
-            SET version = accounting.store_versions.version + 1
-            WHERE CAST(:expected_version AS INTEGER) IS NULL
-               OR accounting.store_versions.version = CAST(:expected_version AS INTEGER)
-            RETURNING version
-            """
-        ),
-        {"user_id": str(user_id), "expected_version": expected_version},
-    )
-    if result.first() is None:
-        current = get_store_version(session, user_id)
-        message = (
-            f"This data changed elsewhere since version {expected_version} was loaded (now at version {current}) "
-            "— reload before saving again."
-        )
-        raise StoreVersionConflictError(message)
+    check_and_bump_version(session, _STORE_VERSION_TABLE, user_id, expected_version)
 
 
 def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> None:

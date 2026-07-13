@@ -1,4 +1,4 @@
-import { ApiError } from '@/lib/api'
+import { ApiError, StoreVersionConflictError } from '@/lib/api'
 import type {
   Account,
   AccountingStore,
@@ -53,11 +53,6 @@ import type {
   VerifyResult,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
-
-// A change made elsewhere (another tab, another device, or just an
-// earlier request from this same tab) since the last `GET /store` this
-// module saw — see App.tsx's mutationCache for how this is surfaced.
-export class StoreVersionConflictError extends ApiError {}
 
 // The most recent `version` this module has seen out of any accounting
 // response — updated below on every response that carries one (in

@@ -9,10 +9,13 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from db.base import check_and_bump_version, get_version
 from trades.config import TaxRegime
 from trades.db.models import DashboardSettings as DashboardSettingsRow
 from trades.ledger.taxes import after_tax_rate_lookup
 from trades.market_data import hysa_rates as hysa_rates_module
+
+_DASHBOARD_SETTINGS_VERSION_TABLE = "trades.dashboard_settings_versions"
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -93,8 +96,34 @@ def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
     )
 
 
+def get_dashboard_settings_version(session: Session, user_id: uuid.UUID) -> int:
+    """Read this user's current dashboard-settings save-version counter.
+
+    Parameters
+    ----------
+    session
+        An active database session.
+    user_id
+        Whose counter to read.
+
+    Returns
+    -------
+    int
+        `0` if this user has never saved settings yet (no row exists).
+    """
+    return get_version(session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id)
+
+
 def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.UUID) -> None:
     """Persist this user's dashboard settings, overwriting whatever was saved before.
+
+    Reads an expected version from `session.info["expected_dashboard_settings_version"]`
+    — stashed once per request by `trades.api.dependencies`'s
+    `_stash_expected_dashboard_settings_version`, from the client's own
+    `X-Expected-Dashboard-Settings-Version` header — the same optimistic-
+    concurrency mechanism `accounting.store.save_store` uses (see
+    `db.base.check_and_bump_version`), since every one of this module's
+    five settings endpoints reads-modifies-writes the same one shared row.
 
     Parameters
     ----------
@@ -105,6 +134,9 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     user_id
         Whose settings this is.
     """
+    expected_version = session.info.get("expected_dashboard_settings_version")
+    check_and_bump_version(session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id, expected_version)
+
     row = session.get(DashboardSettingsRow, user_id)
     if row is None:
         row = DashboardSettingsRow(user_id=user_id)

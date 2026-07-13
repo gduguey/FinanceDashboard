@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, cast
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from sqlalchemy.orm import Session
 
+from db.session import get_db
 from trades.api.api_models import SyncProgress
 from trades.api.auth import validate_clerk_settings
 from trades.brokers.ibkr import api as ibkr_api
@@ -27,6 +28,23 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     import polars as pl
+
+
+def _stash_expected_dashboard_settings_version(
+    session: Annotated[Session, Depends(get_db)],
+    x_expected_dashboard_settings_version: Annotated[int | None, Header()] = None,
+) -> None:
+    """Remember the client's last-seen dashboard-settings version on this request's session.
+
+    Mirrors `accounting.api.dependencies._stash_expected_store_version` —
+    a router-level dependency (see `trades.api.routers.settings`'s own
+    `APIRouter`), stashing onto the exact same `Session` instance
+    `trades.dashboard.settings.save_settings` goes on to read
+    (`session.info["expected_dashboard_settings_version"]`), without any
+    of that router's endpoints needing to thread a version through
+    themselves.
+    """
+    session.info["expected_dashboard_settings_version"] = x_expected_dashboard_settings_version
 
 
 @asynccontextmanager

@@ -9,6 +9,7 @@ import type {
   GrowthOf100Point,
   HysaRates,
   HysaSettings,
+  HysaSettingsUpdate,
   IbkrSettings,
   IbkrSettingsUpdate,
   LedgerEvent,
@@ -32,13 +33,41 @@ import type {
 
 export class ApiError extends Error {}
 
+// A change made elsewhere (another tab, another device, or just an
+// earlier request from this same tab) since the last response this
+// module saw with a `version` field — see App.tsx's mutationCache for how
+// this is surfaced. Shared with `accountingApi.ts`, whose `request()`
+// mirrors this one against `accounting`'s own `version` field, so
+// App.tsx's single `error instanceof StoreVersionConflictError` check
+// catches a conflict from either module.
+export class StoreVersionConflictError extends ApiError {}
+
+// The most recent `version` this module has seen out of any trades
+// settings response — updated below on every response that carries one
+// (`HysaSettings`, `BenchmarkSetting`, `TimezoneSetting`, `TaxSettings`;
+// `TargetAllocation`'s endpoint returns a bare dict with nowhere to carry
+// one, so it doesn't contribute) — and sent back on every non-GET request
+// so the backend can tell whether anything changed in between.
+let lastKnownDashboardSettingsVersion: number | null = null
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const method = init?.method ?? 'GET'
+  const headers = new Headers(init?.headers)
+  if (method !== 'GET' && lastKnownDashboardSettingsVersion !== null) {
+    headers.set('X-Expected-Dashboard-Settings-Version', String(lastKnownDashboardSettingsVersion))
+  }
+  const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new ApiError(body?.detail ?? `${response.status} ${response.statusText}`)
+    const message = body?.detail ?? `${response.status} ${response.statusText}`
+    if (response.status === 409) throw new StoreVersionConflictError(message)
+    throw new ApiError(message)
   }
-  return response.json() as Promise<T>
+  const data = (await response.json()) as T
+  if (data && typeof data === 'object' && 'version' in data && typeof data.version === 'number') {
+    lastKnownDashboardSettingsVersion = data.version
+  }
+  return data
 }
 
 // Date range params shared by every chart/stat endpoint — omitted keys let
@@ -82,7 +111,7 @@ export const api = {
   syncProgress: () => request<SyncProgress>('/api/sync/progress'),
   hysaRates: () => request<HysaRates>('/api/hysa-rates'),
   hysaSettings: () => request<HysaSettings>('/api/settings/hysa'),
-  setHysaSettings: (settings: HysaSettings) =>
+  setHysaSettings: (settings: HysaSettingsUpdate) =>
     request<HysaSettings>('/api/settings/hysa', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

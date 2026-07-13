@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import { api, type DateRange } from '@/lib/api'
 import type {
   BenchmarkSettingUpdate,
-  HysaSettings,
+  HysaSettingsUpdate,
   IbkrSettingsUpdate,
   TargetAllocation,
   TaxSettingsUpdate,
@@ -82,7 +82,7 @@ export const useHysaSettings = () => useQuery({ queryKey: keys.hysaSettings, que
 export function useSetHysaSettings() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (settings: HysaSettings) => api.setHysaSettings(settings),
+    mutationFn: (settings: HysaSettingsUpdate) => api.setHysaSettings(settings),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
   })
 }

@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING
 
-from trades.dashboard.settings import DashboardSettings, load_settings, save_settings
+import pytest
+
+from db.base import VersionConflictError
+from trades.dashboard.settings import DashboardSettings, get_dashboard_settings_version, load_settings, save_settings
 
 if TYPE_CHECKING:
     import uuid
@@ -45,3 +48,48 @@ def test_save_settings_overwrites_rather_than_merges(db_session: Session, test_u
     save_settings(DashboardSettings(target_allocation_pct={"VOO": 80.0}), db_session, test_user_id)
 
     assert load_settings(db_session, test_user_id).hysa_bank_id is None
+
+
+def test_get_dashboard_settings_version_is_zero_for_a_user_who_has_never_saved(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    assert get_dashboard_settings_version(db_session, test_user_id) == 0
+
+
+def test_save_settings_bumps_the_version_by_one_each_time(db_session: Session, test_user_id: uuid.UUID) -> None:
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    assert get_dashboard_settings_version(db_session, test_user_id) == 1
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    assert get_dashboard_settings_version(db_session, test_user_id) == 2
+
+
+def test_save_settings_with_no_expected_version_set_skips_the_check(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    db_session.info.pop("expected_dashboard_settings_version", None)
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    assert get_dashboard_settings_version(db_session, test_user_id) == 2
+
+
+def test_save_settings_with_the_current_expected_version_succeeds_and_bumps(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    db_session.info["expected_dashboard_settings_version"] = 1
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    assert get_dashboard_settings_version(db_session, test_user_id) == 2
+
+
+def test_save_settings_with_a_stale_expected_version_raises_and_does_not_bump(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    db_session.info["expected_dashboard_settings_version"] = 1
+    save_settings(DashboardSettings(), db_session, test_user_id)
+    assert get_dashboard_settings_version(db_session, test_user_id) == 2
+
+    db_session.info["expected_dashboard_settings_version"] = 1
+    with pytest.raises(VersionConflictError):
+        save_settings(DashboardSettings(), db_session, test_user_id)
+    assert get_dashboard_settings_version(db_session, test_user_id) == 2

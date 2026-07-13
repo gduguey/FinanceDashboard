@@ -10,7 +10,7 @@ import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { useSyncBrowserTimezone } from '@/hooks/usePortfolioData'
-import { StoreVersionConflictError } from '@/lib/accountingApi'
+import { StoreVersionConflictError } from '@/lib/api'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { routePathFromFile } from '@/lib/routing'
 
