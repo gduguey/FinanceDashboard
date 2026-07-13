@@ -64,9 +64,7 @@ def get_simulator_projection(
     return [ProjectionPoint(**vars(point)) for point in points]
 
 
-def _external_investment_values_usd(
-    dates: list[date], session: Session, user_id: uuid.UUID
-) -> dict[date, float] | None:
+def _external_investment_values(dates: list[date], session: Session, user_id: uuid.UUID) -> dict[date, float] | None:
     """Look up the tracked investment portfolio's value as of each requested date, from `trades`'s own ledger.
 
     Imported lazily, and reads the *running* `trades.api` app's own
@@ -122,7 +120,7 @@ def _benchmark_apy_pct(as_of: date, session: Session, user_id: uuid.UUID) -> flo
     """Look up `trades`'s published HYSA rate as of a date, as a percent, to compare vault/savings APYs against.
 
     Imported lazily, reading the *running* `trades.api` app's own
-    `app.state.config` — the same reasoning as `_external_investment_values_usd`.
+    `app.state.config` — the same reasoning as `_external_investment_values`.
     `session` is the same session this request's own route already holds —
     `accounting.*` and `trades.*` are separate Postgres schemas in one
     database, so one session can query both.
@@ -187,7 +185,7 @@ def get_net_worth(
     )
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     external_values = (
-        _external_investment_values_usd([resolved_as_of], session, user_id) if has_external_investment else None
+        _external_investment_values([resolved_as_of], session, user_id) if has_external_investment else None
     )
     summary = net_worth_summary(
         postings,
@@ -195,7 +193,7 @@ def get_net_worth(
         store.other_assets,
         resolved_as_of,
         _display_currency(display_currency, store, resolved_as_of),
-        external_investment_value_usd=(external_values or {}).get(resolved_as_of) if external_values else None,
+        external_investment_value=(external_values or {}).get(resolved_as_of) if external_values else None,
         opening_balances=store.opening_balances,
     )
     return NetWorthSummary(
@@ -238,7 +236,7 @@ def get_net_worth_history(
         for account in store.accounts.values()
     )
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
-    external_values = _external_investment_values_usd(dates, session, user_id) if has_external_investment else None
+    external_values = _external_investment_values(dates, session, user_id) if has_external_investment else None
     return [
         NetWorthHistoryPoint(
             date=day,
@@ -248,7 +246,7 @@ def get_net_worth_history(
                 store.other_assets,
                 day,
                 _display_currency(display_currency, store, day),
-                external_investment_value_usd=(external_values or {}).get(day, 0.0) if external_values else None,
+                external_investment_value=(external_values or {}).get(day, 0.0) if external_values else None,
                 opening_balances=store.opening_balances,
             ).net_worth,
         )
@@ -288,7 +286,7 @@ def get_net_worth_history_by_account(
     has_external_investment = any(
         account.kind == "external_investment" and account.external_ref == "trades" for account in real_accounts.values()
     )
-    external_values = _external_investment_values_usd(dates, session, user_id) if has_external_investment else None
+    external_values = _external_investment_values(dates, session, user_id) if has_external_investment else None
 
     balances = cast("pl.DataFrame", account_balances_over_time(postings, dates))
     balance_lookup = {(row["account_id"], row["date"]): row["balance"] for row in balances.to_dicts()}

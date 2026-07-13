@@ -147,7 +147,7 @@ def test_net_worth_includes_a_vault_as_its_own_asset_row_without_double_counting
 
 def test_net_worth_reads_the_external_investment_value_from_the_caller() -> None:
     accounts = {EXTERNAL_INVESTMENT.account_id: EXTERNAL_INVESTMENT}
-    summary = net_worth_summary(_postings(), accounts, [], date(2026, 6, 30), external_investment_value_usd=42000.0)
+    summary = net_worth_summary(_postings(), accounts, [], date(2026, 6, 30), external_investment_value=42000.0)
     assert summary.assets == pytest.approx(42000.0)
 
 
@@ -157,15 +157,15 @@ def test_net_worth_defaults_a_missing_external_investment_value_to_zero() -> Non
     assert summary.assets == pytest.approx(0.0)
 
 
-def test_net_worth_treats_the_trades_value_as_usd_even_if_the_account_is_set_to_a_different_currency() -> None:
+def test_net_worth_converts_a_trades_linked_investment_using_the_accounts_own_currency() -> None:
     eur_external_investment = EXTERNAL_INVESTMENT.model_copy(update={"currency": "EUR"})
     accounts = {eur_external_investment.account_id: eur_external_investment}
     display = DisplayCurrency(code="USD", rates_to_base={"USD": 1.0, "EUR": 2.0})
     summary = net_worth_summary(
-        _postings(), accounts, [], date(2026, 6, 30), display=display, external_investment_value_usd=42000.0
+        _postings(), accounts, [], date(2026, 6, 30), display=display, external_investment_value=42000.0
     )
-    assert summary.assets == pytest.approx(42000.0)
-    assert summary.accounts[0].currency == "USD"
+    assert summary.accounts[0].currency == "EUR"
+    assert summary.assets == pytest.approx(84000.0)
 
 
 def test_net_worth_ignores_the_trades_value_for_a_manual_external_investment_account() -> None:
@@ -174,7 +174,7 @@ def test_net_worth_ignores_the_trades_value_for_a_manual_external_investment_acc
         _posting("p2", "t1", "uncategorized:expense", -5000.0),
     )
     accounts = {MANUAL_EXTERNAL_INVESTMENT.account_id: MANUAL_EXTERNAL_INVESTMENT}
-    summary = net_worth_summary(postings, accounts, [], date(2026, 6, 30), external_investment_value_usd=42000.0)
+    summary = net_worth_summary(postings, accounts, [], date(2026, 6, 30), external_investment_value=42000.0)
     assert summary.assets == pytest.approx(5000.0)
 
 
@@ -190,7 +190,7 @@ def test_net_worth_adds_an_opening_balance_for_a_manual_external_investment_acco
         accounts,
         [],
         date(2026, 6, 30),
-        external_investment_value_usd=42000.0,
+        external_investment_value=42000.0,
         opening_balances=opening_balances,
     )
     assert summary.assets == pytest.approx(12000.0)
