@@ -1,0 +1,16 @@
+# Custom Caddy build for staging only — bundles the DuckDNS DNS provider
+# module so Caddyfile.staging can get a real, trusted Let's Encrypt
+# certificate via a DNS-01 challenge instead of `tls internal` (self-signed).
+# Production doesn't need this: it owns port 80 and gets a normal HTTP-01
+# cert from the stock `caddy:2-alpine` image, no custom build required.
+#
+# Go binaries here are statically linked, so a builder image's own libc
+# (glibc, in caddy:2-builder) doesn't have to match the runtime image's
+# (musl, in caddy:2-alpine) — only the final binary is copied over.
+FROM caddy:2-builder AS builder
+
+RUN xcaddy build --with github.com/caddy-dns/duckdns
+
+FROM caddy:2-alpine
+
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

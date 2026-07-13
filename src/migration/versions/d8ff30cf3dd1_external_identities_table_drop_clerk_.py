@@ -15,9 +15,11 @@ why a delete-and-re-invite of the same address must not collide with the
 first signup's now-orphaned row.
 
 Data migration, not just a schema change: any row that already has a
-`clerk_user_id` (today, only the app owner's seeded row from
-`bcb4d6662dfc`) gets its link copied into `external_identities` before
-that column is dropped — nothing here is losing information.
+`clerk_user_id` set gets its link copied into `external_identities`
+before that column is dropped — nothing here is losing information. On a
+fresh database this is a no-op (`users` starts empty — see
+`bcb4d6662dfc`), but it stays correct for anyone upgrading from a
+database that predates this migration.
 """
 from typing import Sequence, Union
 

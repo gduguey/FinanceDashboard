@@ -104,7 +104,14 @@ services:
         max-file: "3"
 
   caddy:
-    image: caddy:2-alpine
+    # Custom build (deploy/Dockerfile.caddy), not the stock caddy:2-alpine —
+    # bundles the caddy-dns/duckdns module so Caddyfile.staging can get a
+    # real Let's Encrypt cert via DNS-01 instead of a self-signed one, which
+    # is what actually lets Clerk's webhook sender (Svix) reach this
+    # endpoint at all (it rejects self-signed certs outright).
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
     container_name: staging-finance-caddy
     restart: unless-stopped
 
@@ -115,14 +122,10 @@ services:
       - ../.env.staging
 
     # Different host ports than production's 80/443 — both stacks run on
-    # the same VM/IP, so they can't both claim the standard ports. Combined
-    # with `tls internal` in Caddyfile.staging (self-signed, not Let's
-    # Encrypt), this also sidesteps a real constraint: ACME's HTTP-01
-    # challenge always targets port 80 of the domain being validated, which
-    # a non-standard port can never satisfy anyway. Self-signed is the
-    # right tool here, not a workaround — nobody but you ever visits
-    # staging, so a "not trusted" browser warning you click through once
-    # is a fine trade for zero production changes.
+    # the same VM/IP, so they can't both claim the standard ports. A DNS-01
+    # challenge (unlike HTTP-01) never touches port 80 at all, so this is
+    # safe even on a non-standard port — the whole reason DNS-01 is worth
+    # the custom build here.
     ports:
       - "8080:80"
       - "8443:443"

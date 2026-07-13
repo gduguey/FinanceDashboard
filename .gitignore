@@ -40,6 +40,9 @@ docs/app-stack/
 archive/
 info/
 
+# Hardcodes a real personal Clerk id/email — never meant to be committed
+deploy/seed_owner_user.py
+
 # Agents and their skills
 .agents/
 skills-lock.json
