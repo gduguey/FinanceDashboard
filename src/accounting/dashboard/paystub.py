@@ -61,7 +61,7 @@ def reconcile_earnings_statement(
         The full, resolved posting ledger.
     accounts
         Every known account, keyed by `account_id` — used to match a
-        deposit's `account_last4` against an account's own trailing digits.
+        deposit's `account_last4` against an account's own `last_four`.
     tolerance_days
         How many days before/after `statement.pay_date` to look for a matching deposit.
 
@@ -88,7 +88,7 @@ def reconcile_earnings_statement(
             if abs(row["amount"] - deposit.amount) > _AMOUNT_TOLERANCE:
                 continue
             account = accounts.get(row["account_id"])
-            if deposit.account_last4 and account and not account.account_id.endswith(f":{deposit.account_last4}"):
+            if deposit.account_last4 and account and account.last_four != deposit.account_last4:
                 continue
             matched_row = row
             break

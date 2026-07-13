@@ -27,6 +27,7 @@ import {
   useRebuildLedger,
   useSupportedImportKinds,
 } from '@/hooks/useAccountingData'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
 import type { Account, CanonicalCategoryOverrides, Category, CurrencyCode } from '@/types/accounting'
 
@@ -61,10 +62,11 @@ interface PendingCsvImport {
   institution: string
   accountKind: string
   accountId: string
-  name: string
   currency: CurrencyCode
-  parentAccountId: string | null
-  isNewAccount: boolean
+  // Non-empty only when detection matched 2+ already-registered accounts of
+  // the same institution+kind — the ambiguous case, where the account
+  // `<Select>` below is shown but nothing is auto-picked for the user.
+  candidateAccountIds: string[]
   status: 'pending' | 'importing' | 'done' | 'error'
   message?: string
   // Only meaningful once `institution`/`accountKind` have no registered
@@ -311,6 +313,9 @@ export function ImportPage() {
   const supportedKinds = new Set(
     (supportedImportKindsList ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`),
   )
+  const registeredAccounts = store
+    ? Object.values(store.accounts).filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id))
+    : []
 
   const handleFiles = useCallback(
     async (files: FileList) => {
@@ -334,30 +339,34 @@ export function ImportPage() {
           const detected = isExcel
             ? null
             : await accountingApi.detect(header, file.name, firstDataRow).catch(() => null)
-          // A detected account may or may not be registered yet — a
-          // brand-new vault CSV, for instance, describes an account
-          // nobody's created here before. Either way, the detected
-          // guess (not just an already-registered match) is what
-          // pre-fills the form, since that's the whole point of detecting.
-          const existingAccount = detected ? store?.accounts[detected.account_id] : undefined
+          // The detector only ever names an institution and account kind now
+          // (see `importers.detect`) — it never invents an account id, so a
+          // match against an already-registered account is always by
+          // institution+kind, never an exact id lookup. The user can always
+          // override the autofill manually via the account `<Select>` below.
+          const matches = detected
+            ? registeredAccounts.filter(
+                (account) =>
+                  account.institution.trim().toLowerCase() === detected.institution.trim().toLowerCase() &&
+                  account.kind === detected.account_kind,
+              )
+            : []
           return {
             key,
             kind: 'csv',
             file,
-            institution: existingAccount?.institution ?? detected?.institution ?? '',
-            accountKind: existingAccount?.kind ?? detected?.account_kind ?? '',
-            accountId: existingAccount?.account_id ?? detected?.account_id ?? '',
-            name: existingAccount?.name ?? detected?.account_name ?? '',
-            currency: existingAccount?.currency ?? 'USD',
-            parentAccountId: existingAccount?.parent_account_id ?? detected?.parent_account_id ?? null,
-            isNewAccount: Boolean(detected) && !existingAccount,
+            institution: matches.length === 1 ? matches[0].institution : (detected?.institution ?? ''),
+            accountKind: matches.length === 1 ? matches[0].kind : (detected?.account_kind ?? ''),
+            accountId: matches.length === 1 ? matches[0].account_id : '',
+            currency: matches.length === 1 ? matches[0].currency : 'USD',
+            candidateAccountIds: matches.length > 1 ? matches.map((account) => account.account_id) : [],
             status: 'pending',
           }
         }),
       )
       setPending((prev) => [...prev, ...entries])
     },
-    [store],
+    [registeredAccounts],
   )
 
   function updateEntry(key: string, patch: Partial<PendingImport>) {
@@ -369,13 +378,18 @@ export function ImportPage() {
   }
 
   function buildImportInfo(entry: PendingCsvImport): ImportAccountInfo {
+    // `entry.accountId` is always a real, already-existing account by
+    // construction (the `Import` button is disabled while it's empty — see
+    // below), so its name/parent are always safe to look up here rather
+    // than carried on the pending entry itself.
+    const account = store?.accounts[entry.accountId]
     return {
       institution: entry.institution,
       account_kind: entry.accountKind,
       account_id: entry.accountId,
-      account_name: entry.name,
+      account_name: account?.name ?? '',
       currency: entry.currency,
-      parent_account_id: entry.parentAccountId,
+      parent_account_id: account?.parent_account_id ?? null,
     }
   }
 
@@ -433,9 +447,6 @@ export function ImportPage() {
     }
   }
 
-  const registeredAccounts = store
-    ? Object.values(store.accounts).filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id))
-    : []
   const institutions = [
     ...new Set([
       ...registeredAccounts.map((account) => account.institution),
@@ -542,8 +553,7 @@ export function ImportPage() {
                         institution,
                         accountId: '',
                         accountKind: '',
-                        name: '',
-                        isNewAccount: false,
+                        candidateAccountIds: [],
                       })
                     }
                   >
@@ -570,10 +580,8 @@ export function ImportPage() {
                         updateEntry(entry.key, {
                           accountId: account.account_id,
                           accountKind: account.kind,
-                          name: account.name,
                           currency: account.currency,
-                          parentAccountId: account.parent_account_id,
-                          isNewAccount: false,
+                          candidateAccountIds: [],
                         })
                       }
                     }}
@@ -582,16 +590,12 @@ export function ImportPage() {
                     <SelectTrigger size="sm" className="w-52">
                       <SelectValue
                         placeholder="Choose an account…"
-                        items={{
-                          ...Object.fromEntries(
-                            accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name]),
-                          ),
-                          ...(entry.isNewAccount ? { [entry.accountId]: `${entry.name} (new)` } : {}),
-                        }}
+                        items={Object.fromEntries(
+                          accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name]),
+                        )}
                       />
                     </SelectTrigger>
                     <SelectContent>
-                      {entry.isNewAccount && <SelectItem value={entry.accountId}>{entry.name} (new)</SelectItem>}
                       {accountsForInstitution(entry.institution).map((account) => (
                         <SelectItem key={account.account_id} value={account.account_id}>
                           {account.name}
@@ -643,12 +647,18 @@ export function ImportPage() {
                   <LoadingProgressBar step="Standardizing rows and merging into the ledger…" />
                 )}
 
-                {entry.isNewAccount && (
+                {entry.candidateAccountIds.length > 1 && !entry.accountId && (
                   <p className="basis-full text-xs text-muted-foreground">
-                    This account isn't registered yet — importing will create "{entry.name}" automatically.
+                    Recognized as a {entry.institution}{' '}
+                    {(ACCOUNT_KIND_LABELS as Record<string, string>)[entry.accountKind] ?? entry.accountKind} account —
+                    which one?{' '}
+                    {entry.candidateAccountIds
+                      .map((accountId) => store?.accounts[accountId]?.name)
+                      .filter(Boolean)
+                      .join(', ')}
                   </p>
                 )}
-                {entry.institution && !entry.isNewAccount && accountsForInstitution(entry.institution).length === 0 ? (
+                {entry.institution && !entry.accountId && accountsForInstitution(entry.institution).length === 0 ? (
                   <p className="basis-full text-xs text-amber-600">
                     No {entry.institution} accounts registered yet — add one below first, then come back to pick it
                     here.

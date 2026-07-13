@@ -43,6 +43,7 @@ class Account(Base):
     kind: Mapped[str]
     institution: Mapped[str]
     currency: Mapped[str]
+    last_four: Mapped[str | None] = mapped_column(default=None)
     parent_account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"), default=None
     )

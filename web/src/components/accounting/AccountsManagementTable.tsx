@@ -36,7 +36,6 @@ function emptyDraft(): AccountFormValue {
     kind: 'checking',
     currency: 'USD',
     last4: '',
-    accountId: '',
     name: '',
     parentAccountId: null,
     openingBalance: '',
@@ -64,7 +63,7 @@ function AccountDialog({
   onSave: (value: AccountFormValue) => void
 }) {
   const [draft, setDraft] = useState(initial)
-  const canSave = locked ? draft.name.length > 0 : draft.institution && draft.kind && draft.last4 && draft.name
+  const canSave = locked ? draft.name.length > 0 : draft.institution && draft.kind && draft.name
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -135,23 +134,22 @@ export function AccountsManagementTable({
   async function handleCreate(value: AccountFormValue) {
     setError(null)
     try {
-      await createAccount.mutateAsync({
-        account_id: value.accountId,
+      const created = await createAccount.mutateAsync({
         name: value.name,
         kind: value.kind,
         institution: value.institution,
         currency: value.currency,
+        last_four: value.last4 || null,
         parent_account_id: value.parentAccountId,
         external_ref: value.externalRef,
         meta: {},
-        closed: false,
       })
       const amount = Number.parseFloat(value.openingBalance)
       if (value.openingBalance.trim() && !Number.isNaN(amount)) {
         await setOpeningBalance.mutateAsync({
-          accountId: value.accountId,
+          accountId: created.account_id,
           openingBalance: {
-            account_id: value.accountId,
+            account_id: created.account_id,
             amount,
             as_of_date: new Date().toISOString(),
           },
@@ -172,6 +170,7 @@ export function AccountsManagementTable({
           institution: value.institution,
           kind: value.kind,
           currency: value.currency,
+          last_four: value.last4 || null,
           external_ref: value.externalRef,
           meta: {},
         },
@@ -342,8 +341,7 @@ export function AccountsManagementTable({
             institution: editing.institution,
             kind: editing.kind,
             currency: editing.currency,
-            last4: editing.account_id.split(':').pop() ?? '',
-            accountId: editing.account_id,
+            last4: editing.last_four ?? '',
             name: editing.name,
             parentAccountId: editing.parent_account_id ?? null,
             openingBalance: '',

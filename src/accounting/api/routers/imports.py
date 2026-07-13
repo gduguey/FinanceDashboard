@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Annotated, Any, cast
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -56,7 +56,7 @@ from accounting.importers.ingest import (
     supported_import_kinds,
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
-from accounting.models import Account, CurrencyCode, PostingSplitLeg
+from accounting.models import CurrencyCode, PostingSplitLeg
 from accounting.store import load_store, save_store
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -111,14 +111,22 @@ async def post_import(  # noqa: PLR0913
     institution: Annotated[str, Form()],
     account_kind: Annotated[str, Form()],
     account_id: Annotated[str, Form()],
-    account_name: Annotated[str, Form()],
-    currency: Annotated[str, Form()] = "USD",
-    parent_account_id: Annotated[str | None, Form()] = None,
+    account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
+    currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
+    parent_account_id: Annotated[str | None, Form()] = None,  # noqa: ARG001 (kept for request-contract stability)
     *,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ImportResult:
-    """Register the account if it's new, then archive and import the uploaded CSV.
+    """Archive and import the uploaded CSV against an already-registered account.
+
+    `account_name`, `currency`, and `parent_account_id` are no longer used
+    to construct anything here — every account this endpoint is called
+    with must already exist (see `AccountCreate`/`POST /accounts`), so the
+    account's own `parent_account_id` (not this form field) is what's
+    threaded into the standardizer. Kept as accepted form fields anyway
+    rather than narrowing this endpoint's request contract as part of this
+    change.
 
     Returns
     -------
@@ -127,21 +135,14 @@ async def post_import(  # noqa: PLR0913
     Raises
     ------
     HTTPException
-        400 if no importer exists for this institution/account-kind combination.
+        422 if `account_id` doesn't already exist; 400 if no importer exists
+        for this institution/account-kind combination.
     """
     store = load_store(session, user_id)
-    if account_id not in store.accounts:
-        account_kind_literal: Any = account_kind
-        new_account = Account(
-            account_id=account_id,
-            name=account_name,
-            kind=account_kind_literal,
-            institution=institution,
-            currency=currency,  # type: ignore[arg-type]
-            parent_account_id=parent_account_id,
-        )
-        store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
-        save_store(store, session, user_id)
+    account = store.accounts.get(account_id)
+    if account is None:
+        message = f"Account {account_id!r} does not exist — create this account first, then import."
+        raise HTTPException(status_code=422, detail=message)
 
     # Try multiple encodings to handle files from different sources
     # (e.g., Excel exports on different systems use different encodings).
@@ -168,7 +169,16 @@ async def post_import(  # noqa: PLR0913
         raise HTTPException(status_code=400, detail=message)
 
     try:
-        result = ingest_csv(csv_text, institution, account_kind, account_id, state.config, session, user_id)
+        result = ingest_csv(
+            csv_text,
+            institution,
+            account_kind,
+            account_id,
+            state.config,
+            session,
+            user_id,
+            parent_account_id=account.parent_account_id,
+        )
     except UnsupportedImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -244,12 +254,12 @@ async def post_canonical_import_preview(
 @router.post("/import/canonical")
 async def post_canonical_import(  # noqa: PLR0913, PLR0917
     file: UploadFile,
-    institution: Annotated[str, Form()],
-    account_kind: Annotated[str, Form()],
+    institution: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
+    account_kind: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
     account_id: Annotated[str, Form()],
-    account_name: Annotated[str, Form()],
-    currency: Annotated[str, Form()] = "USD",
-    parent_account_id: Annotated[str | None, Form()] = None,
+    account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
+    currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
+    parent_account_id: Annotated[str | None, Form()] = None,  # noqa: ARG001 (kept for request-contract stability)
     separator: Annotated[str | None, Form()] = None,
     date_order: Annotated[str, Form()] = "MDY",
     category_overrides: Annotated[str | None, Form()] = None,
@@ -257,7 +267,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> CanonicalImportResult:
-    """Register the account if it's new, then import the file through the canonical fallback parser.
+    """Import the file, against an already-registered account, through the canonical fallback parser.
 
     Used when no dedicated standardizer exists for `institution`/`account_kind`
     (see `supported_import_kinds`) — the canonical parser guesses column
@@ -270,6 +280,12 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     `CanonicalCategoryOverridesRequest`) renames or merges it — typically
     collected via `post_canonical_import_preview` first.
 
+    `institution`, `account_name`, `currency`, and `parent_account_id` are
+    accepted but unused — every account this endpoint is called with must
+    already exist (see `AccountCreate`/`POST /accounts`). Kept as accepted
+    form fields anyway rather than narrowing this endpoint's request
+    contract as part of this change.
+
     Returns
     -------
     CanonicalImportResult
@@ -278,23 +294,15 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     Raises
     ------
     HTTPException
-        422 if the file couldn't be parsed — the message explains what
-        columns are supported, and (when the column separator couldn't be
-        guessed) asks the user to pick one and retry with `separator` set.
+        422 if `account_id` doesn't already exist, or if the file couldn't
+        be parsed — the message explains what columns are supported, and
+        (when the column separator couldn't be guessed) asks the user to
+        pick one and retry with `separator` set.
     """
     store = load_store(session, user_id)
     if account_id not in store.accounts:
-        account_kind_literal: Any = account_kind
-        new_account = Account(
-            account_id=account_id,
-            name=account_name,
-            kind=account_kind_literal,
-            institution=institution,
-            currency=currency,  # type: ignore[arg-type]
-            parent_account_id=parent_account_id,
-        )
-        store = store.model_copy(update={"accounts": {**store.accounts, account_id: new_account}})
-        save_store(store, session, user_id)
+        message = f"Account {account_id!r} does not exist — create this account first, then import."
+        raise HTTPException(status_code=422, detail=message)
 
     date_order_literal = cast("DateOrder", date_order)
     overrides = _read_category_overrides(category_overrides)

@@ -9,7 +9,12 @@ from accounting.models import Account, EarningsDeposit, EarningsLineItem, Earnin
 SCHEMA = Posting.polars_schema
 
 CHECKING = Account(
-    account_id="chase:checking:9579", name="Checking", kind="checking", institution="Chase", currency="USD"
+    account_id="chase:checking:9579",
+    name="Checking",
+    kind="checking",
+    institution="Chase",
+    currency="USD",
+    last_four="9579",
 )
 UNCATEGORIZED_INCOME = Account(
     account_id="uncategorized:income",
@@ -136,10 +141,20 @@ def test_propose_posting_splits_separates_salary_from_reimbursements_on_one_depo
 
 def test_propose_posting_splits_assigns_reimbursements_to_the_largest_deposit_first() -> None:
     checking = Account(
-        account_id="chase:checking:9579", name="Checking", kind="checking", institution="Chase", currency="USD"
+        account_id="chase:checking:9579",
+        name="Checking",
+        kind="checking",
+        institution="Chase",
+        currency="USD",
+        last_four="9579",
     )
     savings = Account(
-        account_id="sofi:savings:3680", name="Savings", kind="savings", institution="SoFi", currency="USD"
+        account_id="sofi:savings:3680",
+        name="Savings",
+        kind="savings",
+        institution="SoFi",
+        currency="USD",
+        last_four="3680",
     )
     accounts = {**ACCOUNTS, checking.account_id: checking, savings.account_id: savings}
     postings = _postings(

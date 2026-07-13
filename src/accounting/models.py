@@ -104,7 +104,10 @@ class Account(BaseModel):
     a single transaction. `closed` marks a real-world account that no
     longer exists at its institution — its transaction history stays
     exactly as imported (never deleted), it just stops being offered as a
-    destination for new imports or transfers.
+    destination for new imports or transfers. `last_four` is the real
+    trailing digits the institution shows for this account, when it shows
+    any at all — `None` for vaults, cash, loans, and virtual counterparties,
+    which have none.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -114,6 +117,7 @@ class Account(BaseModel):
     kind: AccountKind
     institution: str = Field(min_length=1)
     currency: CurrencyCode
+    last_four: str | None = None
     parent_account_id: str | None = None
     external_ref: str | None = None
     meta: dict[str, str] = Field(default_factory=dict)
@@ -354,7 +358,7 @@ class SimulatorScenario(BaseModel):
 class Goal(BaseModel):
     """A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
 
-    See `dashboard.goals.goal_balance`: the balance at any point in time
+    See `dashboard.goals.all_goal_balances`: the balance at any point in time
     is always the running sum of contributions up to that date, computed
     fresh, the same way an account's balance is never a cached figure
     (see `Budget`'s own docstring for the same reasoning applied to
@@ -486,8 +490,7 @@ class EarningsDeposit(BaseModel):
 
     `account_last4` is the bank account digits the paystub itself prints
     next to a deposit line, when it prints one at all — used to match
-    against a real `Account.account_id`'s own trailing digits (see the
-    `{institution}:{kind}:{last4}` convention) during reconciliation.
+    against a real `Account.last_four` during reconciliation.
     """
 
     model_config = ConfigDict(frozen=True)

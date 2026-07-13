@@ -136,14 +136,18 @@ def test_standardize_sofi_wide_csv_tags_interest_rows_with_the_interest_earned_c
 
 
 def test_standardize_sofi_wide_csv_points_a_savings_transfer_straight_at_the_parent_account() -> None:
-    result = standardize_sofi_savings(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
-    counterparties = set(result["account_id"].unique().to_list()) - {"sofi:savings:3680:vault:emergency-fund"}
+    # An opaque, non-colon-shaped id — proves the parent is read from the
+    # explicit `parent_account_id` argument, never parsed out of `account_id`.
+    vault_id = "a1b2c3d4"
+    result = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
+    counterparties = set(result["account_id"].unique().to_list()) - {vault_id}
     assert "sofi:savings:3680" in counterparties
     transfer_leg = result.filter(pl.col("account_id") == "sofi:savings:3680").row(0, named=True)
     assert transfer_leg["amount"] == pytest.approx(-10000.0)
 
 
 def test_standardize_sofi_wide_csv_used_via_the_checking_and_savings_dispatchers() -> None:
-    via_savings = standardize_sofi_savings(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
-    via_checking = standardize_sofi_checking(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
+    vault_id = "a1b2c3d4"
+    via_savings = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
+    via_checking = standardize_sofi_checking(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
     assert len(via_savings) == len(via_checking) == 4

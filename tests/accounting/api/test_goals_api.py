@@ -53,17 +53,27 @@ def client():
     return TestClient(trades_api.app)
 
 
-def _import_checking(client) -> None:
-    client.post(
+def _create_account(client, **overrides) -> dict:
+    payload = {"name": "Test Account", "kind": "checking", "institution": "Chase", "currency": "USD", **overrides}
+    response = client.post("/api/accounting/accounts", json=payload)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _import_checking(client) -> str:
+    account = _create_account(client, name="Chase Checking", kind="checking", institution="Chase")
+    response = client.post(
         "/api/accounting/import",
         files={"file": ("Chase9579.csv", CHECKING_CSV, "text/csv")},
         data={
             "institution": "Chase",
             "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
+            "account_id": account["account_id"],
+            "account_name": "Chase Checking",
         },
     )
+    assert response.status_code == 200
+    return account["account_id"]
 
 
 def _create_goal(client, goal_id: str = "emergency-fund") -> None:
@@ -302,16 +312,18 @@ _BIG_EXPENSE_CSV = (
 
 
 def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negative(client) -> None:
-    client.post(
+    account = _create_account(client, name="Chase Checking", kind="checking", institution="Chase")
+    response = client.post(
         "/api/accounting/import",
         files={"file": ("Chase9579.csv", _BIG_EXPENSE_CSV, "text/csv")},
         data={
             "institution": "Chase",
             "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
+            "account_id": account["account_id"],
+            "account_name": "Chase Checking",
         },
     )
+    assert response.status_code == 200
     _create_goal(client)
     client.put(
         "/api/accounting/goal-contributions",
