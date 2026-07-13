@@ -224,19 +224,44 @@ def test_target_allocation_put_preserves_other_settings(client) -> None:
 
 
 def test_hysa_settings_default_to_no_override(client) -> None:
-    assert client.get("/api/settings/hysa").json() == {"bank_id": None, "fixed_rate_pct": None}
+    assert client.get("/api/settings/hysa").json() == {"bank_id": None, "fixed_rate_pct": None, "version": 0}
 
 
 def test_hysa_settings_put_then_get_round_trips(client) -> None:
     put_response = client.put("/api/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
     assert put_response.status_code == 200
-    assert client.get("/api/settings/hysa").json() == {"bank_id": "marcus", "fixed_rate_pct": None}
+    assert client.get("/api/settings/hysa").json() == {"bank_id": "marcus", "fixed_rate_pct": None, "version": 1}
 
 
 def test_hysa_settings_put_preserves_target_allocation(client) -> None:
     client.put("/api/settings/target-allocation", json={"VOO": 80.0})
     client.put("/api/settings/hysa", json={"fixed_rate_pct": 5.0})
     assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+
+
+def test_settings_mutation_with_the_current_expected_version_succeeds_and_bumps(client) -> None:
+    version = client.get("/api/settings/hysa").json()["version"]
+    response = client.put(
+        "/api/settings/hysa",
+        json={"bank_id": "marcus", "fixed_rate_pct": None},
+        headers={"X-Expected-Dashboard-Settings-Version": str(version)},
+    )
+    assert response.status_code == 200
+    assert response.json()["version"] == version + 1
+
+
+def test_settings_mutation_with_a_stale_expected_version_409s(client) -> None:
+    version = client.get("/api/settings/hysa").json()["version"]
+    # Someone else's save lands first.
+    client.put("/api/settings/benchmark", json={"symbol_override": "QQQ"})
+
+    response = client.put(
+        "/api/settings/hysa",
+        json={"bank_id": "marcus", "fixed_rate_pct": None},
+        headers={"X-Expected-Dashboard-Settings-Version": str(version)},
+    )
+    assert response.status_code == 409
+    assert "changed elsewhere" in response.json()["detail"]
 
 
 def test_benchmark_setting_defaults_to_no_override(client) -> None:
@@ -264,6 +289,7 @@ def test_tax_settings_default_to_disabled_and_resident(client) -> None:
         "resolved_marginal_ordinary_rate_pct": pytest.approx(24.0),
         "qualified_ltcg_rate_pct": None,
         "resolved_qualified_ltcg_rate_pct": pytest.approx(15.0),
+        "version": 0,
     }
 
 
@@ -293,6 +319,7 @@ def test_tax_settings_put_then_get_round_trips(client) -> None:
         "resolved_marginal_ordinary_rate_pct": pytest.approx(32.0),
         "qualified_ltcg_rate_pct": pytest.approx(20.0),
         "resolved_qualified_ltcg_rate_pct": pytest.approx(20.0),
+        "version": 1,
     }
 
 

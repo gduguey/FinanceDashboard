@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from accounting.api import router as accounting_router
-from accounting.store import StoreVersionConflictError
+from db.base import VersionConflictError
 from db.current_user import get_current_user_id
 from trades.api.auth import require_clerk_session, resolve_current_user_id
 from trades.api.dependencies import app
@@ -59,13 +59,14 @@ app.include_router(sync.router, dependencies=_authenticated)
 app.include_router(webhooks_router)
 
 
-# One handler, not one per accounting endpoint — `accounting.store.save_store`
-# raises this from deep inside a plain persistence function (no FastAPI
-# import there at all, deliberately), so translating it into an HTTP 409
-# happens once, here, rather than every one of its ~30 call sites needing
-# its own try/except.
-@app.exception_handler(StoreVersionConflictError)
-def _handle_store_version_conflict(_request: Request, exc: StoreVersionConflictError) -> Response:
+# One handler, not one per save function — both `accounting.store.save_store`
+# and `trades.dashboard.settings.save_settings` raise this from deep inside
+# a plain persistence function (no FastAPI import in either, deliberately),
+# via the shared `db.base.check_and_bump_version`, so translating it into an
+# HTTP 409 happens once, here, rather than either module's own call sites
+# needing their own try/except.
+@app.exception_handler(VersionConflictError)
+def _handle_version_conflict(_request: Request, exc: VersionConflictError) -> Response:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 

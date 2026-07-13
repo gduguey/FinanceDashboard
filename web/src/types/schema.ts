@@ -3471,6 +3471,8 @@ export interface components {
       symbol_override: string | null
       /** Default Symbol */
       default_symbol: string
+      /** Version */
+      version: number
     }
     /**
      * BenchmarkSettingUpdate
@@ -4528,6 +4530,8 @@ export interface components {
       bank_id: string | null
       /** Fixed Rate Pct */
       fixed_rate_pct: number | null
+      /** Version */
+      version: number
     }
     /**
      * HysaSettingsUpdate
@@ -5736,6 +5740,8 @@ export interface components {
       qualified_ltcg_rate_pct: number | null
       /** Resolved Qualified Ltcg Rate Pct */
       resolved_qualified_ltcg_rate_pct: number
+      /** Version */
+      version: number
     }
     /**
      * TaxSettingsUpdate
@@ -5766,6 +5772,8 @@ export interface components {
       local_zone: string | null
       /** Resolved Local Zone */
       resolved_local_zone: string
+      /** Version */
+      version: number
     }
     /**
      * TimezoneSettingUpdate
@@ -9050,7 +9058,9 @@ export interface operations {
   get_target_allocation_api_settings_target_allocation_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9067,12 +9077,23 @@ export interface operations {
           }
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_target_allocation_api_settings_target_allocation_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9109,7 +9130,9 @@ export interface operations {
   get_hysa_settings_api_settings_hysa_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9124,12 +9147,23 @@ export interface operations {
           'application/json': components['schemas']['HysaSettings']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_hysa_settings_api_settings_hysa_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9162,7 +9196,9 @@ export interface operations {
   get_benchmark_setting_api_settings_benchmark_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9177,12 +9213,23 @@ export interface operations {
           'application/json': components['schemas']['BenchmarkSetting']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_benchmark_setting_api_settings_benchmark_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9215,7 +9262,9 @@ export interface operations {
   get_timezone_setting_api_settings_timezone_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9230,12 +9279,23 @@ export interface operations {
           'application/json': components['schemas']['TimezoneSetting']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_timezone_setting_api_settings_timezone_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9268,7 +9328,9 @@ export interface operations {
   get_tax_settings_api_settings_tax_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9283,12 +9345,23 @@ export interface operations {
           'application/json': components['schemas']['TaxSettings']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_tax_settings_api_settings_tax_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9321,7 +9394,9 @@ export interface operations {
   get_ibkr_settings_api_settings_ibkr_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9336,12 +9411,23 @@ export interface operations {
           'application/json': components['schemas']['IbkrSettings']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_ibkr_settings_api_settings_ibkr_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9374,7 +9460,9 @@ export interface operations {
   delete_ibkr_settings_api_settings_ibkr_delete: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9389,12 +9477,23 @@ export interface operations {
           'application/json': components['schemas']['IbkrSettings']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   verify_ibkr_settings_api_settings_ibkr_verify_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-dashboard-settings-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -9407,6 +9506,15 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['trades__api__api_models__VerifyResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

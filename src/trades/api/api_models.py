@@ -143,6 +143,7 @@ class HysaSettings(BaseModel):
 
     bank_id: str | None
     fixed_rate_pct: float | None
+    version: int
 
 
 class BenchmarkSettingUpdate(BaseModel):
@@ -156,6 +157,7 @@ class BenchmarkSetting(BaseModel):
 
     symbol_override: str | None
     default_symbol: str
+    version: int
 
 
 class TimezoneSettingUpdate(BaseModel):
@@ -186,6 +188,7 @@ class TimezoneSetting(BaseModel):
 
     local_zone: str | None
     resolved_local_zone: str
+    version: int
 
 
 class TaxSettingsUpdate(BaseModel):
@@ -213,6 +216,7 @@ class TaxSettings(BaseModel):
     resolved_marginal_ordinary_rate_pct: float
     qualified_ltcg_rate_pct: float | None
     resolved_qualified_ltcg_rate_pct: float
+    version: int
 
 
 class IbkrCredentialsUpdate(BaseModel):

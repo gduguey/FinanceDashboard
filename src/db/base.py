@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import MetaData, Numeric
+from sqlalchemy import MetaData, Numeric, text
 from sqlalchemy.orm import DeclarativeBase
 
 if TYPE_CHECKING:
@@ -171,3 +171,95 @@ def natural_keys_by_id(
         session.query(model.id, model.natural_key).filter(model.user_id == user_id, model.id.in_(id_list)).all()
     )
     return dict(rows)
+
+
+class VersionConflictError(Exception):
+    """Raised by `check_and_bump_version` when a caller's remembered version no longer matches what's persisted.
+
+    Means someone else's save — another browser tab, another device, or
+    just an earlier request from the same tab — landed since the caller
+    last loaded this data. Mapped to an HTTP 409 by one global exception
+    handler (`trades.api.api`), shared across every table that uses this
+    module, not caught anywhere any of them are actually raised from.
+    """
+
+
+def get_version(session: Session, table: str, user_id: uuid.UUID) -> int:
+    """Read this user's current save-version counter for `table`.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    table
+        The fully-qualified `schema.table_name` this counter is for, e.g.
+        `"accounting.store_versions"` — a plain two-column `(user_id,
+        version)` table with `user_id` as its sole primary key (see
+        `accounting.db.concurrency.StoreVersion` for the shape every such
+        table follows).
+    user_id
+        Whose counter to read.
+
+    Returns
+    -------
+    int
+        `0` if this user has never saved anything to `table` yet (no row exists).
+    """
+    row = session.execute(
+        text(f"SELECT version FROM {table} WHERE user_id = :user_id"),  # noqa: S608 (table is a fixed internal constant, never user input)
+        {"user_id": str(user_id)},
+    ).first()
+    return row.version if row is not None else 0
+
+
+def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, expected_version: int | None) -> None:
+    """Atomically verify no other save has landed since `expected_version`, then bump `table`'s counter by one.
+
+    The check-and-bump happens as one atomic SQL statement (an upsert
+    with a conditional `WHERE` on the update branch), not a separate read
+    then write — a read-then-write here would leave a race window where
+    two concurrent saves could both read the same "current" version and
+    both proceed. `expected_version=None` (no version the caller wants
+    checked, e.g. an older client) skips the check but still bumps: a
+    real change always has to be visible to a version-aware caller later,
+    even if this particular caller didn't opt into checking itself.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    table
+        The fully-qualified `schema.table_name` this counter is for (see
+        `get_version`).
+    user_id
+        Whose store this is.
+    expected_version
+        The version the caller last saw, or `None` to skip the check.
+
+    Raises
+    ------
+    VersionConflictError
+        If `expected_version` was given and no longer matches what's
+        actually stored.
+    """
+    result = session.execute(
+        text(
+            f"""
+            INSERT INTO {table} (user_id, version)
+            VALUES (:user_id, 1)
+            ON CONFLICT (user_id) DO UPDATE
+            SET version = {table}.version + 1
+            WHERE CAST(:expected_version AS INTEGER) IS NULL
+               OR {table}.version = CAST(:expected_version AS INTEGER)
+            RETURNING version
+            """  # noqa: S608 (table is a fixed internal constant, never user input)
+        ),
+        {"user_id": str(user_id), "expected_version": expected_version},
+    )
+    if result.first() is None:
+        current = get_version(session, table, user_id)
+        message = (
+            f"This data changed elsewhere since version {expected_version} was loaded (now at version {current}) "
+            "— reload before saving again."
+        )
+        raise VersionConflictError(message)

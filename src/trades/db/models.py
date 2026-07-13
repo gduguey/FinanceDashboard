@@ -133,3 +133,24 @@ class DashboardSettings(Base):
     w8ben_treaty_rate_pct: Mapped[float | None] = mapped_column(default=None)
     marginal_ordinary_rate_pct: Mapped[float | None] = mapped_column(default=None)
     qualified_ltcg_rate_pct: Mapped[float | None] = mapped_column(default=None)
+
+
+class DashboardSettingsVersion(Base):
+    """One user's save counter for `DashboardSettings`, bumped by one on every successful `save_settings` call.
+
+    The same `db.base.check_and_bump_version`/`get_version` mechanism
+    `accounting.db.concurrency.StoreVersion` uses, kept as its own table
+    (rather than a `version` column on `DashboardSettings` itself) since
+    that table's other columns aren't all nullable — an atomic upsert that
+    only ever needs to supply `(user_id, version)` would otherwise have to
+    know every other column's default too. Exactly zero or one row per
+    user, same shape as `DashboardSettings`.
+    """
+
+    __tablename__ = "dashboard_settings_versions"
+    __table_args__ = {"schema": SCHEMA}
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(default=0)
