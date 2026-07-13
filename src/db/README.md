@@ -131,6 +131,138 @@ one's identity — so a surrogate id would just be one more column with no
 job to do. Using `derive_id` here would be following the majority
 pattern out of habit rather than for a reason that actually applies.
 
+## How a save actually writes to Postgres: wipe-and-reinsert vs. upsert-and-prune
+
+The primary-key pattern above (`derive_id` + `natural_key`) is what *lets*
+a table be safely rewritten — but rewriting is still a choice each write
+path makes, table by table. `accounting.store.save_store` (the one
+function every mutating endpoint funnels through) uses two different
+techniques, and picking the wrong one for a new table is a real mistake,
+not just a style preference — see "Which technique to use" below.
+
+**Wipe-and-reinsert**: delete every row this user owns in a table, then
+insert fresh rows for everything currently held in memory. Not "diff and
+patch what changed" — the *entire* table is thrown away and rebuilt on
+every single save, even a save that only touched one unrelated field.
+This is safe here specifically because every row's `id` is `derive_id`-
+derived: a row deleted and reinserted with the same `natural_key` comes
+back with the *exact same* `id` it had before, so nothing that
+(hypothetically) referenced it would ever see it as "gone," even
+mid-rewrite.
+`save_store` uses this for 17 tables, none of which anything else in the
+schema foreign-keys against:
+
+`posting_split_legs`, `posting_splits`, `posting_merge_duplicates`,
+`posting_merges`, `goal_contributions`, `recurring_additions`,
+`withdrawal_priority_entries`, `goals`, `budgets`, `general_budgets`,
+`manual_transfers`, `opening_balances`, `transfer_rules`,
+`category_patterns`, `other_assets`, `simulator_scenarios`,
+`dismissed_suggestions`.
+
+**Upsert-and-prune** (`accounting.store._upsert_and_prune`): for each row
+currently held in memory, `session.merge()` it — update it in place if a
+row with that `id` already exists, insert it if not — then, separately,
+delete only whichever rows *used to* exist for this user but aren't in
+the new set anymore. Nothing not mentioned in the new state gets touched;
+nothing mentioned gets torn down and rebuilt. `save_store` uses this for
+exactly three tables — `accounts`, `categories`, `tags` — because
+`postings.account_id`/`category_id`/`subcategory_id` and
+`posting_tags.tag_id` are real foreign keys into them. Wiping these the
+same way as the 17 above would mean, for one instant mid-transaction, a
+category your real transaction history still points at doesn't exist —
+Postgres would reject that outright (see "What happens if you delete
+something still in use" below), turning every single save into a hard
+failure the moment any account/category/tag existed at all.
+
+**Which technique to use, for a new table**: wipe-and-reinsert *unless*
+something else foreign-keys against this table's `id` — in which case it
+has to be upsert-and-prune, or every save touching it would fail the
+moment a real reference existed. This is exactly the same "does anything
+foreign-key against this?" question the primary-key section above asks,
+applied one layer up: at the *write path* instead of the *id* itself.
+
+**Why the 17 wipe-and-reinsert tables stay small**: every one of them
+holds *settings you configured by hand* — a budget you typed a number
+into, a savings goal you created, a transfer rule you wrote — never
+anything an import can add on its own. A heavy user might have dozens of
+budgets and goals after years of use; that's still hundreds of rows at
+most, not the tens of thousands a transaction history could reach. Small
+row counts are exactly what makes "delete everything, reinsert
+everything" cheap enough to do on every save without it mattering.
+
+## `transactions`/`postings`: written once at import time, never wiped
+
+Your actual transaction history isn't part of either pattern above.
+`save_store` never mentions `transactions` or `postings` at all — they're
+owned by a completely separate write path,
+`accounting.importers.ingest._write_ledger`, called only when you import
+a statement (`ingest_csv`, the canonical CSV/Excel importer) or rebuild
+the ledger from your raw archive (`rebuild_from_raw_statements`). Clicking
+"+" on a goal, editing a budget, renaming a category — none of that ever
+touches these two tables, no matter how large your real history has
+grown.
+
+`_write_ledger` itself *is* upsert-and-prune, same technique as
+`accounts`/`categories`/`tags` and for the same reason —
+`posting_overrides`, `posting_splits`, `posting_merges`, and
+`goal_contributions.source_posting_id` all foreign-key into `postings` —
+but it's reached by an entirely different trigger (an import finishing,
+not a settings save), and in practice it's almost always **additive**:
+each import call only ever adds the new rows a fresh statement actually
+contains, on top of whatever was already there — it doesn't re-derive
+your whole history from scratch the way `rebuild_from_raw_statements`
+does. A statement's rows are matched to existing ones by their own
+content-derived id (see `derive_id` above), not by position in the file
+or by upload order.
+
+**What happens if you import the same statement twice**: every
+transaction's id is a hash of the facts that describe it — account, date,
+amount, description (`accounting.importers.ingest._fingerprint`) — so
+re-importing an identical row produces the identical id both times.
+`_merge_ledger`'s `.unique(subset="posting_id", keep="last")` then
+collapses the duplicate automatically; nothing is inserted twice, and no
+special "have I seen this file before" tracking is needed.
+
+**What happens if two *real, distinct* transactions genuinely look
+identical** — two coffees bought at the same shop for the same amount the
+same morning — is the harder case this same hash would otherwise get
+wrong: both would hash to the same id, and the second would silently
+overwrite the first. `_reassign_colliding_transaction_ids` handles this by
+counting instead of just hashing: the first row matching an existing
+fingerprint reuses that same id (nothing changes); a second, third, ...
+row with no more existing matches to reuse gets a counting suffix instead
+(`...#2`, `...#3`) and is added as a genuinely new transaction. This also
+makes a re-import order-independent — re-uploading the same statement
+later, even if the bank happens to print its rows in a different order
+that time, still produces the same result, since matching is by how many
+rows share a fingerprint, not by position in the file.
+
+## What happens if you delete something still in use
+
+For the three upsert-and-prune tables, deleting a row that's still
+referenced elsewhere doesn't quietly corrupt anything — it's rejected
+outright by Postgres itself. `postings.category_id`/`subcategory_id` and
+`postings.account_id` are declared with no `ondelete` clause, so
+Postgres's default behavior (`NO ACTION`) applies: attempting to delete a
+category, subcategory, or account any posting still points to fails the
+whole transaction with a foreign-key-violation error, before anything is
+written. Nothing is silently orphaned, and no posting is ever
+auto-deleted as a side effect of deleting something it references.
+
+`posting_tags` (linking a posting to a tag) is the one deliberate
+exception — it's declared with `ondelete="CASCADE"` on both
+`posting_tags.tag_id` and `posting_tags.posting_id`. Deleting a tag
+cascades to remove the join rows that referenced it (the posting itself
+is completely untouched — only the tag *label* disappears from it, the
+posting doesn't get deleted, its category doesn't change). Symmetrically,
+deleting a posting cascades to remove its own tag associations, which
+makes sense here in a way it wouldn't for `category_id`: a join table's
+only reason to exist is to describe a relationship between two other
+rows, so once either side of that relationship is gone, the row
+describing the relationship has nothing left to mean — unlike a
+category/account reference, which is a fact *about* the posting itself
+and should never silently disappear out from under it.
+
 ## The three tables here: `users`, `user_secrets`, and `external_identities`
 
 - **`users`** — one row per person using the app, created automatically
