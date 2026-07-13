@@ -27,7 +27,7 @@ ssh "$HOST" "
     # docker-compose.yml's build.args reads this from the shell env, not
     # from .env.docker directly (Compose's own interpolation never reads a
     # file that isn't literally named .env) — so pull it out here instead.
-    VITE_CLERK_PUBLISHABLE_KEY=\$(grep -m1 '^CLERK_PUBLISHABLE_KEY=' .env.docker | cut -d= -f2-)
+    VITE_CLERK_PUBLISHABLE_KEY=\$(grep -m1 '^CLERK_PUBLISHABLE_KEY=' .env.docker | cut -d= -f2- || true)
     if [ -z \"\$VITE_CLERK_PUBLISHABLE_KEY\" ]; then
         echo \"::error:: CLERK_PUBLISHABLE_KEY missing from .env.docker — aborting rather than building a frontend with no Clerk key\"
         exit 1

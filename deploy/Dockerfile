@@ -84,7 +84,7 @@ USER appuser
 
 # Health check: verify FastAPI is responding
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/docs || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Expose ports
 EXPOSE 8000

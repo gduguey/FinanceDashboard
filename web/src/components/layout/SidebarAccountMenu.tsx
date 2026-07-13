@@ -41,7 +41,7 @@ export function SidebarAccountMenu() {
           Manage account
         </MenuItem>
         <MenuSeparator />
-        <MenuItem onClick={() => signOut()}>
+        <MenuItem onClick={() => void signOut()}>
           <LogOut className="size-4" />
           Sign out
         </MenuItem>

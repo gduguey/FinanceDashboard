@@ -61,7 +61,7 @@ services:
         max-file: "3"
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -80,8 +80,14 @@ services:
     env_file:
       - ../.env.staging
 
-    # No `ports:` here either — same reasoning as production, never
-    # exposed to the host's public interface.
+    # Loopback-only — reachable from processes on the VM itself (an SSH
+    # tunnel from your Mac, e.g. TablePlus/VS Code's Postgres extension),
+    # but bound to 127.0.0.1 specifically, so still unreachable from the
+    # internet or anywhere else on the VM's network. Not the same as
+    # production's own Postgres, which has no `ports:` entry at all.
+    ports:
+      - "127.0.0.1:5433:5432"
+
     volumes:
       - staging_pgdata:/var/lib/postgresql/data
 
