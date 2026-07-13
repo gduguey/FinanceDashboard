@@ -10,6 +10,7 @@ import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { useSyncBrowserTimezone } from '@/hooks/usePortfolioData'
+import { StoreVersionConflictError } from '@/lib/accountingApi'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { routePathFromFile } from '@/lib/routing'
 
@@ -40,7 +41,13 @@ const queryClient = new QueryClient({
   // happen — the exact "bad key still shows Connected" confusion a
   // permission error on the VM caused, with no error anywhere in the UI.
   mutationCache: new MutationCache({
-    onError: (error) => toast.error(error instanceof Error ? error.message : 'Something went wrong'),
+    onError: (error) => {
+      if (error instanceof StoreVersionConflictError) {
+        toast.error(error.message, { action: { label: 'Reload', onClick: () => window.location.reload() } })
+        return
+      }
+      toast.error(error instanceof Error ? error.message : 'Something went wrong')
+    },
   }),
 })
 

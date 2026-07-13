@@ -25,18 +25,23 @@ module) and serves the built frontend — it holds no endpoints itself.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from accounting.api import router as accounting_router
+from accounting.store import StoreVersionConflictError
 from db.current_user import get_current_user_id
 from trades.api.auth import require_clerk_session, resolve_current_user_id
 from trades.api.dependencies import app
 from trades.api.routers import dashboard, market_data, settings, sync
 from trades.api.webhooks import router as webhooks_router
+
+if TYPE_CHECKING:
+    from starlette.responses import Response
 
 # Every `/api/...` route across both modules requires a valid Clerk session
 # (see trades.api.auth) — applied here, at the one place that wires routers
@@ -52,6 +57,16 @@ app.include_router(sync.router, dependencies=_authenticated)
 # Deliberately unauthenticated — see trades.api.webhooks' own docstring for
 # why (Clerk's own servers call this, never a signed-in browser).
 app.include_router(webhooks_router)
+
+
+# One handler, not one per accounting endpoint — `accounting.store.save_store`
+# raises this from deep inside a plain persistence function (no FastAPI
+# import there at all, deliberately), so translating it into an HTTP 409
+# happens once, here, rather than every one of its ~30 call sites needing
+# its own try/except.
+@app.exception_handler(StoreVersionConflictError)
+def _handle_store_version_conflict(_request: Request, exc: StoreVersionConflictError) -> Response:
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/health", include_in_schema=False)

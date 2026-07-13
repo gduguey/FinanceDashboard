@@ -1,9 +1,19 @@
 import pytest
 
-from accounting.models import Budget, Category, CategoryPattern, GeneralBudget, Tag, TransferRule
+from accounting.models import (
+    Budget,
+    Category,
+    CategoryPattern,
+    GeneralBudget,
+    PostingSplit,
+    PostingSplitLeg,
+    Tag,
+    TransferRule,
+)
 from accounting.store import (
     CATEGORY_COLOR_PALETTE,
     AccountingStore,
+    category_ids_to_delete,
     default_categories,
     next_available_color,
     normalize_categories,
@@ -11,6 +21,7 @@ from accounting.store import (
     plan_tag_rename,
     remap_category_ids,
     slugify,
+    uncategorize_category_ids,
 )
 
 
@@ -238,6 +249,106 @@ def test_remap_category_ids_with_no_collision_keeps_both_budgets() -> None:
     id_remap = {"expense:nourriture": "expense:food"}
     updated = remap_category_ids(store, id_remap)
     assert {budget.budget_id for budget in updated.budgets} == {"b1", "b2"}
+
+
+def test_category_ids_to_delete_for_a_subcategory_is_just_itself() -> None:
+    categories = {
+        "expense:food": _cat("expense:food", "Food"),
+        "expense:food:snacks": _cat("expense:food:snacks", "Snacks", parent_category_id="expense:food"),
+    }
+    assert category_ids_to_delete(categories, "expense:food:snacks") == {"expense:food:snacks"}
+
+
+def test_category_ids_to_delete_for_a_top_level_category_includes_every_subcategory() -> None:
+    categories = {
+        "expense:food": _cat("expense:food", "Food"),
+        "expense:food:snacks": _cat("expense:food:snacks", "Snacks", parent_category_id="expense:food"),
+        "expense:food:chips": _cat("expense:food:chips", "Chips", parent_category_id="expense:food"),
+        "expense:travel": _cat("expense:travel", "Travel"),
+    }
+    assert category_ids_to_delete(categories, "expense:food") == {
+        "expense:food",
+        "expense:food:snacks",
+        "expense:food:chips",
+    }
+
+
+def test_uncategorize_category_ids_clears_nullable_references() -> None:
+    store = AccountingStore(
+        rules=[
+            TransferRule(
+                rule_id="r1", description_contains="x", category_id="expense:food", subcategory_id="expense:food:snacks"
+            )
+        ],
+        posting_splits={
+            "p1": PostingSplit(
+                posting_id="p1",
+                legs=[
+                    PostingSplitLeg(amount=10.0, category_id="expense:food", subcategory_id="expense:food:snacks"),
+                    PostingSplitLeg(amount=20.0, category_id="expense:travel"),
+                ],
+            )
+        },
+    )
+    updated = uncategorize_category_ids(store, {"expense:food", "expense:food:snacks"})
+    assert updated.rules[0].category_id is None
+    assert updated.rules[0].subcategory_id is None
+    assert updated.posting_splits["p1"].legs[0].category_id is None
+    assert updated.posting_splits["p1"].legs[0].subcategory_id is None
+    assert updated.posting_splits["p1"].legs[1].category_id == "expense:travel"
+
+
+def test_uncategorize_category_ids_deletes_a_budget_whose_own_category_is_deleted() -> None:
+    store = AccountingStore(
+        budgets=[
+            Budget(budget_id="b1", month="2026-06", category_id="expense:food", amount=100.0),
+            Budget(budget_id="b2", month="2026-06", category_id="expense:travel", amount=200.0),
+        ]
+    )
+    updated = uncategorize_category_ids(store, {"expense:food"})
+    assert [budget.budget_id for budget in updated.budgets] == ["b2"]
+
+
+def test_uncategorize_category_ids_only_clears_subcategory_when_just_the_subcategory_is_deleted() -> None:
+    store = AccountingStore(
+        budgets=[
+            Budget(
+                budget_id="b1",
+                month="2026-06",
+                category_id="expense:food",
+                subcategory_id="expense:food:snacks",
+                amount=100.0,
+            ),
+        ]
+    )
+    updated = uncategorize_category_ids(store, {"expense:food:snacks"})
+    assert len(updated.budgets) == 1
+    assert updated.budgets[0].category_id == "expense:food"
+    assert updated.budgets[0].subcategory_id is None
+
+
+def test_uncategorize_category_ids_drops_a_general_budget_keyed_by_a_deleted_subcategory() -> None:
+    store = AccountingStore(
+        general_budgets={
+            "expense:food:snacks": GeneralBudget(
+                category_id="expense:food", subcategory_id="expense:food:snacks", amount=50.0
+            ),
+            "expense:travel": GeneralBudget(category_id="expense:travel", amount=75.0),
+        }
+    )
+    updated = uncategorize_category_ids(store, {"expense:food:snacks"})
+    assert list(updated.general_budgets) == ["expense:travel"]
+
+
+def test_uncategorize_category_ids_deletes_a_category_pattern_for_the_deleted_category() -> None:
+    store = AccountingStore(
+        category_patterns={
+            "p1": CategoryPattern(pattern_id="p1", description_contains="x", category_id="expense:food"),
+            "p2": CategoryPattern(pattern_id="p2", description_contains="y", category_id="expense:travel"),
+        }
+    )
+    updated = uncategorize_category_ids(store, {"expense:food"})
+    assert list(updated.category_patterns) == ["p2"]
 
 
 def test_normalize_categories_adds_other_when_a_first_real_subcategory_appears() -> None:

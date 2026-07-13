@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from accounting.db.automation import CategoryPattern, TransferRule
 from accounting.db.budgets import Budget, GeneralBudget
+from accounting.db.concurrency import StoreVersion
 from accounting.db.core import (
     Account,
     Category,
@@ -57,6 +58,7 @@ __all__ = [
     "PostingTag",
     "RecurringAddition",
     "SimulatorScenario",
+    "StoreVersion",
     "Tag",
     "Transaction",
     "TransferRule",

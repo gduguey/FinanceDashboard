@@ -11,11 +11,16 @@ intact at the API layer too.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from accounting.api.dependencies import _stash_expected_store_version
 from accounting.api.routers import dashboard, exchange_rates, goals, imports, llm, postings, store
 
-router: APIRouter = APIRouter(prefix="/api/accounting")
+# `_stash_expected_store_version` runs for every accounting endpoint (reads
+# included — harmless there, it just stashes a value nothing reads back),
+# so `accounting.store.save_store`'s version check works everywhere without
+# each of its ~30 call sites needing its own copy of this dependency.
+router: APIRouter = APIRouter(prefix="/api/accounting", dependencies=[Depends(_stash_expected_store_version)])
 router.include_router(store.router)
 router.include_router(exchange_rates.router)
 router.include_router(imports.router)

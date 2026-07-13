@@ -16,6 +16,7 @@ import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import (
@@ -436,6 +437,121 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
             "rules": rules,
             "category_patterns": patterns,
             "budgets": list(budgets_by_key.values()),
+            "general_budgets": general_budgets,
+            "posting_splits": posting_splits,
+        }
+    )
+
+
+def category_ids_to_delete(categories: dict[str, Category], category_id: str) -> set[str]:
+    """Every category id that deleting `category_id` would remove — itself, plus every subcategory if it's top-level.
+
+    A subcategory's delete never cascades (it has none of its own); a
+    top-level category's delete takes every one of its subcategories down
+    with it, the same "children go too" behavior deleting it has always
+    had, just made explicit here instead of happening as a side effect of
+    a client-computed dict diff.
+
+    Parameters
+    ----------
+    categories
+        The full category tree.
+    category_id
+        The category or subcategory being deleted.
+
+    Returns
+    -------
+    set[str]
+    """
+    category = categories[category_id]
+    if category.parent_category_id is not None:
+        return {category_id}
+    children = {c.category_id for c in categories.values() if c.parent_category_id == category_id}
+    return {category_id} | children
+
+
+def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) -> AccountingStore:
+    """Strip every reference to `category_ids` from everything a category delete doesn't already remove.
+
+    Doesn't touch `store.categories` itself (the caller removes
+    `category_ids` from it separately — see `category_ids_to_delete`) or
+    the ledger/manual overrides, which live outside `AccountingStore`
+    entirely (see `importers.ingest.uncategorize_ledger_postings` and the
+    router's own override pass, mirroring `remap_category_ids`'s split).
+
+    `TransferRule`/`PostingSplitLeg` have nullable `category_id`/
+    `subcategory_id` fields, so a reference there is simply cleared —
+    unlike a merge, there's no replacement id to repoint at.
+    `Budget`/`GeneralBudget`/`CategoryPattern` require a `category_id`
+    (never null): a row whose own `category_id` is being deleted has
+    nothing left to be, so it's dropped entirely; one only referencing a
+    deleted id via its (nullable) `subcategory_id` just has that cleared,
+    same as the nullable-field tables.
+
+    Parameters
+    ----------
+    store
+        The store, with `store.categories` not yet updated.
+    category_ids
+        Every category id being deleted (see `category_ids_to_delete`).
+
+    Returns
+    -------
+    AccountingStore
+    """
+    if not category_ids:
+        return store
+
+    def clear(field_id: str | None) -> str | None:
+        """Return `None` if `field_id` is one of the ids being deleted, otherwise leave it unchanged.
+
+        Returns
+        -------
+        str or None
+        """
+        return None if field_id in category_ids else field_id
+
+    rules = [
+        rule.model_copy(update={"category_id": clear(rule.category_id), "subcategory_id": clear(rule.subcategory_id)})
+        for rule in store.rules
+    ]
+    patterns = {
+        pattern_id: pattern.model_copy(update={"subcategory_id": clear(pattern.subcategory_id)})
+        for pattern_id, pattern in store.category_patterns.items()
+        if pattern.category_id not in category_ids
+    }
+    budgets = [
+        budget.model_copy(update={"subcategory_id": clear(budget.subcategory_id)})
+        for budget in store.budgets
+        if budget.category_id not in category_ids
+    ]
+    general_budgets = {
+        key: general.model_copy(update={"subcategory_id": clear(general.subcategory_id)})
+        for key, general in store.general_budgets.items()
+        # `general_budgets` is keyed by whichever of category_id/subcategory_id
+        # is most specific — a deleted top-level category's own subcategories
+        # are already folded into `category_ids` (see `category_ids_to_delete`),
+        # so checking the key alone is enough to catch both cases.
+        if key not in category_ids
+    }
+    posting_splits = {
+        posting_id: split.model_copy(
+            update={
+                "legs": [
+                    leg.model_copy(
+                        update={"category_id": clear(leg.category_id), "subcategory_id": clear(leg.subcategory_id)}
+                    )
+                    for leg in split.legs
+                ]
+            }
+        )
+        for posting_id, split in store.posting_splits.items()
+    }
+    return store.model_copy(
+        update={
+            "rules": rules,
+            "category_patterns": patterns,
+            "budgets": budgets,
             "general_budgets": general_budgets,
             "posting_splits": posting_splits,
         }
@@ -1104,6 +1220,93 @@ def _upsert_and_prune(
         ).delete(synchronize_session=False)
 
 
+class StoreVersionConflictError(Exception):
+    """Raised by `save_store` when the caller's remembered version no longer matches what's persisted.
+
+    Means someone else's save — another browser tab, another device, or
+    just an earlier request from the same tab — landed since the caller
+    last loaded this data. Mapped to an HTTP 409 by a global exception
+    handler (`trades.api.api`), not caught anywhere in `accounting.api`
+    itself, so no router needs its own try/except for it.
+    """
+
+
+def get_store_version(session: Session, user_id: uuid.UUID) -> int:
+    """Read this user's current save-version counter.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose counter to read.
+
+    Returns
+    -------
+    int
+        `0` if this user has never saved anything yet (no row exists).
+    """
+    row = session.query(adb.StoreVersion).filter_by(user_id=user_id).one_or_none()
+    return row.version if row is not None else 0
+
+
+def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
+    """Atomically verify no other save has landed since the caller's expected version, then bump by one.
+
+    Reads the expected version from `session.info["expected_store_version"]`
+    — stashed once per request by `accounting.api.dependencies`'s
+    `_stash_expected_store_version`, from the client's own
+    `X-Expected-Store-Version` header — rather than taking it as a
+    parameter here, so every one of `save_store`'s call sites gets this
+    check for free without threading a version through each of them
+    individually. `None` (no header sent, e.g. an older client) skips the
+    check but still bumps: a real change always has to be visible to a
+    version-aware caller later, even if this particular caller didn't opt
+    into checking itself.
+
+    The check-and-bump happens as one atomic SQL statement (an upsert with
+    a conditional `WHERE` on the update branch), not a separate read then
+    write — a read-then-write here would leave a race window where two
+    concurrent saves could both read the same "current" version and both
+    proceed.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose store this is.
+
+    Raises
+    ------
+    StoreVersionConflictError
+        If an expected version was given and no longer matches what's
+        actually stored.
+    """
+    expected_version = session.info.get("expected_store_version")
+    result = session.execute(
+        text(
+            """
+            INSERT INTO accounting.store_versions (user_id, version)
+            VALUES (:user_id, 1)
+            ON CONFLICT (user_id) DO UPDATE
+            SET version = accounting.store_versions.version + 1
+            WHERE CAST(:expected_version AS INTEGER) IS NULL
+               OR accounting.store_versions.version = CAST(:expected_version AS INTEGER)
+            RETURNING version
+            """
+        ),
+        {"user_id": str(user_id), "expected_version": expected_version},
+    )
+    if result.first() is None:
+        current = get_store_version(session, user_id)
+        message = (
+            f"This data changed elsewhere since version {expected_version} was loaded (now at version {current}) "
+            "— reload before saving again."
+        )
+        raise StoreVersionConflictError(message)
+
+
 def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> None:
     """Persist the accounting store, overwriting whatever was saved before.
 
@@ -1127,7 +1330,11 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         An open database session; `session.commit()` is called on success.
     user_id
         Whose store this is.
+
+    See `_check_and_bump_store_version` for the `StoreVersionConflictError`
+    this can raise before touching anything else.
     """
+    _check_and_bump_store_version(session, user_id)
     session.query(adb.PostingSplitLeg).filter_by(user_id=user_id).delete()
     session.query(adb.PostingSplit).filter_by(user_id=user_id).delete()
     session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id).delete()

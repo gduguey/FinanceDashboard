@@ -43,6 +43,8 @@ from accounting.models import (
 from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
+    StoreVersionConflictError,
+    get_store_version,
     load_overrides,
     load_store,
     remap_tag_ids,
@@ -475,3 +477,55 @@ def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
     posting_row.budget_id = derive_id(test_user_id, "budgets", "does-not-exist")
     with pytest.raises(IntegrityError):
         db_session.commit()
+
+
+def test_get_store_version_is_zero_for_a_user_who_has_never_saved(db_session: Session, test_user_id: uuid.UUID) -> None:
+    assert get_store_version(db_session, user_id=test_user_id) == 0
+
+
+def test_save_store_bumps_the_version_by_one_each_time(db_session: Session, test_user_id: uuid.UUID) -> None:
+    # `load_store` itself does one internal save to seed a brand-new user's
+    # defaults, so the baseline after it is already 1, not 0.
+    store = load_store(db_session, user_id=test_user_id)
+    baseline = get_store_version(db_session, user_id=test_user_id)
+    save_store(store, db_session, user_id=test_user_id)
+    assert get_store_version(db_session, user_id=test_user_id) == baseline + 1
+    save_store(store, db_session, user_id=test_user_id)
+    assert get_store_version(db_session, user_id=test_user_id) == baseline + 2
+
+
+def test_save_store_with_no_expected_version_set_skips_the_check(db_session: Session, test_user_id: uuid.UUID) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    save_store(store, db_session, user_id=test_user_id)
+    before = get_store_version(db_session, user_id=test_user_id)
+    db_session.info.pop("expected_store_version", None)
+    save_store(store, db_session, user_id=test_user_id)
+    assert get_store_version(db_session, user_id=test_user_id) == before + 1
+
+
+def test_save_store_with_the_current_expected_version_succeeds_and_bumps(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    save_store(store, db_session, user_id=test_user_id)
+    current = get_store_version(db_session, user_id=test_user_id)
+    db_session.info["expected_store_version"] = current
+    save_store(store, db_session, user_id=test_user_id)
+    assert get_store_version(db_session, user_id=test_user_id) == current + 1
+
+
+def test_save_store_with_a_stale_expected_version_raises_and_does_not_bump(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    save_store(store, db_session, user_id=test_user_id)
+    stale = get_store_version(db_session, user_id=test_user_id)
+    db_session.info["expected_store_version"] = stale
+    save_store(store, db_session, user_id=test_user_id)
+    current = get_store_version(db_session, user_id=test_user_id)
+    assert current == stale + 1
+
+    db_session.info["expected_store_version"] = stale
+    with pytest.raises(StoreVersionConflictError):
+        save_store(store, db_session, user_id=test_user_id)
+    assert get_store_version(db_session, user_id=test_user_id) == current
