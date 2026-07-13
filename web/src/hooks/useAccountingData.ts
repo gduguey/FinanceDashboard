@@ -425,6 +425,26 @@ export function useRenameCategory() {
   })
 }
 
+// Read-only — reports how many postings deleting a category would
+// uncategorize without persisting anything, so no cache invalidation.
+export function useCategoryDeletePreview() {
+  return useMutation({
+    mutationFn: (categoryId: string) => accountingApi.categoryDeletePreview(categoryId),
+  })
+}
+
+// Uncategorizes every posting (and clears/drops every rule, budget,
+// pattern, and split leg) referencing the deleted category or, for a
+// top-level one, any of its subcategories — so this invalidates
+// everything, same as a merge does.
+export function useDeleteCategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (categoryId: string) => accountingApi.deleteCategory(categoryId),
+    onSuccess: invalidate,
+  })
+}
+
 export function useSetTags() {
   const invalidate = useInvalidateAccounting()
   return useMutation({

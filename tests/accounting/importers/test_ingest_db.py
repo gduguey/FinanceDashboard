@@ -16,7 +16,12 @@ import polars as pl
 import pytest
 
 import db.models
-from accounting.importers.ingest import _write_ledger, load_ledger, remap_ledger_category_ids
+from accounting.importers.ingest import (
+    _write_ledger,
+    load_ledger,
+    remap_ledger_category_ids,
+    uncategorize_ledger_postings,
+)
 from accounting.models import Account, Posting, Tag
 from accounting.store import load_store, save_store
 
@@ -165,3 +170,70 @@ def test_remap_ledger_category_ids_updates_category_and_subcategory(
     row = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
     assert row["category_id"] == "expense:transport"
     assert row["subcategory_id"] == "expense:transport:gas"
+
+
+def test_uncategorize_ledger_postings_is_a_noop_for_an_empty_set(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _register_account(db_session, test_user_id)
+    load_store(db_session, user_id=test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
+    uncategorize_ledger_postings(set(), db_session, user_id=test_user_id)
+    assert load_ledger(db_session, user_id=test_user_id).row(0, named=True)["category_id"] == "expense:food-drink"
+
+
+def test_uncategorize_ledger_postings_clears_category_and_subcategory(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    load_store(db_session, user_id=test_user_id)
+    _write_ledger(
+        _frame(_posting("p1", "t1", category_id="expense:food-drink", subcategory_id="expense:food-drink:groceries")),
+        db_session,
+        user_id=test_user_id,
+    )
+    # A real caller passes the already-cascaded set from
+    # `store.category_ids_to_delete` — deleting the parent includes its
+    # subcategories, this function just clears exact matches.
+    uncategorize_ledger_postings(
+        {"expense:food-drink", "expense:food-drink:groceries"}, db_session, user_id=test_user_id
+    )
+
+    row = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
+    assert row["category_id"] is None
+    assert row["subcategory_id"] is None
+
+
+def test_uncategorize_ledger_postings_only_clears_the_subcategory_when_thats_all_thats_deleted(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    load_store(db_session, user_id=test_user_id)
+    _write_ledger(
+        _frame(_posting("p1", "t1", category_id="expense:food-drink", subcategory_id="expense:food-drink:groceries")),
+        db_session,
+        user_id=test_user_id,
+    )
+    uncategorize_ledger_postings({"expense:food-drink:groceries"}, db_session, user_id=test_user_id)
+
+    row = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
+    assert row["category_id"] == "expense:food-drink"
+    assert row["subcategory_id"] is None
+
+
+def test_uncategorize_ledger_postings_leaves_unrelated_postings_untouched(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    load_store(db_session, user_id=test_user_id)
+    _write_ledger(
+        _frame(
+            _posting("p1", "t1", category_id="expense:food-drink"),
+            _posting("p2", "t2", category_id="expense:transport"),
+        ),
+        db_session,
+        user_id=test_user_id,
+    )
+    uncategorize_ledger_postings({"expense:food-drink"}, db_session, user_id=test_user_id)
+
+    rows = {row["posting_id"]: row["category_id"] for row in load_ledger(db_session, user_id=test_user_id).to_dicts()}
+    assert rows["p1"] is None
+    assert rows["p2"] == "expense:transport"

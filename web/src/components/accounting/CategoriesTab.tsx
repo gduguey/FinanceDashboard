@@ -20,11 +20,12 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
+  useCategoryDeletePreview,
   useCategoryRenamePreview,
   useCreateCategory,
   useCreateSubcategory,
+  useDeleteCategory,
   useRenameCategory,
-  useSetCategories,
   useSetCategoryPatterns,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
@@ -155,11 +156,12 @@ function ClassificationSection({
   classification: CategoryClassification
   categories: Record<string, Category>
 }) {
-  const setCategories = useSetCategories()
   const createCategory = useCreateCategory()
   const createSubcategory = useCreateSubcategory()
   const renamePreview = useCategoryRenamePreview()
   const renameCategoryMutation = useRenameCategory()
+  const deletePreview = useCategoryDeletePreview()
+  const deleteCategoryMutation = useDeleteCategory()
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryError, setNewCategoryError] = useState<string | null>(null)
   const [subcategoryDrafts, setSubcategoryDrafts] = useState<Record<string, string>>({})
@@ -176,6 +178,14 @@ function ClassificationSection({
     budgetsToDelete: BudgetToDeletePreview[]
   } | null>(null)
   const [renameResetTick, setRenameResetTick] = useState(0)
+  // A delete that would uncategorize at least one real posting needs the
+  // user's confirmation first (see `useCategoryDeletePreview`) — deleting
+  // one with no postings at all just happens immediately, no popup.
+  const [pendingDelete, setPendingDelete] = useState<{
+    categoryId: string
+    categoryName: string
+    postingCount: number
+  } | null>(null)
 
   const topLevel = Object.values(categories)
     .filter((category) => category.classification === classification && category.parent_category_id === null)
@@ -196,13 +206,23 @@ function ClassificationSection({
     )
   }
 
-  function removeCategory(categoryId: string) {
-    const next = { ...categories }
-    delete next[categoryId]
-    for (const [id, category] of Object.entries(next)) {
-      if (category.parent_category_id === categoryId) delete next[id]
+  async function removeCategory(categoryId: string, categoryName: string) {
+    const preview = await deletePreview.mutateAsync(categoryId)
+    if (preview.posting_count > 0) {
+      setPendingDelete({ categoryId, categoryName, postingCount: preview.posting_count })
+      return
     }
-    setCategories.mutate(next)
+    deleteCategoryMutation.mutate(categoryId)
+  }
+
+  function acceptPendingDelete() {
+    if (!pendingDelete) return
+    deleteCategoryMutation.mutate(pendingDelete.categoryId)
+    setPendingDelete(null)
+  }
+
+  function declinePendingDelete() {
+    setPendingDelete(null)
   }
 
   async function renameCategory(categoryId: string, name: string) {
@@ -273,7 +293,7 @@ function ClassificationSection({
                   />
                 </span>
                 <button
-                  onClick={() => removeCategory(category.category_id)}
+                  onClick={() => removeCategory(category.category_id, category.name)}
                   className="text-muted-foreground/60 hover:text-destructive"
                 >
                   <Trash2 className="size-3.5" />
@@ -301,7 +321,7 @@ function ClassificationSection({
                       )}
                       {!isOther && (
                         <button
-                          onClick={() => removeCategory(child.category_id)}
+                          onClick={() => removeCategory(child.category_id, child.name)}
                           className="text-muted-foreground/60 hover:text-destructive"
                         >
                           <Trash2 className="size-2.5" />
@@ -377,6 +397,29 @@ function ClassificationSection({
                 Decline
               </Button>
               <Button onClick={acceptPendingRename}>Accept</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      {pendingDelete && (
+        <Dialog open onOpenChange={(open) => !open && declinePendingDelete()}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete '{pendingDelete.categoryName}'?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-destructive">
+              {pendingDelete.postingCount} transaction{pendingDelete.postingCount === 1 ? '' : 's'} currently{' '}
+              {pendingDelete.postingCount === 1 ? 'has' : 'have'} this category — deleting it will make{' '}
+              {pendingDelete.postingCount === 1 ? 'that transaction' : 'those transactions'} uncategorized. This can't
+              be undone.
+            </p>
+            <DialogFooter>
+              <Button variant="outline" onClick={declinePendingDelete}>
+                Decline
+              </Button>
+              <Button variant="destructive" onClick={acceptPendingDelete}>
+                Delete
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
