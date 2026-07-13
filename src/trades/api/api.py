@@ -27,7 +27,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import Depends
-from fastapi.responses import FileResponse
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from accounting.api import router as accounting_router
@@ -51,6 +52,62 @@ app.include_router(sync.router, dependencies=_authenticated)
 # Deliberately unauthenticated — see trades.api.webhooks' own docstring for
 # why (Clerk's own servers call this, never a signed-in browser).
 app.include_router(webhooks_router)
+
+
+@app.get("/health", include_in_schema=False)
+def health() -> dict[str, bool]:
+    """Liveness probe for `deploy/Dockerfile`'s `HEALTHCHECK` and both `docker-compose*.yml`'s own.
+
+    Deliberately unauthenticated and separate from `/docs` below (which
+    Docker's healthcheck used to poll, before that route required a Clerk
+    session too) — a healthcheck that itself needed a Clerk session would
+    always report unhealthy.
+
+    Returns
+    -------
+    dict[str, bool]
+    """
+    return {"ok": True}
+
+
+# `trades.api.dependencies` disables FastAPI's own auto-registered
+# /docs, /redoc, /openapi.json (`docs_url`/`redoc_url`/`openapi_url=None`)
+# so these hand-registered equivalents can require the same Clerk session
+# as every other route here — the schema/UI would otherwise leak this
+# app's endpoint shape (and confirm which routes exist) to anyone, signed
+# in or not.
+@app.get("/openapi.json", include_in_schema=False, dependencies=_authenticated)
+def openapi_schema() -> JSONResponse:
+    """Return `app`'s OpenAPI schema. Not the default endpoint's route — see the note above.
+
+    Returns
+    -------
+    fastapi.responses.JSONResponse
+    """
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False, dependencies=_authenticated)
+def swagger_ui() -> HTMLResponse:
+    """Serve Swagger UI against the protected `/openapi.json` above.
+
+    Returns
+    -------
+    fastapi.responses.HTMLResponse
+    """
+    return get_swagger_ui_html(openapi_url="/openapi.json", title=f"{app.title} - Swagger UI")
+
+
+@app.get("/redoc", include_in_schema=False, dependencies=_authenticated)
+def redoc_ui() -> HTMLResponse:
+    """Serve ReDoc against the protected `/openapi.json` above.
+
+    Returns
+    -------
+    fastapi.responses.HTMLResponse
+    """
+    return get_redoc_html(openapi_url="/openapi.json", title=f"{app.title} - ReDoc")
+
 
 # db.current_user.get_current_user_id's own body always raises (see its
 # docstring) — this override is what makes db.session.get_db actually

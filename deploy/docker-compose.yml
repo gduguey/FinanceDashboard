@@ -51,7 +51,7 @@ services:
         max-file: "3"
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -66,10 +66,16 @@ services:
     # .env.docker directly into the container's runtime environment, which is
     # what the official postgres image reads on startup.
     env_file:
-      - .env.docker
+      - ../.env.docker
 
-    # No `ports:` entry on purpose — Postgres is never exposed to the host's
-    # public interface, only reachable from other containers on this network.
+    # Loopback-only — reachable from processes on the VM itself (an SSH
+    # tunnel from your Mac, e.g. TablePlus/VS Code's Postgres extension),
+    # but bound to 127.0.0.1 specifically, so still unreachable from the
+    # internet or anywhere else on the VM's network. Same convention as
+    # staging's own 127.0.0.1:5433 mapping, one port over.
+    ports:
+      - "127.0.0.1:5432:5432"
+
     volumes:
       - pgdata:/var/lib/postgresql/data
 

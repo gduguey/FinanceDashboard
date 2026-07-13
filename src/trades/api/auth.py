@@ -57,11 +57,17 @@ class ClerkAuthSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=str(_REPO_ROOT / ".env"), env_file_encoding="utf-8", extra="ignore")
 
     secret_key: SecretStr = Field(validation_alias="CLERK_SECRET_KEY")
+    public_domain: str | None = Field(default=None, validation_alias="PUBLIC_DOMAIN")
+    """The same space-separated hostname(s) Caddy serves (see `deploy/Caddyfile`'s `{$PUBLIC_DOMAIN}`).
+
+    `None` in local dev, where no fixed domain exists yet — see `_options`
+    for what that means for `authorized_parties`.
+    """
 
 
 @lru_cache(maxsize=1)
 def _options() -> AuthenticateRequestOptions:
-    """Build (once) Clerk's request-authentication options from `CLERK_SECRET_KEY`.
+    """Build (once) Clerk's request-authentication options from `CLERK_SECRET_KEY`/`PUBLIC_DOMAIN`.
 
     Returns
     -------
@@ -71,7 +77,24 @@ def _options() -> AuthenticateRequestOptions:
     # CLERK_SECRET_KEY at runtime, but mypy has no pydantic plugin configured here to know
     # that, so it sees a required constructor argument never passed.
     settings = ClerkAuthSettings()  # type: ignore[call-arg]
-    return AuthenticateRequestOptions(secret_key=settings.secret_key.get_secret_value())
+    # `authorized_parties` restricts accepted sessions to tokens issued for one of these
+    # origins (Clerk's `azp` claim) — left unset (None) in local dev, where PUBLIC_DOMAIN
+    # isn't configured, so nothing beyond signature/expiry is enforced there.
+    authorized_parties = (
+        [f"https://{host}" for host in settings.public_domain.split()] if settings.public_domain else None
+    )
+    return AuthenticateRequestOptions(
+        secret_key=settings.secret_key.get_secret_value(), authorized_parties=authorized_parties
+    )
+
+
+def validate_clerk_settings() -> None:
+    """Fail fast if `CLERK_SECRET_KEY` is missing/invalid, instead of only on the first authenticated request.
+
+    Called from `trades.api.dependencies`'s app startup — see its own
+    lifespan handler.
+    """
+    _options()
 
 
 def require_clerk_session(request: Request) -> None:

@@ -66,6 +66,7 @@ try:
 except ModuleNotFoundError:
     trades_storage = None
     trades_api = None
+    require_clerk_session = None
 
 
 _R2_ENV_VARS = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_ENDPOINT_URL")

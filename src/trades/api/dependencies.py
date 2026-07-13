@@ -8,6 +8,7 @@ own file stays defined there instead — see that router module for those.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, cast
 from zoneinfo import ZoneInfo
@@ -16,16 +17,26 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
 from trades.api.api_models import SyncProgress
+from trades.api.auth import validate_clerk_settings
 from trades.brokers.ibkr import api as ibkr_api
 from trades.brokers.ibkr import main
 from trades.config import AppConfig
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import AsyncIterator
 
     import polars as pl
 
-app = FastAPI(title="Investments API")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Validate `CLERK_SECRET_KEY` at process startup rather than on the first authenticated request."""
+    validate_clerk_settings()
+    yield
+
+
+app = FastAPI(title="Investments API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
 app.state.config = AppConfig()
 app.state.sync_progress = {}
 """`dict[uuid.UUID, SyncProgress]` — each user's own sync progress, keyed by

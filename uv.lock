@@ -1590,7 +1590,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "boto3", specifier = ">=1.43.42" },
-    { name = "clerk-backend-api", marker = "extra == 'api'", specifier = ">=6.0.1" },
+    { name = "clerk-backend-api", marker = "extra == 'api'", specifier = ">=6.0.1,<7.0.0" },
     { name = "cryptography", specifier = ">=45.0.0,<49.0.0" },
     { name = "defusedxml", specifier = ">=0.7" },
     { name = "fastapi", marker = "extra == 'api'", specifier = ">=0.115" },
