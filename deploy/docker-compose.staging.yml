@@ -14,8 +14,8 @@
 services:
   api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile
       # Same gotcha and same fix as production's docker-compose.yml —
       # deploy-staging.sh exports this from .env.staging before `--build`.
       args:
@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
     env_file:
-      - .env.staging
+      - ../.env.staging
 
     depends_on:
       postgres:
@@ -42,7 +42,7 @@ services:
     volumes:
       # Disposable on purpose — staging data is meant to be wiped and
       # reseeded with fake accounts, never a copy of anyone's real numbers.
-      - ./data:/app/data
+      - ../data:/app/data
 
     deploy:
       resources:
@@ -79,7 +79,7 @@ services:
     # interpolation only reads a file literally named `.env`, not
     # `.env.staging`. Let env_file inject these directly instead.
     env_file:
-      - .env.staging
+      - ../.env.staging
 
     # No `ports:` here either — same reasoning as production, never
     # exposed to the host's public interface.
@@ -107,7 +107,7 @@ services:
       - api
 
     env_file:
-      - .env.staging
+      - ../.env.staging
 
     # Different host ports than production's 80/443 — both stacks run on
     # the same VM/IP, so they can't both claim the standard ports. Combined

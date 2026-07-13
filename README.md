@@ -222,18 +222,21 @@ kill <PID>
 
 ## Deploying
 
-Three root-level scripts drive the production/staging VM; all three are
-committed (they contain no credentials — real secrets live in the
-gitignored `.env.docker`/`.env.staging` files they reference):
+Three scripts under `deploy/` drive the production/staging VM, alongside
+the `Dockerfile` and `docker-compose*.yml`/`Caddyfile*` they use; all of
+it is committed (they contain no credentials — real secrets live in the
+gitignored `.env.docker`/`.env.staging` files they reference, still kept
+at the repo root):
 
-- **`deploy.sh <ssh-host>`** — deploys `main` to production: `git pull`,
-  rebuild, `docker compose up -d --build` (which itself runs
-  `alembic upgrade head` before starting the app — see the Dockerfile).
-- **`deploy-staging.sh <ssh-host> [branch]`** — same idea, but to a
+- **`deploy/deploy.sh <ssh-host>`** — deploys `main` to production:
+  `git pull`, rebuild, `docker compose -f deploy/docker-compose.yml up -d
+  --build` (which itself runs `alembic upgrade head` before starting the
+  app — see `deploy/Dockerfile`).
+- **`deploy/deploy-staging.sh <ssh-host> [branch]`** — same idea, but to a
   separate staging stack/clone on the same VM, for a branch that isn't
   `main` yet.
-- **`reset-staging.sh <ssh-host>`** — wipes staging's database/volumes
-  back to empty and rebuilds; never touches production.
+- **`deploy/reset-staging.sh <ssh-host>`** — wipes staging's
+  database/volumes back to empty and rebuilds; never touches production.
 
 Further infrastructure notes (VM setup, Docker/Caddy/Postgres
 architecture, DNS, secrets) live in `docs/server-setup/`, gitignored on

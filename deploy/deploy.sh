@@ -1,7 +1,7 @@
 #!/bin/bash
 # Deploy the current main branch to the VM and restart the stack.
-# Usage: ./deploy.sh <ssh-host>
-# Example: ./deploy.sh oci-finance-dashboard   (using an entry in ~/.ssh/config)
+# Usage: ./deploy/deploy.sh <ssh-host>
+# Example: ./deploy/deploy.sh oci-finance-dashboard   (using an entry in ~/.ssh/config)
 
 set -euo pipefail
 
@@ -33,10 +33,10 @@ ssh "$HOST" "
         exit 1
     fi
     echo \"==> Building image tagged \$VERSION\"
-    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose up -d --build
+    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose -f deploy/docker-compose.yml up -d --build
     # Host-wide prune: this VM only ever runs this one app's stack, so
     # cleaning up every dangling image on the host is safe here — not a
     # shared/multi-tenant machine where that would risk another stack's cache.
     docker image prune -f
 "
-echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose logs -f'"
+echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose -f deploy/docker-compose.yml logs -f'"
