@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import polars as pl
 import pytest
 
 from accounting.config import AccountingConfig
 from accounting.importers import ingest as ingest_module
+from accounting.importers.canonical.csv import CanonicalImportResult
 from accounting.importers.ingest import (
     UnsupportedImportError,
+    ingest_canonical_csv,
     ingest_csv,
     load_ledger,
     rebuild_from_raw_statements,
 )
-from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_text
-from accounting.models import Account
+from accounting.models import Account, Posting
 from accounting.store import load_store, save_store
 
 if TYPE_CHECKING:
@@ -33,19 +36,39 @@ SOFI_SAVINGS_CSV = (
     "2026-06-29,SOME EMPLOYER,DIRECT_DEPOSIT,2000,3261.47,Posted\n"
 )
 
+# The newer, wide SoFi CSV shape (see `importers.sofi.csv`) — a vault export
+# with one interest row and one transfer-from-savings row.
+SOFI_VAULT_CSV = (
+    "Authorized Date,Posted Date,Status,Account Name,Description,Primary Category,Detailed Category,Amount\n"
+    "2026-06-30,2026-06-30,Posted,Emergency Fund ***3680,Interest,Income,Interest,77.97\n"
+    "2026-04-03,2026-04-03,Posted,Emergency Fund ***3680,Transfer From Savings,Transfers,Savings transfers,10000.00\n"
+)
+
 
 def _config(tmp_path) -> AccountingConfig:
     return AccountingConfig(data_dir=tmp_path)
 
 
 def _register_account(
-    session: Session, user_id: uuid.UUID, account_id: str, institution: str, kind: str = "checking"
+    session: Session,
+    user_id: uuid.UUID,
+    account_id: str,
+    institution: str,
+    kind: str = "checking",
+    parent_account_id: str | None = None,
 ) -> None:
     """Register an account through the store first — exactly what `api.py`'s upload endpoint does before
     ever calling `ingest_csv`, since a posting can only reference an account that already exists.
     """
     store = load_store(session, user_id=user_id)
-    account = Account(account_id=account_id, name=account_id, kind=kind, institution=institution, currency="USD")  # type: ignore[arg-type]
+    account = Account(
+        account_id=account_id,
+        name=account_id,
+        kind=kind,  # type: ignore[arg-type]
+        institution=institution,
+        currency="USD",
+        parent_account_id=parent_account_id,
+    )
     save_store(store.model_copy(update={"accounts": {**store.accounts, account_id: account}}), session, user_id=user_id)
 
 
@@ -155,6 +178,63 @@ def test_ingest_csv_two_different_accounts_both_land_in_the_ledger(
     assert set(ledger["account_id"].unique().to_list()) >= {"chase:checking:1234", "sofi:savings:9999"}
 
 
+def test_ingest_csv_routes_a_vault_transfer_to_its_real_opaque_parent_id(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    # Deliberately opaque, non-colon-shaped ids — proves the parent is read
+    # off the account row (via `parent_account_id`), never parsed out of
+    # `account_id`'s own shape (see `ingest.py:802`'s old `.split(":")[1]`).
+    config = _config(tmp_path)
+    savings_id = "a1b2c3d4savings"
+    vault_id = "e5f6a7b8vault"
+    _register_account(db_session, test_user_id, savings_id, "SoFi", kind="savings")
+    _register_account(db_session, test_user_id, vault_id, "SoFi", kind="vault", parent_account_id=savings_id)
+
+    result = ingest_csv(
+        SOFI_VAULT_CSV,
+        "SoFi",
+        "vault",
+        vault_id,
+        config,
+        db_session,
+        user_id=test_user_id,
+        parent_account_id=savings_id,
+    )
+    assert result.new_posting_count == 4
+
+    ledger = load_ledger(db_session, user_id=test_user_id)
+    transfer_leg = ledger.filter(ledger["account_id"] == savings_id).row(0, named=True)
+    assert transfer_leg["amount"] == pytest.approx(-10000.0)
+
+
+def test_rebuild_from_raw_statements_resolves_a_vault_transfer_with_opaque_ids(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    # Regression test for `ingest.py:802`'s `account_id.split(":")[1]`, which
+    # raises `IndexError` the moment `account_id` isn't colon-shaped — must
+    # fail on the pre-fix code.
+    config = _config(tmp_path)
+    savings_id = "a1b2c3d4savings"
+    vault_id = "e5f6a7b8vault"
+    _register_account(db_session, test_user_id, savings_id, "SoFi", kind="savings")
+    _register_account(db_session, test_user_id, vault_id, "SoFi", kind="vault", parent_account_id=savings_id)
+    ingest_csv(
+        SOFI_VAULT_CSV,
+        "SoFi",
+        "vault",
+        vault_id,
+        config,
+        db_session,
+        user_id=test_user_id,
+        parent_account_id=savings_id,
+    )
+
+    rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
+
+    transfer_leg = rebuilt.filter(rebuilt["account_id"] == savings_id).row(0, named=True)
+    assert transfer_leg["amount"] == pytest.approx(-10000.0)
+
+
 def test_ingest_csv_unsupported_institution_raises(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
     with pytest.raises(UnsupportedImportError):
         ingest_csv(
@@ -193,64 +273,103 @@ def test_rebuild_from_raw_statements_with_no_archives_raises(
         rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
 
-_SOFI_STATEMENT_TEXT = """\
-Checking Account - 9169
-Current Balance Monthly Interest Paid1 Annual Percentage Yield Earned1
-$0.01 $0.01 0.61%
-as of Apr 30, 2026
-Transaction Details
-Checking Account - 9169
-DATE TYPE DESCRIPTION AMOUNT BALANCE
-Apr 3, 2026 Withdrawal To Savings - 3680 -$300.08 $0.00
-Transaction ID: 17-353515001
-Savings Account - 3680
-Current Balance Monthly Interest Paid1 Annual Percentage Yield Earned1
-$4,539.01 $102.18 4.02%
-as of Apr 30, 2026
-Transaction Details
-Savings Account - 3680
-DATE TYPE DESCRIPTION AMOUNT BALANCE
-Apr 3, 2026 Deposit From Checking - 9169 $300.08 $300.08
-Transaction ID: 39-353515002
-Apr 3, 2026 Withdrawal To Emergency Fund Vault -$10,000.00 $8,738.93
-Transaction ID: 36-351435001
-Emergency Fund Vault
-DATE TYPE DESCRIPTION AMOUNT BALANCE
-Apr 3, 2026 Deposit From savings balance $10,000.00 $10,000.00
-Transaction ID: 17-351435002
-"""
-
-
-def _patch_sofi_statement_pdf(monkeypatch) -> None:
-    monkeypatch.setattr(
-        ingest_module,
-        "standardize_sofi_statement_pdf",
-        lambda _pdf_bytes: standardize_sofi_statement_text(_SOFI_STATEMENT_TEXT),
-    )
-
-
 def _archive_sofi_statement_pdf(config: AccountingConfig, pdf_bytes: bytes) -> None:
-    """Write a raw PDF straight into the archive, bypassing the (now-retired) upload endpoint.
+    """Write a raw PDF straight into the archive, exactly where an old (pre-retirement) upload would have.
 
-    Mirrors what `ingest_sofi_statement_pdf` used to do before new PDF
-    imports were retired — `rebuild_from_raw_statements` still needs to
-    find something under `SoFi/statement_pdf/*.pdf` to re-derive.
+    `rebuild_from_raw_statements` no longer reads anything under
+    `SoFi/statement_pdf/*.pdf` — this only exists to prove a rebuild
+    ignores it rather than erroring on it or re-deriving postings from it.
     """
     directory = config.raw_statement_dir / "SoFi" / "statement_pdf"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "statement.pdf").write_bytes(pdf_bytes)
 
 
-def test_rebuild_from_raw_statements_replays_archived_sofi_pdfs(
-    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+def test_rebuild_from_raw_statements_ignores_archived_pdfs(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    _patch_sofi_statement_pdf(monkeypatch)
     config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
     _archive_sofi_statement_pdf(config, b"%PDF-fake")
 
     rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
-    assert set(rebuilt["account_id"].unique().to_list()) >= {"sofi:checking:9169", "sofi:savings:3680"}
-    assert "sofi:savings:3680:vault:emergency-fund" in load_store(db_session, user_id=test_user_id).accounts
 
-    store = load_store(db_session, user_id=test_user_id)
-    assert store.accounts["sofi:savings:3680"].meta["apy_pct"] == "4.02"
+    assert "chase:checking:1234" in set(rebuilt["account_id"].unique().to_list())
+    assert not any(account_id.startswith("sofi:") for account_id in rebuilt["account_id"].unique().to_list())
+    assert "sofi:savings:3680" not in load_store(db_session, user_id=test_user_id).accounts
+
+
+def test_rebuild_from_raw_statements_with_only_archived_pdfs_raises(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _archive_sofi_statement_pdf(config, b"%PDF-fake")
+
+    with pytest.raises(FileNotFoundError):
+        rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
+
+
+def _unbalanced_posting_frame(account_id: str) -> pl.DataFrame:
+    """One posting with no counterparty leg — its transaction can never sum to zero."""
+    posting = Posting(
+        posting_id="unbalanced-p1",
+        transaction_id="unbalanced-t1",
+        account_id=account_id,
+        posted_at=datetime(2026, 1, 1, tzinfo=UTC),
+        amount=50.0,
+        currency="USD",
+        description="test",
+        meta={},
+    )
+    return pl.DataFrame([posting.model_dump(mode="python")], schema=Posting.polars_schema)
+
+
+def test_ingest_csv_rejects_a_standardizer_result_that_doesnt_balance(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    monkeypatch.setitem(
+        ingest_module._STANDARDIZERS,
+        ("Chase", "checking"),
+        lambda *_args: _unbalanced_posting_frame("chase:checking:1234"),
+    )
+
+    with pytest.raises(ValueError, match="not zero"):
+        ingest_csv(
+            CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id
+        )
+
+
+def test_ingest_canonical_csv_rejects_a_result_that_doesnt_balance(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    monkeypatch.setattr(
+        ingest_module,
+        "standardize_canonical_csv",
+        lambda *_args, **_kwargs: CanonicalImportResult(
+            postings=_unbalanced_posting_frame("chase:checking:1234"), new_categories={}
+        ),
+    )
+
+    with pytest.raises(ValueError, match="not zero"):
+        ingest_canonical_csv("a,b\n1,2\n", "chase:checking:1234", config, db_session, user_id=test_user_id)
+
+
+def test_rebuild_from_raw_statements_rejects_a_result_that_doesnt_balance(
+    tmp_path, monkeypatch, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+    monkeypatch.setitem(
+        ingest_module._STANDARDIZERS,
+        ("Chase", "checking"),
+        lambda *_args: _unbalanced_posting_frame("chase:checking:1234"),
+    )
+
+    with pytest.raises(ValueError, match="not zero"):
+        rebuild_from_raw_statements(config, db_session, user_id=test_user_id)

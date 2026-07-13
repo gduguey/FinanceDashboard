@@ -25,7 +25,7 @@ from accounting.importers.canonical.csv import (
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
-from accounting.importers.sofi.statement_pdf import standardize_sofi_statement_pdf
+from accounting.ledger.replay import validate_balanced
 from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.statement_archive import StatementArchive
@@ -40,13 +40,13 @@ if TYPE_CHECKING:
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
-    from accounting.models import Account, Category
+    from accounting.models import Category
     from accounting.store import AccountingStore
 
 _Fingerprint = tuple[str, datetime, float, str]
 """`(account_id, posted_at, amount, description)` — two transactions with the same fingerprint look identical."""
 
-_STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
+_STANDARDIZERS: dict[tuple[str, str], Callable[[str, str, str | None], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
     ("Chase", "credit_card"): standardize_chase_credit_card,
     ("SoFi", "checking"): standardize_sofi_checking,
@@ -426,40 +426,6 @@ def _archive_raw_statement(
     archive.write(f"{institution}/{account_id}/{timestamp}.{suffix}", data)
 
 
-def _merge_discovered_accounts(discovered: dict[str, Account], session: Session, user_id: uuid.UUID) -> None:
-    """Add newly-seen accounts to the store, and refresh `meta` on ones already known.
-
-    Unlike a rule's counterparty (only ever created the first time it's
-    matched), a statement PDF's checking/savings/vault accounts are
-    already fully known every time it's parsed — re-importing a later
-    month must keep updating `meta["apy_pct"]` without ever touching a
-    user-edited `name`.
-
-    Parameters
-    ----------
-    discovered
-        Every account this statement describes, keyed by `account_id`.
-    session
-        An open database session; the store is read and, if anything
-        changed, written back.
-    user_id
-        Whose store this is.
-    """
-    store = load_store(session, user_id=user_id)
-    accounts = dict(store.accounts)
-    changed = False
-    for account_id, discovered_account in discovered.items():
-        existing = accounts.get(account_id)
-        if existing is None:
-            accounts[account_id] = discovered_account
-            changed = True
-        elif existing.meta != {**existing.meta, **discovered_account.meta}:
-            accounts[account_id] = existing.model_copy(update={"meta": {**existing.meta, **discovered_account.meta}})
-            changed = True
-    if changed:
-        save_store(store.model_copy(update={"accounts": accounts}), session, user_id=user_id)
-
-
 def _fallback_to_canonical_csv(
     csv_text: str,
     account_id: str,
@@ -491,7 +457,7 @@ def _fallback_to_canonical_csv(
     return canonical_result.postings, canonical_result.skipped_rows
 
 
-def ingest_csv(
+def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the CSV-parsing options, push this one over)
     csv_text: str,
     institution: str,
     account_kind: str,
@@ -499,6 +465,7 @@ def ingest_csv(
     config: AccountingConfig,
     session: Session,
     user_id: uuid.UUID,
+    parent_account_id: str | None = None,
 ) -> IngestResult:
     """Archive one uploaded CSV verbatim, standardize it, and merge the result into the ledger.
 
@@ -529,6 +496,10 @@ def ingest_csv(
         An open database session.
     user_id
         Whose store/ledger this is.
+    parent_account_id
+        `account_id`'s own parent account, if it has one (a vault's savings
+        account) — only meaningful to the SoFi standardizers; ignored by
+        every other registered standardizer.
 
     Returns
     -------
@@ -552,7 +523,7 @@ def ingest_csv(
     skip_info: SkippedRowsInfo | None = None
     # Try the bank-specific standardizer first; if it fails, fall back to canonical CSV
     try:
-        new_postings = standardizer(csv_text, account_id)
+        new_postings = standardizer(csv_text, account_id, parent_account_id)
     except (ValueError, RuntimeError) as error:
         # Bank-specific standardizer failed (likely validation, parsing, or format mismatch).
         # Fall back to canonical CSV importer, which is more forgiving about column names/formats.
@@ -569,6 +540,7 @@ def ingest_csv(
 
     existing = load_ledger(session, user_id=user_id)
     merged = _merge_ledger(existing, new_postings)
+    validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
 
     return IngestResult(
@@ -712,6 +684,7 @@ def _apply_canonical_outcome(
 
     existing = load_ledger(session, user_id=user_id)
     merged = _merge_ledger(existing, outcome.postings)
+    validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
 
     return CanonicalIngestResult(
@@ -764,9 +737,15 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
 
     Discards whatever ledger is currently persisted. The account id and kind
     for each archive are recovered from its own directory name
-    (`raw_statement_dir/{institution}/{account_id}/...`) and `account_id`'s
-    own `{institution}:{kind}:{number}` shape — no separate registry of
-    "which files belong to which account" is needed.
+    (`raw_statement_dir/{institution}/{account_id}/...`) — no separate
+    registry of "which files belong to which account" is needed.
+
+    Archived SoFi statement PDFs (see `importers.sofi.statement_pdf`, kept
+    only for that module's own sake — see its docstring) are deliberately
+    ignored here, not replayed: PDF-based import is retired, and any
+    postings that were only ever derived from an old PDF are dropped by a
+    rebuild rather than re-parsed. If that ever matters for a real
+    archive, re-run the parser against it manually first.
 
     Parameters
     ----------
@@ -785,41 +764,32 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     Raises
     ------
     FileNotFoundError
-        If no raw statements have ever been archived.
+        If no raw CSV statements have ever been archived.
     UnsupportedImportError
         If an archived directory's institution/account-kind has no registered standardizer.
     """
     archive = StatementArchive(config.raw_statement_dir, f"statements/{user_id}")
     csv_relative_paths = archive.list_relative_paths("*/*/*.csv")
-    pdf_relative_paths = archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf")
-    if not csv_relative_paths and not pdf_relative_paths:
+    if not csv_relative_paths:
         message = f"No archived raw statements under {config.raw_statement_dir}"
         raise FileNotFoundError(message)
 
+    store = load_store(session, user_id=user_id)
     frames = [pl.DataFrame(schema=Posting.polars_schema)]
     for relative_path in csv_relative_paths:
         institution, account_id, _filename = relative_path.split("/")
-        account_kind = account_id.split(":")[1]
-        standardizer = _STANDARDIZERS.get((institution, account_kind))
+        # An archived-but-now-missing account is an invariant violation, not a
+        # case to degrade gracefully for — `delete_account` already refuses to
+        # delete any account with postings, and every archived raw statement
+        # implies postings were ingested from it, so indexing directly is safe.
+        account = store.accounts[account_id]
+        standardizer = _STANDARDIZERS.get((institution, account.kind))
         if standardizer is None:
-            message = f"No importer for institution={institution!r}, account_kind={account_kind!r}."
+            message = f"No importer for institution={institution!r}, account_kind={account.kind!r}."
             raise UnsupportedImportError(message)
-        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id))
-
-    # New statement-PDF imports are retired (SoFi CSV now covers checking,
-    # savings, and vaults — see `importers.sofi.csv`) — there is no upload
-    # path left that writes into `pdf_relative_paths` going forward. But any
-    # PDF archived by a past import still needs to be re-derived here, or a
-    # rebuild would silently drop those postings and orphan their
-    # categorization (see `models.ManualOverride`, keyed by posting_id).
-    discovered_accounts: dict[str, Account] = {}
-    for relative_path in pdf_relative_paths:
-        pdf_postings, pdf_accounts = standardize_sofi_statement_pdf(archive.read(relative_path))
-        frames.append(pdf_postings)
-        discovered_accounts.update(pdf_accounts)
-    if discovered_accounts:
-        _merge_discovered_accounts(discovered_accounts, session, user_id=user_id)
+        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id, account.parent_account_id))
 
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
+    validate_balanced(ledger)
     _write_ledger(ledger, session, user_id=user_id)
     return ledger
