@@ -1,8 +1,8 @@
 services:
   api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile
       # From the invoking shell's env (deploy.sh exports it from .env.docker
       # before calling `docker compose up --build`) — Compose's own `${...}`
       # interpolation never reads .env.docker itself, only a literal `.env`
@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
 
     env_file:
-      - .env.docker
+      - ../.env.docker
 
     depends_on:
       postgres:
@@ -33,7 +33,7 @@ services:
 
     volumes:
       # Transitional: local file-based data, until Postgres + R2 fully take over.
-      - ./data:/app/data
+      - ../data:/app/data
 
     deploy:
       resources:
@@ -97,7 +97,7 @@ services:
       - api
 
     env_file:
-      - .env.docker
+      - ../.env.docker
 
     ports:
       - "80:80"

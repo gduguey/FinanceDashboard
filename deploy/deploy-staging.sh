@@ -1,8 +1,8 @@
 #!/bin/bash
 # Deploy a branch to the staging stack — a separate clone directory, a
 # separate docker-compose project, on the same VM as production.
-# Usage: ./deploy-staging.sh <ssh-host> [branch]
-# Example: ./deploy-staging.sh oci-finance-dashboard gduguey/some-feature
+# Usage: ./deploy/deploy-staging.sh <ssh-host> [branch]
+# Example: ./deploy/deploy-staging.sh oci-finance-dashboard gduguey/some-feature
 #          (branch defaults to whatever's currently checked out if omitted)
 
 set -euo pipefail
@@ -55,7 +55,7 @@ ssh "$HOST" "
         exit 1
     fi
     echo \"==> Building image tagged \$VERSION\"
-    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose -p staging -f docker-compose.staging.yml up -d --build
+    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose -p staging -f deploy/docker-compose.staging.yml up -d --build
     docker image prune -f
 "
-echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose -p staging -f docker-compose.staging.yml logs -f'"
+echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose -p staging -f deploy/docker-compose.staging.yml logs -f'"

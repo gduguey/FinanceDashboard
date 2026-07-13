@@ -6,8 +6,5 @@
 # who will ever visit this URL. See docs/server-setup/staging.md.
 {$PUBLIC_DOMAIN} {
 	tls internal
-	basic_auth {
-		{$BASIC_AUTH_USER} {$BASIC_AUTH_PASSWORD_HASH}
-	}
 	reverse_proxy api:8000
 }
