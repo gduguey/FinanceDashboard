@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from db.current_user import get_current_user_id
 from db.session import get_db
+from trades import dashboard
 from trades.api.api_models import SyncProgress, SyncResult, SyncStep
 from trades.api.dependencies import _config, _last_synced_iso, _report_sync_progress, app
 from trades.brokers.ibkr import main
@@ -135,8 +136,9 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
         new_event_count = 0
         total_event_count = main.load_ledger(session, user_id).height
 
+    local_zone = dashboard.resolved_local_zone(config, dashboard.load_settings(session, user_id))
     return SyncResult(
-        synced_at=_last_synced_iso(user_id),
+        synced_at=_last_synced_iso(user_id, local_zone),
         new_event_count=new_event_count,
         total_event_count=total_event_count,
         steps=steps,

@@ -105,32 +105,40 @@ def _first_event_date(ledger: pl.DataFrame) -> date:
     return cast("date", ledger["event_datetime"].dt.date().min())
 
 
-def _to_display_zone(value: datetime, config: AppConfig) -> datetime:
-    """Attach the display timezone to a naive-UTC datetime, for human-facing output.
+def _to_display_zone(value: datetime, local_zone: str) -> datetime:
+    """Attach a display timezone to a naive-UTC datetime, for human-facing output.
 
     Parameters
     ----------
     value
         A naive UTC datetime (the storage format everywhere in this app).
-    config
-        Application configuration; `config.timezone.local_zone` is read.
+    local_zone
+        An IANA zone name — the caller's resolved
+        `trades.dashboard.settings.resolved_local_zone`, not read here, so
+        this stays a plain per-user-agnostic helper.
 
     Returns
     -------
     datetime.datetime
-        `value` converted to `config.timezone.local_zone` and made
-        tz-aware, so its `isoformat()` carries a real UTC offset.
+        `value` converted to `local_zone` and made tz-aware, so its
+        `isoformat()` carries a real UTC offset.
     """
-    return value.replace(tzinfo=UTC).astimezone(ZoneInfo(config.timezone.local_zone))
+    return value.replace(tzinfo=UTC).astimezone(ZoneInfo(local_zone))
 
 
-def _last_synced_iso(user_id: uuid.UUID) -> str | None:
-    """Return this user's most recent IBKR sync time, in the display timezone, or `None` if they've never synced.
+def _last_synced_iso(user_id: uuid.UUID, local_zone: str) -> str | None:
+    """Return this user's most recent IBKR sync time, in `local_zone`, or `None` if they've never synced.
+
+    Parameters
+    ----------
+    user_id
+        Whose last sync time to look up.
+    local_zone
+        An IANA zone name — see `_to_display_zone`.
 
     Returns
     -------
     str or None
     """
-    config = _config()
-    last_synced = ibkr_api.last_synced_at(config, user_id)
-    return _to_display_zone(last_synced, config).isoformat() if last_synced else None
+    last_synced = ibkr_api.last_synced_at(_config(), user_id)
+    return _to_display_zone(last_synced, local_zone).isoformat() if last_synced else None

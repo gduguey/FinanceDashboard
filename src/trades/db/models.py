@@ -106,7 +106,7 @@ class LedgerEventTradeDetails(Base):
 
 
 class DashboardSettings(Base):
-    """One user's dashboard preferences — target allocation, HYSA/benchmark overrides, tax settings.
+    """One user's dashboard preferences — target allocation, HYSA/benchmark overrides, tax settings, display timezone.
 
     Exactly zero or one row per user (a singleton preferences record) —
     `user_id` is the primary key directly; there's no natural-key/import
@@ -126,6 +126,7 @@ class DashboardSettings(Base):
     hysa_bank_id: Mapped[str | None] = mapped_column(default=None)
     hysa_fixed_rate_pct: Mapped[float | None] = mapped_column(default=None)
     benchmark_symbol_override: Mapped[str | None] = mapped_column(default=None)
+    local_zone: Mapped[str | None] = mapped_column(default=None)
     tax_enabled: Mapped[bool] = mapped_column(default=False)
     tax_regime: Mapped[str | None] = mapped_column(default=None)
     residency_status_change_date: Mapped[date | None] = mapped_column(default=None)

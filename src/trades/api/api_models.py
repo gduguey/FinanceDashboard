@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from trades.config import TaxRegime
+from trades.config import TaxRegime, validate_iana_zone_name
 from trades.dashboard.cash_sitting import WarningLevel
 
 
@@ -156,6 +156,36 @@ class BenchmarkSetting(BaseModel):
 
     symbol_override: str | None
     default_symbol: str
+
+
+class TimezoneSettingUpdate(BaseModel):
+    """Request body for `PUT /api/settings/timezone`.
+
+    `local_zone` is the browser's own IANA zone name
+    (`Intl.DateTimeFormat().resolvedOptions().timeZone`), reported once per
+    session rather than picked from a list — see
+    `trades.dashboard.settings.DashboardSettings.local_zone`.
+    """
+
+    local_zone: str | None = None
+
+    @field_validator("local_zone")
+    @classmethod
+    def _validate_zone_name(cls, value: str | None) -> str | None:
+        """Reject a `local_zone` that isn't a real IANA timezone name.
+
+        Returns
+        -------
+        str or None
+        """
+        return validate_iana_zone_name(value) if value is not None else None
+
+
+class TimezoneSetting(BaseModel):
+    """The persisted display-timezone override, plus what it resolves to."""
+
+    local_zone: str | None
+    resolved_local_zone: str
 
 
 class TaxSettingsUpdate(BaseModel):

@@ -79,12 +79,14 @@ def get_overview(
         404 if no ledger is cached yet; 422 if a required price is missing.
     """
     ledger = _load_ledger(session, user_id)
+    config = _config()
     settings = dashboard.load_settings(session, user_id)
     try:
-        cards = dashboard.overview_cards(ledger, _config(), settings, as_of or datetime.now(tz=UTC).date())
+        cards = dashboard.overview_cards(ledger, config, settings, as_of or datetime.now(tz=UTC).date())
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return Overview(**asdict(cards), last_synced_at=_last_synced_iso(user_id))
+    local_zone = dashboard.resolved_local_zone(config, settings)
+    return Overview(**asdict(cards), last_synced_at=_last_synced_iso(user_id, local_zone))
 
 
 @router.get("/api/chart/dollar")

@@ -20,6 +20,8 @@ from trades.api.api_models import (
     IbkrSettings,
     TaxSettings,
     TaxSettingsUpdate,
+    TimezoneSetting,
+    TimezoneSettingUpdate,
     VerifyResult,
 )
 from trades.api.dependencies import _config
@@ -153,6 +155,51 @@ def put_benchmark_setting(
     dashboard.save_settings(updated, session, user_id)
     return BenchmarkSetting(
         symbol_override=updated.benchmark_symbol_override, default_symbol=config.returns.benchmark_symbol
+    )
+
+
+@router.get("/api/settings/timezone")
+def get_timezone_setting(
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TimezoneSetting:
+    """Return the persisted display-timezone override, plus what it resolves to.
+
+    Returns
+    -------
+    TimezoneSetting
+        `local_zone` (None if the browser has never reported one for this
+        user yet), `resolved_local_zone` (what timestamps actually display
+        in — `config.timezone.local_zone` until it has).
+    """
+    settings = dashboard.load_settings(session, user_id)
+    return TimezoneSetting(
+        local_zone=settings.local_zone, resolved_local_zone=dashboard.resolved_local_zone(_config(), settings)
+    )
+
+
+@router.put("/api/settings/timezone")
+def put_timezone_setting(
+    update: TimezoneSettingUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TimezoneSetting:
+    """Persist the browser-reported display timezone (merges into existing settings).
+
+    Called by the frontend once per session with
+    `Intl.DateTimeFormat().resolvedOptions().timeZone` — never user-picked
+    from a list.
+
+    Returns
+    -------
+    TimezoneSetting
+        Same shape as `GET /api/settings/timezone`, reflecting what was
+        just persisted.
+    """
+    updated = dashboard.load_settings(session, user_id).model_copy(update={"local_zone": update.local_zone})
+    dashboard.save_settings(updated, session, user_id)
+    return TimezoneSetting(
+        local_zone=updated.local_zone, resolved_local_zone=dashboard.resolved_local_zone(_config(), updated)
     )
 
 

@@ -25,6 +25,8 @@ import type {
   TaxReport,
   TaxSettings,
   TaxSettingsUpdate,
+  TimezoneSetting,
+  TimezoneSettingUpdate,
   VerifyResult,
 } from '@/types/portfolio'
 
@@ -113,4 +115,11 @@ export const api = {
     }),
   clearIbkrSettings: () => request<IbkrSettings>('/api/settings/ibkr', { method: 'DELETE' }),
   verifyIbkrSettings: () => request<VerifyResult>('/api/settings/ibkr/verify', { method: 'POST' }),
+  timezoneSetting: () => request<TimezoneSetting>('/api/settings/timezone'),
+  setTimezoneSetting: (setting: TimezoneSettingUpdate) =>
+    request<TimezoneSetting>('/api/settings/timezone', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(setting),
+    }),
 }
