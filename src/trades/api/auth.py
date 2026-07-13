@@ -63,6 +63,19 @@ class ClerkAuthSettings(BaseSettings):
     `None` in local dev, where no fixed domain exists yet — see `_options`
     for what that means for `authorized_parties`.
     """
+    public_port: int | None = Field(default=None, validation_alias="PUBLIC_PORT")
+    """The external port the browser actually connects on, only if it isn't the standard 443.
+
+    Staging needs this (`8443`) since it can't share port 443 with
+    production on the same VM; production and local dev leave it unset.
+    Clerk encodes the exact origin a session token was issued for in its
+    `azp` claim, port included whenever it's non-standard — and
+    `clerk_backend_api`'s own verification does a plain `azp not in
+    authorized_parties` string check, no port-normalization at all (see
+    `security/verifytoken.py`) — so `authorized_parties` below has to
+    reproduce that port suffix exactly, or every session gets rejected as
+    an unauthorized party on every single request, regardless of endpoint.
+    """
 
 
 @lru_cache(maxsize=1)
@@ -80,8 +93,9 @@ def _options() -> AuthenticateRequestOptions:
     # `authorized_parties` restricts accepted sessions to tokens issued for one of these
     # origins (Clerk's `azp` claim) — left unset (None) in local dev, where PUBLIC_DOMAIN
     # isn't configured, so nothing beyond signature/expiry is enforced there.
+    port_suffix = f":{settings.public_port}" if settings.public_port else ""
     authorized_parties = (
-        [f"https://{host}" for host in settings.public_domain.split()] if settings.public_domain else None
+        [f"https://{host}{port_suffix}" for host in settings.public_domain.split()] if settings.public_domain else None
     )
     return AuthenticateRequestOptions(
         secret_key=settings.secret_key.get_secret_value(), authorized_parties=authorized_parties
