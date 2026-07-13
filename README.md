@@ -201,10 +201,8 @@ npm run dev
 Open **http://localhost:5173**. The dev server proxies `/api/*` to the
 FastAPI server on :8000, so no CORS setup is needed. Every route is
 gated behind Clerk sign-in (`CLERK_PUBLISHABLE_KEY`/`CLERK_SECRET_KEY` —
-see [docs/architecture.md](docs/architecture.md) and, if present on this
-machine, `docs/server-setup/clerk-authentication.md`); sign-up is
-invite-only, so the first account has to be created directly in the
-Clerk Dashboard. Once signed in, the **Settings** page is where you
+see [docs/architecture.md](docs/architecture.md)); sign-up is invite-only,
+so the first account has to be created directly in the Clerk Dashboard. Once signed in, the **Settings** page is where you
 add/verify/delete your own broker credentials; the **Sync** button in the
 page header pulls your latest IBKR history into Postgres, then the whole
 page refreshes with the new numbers. Price/CPI/HYSA-rate caches are
@@ -237,10 +235,6 @@ at the repo root):
   `main` yet.
 - **`deploy/reset-staging.sh <ssh-host>`** — wipes staging's
   database/volumes back to empty and rebuilds; never touches production.
-
-Further infrastructure notes (VM setup, Docker/Caddy/Postgres
-architecture, DNS, secrets) live in `docs/server-setup/`, gitignored on
-this machine only since some of those files hold live credentials.
 
 ## Repo layout
 

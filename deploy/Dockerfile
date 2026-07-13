@@ -44,8 +44,9 @@ FROM python:3.14-slim
 WORKDIR /app
 
 # Install runtime dependencies: curl for health checks, postgresql-client for
-# `pg_dump` (see db.backup / docs/server-setup/maintenance.md's cron entry) —
-# Debian's packaged version may trail the postgres:16-alpine server's; pg_dump
+# `pg_dump` (see db.backup, run once daily at 3:00 UTC via a crontab entry
+# on the deploy VM) — Debian's packaged version may trail the
+# postgres:16-alpine server's; pg_dump
 # is generally compatible with newer servers, but pin to the PGDG apt repo
 # instead if that ever actually causes a dump to fail.
 RUN apt-get update && apt-get install -y --no-install-recommends \

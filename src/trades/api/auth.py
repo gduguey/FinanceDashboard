@@ -46,9 +46,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 class ClerkAuthSettings(BaseSettings):
     """The Clerk secret key — a real credential, never logged or exposed to the frontend.
 
-    Distinct from `CLERK_PUBLISHABLE_KEY` (used only by the frontend, and
-    by this app's own docs — see `docs/server-setup/clerk-authentication.md`
-    for the difference): this key lets its holder act as the Clerk
+    Distinct from `CLERK_PUBLISHABLE_KEY`: the publishable key isn't
+    actually secret — it's meant to ship inside browser JS, used only at
+    frontend build time — while this one lets its holder act as the Clerk
     account itself, so it's treated the same as any other secret in this
     repo (`db.encryption`'s keys, IBKR credentials, etc.) — real values
     only ever live in `.env`/`.env.docker`/`.env.staging`, never in git.

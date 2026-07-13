@@ -6,9 +6,8 @@ Create Date: 2026-07-11 03:39:12.122701
 
 Adds a `user_isolation` RLS policy to every table scoped by `user_id` (or,
 for `users` itself, by its own `id`) across all three schemas — belt and
-suspenders on top of the app's own `WHERE user_id = ...` filtering, per
-`docs/app-stack/authentication-and-authorization.md`'s own reasoning: even
-a bug that forgets the filter can't leak another user's rows, because
+suspenders on top of the app's own `WHERE user_id = ...` filtering: even a
+bug that forgets the filter can't leak another user's rows, because
 Postgres itself won't return them.
 
 Critical wrinkle this migration also has to handle: Postgres superusers

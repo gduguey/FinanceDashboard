@@ -291,9 +291,9 @@ Bob (a real invited user) loads the dashboard, which calls
    lookup would otherwise hit (RLS on `users` would block the very
    `WHERE ... = Bob's id` query trying to discover what Bob's id is). If
    no row matches (a Clerk session for someone who was never provisioned —
-   see the webhook in `docs/server-setup/clerk-authentication.md`), the
-   request is rejected with 401 rather than falling back to anyone else's
-   id.
+   see "How a new user gets provisioned" below for the webhook that does
+   that), the request is rejected with 401 rather than falling back to
+   anyone else's id.
 4. That id flows back into `get_db`, which uses it to set
    `app.current_user_id` (the RLS section above) before handing back a
    working session.
@@ -340,12 +340,12 @@ re-invited under the same email, she gets a **new** Clerk id, but step 4
 only checks by Clerk id — so a naive re-provisioning would create a
 second, disconnected `users` row, orphaning anything tied to the first
 one. That's not automatic today (nothing currently listens for Clerk's
-`user.deleted` event) — see
-`docs/server-setup/clerk-authentication.md`'s "Managing users" section
-for the manual step this requires (reassigning her existing
-`external_identities` row to the new Clerk id is a single-row update,
-never a migration touching every other table, which is the whole reason
-this table exists as a separate mapping instead of a column on `users`).
+`user.deleted` event) — the manual step this requires is a single-row
+update, reassigning her existing `external_identities` row to the new
+Clerk id (never a migration touching every other table, which is the
+whole reason this table exists as a separate mapping instead of a column
+on `users`) — see `db.external_identities`'s own docstring and
+`tests/db/test_external_identities.py`'s test of exactly that.
 
 ## Why `external_identities` can't have RLS
 
@@ -465,10 +465,9 @@ does four things, in order:
 
 **This does not run by itself.** `python -m db.backup` is just a command —
 nothing in this repo schedules it automatically. Making it run on a
-recurring basis (e.g. daily) is an infrastructure-level setup step, done
-once, outside of this code; it isn't part of what `docker compose up`
-brings up on its own. See `docs/server-setup/maintenance.md` for the
-actual cron entry.
+recurring basis is an infrastructure-level setup step, done once, outside
+of this code; it isn't part of what `docker compose up` brings up on its
+own — a `crontab` entry on the deploy VM runs it once daily, at 3:00 UTC.
 
 **Restoring** a dump — this is destructive (it drops and recreates
 objects before loading), so only run it against a database you actually

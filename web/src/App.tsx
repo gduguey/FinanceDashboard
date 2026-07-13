@@ -50,12 +50,14 @@ function AppShell() {
   const { data: store, isPending: storeIsPending, isError: storeIsError } = useAccountingStore()
   const hasAnyData = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
 
-  // The whole Money side reads from the same underlying data layer (see
-  // docs/server-setup/storage-and-volumes.md's bind-mount permission
-  // gotcha) — if the core store call is failing outright, every one of
-  // these pages would too, each in its own slightly different way, some
-  // of them blank rather than erroring. One fallback here, instead of
-  // trusting every page's own error handling to catch it.
+  // The whole Money side reads from the same underlying data layer — if
+  // the core store call is failing outright (e.g. the deploy VM's `data/`
+  // bind mount got recreated root-owned by Docker, unreadable by the
+  // non-root `appuser` the container actually runs as, until a one-time
+  // `chown` fixes it), every one of these pages would too, each in its
+  // own slightly different way, some of them blank rather than erroring.
+  // One fallback here, instead of trusting every page's own error
+  // handling to catch it.
   const moneyPage = (page: ReactNode) => (storeIsError ? <PageErrorFallback /> : page)
 
   return (

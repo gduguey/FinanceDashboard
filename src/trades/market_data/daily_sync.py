@@ -4,8 +4,8 @@ Unlike `trades.market_data.price_sync`'s price refresh, neither CPI nor
 HYSA rates are fetched incrementally (see `cpi.py`/`hysa_rates.py` for
 why) — both are small, full re-fetches, cheap enough once a day. No
 Postgres session is needed either: neither cache depends on the ledger.
-Run via `python -m trades.market_data.daily_sync` (see
-`docs/server-setup/maintenance.md` for the cron entry).
+Run via `python -m trades.market_data.daily_sync`, once daily at 4:00 UTC
+as a `crontab` entry on the deploy VM (after the nightly backup).
 """
 
 from __future__ import annotations

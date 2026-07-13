@@ -1,7 +1,8 @@
 """Back up the whole Postgres database to Cloudflare R2, verbatim, on a schedule.
 
-Run via `python -m db.backup` (see `docs/server-setup/maintenance.md` for
-the cron entry that actually schedules it). Uses `DatabaseSettings` (the
+Run via `python -m db.backup`, once daily at 3:00 UTC as a `crontab` entry
+on the deploy VM — nothing in this repo schedules it automatically on its
+own. Uses `DatabaseSettings` (the
 migration-owning role), not `AppRuntimeDatabaseSettings` — a backup needs
 to read every row in every table regardless of Row-Level Security, which
 is exactly what the app's own restricted `app_runtime` role must never be

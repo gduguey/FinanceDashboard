@@ -193,5 +193,14 @@ overrides, tax settings) are all per-user, in Postgres — never under
 
 ## Guidance for AI assistants
 
-`AGENTS.md` (`CLAUDE.md` is a symlink) carries standing conventions.
-Read it before adding a new broker, external API, or cached data source.
+Adding a new broker, external API, or cached data source that overlaps
+with an existing concept: never let the source's native field/column
+names leak past the module that reads it. The canonical name for a
+concept is declared once, as the field names on its pydantic model (e.g.
+`LedgerEvent` here); add a `standardize_{source}_...` function to that
+source's own preprocessing module that maps its native shape onto that
+canonical schema and validates the result through the matching model
+before returning it — never re-typed as a string literal elsewhere, never
+invented ad hoc by a new preprocessor. `IBKR <Trade> rows -> LedgerEvent`,
+in `trades.brokers.ibkr.preprocessing.statement_to_ledger` (see "The
+ledger" above), is the concrete example this rule is based on.
