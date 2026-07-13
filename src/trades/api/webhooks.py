@@ -15,6 +15,15 @@ later request from them) — so a newly invited person's very first
 authenticated request already resolves to a row that exists, rather than
 hitting the foreign-key violation this app shipped with before any of
 this identity-linking existed (see migration `bcb4d6662dfc`).
+
+On `user.deleted`, marks the linked `users` row `is_active=False` —
+fired by Clerk regardless of whether the person deleted their own
+account or an admin removed them, so one handler covers both. Note this
+is metadata only today: nothing else in this app currently reads
+`is_active` (see `db.models.User`'s own docstring) — a deleted Clerk
+account already can't produce a valid session token at all, so access is
+already cut off the moment Clerk itself deletes it; this just records
+that it happened, for anyone looking at the `users` table directly.
 """
 
 from __future__ import annotations
@@ -117,6 +126,35 @@ def _provision_user(clerk_user_id: str, email: str) -> None:
         session.commit()
 
 
+def _deactivate_user(clerk_user_id: str) -> None:
+    """Mark the `users` row linked to `clerk_user_id` inactive, whether deleted by the user or an admin.
+
+    A no-op if no `users` row is linked to this Clerk id at all — a
+    redelivery of an event already handled, or an id this app never
+    provisioned in the first place. Two session scopes, not one: the
+    first looks up which internal id this Clerk id maps to (`external_identities`
+    carries no Row-Level Security — see its own docstring — so any scope
+    works for that lookup); the second is scoped to that *found* id
+    specifically, since `users` itself does have RLS, keyed on its own
+    `id` column, and a session scoped to the wrong id would silently see
+    zero rows to update rather than raising.
+
+    Parameters
+    ----------
+    clerk_user_id
+        The Clerk user id (`data.id`) from the `user.deleted` payload.
+    """
+    with session_scope(uuid.uuid4()) as session:
+        target_user_id = lookup_user_id(session, "clerk", clerk_user_id)
+    if target_user_id is None:
+        return
+    with session_scope(target_user_id) as session:
+        user = session.get(User, target_user_id)
+        if user is not None:
+            user.is_active = False
+            session.commit()
+
+
 @router.post("/api/webhooks/clerk")
 async def handle_clerk_webhook(request: Request) -> dict[str, str]:
     """Verify and handle one Clerk webhook delivery.
@@ -150,5 +188,7 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
     if payload.get("type") == "user.created":
         data = payload["data"]
         _provision_user(data["id"], _primary_email(data))
+    elif payload.get("type") == "user.deleted":
+        _deactivate_user(payload["data"]["id"])
 
     return {"status": "ok"}

@@ -73,6 +73,10 @@ def _user_created_payload(clerk_user_id: str, email: str) -> dict[str, object]:
     }
 
 
+def _user_deleted_payload(clerk_user_id: str) -> dict[str, object]:
+    return {"type": "user.deleted", "data": {"id": clerk_user_id, "object": "user", "deleted": True}}
+
+
 @pytest.fixture
 def client(db_session) -> TestClient:
     def _override_get_db():
@@ -140,6 +144,28 @@ class TestClerkWebhook:
         }
         response = client.post("/api/webhooks/clerk", content=body, headers=headers)
         assert response.status_code == 400
+
+    def test_user_deleted_marks_the_matching_users_row_inactive(self, client: TestClient, db_session) -> None:
+        created_headers, created_body = _signed_headers_and_body(
+            _user_created_payload("user_to_delete", "to-delete@example.com")
+        )
+        client.post("/api/webhooks/clerk", content=created_body, headers=created_headers)
+        linked_id = lookup_user_id(db_session, "clerk", "user_to_delete")
+        assert linked_id is not None
+
+        deleted_headers, deleted_body = _signed_headers_and_body(_user_deleted_payload("user_to_delete"))
+        response = client.post("/api/webhooks/clerk", content=deleted_body, headers=deleted_headers)
+        assert response.status_code == 200
+
+        db_session.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(linked_id)})
+        row = db_session.execute(text("SELECT is_active FROM users WHERE id = :id"), {"id": str(linked_id)}).first()
+        assert row is not None
+        assert row.is_active is False
+
+    def test_user_deleted_for_an_unknown_clerk_id_is_a_noop(self, client: TestClient) -> None:
+        headers, body = _signed_headers_and_body(_user_deleted_payload("user_never_provisioned"))
+        response = client.post("/api/webhooks/clerk", content=body, headers=headers)
+        assert response.status_code == 200
 
     def test_does_not_require_a_clerk_session(self, client: TestClient) -> None:
         """The webhook is called by Clerk's own servers, never a signed-in browser.
