@@ -9,6 +9,7 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
+import { useSyncBrowserTimezone } from '@/hooks/usePortfolioData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { routePathFromFile } from '@/lib/routing'
 
@@ -49,6 +50,7 @@ const queryClient = new QueryClient({
 function AppShell() {
   const { data: store, isPending: storeIsPending, isError: storeIsError } = useAccountingStore()
   const hasAnyData = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
+  useSyncBrowserTimezone()
 
   // The whole Money side reads from the same underlying data layer — if
   // the core store call is failing outright (e.g. the deploy VM's `data/`

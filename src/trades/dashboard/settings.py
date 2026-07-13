@@ -37,6 +37,11 @@ class DashboardSettings(BaseModel):
     and `w8ben_claimed` is set — it does not change any historical figure
     (real withholding already happened at whatever rate the broker
     actually applied); it only feeds the forward-looking tax-owed estimate.
+    `local_zone` left unset falls back to `config.timezone.local_zone` —
+    normally never unset for long, since the frontend reports the
+    browser's own IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`)
+    the first time it loads, the same way it's the source of truth for
+    every other per-user preference here.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -45,6 +50,7 @@ class DashboardSettings(BaseModel):
     hysa_bank_id: str | None = None
     hysa_fixed_rate_pct: float | None = None
     benchmark_symbol_override: str | None = None
+    local_zone: str | None = None
     tax_enabled: bool = False
     tax_regime: TaxRegime | None = None
     residency_status_change_date: date | None = None
@@ -76,6 +82,7 @@ def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
         hysa_bank_id=row.hysa_bank_id,
         hysa_fixed_rate_pct=row.hysa_fixed_rate_pct,
         benchmark_symbol_override=row.benchmark_symbol_override,
+        local_zone=row.local_zone,
         tax_enabled=row.tax_enabled,
         tax_regime=cast("TaxRegime | None", row.tax_regime),
         residency_status_change_date=row.residency_status_change_date,
@@ -106,6 +113,7 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     row.hysa_bank_id = settings.hysa_bank_id
     row.hysa_fixed_rate_pct = settings.hysa_fixed_rate_pct
     row.benchmark_symbol_override = settings.benchmark_symbol_override
+    row.local_zone = settings.local_zone
     row.tax_enabled = settings.tax_enabled
     row.tax_regime = settings.tax_regime
     row.residency_status_change_date = settings.residency_status_change_date
@@ -217,6 +225,24 @@ def resolved_benchmark_symbol(config: AppConfig, settings: DashboardSettings) ->
         The ticker symbol to benchmark against.
     """
     return settings.benchmark_symbol_override or config.returns.benchmark_symbol
+
+
+def resolved_local_zone(config: AppConfig, settings: DashboardSettings) -> str:
+    """Resolve the display timezone to use: the browser-reported zone, or `config.timezone.local_zone`.
+
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
+
+    Returns
+    -------
+    str
+        An IANA zone name (e.g. `"America/New_York"`).
+    """
+    return settings.local_zone or config.timezone.local_zone
 
 
 def resolved_tax_regime(settings: DashboardSettings) -> TaxRegime:

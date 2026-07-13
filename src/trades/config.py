@@ -156,6 +156,32 @@ class HysaRatesConfig(BaseModel):
     default_bank_id: str = Field(default="ally-bank", min_length=1)
 
 
+def validate_iana_zone_name(value: str) -> str:
+    """Reject a zone name that isn't a real IANA timezone.
+
+    Shared by `TimezoneConfig.local_zone` (the code-level default) and
+    `trades.api.api_models.TimezoneSettingUpdate.local_zone` (the
+    browser-reported per-user override) — both need the exact same check,
+    since either one ends up passed straight to `zoneinfo.ZoneInfo` in
+    `trades.api.dependencies._to_display_zone`.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    ValueError
+        If `value` isn't a known IANA timezone name.
+    """
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as error:
+        message = f"{value!r} is not a known IANA timezone name."
+        raise ValueError(message) from error
+    return value
+
+
 class TimezoneConfig(BaseModel):
     """The timezone timestamps are displayed in.
 
@@ -177,18 +203,8 @@ class TimezoneConfig(BaseModel):
         Returns
         -------
         str
-
-        Raises
-        ------
-        ValueError
-            If `value` isn't a known IANA timezone name.
         """
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as error:
-            message = f"{value!r} is not a known IANA timezone name."
-            raise ValueError(message) from error
-        return value
+        return validate_iana_zone_name(value)
 
 
 class ReturnsConfig(BaseModel):

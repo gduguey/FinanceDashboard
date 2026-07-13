@@ -2486,6 +2486,47 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/settings/timezone': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Timezone Setting
+     * @description Return the persisted display-timezone override, plus what it resolves to.
+     *
+     *     Returns
+     *     -------
+     *     TimezoneSetting
+     *         `local_zone` (None if the browser has never reported one for this
+     *         user yet), `resolved_local_zone` (what timestamps actually display
+     *         in — `config.timezone.local_zone` until it has).
+     */
+    get: operations['get_timezone_setting_api_settings_timezone_get']
+    /**
+     * Put Timezone Setting
+     * @description Persist the browser-reported display timezone (merges into existing settings).
+     *
+     *     Called by the frontend once per session with
+     *     `Intl.DateTimeFormat().resolvedOptions().timeZone` — never user-picked
+     *     from a list.
+     *
+     *     Returns
+     *     -------
+     *     TimezoneSetting
+     *         Same shape as `GET /api/settings/timezone`, reflecting what was
+     *         just persisted.
+     */
+    put: operations['put_timezone_setting_api_settings_timezone_put']
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/settings/tax': {
     parameters: {
       query?: never
@@ -2724,7 +2765,7 @@ export interface paths {
     }
     /**
      * Get Sync Progress
-     * @description Return the current (or most recently finished) sync's progress.
+     * @description Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
      *
      *     Polled by the frontend's progress bar while a sync is running.
      *     `POST /api/sync` runs in FastAPI's thread pool (it's a plain `def`,
@@ -2734,7 +2775,8 @@ export interface paths {
      *     Returns
      *     -------
      *     SyncProgress
-     *         `step`, `percent`, `done`, `error`.
+     *         `step`, `percent`, `done`, `error` — `"Idle"`/`0.0`/`True`/`None`
+     *         if this user has never triggered a sync.
      */
     get: operations['get_sync_progress_api_sync_progress_get']
     put?: never
@@ -2759,13 +2801,16 @@ export interface paths {
      * @description Pull the latest IBKR statement into the ledger.
      *
      *     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
-     *     here — they run on their own cron schedule instead. Reports progress
-     *     to `app.state.sync_progress` throughout, readable via `GET
-     *     /api/sync/progress` — the IBKR pull can take a while, so a bare
-     *     spinner isn't good enough feedback.
+     *     here — they run on their own cron schedule instead. Reports progress to
+     *     this user's own entry in `app.state.sync_progress` throughout, readable
+     *     via `GET /api/sync/progress` — the IBKR pull can take a while, so a
+     *     bare spinner isn't good enough feedback.
      *
-     *     Concurrent requests are serialized by a lock to prevent ledger
-     *     corruption from simultaneous writes.
+     *     Concurrent requests for the *same* user are serialized by that user's
+     *     own lock, to prevent ledger corruption from simultaneous writes — see
+     *     `_lock_for_user`. Two different users syncing at the same time never
+     *     wait on each other: their syncs write to different, non-overlapping
+     *     ledger rows.
      *
      *     Returns
      *     -------
@@ -2774,6 +2819,42 @@ export interface paths {
      *         — the one IBKR leg's own `label`/`ok`/`error`.
      */
     post: operations['sync_api_sync_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/webhooks/clerk': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Handle Clerk Webhook
+     * @description Verify and handle one Clerk webhook delivery.
+     *
+     *     Parameters
+     *     ----------
+     *     request
+     *         The raw incoming request — both its body and its `svix-*` headers
+     *         are read verbatim, since Svix signs the exact bytes of the body.
+     *
+     *     Returns
+     *     -------
+     *     dict[str, str]
+     *         A small acknowledgement body; Clerk only checks the status code.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if the delivery's signature doesn't verify.
+     */
+    post: operations['handle_clerk_webhook_api_webhooks_clerk_post']
     delete?: never
     options?: never
     head?: never
@@ -5229,6 +5310,29 @@ export interface components {
       marginal_ordinary_rate_pct: number | null
       /** Qualified Ltcg Rate Pct */
       qualified_ltcg_rate_pct: number | null
+    }
+    /**
+     * TimezoneSetting
+     * @description The persisted display-timezone override, plus what it resolves to.
+     */
+    TimezoneSetting: {
+      /** Local Zone */
+      local_zone: string | null
+      /** Resolved Local Zone */
+      resolved_local_zone: string
+    }
+    /**
+     * TimezoneSettingUpdate
+     * @description Request body for `PUT /api/settings/timezone`.
+     *
+     *     `local_zone` is the browser's own IANA zone name
+     *     (`Intl.DateTimeFormat().resolvedOptions().timeZone`), reported once per
+     *     session rather than picked from a list — see
+     *     `trades.dashboard.settings.DashboardSettings.local_zone`.
+     */
+    TimezoneSettingUpdate: {
+      /** Local Zone */
+      local_zone?: string | null
     }
     /**
      * TransferRule
@@ -8136,6 +8240,59 @@ export interface operations {
       }
     }
   }
+  get_timezone_setting_api_settings_timezone_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TimezoneSetting']
+        }
+      }
+    }
+  }
+  put_timezone_setting_api_settings_timezone_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TimezoneSettingUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TimezoneSetting']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_tax_settings_api_settings_tax_get: {
     parameters: {
       query?: never
@@ -8420,6 +8577,28 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['SyncResult']
+        }
+      }
+    }
+  }
+  handle_clerk_webhook_api_webhooks_clerk_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            [key: string]: string
+          }
         }
       }
     }
