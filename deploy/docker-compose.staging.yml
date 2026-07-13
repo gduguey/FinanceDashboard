@@ -1,8 +1,7 @@
 # A second, fully independent stack — separate containers, separate named
 # volumes (Postgres data, Caddy certs), separate secrets file. Nothing here
 # is shared with docker-compose.yml (production) except the same Dockerfile
-# and the same VM's spare capacity. See docs/server-setup/staging.md for
-# the full runbook — what to create by hand first, and exactly what to run.
+# and the same VM's spare capacity.
 #
 # Meant to run from its own separate clone directory on the VM
 # (~/FinanceDashboard-staging), so it can track a different branch/commit
@@ -20,8 +19,8 @@ services:
       # deploy-staging.sh exports this from .env.staging before `--build`.
       args:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
-    # Same convention as production (docs/server-setup/versioning.md), a
-    # distinct image name so the two stacks never share a tag.
+    # Same convention as production (tagged with the app's own version, not
+    # `latest`), a distinct image name so the two stacks never share a tag.
     image: financedashboard-api-staging:${APP_VERSION:-dev}
 
     container_name: staging-finance-dashboard

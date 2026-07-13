@@ -30,8 +30,9 @@ this repo follows. The parsed history is cached as a small CSV
 rates" button anymore — `accounting.market_data.fx_sync.run_fx_sync`
 refreshes this cache automatically via cron, a few times a day in a short
 window around the ECB's ~16:00 CET daily publication rather than
-continuously (see `docs/server-setup/maintenance.md` for exactly why and
-when). `update_rate_history_cache` is incremental: it only requests the
+continuously (14:00, 14:45, and 15:30 UTC — spanning the fixing's 16:00
+CET publish time across both CEST/summer and CET/winter clocks).
+`update_rate_history_cache` is incremental: it only requests the
 range from the day after the cache's current latest date through today,
 so a run that finds the cache already current makes no network call at
 all — cheap enough to check more than once a day without cost. The cache

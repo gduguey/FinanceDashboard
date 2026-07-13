@@ -152,9 +152,10 @@ that's the one leg worth watching a progress bar for.
 Market data refreshes automatically instead, on cron, with no button:
 
 - **`trades.market_data.price_sync.run_price_sync`** — price caches for
-  every held symbol plus the benchmark (raw + adjusted). Run a few times a
-  day in a short window around US markets' 4pm ET close, not continuously
-  — see `docs/server-setup/maintenance.md` for exactly why (checking more
+  every held symbol plus the benchmark (raw + adjusted). Run at 20:30,
+  21:15, and 22:00 UTC — spanning US markets' 4pm ET close in both
+  daylight time (20:00 UTC) and standard time (21:00 UTC), plus a buffer
+  for Yahoo to finalize the number — not continuously (checking more
   often than the data actually changes is wasted, and checking *during*
   market hours risks caching a still-moving, not-yet-final price — see
   `_SETTLEMENT_BUFFER_DAYS` in `prices.py`). The raw-close cache is
@@ -164,15 +165,19 @@ Market data refreshes automatically instead, on cron, with no button:
   recalculates historical adjusted values whenever a symbol pays a new
   dividend or splits, and an incremental fetch would never notice.
 - **`trades.market_data.daily_sync.run_daily_market_data_sync`** — the
-  CPI cache and every bank's HYSA rate history (both full re-fetches,
-  cheap enough daily, no precise publication time worth chasing for
-  either).
+  CPI cache and every bank's HYSA rate history, at 4:00 UTC (both full
+  re-fetches, cheap enough daily, no precise publication time worth
+  chasing for either).
 
 Every one of these also backs up its cache file to R2 (or local disk)
 after each successful write, and transparently restores from that backup
 if the file's ever found corrupted on disk (see `trades.utils.cache_backup`).
 
-See `docs/server-setup/maintenance.md` for the actual cron entries.
+Exchange rates (`accounting.market_data.fx_sync`) run separately, at
+14:00, 14:45, and 15:30 UTC — see
+[currency-handling.md](../accounting/currency-handling.md). All of this
+is wired up as `crontab` entries on the deploy VM, outside of anything
+`docker compose up` schedules on its own.
 
 Individual symbol pricing can also be refreshed on demand via
 `POST /api/symbols/{symbol}/ensure-priced` (e.g. after picking a new

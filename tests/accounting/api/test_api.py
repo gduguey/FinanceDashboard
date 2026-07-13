@@ -1474,9 +1474,9 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
 def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:
     """`counterparty_account_id` is a real foreign key now (see `accounting.db.automation.TransferRule`) —
     a rule naming an account that doesn't exist can no longer be silently accepted. No new API-level
-    validation was added for this (see CLAUDE.md/the task this implements), so it surfaces exactly like
-    every other foreign-key violation in this app: an unhandled `IntegrityError` propagating out of the
-    route as a 500, not a clean 4xx.
+    validation was added on top of that constraint — the database itself is the source of truth here,
+    so this surfaces exactly like every other foreign-key violation in this app: an unhandled
+    `IntegrityError` propagating out of the route as a 500, not a clean 4xx.
     """
     client = TestClient(trades_api.app, raise_server_exceptions=False)
     response = client.put(

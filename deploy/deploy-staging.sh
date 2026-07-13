@@ -41,7 +41,7 @@ ssh "$HOST" "
     cd $REMOTE_DIR
     if [ ! -f .env.staging ]; then
         echo 'No .env.staging found on the VM yet.'
-        echo 'Copy .env.staging.example to .env.staging and fill in real values first — see docs/server-setup/staging.md.'
+        echo 'Assemble a real .env.staging locally and scp it up here first.'
         exit 1
     fi
     VERSION=\$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = \"(.*)\"/\1/')

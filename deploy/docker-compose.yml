@@ -9,11 +9,11 @@ services:
       # or the shell environment, same gotcha as APP_VERSION below.
       args:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
-    # Tags the built image with the app's own version (see
-    # docs/server-setup/versioning.md) so `docker images`/`docker inspect`
-    # can show exactly what's running, not just whatever `git log` says on
-    # the VM. `deploy.sh` sets APP_VERSION from pyproject.toml; falls back
-    # to `dev` for a plain local `docker compose up --build`.
+    # Tags the built image with the app's own version (from `pyproject.toml`,
+    # SemVer, bumped by CI) so `docker images`/`docker inspect` can show
+    # exactly what's running, not just whatever `git log` says on the VM.
+    # `deploy.sh` sets APP_VERSION from pyproject.toml; falls back to `dev`
+    # for a plain local `docker compose up --build`.
     image: financedashboard-api:${APP_VERSION:-dev}
 
     container_name: finance-dashboard

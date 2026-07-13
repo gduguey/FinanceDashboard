@@ -10,9 +10,10 @@ once via the migration-owning role to list who those users even are —
 exactly the same "bypass RLS on purpose, because this one thing is
 inherently cross-user" reasoning `db.backup` already documents for itself.
 Meant to be invoked several times in a tight window around Yahoo's market
-close (see `docs/server-setup/maintenance.md` for the cron entries) rather
-than once a day like `daily_sync`: this module itself doesn't need to know
-that schedule, since `prices.update_price_cache`'s settlement-buffer
+close — 20:30, 21:15, and 22:00 UTC as `crontab` entries on the deploy VM,
+spanning US markets' 4pm ET close in both daylight and standard time —
+rather than once a day like `daily_sync`: this module itself doesn't need
+to know that schedule, since `prices.update_price_cache`'s settlement-buffer
 re-fetching (see `market_data.prices`) already makes repeat same-day calls
 mostly no-ops beyond the trailing buffer window. Run via
 `python -m trades.market_data.price_sync`.

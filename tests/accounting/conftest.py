@@ -5,8 +5,12 @@ Guards `accounting.utils.cache_backup` the same way `tests/conftest.py`'s
 `CacheBackupR2Credentials` reads `.env` directly (via `model_config`'s
 `env_file`), so deleting `R2_*` from `os.environ` alone (which
 `_no_r2_by_default` does) isn't enough to stop it resolving this repo's
-real R2 credentials — see that fixture's own docstring, and CLAUDE.md's
-"Guarding tests against real credentials in `.env`". Without this, any
+real R2 credentials — a pydantic-settings model has two independent
+sources for a real credential (the environment and its own `.env` file
+fallback), and both have to be closed for the same model: clearing the
+env var alone still leaves the `.env`-file fallback able to silently
+resolve the same real secret, and passing `_env_file=None` alone does
+nothing about a value already sitting in `os.environ`. Without this, any
 accounting test that exercises `exchange_rates.update_rate_history_cache`/
 `load_rate_history` (which call `backup_cache_file`/`restore_cache_file`
 with no explicit `credentials`) would silently read from and write to the

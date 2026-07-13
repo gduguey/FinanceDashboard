@@ -30,10 +30,7 @@ this is a private, Clerk-authenticated, multi-user dashboard with no
 anonymous visitors and no SEO surface at all, so a second always-on
 process (with its own memory budget and crash recovery, alongside
 Postgres and the Python API) would be pure cost with no corresponding
-benefit. See
-[`docs/app-stack/ssr-vs-spa.md`](../docs/app-stack/ssr-vs-spa.md) for the
-fuller argument, if that file exists in your checkout (it's a personal,
-uncommitted note — not guaranteed to be there).
+benefit.
 
 ## Dev vs. production
 

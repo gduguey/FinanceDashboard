@@ -6,7 +6,8 @@ price refresh, there's no "which intraday tick is the real one yet"
 problem here to work around — just uncertainty about the exact minute
 the day's rate lands. Rather than run continuously (hourly), this is
 meant to be invoked a handful of times in a tight window around 16:00 CET
-(see `docs/server-setup/maintenance.md` for the actual cron entries) —
+— 14:00, 14:45, and 15:30 UTC as `crontab` entries on the deploy VM,
+spanning the fixing across both CEST/summer and CET/winter clocks —
 safe to do because `exchange_rates.update_rate_history_cache` is already
 incremental, so a run that finds the cache already current makes no
 network call at all. Exchange rates aren't user-scoped, unlike

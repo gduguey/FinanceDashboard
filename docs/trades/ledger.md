@@ -121,8 +121,11 @@ ReplayResult:
 ```
 
 The walk is a **sequential fold** — each event's effect depends on lots
-left open by every prior event. This is a deliberate `for` loop, not a
-vectorized expression (see AGENTS.md).
+left open by every prior event. This repo otherwise prefers vectorized
+polars/numpy expressions over explicit loops, but that convention assumes
+each row's computation is independent; here it deliberately isn't, so a
+`for` loop is the honest shape for this one function rather than forcing
+a vectorized expression to fake sequential state.
 
 Per event type:
 
