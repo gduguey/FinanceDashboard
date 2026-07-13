@@ -27,10 +27,6 @@ const ACCOUNT_KIND_ITEMS: Record<string, string> = Object.fromEntries(
 )
 const NO_PARENT = '__none__'
 
-function deriveAccountId(institution: string, kind: AccountKind, last4: string): string {
-  return `${institution.toLowerCase().replace(/\s+/g, '-')}:${kind}:${last4}`
-}
-
 function deriveName(institution: string, kind: AccountKind, last4: string): string {
   const label = ACCOUNT_KIND_LABELS[kind]
   return last4 ? `${institution} ${label} (...${last4})` : `${institution} ${label}`
@@ -41,7 +37,6 @@ export interface AccountFormValue {
   kind: AccountKind
   currency: CurrencyCode
   last4: string
-  accountId: string
   name: string
   parentAccountId: string | null
   openingBalance: string
@@ -83,20 +78,19 @@ export function AccountForm({
     ...Object.fromEntries(institutionParentOptions.map((account) => [account.account_id, account.name])),
   }
 
-  // Institution/kind/last-4-digits fully determine the account id and (until
-  // the user overrides it) the display name too — recomputed here rather
-  // than left to the caller, so "add an account" only ever needs the last 4
-  // digits off a statement, never a hand-typed id in the `institution:kind:1234`
-  // convention.
+  // Institution/kind/last-4-digits determine the display name (until the
+  // user overrides it) — recomputed here rather than left to the caller.
+  // The account id itself is no longer derived here at all: the server
+  // generates it on creation (see `AccountCreate`), so there's nothing to
+  // recompute when identity fields change.
   function updateIdentity(patch: Partial<Pick<AccountFormValue, 'institution' | 'kind' | 'last4'>>) {
     const next = { ...value, ...patch }
-    const accountId = deriveAccountId(next.institution, next.kind, next.last4)
     const name = nameEdited ? value.name : deriveName(next.institution, next.kind, next.last4)
     // A previously chosen parent belongs to the old institution's account
     // list — carrying it over silently once the institution changes would
     // point a vault at a parent from the wrong bank.
     const parentAccountId = patch.institution !== undefined ? null : next.parentAccountId
-    onChange({ ...next, accountId, name, parentAccountId })
+    onChange({ ...next, name, parentAccountId })
   }
 
   return (

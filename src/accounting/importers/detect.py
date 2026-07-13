@@ -1,13 +1,13 @@
-"""Guess which bank, account, and account number a CSV export belongs to.
+"""Guess which bank and account kind a CSV export belongs to.
 
 Every known export shape is structurally distinct, so a header match alone
-identifies the bank and account kind for most formats; the account number
-then comes from the filename, which every one of those exports embeds
-somewhere. SoFi's newer, wider CSV
-shape (`importers.sofi.csv`) is the one exception — it names its account in
-the `Account Name` *column*, not the filename, so detecting it needs a
-peek at the first data row too. A guess is only ever a starting point for
-the Import page's dropdowns — never final, always overridable.
+identifies the bank and account kind for most formats; a genuine export
+also embeds a last-4-shaped account number somewhere (the filename, for
+most formats), which is checked here purely as a "does this really look
+like a real export" signal — never used to build an id, since accounts are
+now always looked up (or created) by the caller, never invented here. A
+guess is only ever a starting point for the Import page's dropdowns —
+never final, always overridable.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Literal
 
 from accounting.importers.sofi.csv import HEADER as _SOFI_CSV_HEADER
 from accounting.importers.sofi.csv import parse_account_name
-from accounting.store import slugify
 
 if TYPE_CHECKING:
     from accounting.models import AccountKind
@@ -33,19 +32,10 @@ _SOFI_ACCOUNT_NUMBER = re.compile(r"(\d{4})-\d{4}-\d{2}-\d{2}")
 
 @dataclass(frozen=True)
 class DetectedAccount:
-    """A best-guess bank, account kind, and stable account id for one uploaded CSV.
-
-    `parent_account_id` is only ever set when `account_kind` is `"vault"`
-    — the savings account this vault belongs to, so the Import page can
-    register a brand-new vault with its parent already wired up instead
-    of leaving it `None`.
-    """
+    """A best-guess institution and account kind for one uploaded CSV."""
 
     institution: str
     account_kind: AccountKind
-    account_id: str
-    account_name: str
-    parent_account_id: str | None = None
 
 
 def _sofi_kind(filename: str) -> Literal["checking", "savings"] | None:
@@ -71,18 +61,15 @@ def _detect_chase(header_tuple: tuple[str, ...], filename: str) -> DetectedAccou
     DetectedAccount or None
     """
     kind: Literal["credit_card", "checking"]
-    label: str
     if header_tuple == _CHASE_CREDIT_CARD_HEADER:
-        kind, label = "credit_card", "Credit Card"
+        kind = "credit_card"
     elif header_tuple == _CHASE_CHECKING_HEADER:
-        kind, label = "checking", "Checking"
+        kind = "checking"
     else:
         return None
-    match = _CHASE_ACCOUNT_NUMBER.search(filename)
-    if match is None:
+    if _CHASE_ACCOUNT_NUMBER.search(filename) is None:
         return None
-    last4 = match.group(1)
-    return DetectedAccount("Chase", kind, f"chase:{kind}:{last4}", f"Chase {label} (...{last4})")
+    return DetectedAccount("Chase", kind)
 
 
 def _detect_sofi(header_tuple: tuple[str, ...], filename: str) -> DetectedAccount | None:
@@ -98,8 +85,7 @@ def _detect_sofi(header_tuple: tuple[str, ...], filename: str) -> DetectedAccoun
     match = _SOFI_ACCOUNT_NUMBER.search(filename)
     if kind is None or match is None:
         return None
-    last4 = match.group(1)
-    return DetectedAccount("SoFi", kind, f"sofi:{kind}:{last4}", f"SoFi {kind.title()} (...{last4})")
+    return DetectedAccount("SoFi", kind)
 
 
 def _detect_sofi_csv(header_tuple: tuple[str, ...], first_data_row: dict[str, str] | None) -> DetectedAccount | None:
@@ -116,18 +102,14 @@ def _detect_sofi_csv(header_tuple: tuple[str, ...], first_data_row: dict[str, st
     if parsed is None:
         return None
     if parsed.kind is not None:
-        return DetectedAccount(
-            "SoFi", parsed.kind, f"sofi:{parsed.kind}:{parsed.last4}", f"SoFi {parsed.kind.title()} (...{parsed.last4})"
-        )
-    parent_id = f"sofi:savings:{parsed.last4}"
-    vault_id = f"{parent_id}:vault:{slugify(parsed.label)}"
-    return DetectedAccount("SoFi", "vault", vault_id, f"{parsed.label} Vault", parent_account_id=parent_id)
+        return DetectedAccount("SoFi", parsed.kind)
+    return DetectedAccount("SoFi", "vault")
 
 
 def detect_bank_account(
     header: list[str], filename: str, first_data_row: dict[str, str] | None = None
 ) -> DetectedAccount | None:
-    """Guess the institution, account kind, and account id a CSV's header, filename, and first row describe.
+    """Guess which institution and account kind a CSV's header, filename, and first row describe.
 
     Parameters
     ----------

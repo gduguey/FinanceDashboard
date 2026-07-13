@@ -7,7 +7,6 @@ def test_detects_chase_credit_card_from_its_header_and_filename() -> None:
     assert result is not None
     assert result.institution == "Chase"
     assert result.account_kind == "credit_card"
-    assert result.account_id == "chase:credit_card:8235"
 
 
 def test_detects_chase_checking_from_its_header_and_filename() -> None:
@@ -16,7 +15,6 @@ def test_detects_chase_checking_from_its_header_and_filename() -> None:
     assert result is not None
     assert result.institution == "Chase"
     assert result.account_kind == "checking"
-    assert result.account_id == "chase:checking:9579"
 
 
 def test_detects_sofi_checking_from_its_header_and_filename() -> None:
@@ -25,7 +23,6 @@ def test_detects_sofi_checking_from_its_header_and_filename() -> None:
     assert result is not None
     assert result.institution == "SoFi"
     assert result.account_kind == "checking"
-    assert result.account_id == "sofi:checking:9169"
 
 
 def test_detects_sofi_savings_from_its_header_and_filename() -> None:
@@ -34,7 +31,6 @@ def test_detects_sofi_savings_from_its_header_and_filename() -> None:
     assert result is not None
     assert result.institution == "SoFi"
     assert result.account_kind == "savings"
-    assert result.account_id == "sofi:savings:3680"
 
 
 _SOFI_CSV_HEADER = [
@@ -56,17 +52,12 @@ def test_detects_a_sofi_csv_vault_from_its_first_data_row() -> None:
     assert result is not None
     assert result.institution == "SoFi"
     assert result.account_kind == "vault"
-    assert result.account_id == "sofi:savings:3680:vault:emergency-fund"
-    assert result.parent_account_id == "sofi:savings:3680"
-    assert result.account_name == "Emergency Fund Vault"
 
 
 def test_detects_a_sofi_csv_savings_account_from_its_first_data_row() -> None:
     result = detect_bank_account(_SOFI_CSV_HEADER, "export.csv", {"Account Name": "SoFi HYSA ***3680"})
     assert result is not None
     assert result.account_kind == "savings"
-    assert result.account_id == "sofi:savings:3680"
-    assert result.parent_account_id is None
 
 
 def test_sofi_csv_without_a_first_data_row_returns_none() -> None:
