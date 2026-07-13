@@ -80,7 +80,8 @@ def test_detect_returns_a_guess_for_a_known_shape(client) -> None:
             "filename": "Chase9579_Activity_20260704.CSV",
         },
     ).json()
-    assert body["account_id"] == "chase:checking:9579"
+    assert body["institution"] == "Chase"
+    assert body["account_kind"] == "checking"
 
 
 def test_detect_returns_none_for_an_unknown_shape(client) -> None:
@@ -88,41 +89,73 @@ def test_detect_returns_none_for_an_unknown_shape(client) -> None:
     assert body is None
 
 
-def test_import_registers_a_new_account_and_ingests_postings(client) -> None:
+def test_import_against_an_unknown_account_id_is_a_422(client) -> None:
     response = client.post(
         "/api/accounting/import",
         files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
         data={
             "institution": "Chase",
             "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
+            "account_id": "does-not-exist",
+            "account_name": "Chase Checking",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_import_ingests_postings_against_an_existing_account(client) -> None:
+    account = _create_account(client, name="Chase Checking", kind="checking", institution="Chase")
+    response = client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Chase Checking",
         },
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["account_id"] == "chase:checking:9579"
+    assert body["account_id"] == account["account_id"]
     assert body["new_posting_count"] == 4
 
     store = client.get("/api/accounting/store").json()
-    assert "chase:checking:9579" in store["accounts"]
+    assert account["account_id"] in store["accounts"]
 
 
 def test_import_unsupported_institution_is_a_400(client) -> None:
+    account = _create_account(client, name="BoA Checking", kind="checking", institution="BankOfAmerica")
     response = client.post(
         "/api/accounting/import",
         files={"file": ("x.csv", "a,b\n1,2\n", "text/csv")},
         data={
             "institution": "BankOfAmerica",
             "account_kind": "checking",
-            "account_id": "boa:checking:0000",
+            "account_id": account["account_id"],
             "account_name": "BoA Checking",
         },
     )
     assert response.status_code == 400
 
 
+def test_canonical_import_against_an_unknown_account_id_is_a_422(client) -> None:
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Grocery Store,-42.50,Groceries\n"
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": "does-not-exist",
+            "account_name": "Generic Checking",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_canonical_import_registers_a_new_account_and_creates_a_category(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = (
         "Date,Description,Amount,Category\n2026-06-30,Grocery Store,-42.50,Groceries\n2026-06-29,Paycheck,1500.00,\n"
     )
@@ -132,22 +165,23 @@ def test_canonical_import_registers_a_new_account_and_creates_a_category(client)
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["account_id"] == "generic-bank:checking:0001"
+    assert body["account_id"] == account["account_id"]
     assert body["new_posting_count"] == 4
     assert [category["name"] for category in body["new_categories"]] == ["Groceries"]
 
     store = client.get("/api/accounting/store").json()
-    assert "generic-bank:checking:0001" in store["accounts"]
+    assert account["account_id"] in store["accounts"]
     assert any(category["name"] == "Groceries" for category in store["categories"].values())
 
 
 def test_canonical_import_handles_a_utf8_bom_prefixed_file(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "﻿Date,Description,Amount\n2026-06-30,Grocery Store,-42.50\n"
     response = client.post(
         "/api/accounting/import/canonical",
@@ -155,7 +189,7 @@ def test_canonical_import_handles_a_utf8_bom_prefixed_file(client) -> None:
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0002",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
@@ -164,6 +198,7 @@ def test_canonical_import_handles_a_utf8_bom_prefixed_file(client) -> None:
 
 
 def test_canonical_import_accepts_an_xlsx_file(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     buffer = io.BytesIO()
     workbook = xlsxwriter.Workbook(buffer, {"in_memory": True})
     worksheet = workbook.add_worksheet("Transactions")
@@ -184,7 +219,7 @@ def test_canonical_import_accepts_an_xlsx_file(client) -> None:
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0003",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
@@ -193,6 +228,7 @@ def test_canonical_import_accepts_an_xlsx_file(client) -> None:
 
 
 def test_canonical_import_date_order_dmy_reads_day_first(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "Date,Description,Amount\n01/12/2026,Grocery Store,-42.50\n"
     response = client.post(
         "/api/accounting/import/canonical",
@@ -200,14 +236,14 @@ def test_canonical_import_date_order_dmy_reads_day_first(client) -> None:
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0004",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
             "date_order": "DMY",
         },
     )
     assert response.status_code == 200
     postings = client.get("/api/accounting/postings").json()
-    real_leg = next(p for p in postings if p["account_id"] == "generic-bank:checking:0004")
+    real_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert real_leg["posted_at"].startswith("2026-12-01")
 
 
@@ -233,6 +269,7 @@ def test_canonical_import_preview_does_not_persist_anything(client) -> None:
 
 
 def test_canonical_import_applies_category_overrides_to_merge_two_categories(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = (
         "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Groceries\n2026-06-29,Restaurant,-20.00,Dining\n"
     )
@@ -242,7 +279,7 @@ def test_canonical_import_applies_category_overrides_to_merge_two_categories(cli
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0006",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
             "category_overrides": '{"categories": {"Groceries": "Food", "Dining": "Food"}}',
         },
@@ -257,13 +294,14 @@ def test_canonical_import_applies_category_overrides_to_merge_two_categories(cli
 
 
 def test_canonical_import_returns_a_422_for_an_unparseable_file(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     response = client.post(
         "/api/accounting/import/canonical",
         files={"file": ("bad.csv", "Foo,Bar\n1,2\n", "text/csv")},
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0002",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
@@ -271,10 +309,21 @@ def test_canonical_import_returns_a_422_for_an_unparseable_file(client) -> None:
     assert "Date" in response.json()["detail"]
 
 
-def _import_chase_checking(client, account_id: str = "chase:checking:9579") -> None:
+def _create_account(client, **overrides) -> dict:
+    payload = {"name": "Test Account", "kind": "checking", "institution": "Chase", "currency": "USD", **overrides}
+    response = client.post("/api/accounting/accounts", json=payload)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _import_chase_checking(client, account_id: str | None = None, csv_text: str = CHASE_CHECKING_CSV) -> str:
+    if account_id is None:
+        account_id = _create_account(
+            client, name="Chase Checking", kind="checking", institution="Chase", last_four="9579"
+        )["account_id"]
     response = client.post(
         "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
+        files={"file": ("Chase9579.csv", csv_text, "text/csv")},
         data={
             "institution": "Chase",
             "account_kind": "checking",
@@ -283,6 +332,25 @@ def _import_chase_checking(client, account_id: str = "chase:checking:9579") -> N
         },
     )
     assert response.status_code == 200
+    return account_id
+
+
+def _import_chase_credit_card(client, csv_text: str) -> str:
+    account_id = _create_account(client, name="Chase Credit Card", kind="credit_card", institution="Chase")[
+        "account_id"
+    ]
+    response = client.post(
+        "/api/accounting/import",
+        files={"file": ("Chase1234.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Chase",
+            "account_kind": "credit_card",
+            "account_id": account_id,
+            "account_name": "Chase Credit Card",
+        },
+    )
+    assert response.status_code == 200
+    return account_id
 
 
 def test_categorize_from_file_preview_matches_an_existing_posting_and_proposes_its_category(client) -> None:
@@ -303,7 +371,7 @@ def test_categorize_from_file_preview_matches_an_existing_posting_and_proposes_i
 
 
 def test_categorize_from_file_preview_does_not_persist_anything(client) -> None:
-    _import_chase_checking(client)
+    account_id = _import_chase_checking(client)
     # "Freelance Gig Income" isn't one of the default-seeded category names (unlike "Salary"),
     # so its absence afterward actually proves the preview created nothing.
     sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,Freelance Gig Income\n"
@@ -312,7 +380,7 @@ def test_categorize_from_file_preview_does_not_persist_anything(client) -> None:
         files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
     )
     postings = client.get("/api/accounting/postings").json()
-    real_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    real_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert real_leg["category_id"] is None
 
     store = client.get("/api/accounting/store").json()
@@ -333,7 +401,7 @@ def test_categorize_from_file_preview_reports_an_unmatched_row(client) -> None:
 
 
 def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(client) -> None:
-    _import_chase_checking(client)
+    account_id = _import_chase_checking(client)
     sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,Salary\n"
     preview = client.post(
         "/api/accounting/import/categorize-from-file/preview",
@@ -350,7 +418,7 @@ def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(cli
     assert response.json()["updated_posting_count"] == 1
 
     postings = client.get("/api/accounting/postings").json()
-    real_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    real_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert real_leg["category_id"] is not None
     store = client.get("/api/accounting/store").json()
     assert store["categories"][real_leg["category_id"]]["name"] == "Salary"
@@ -360,7 +428,7 @@ def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(cli
 
 
 def test_categorize_from_file_apply_skips_rows_not_confirmed(client) -> None:
-    _import_chase_checking(client)
+    account_id = _import_chase_checking(client)
     sheet_csv = (
         "Date,Description,Amount,Category\n"
         "06/30/2026,Payroll,1500.00,Salary\n"
@@ -372,30 +440,21 @@ def test_categorize_from_file_apply_skips_rows_not_confirmed(client) -> None:
         data={"confirmed_row_numbers": "[2]"},  # only the payroll row (header is row 1, so first data row is row 2)
     )
     postings = client.get("/api/accounting/postings").json()
-    payroll_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
-    payment_leg = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] < 0)
+    payroll_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
+    payment_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] < 0)
     assert payroll_leg["category_id"] is not None
     assert payment_leg["category_id"] is None
 
 
 def test_categorize_from_file_apply_never_matches_the_same_posting_twice(client) -> None:
     # Two real, distinct $5 coffees on the same day — matching must not collapse them onto one posting.
-    _import_chase_checking(client)
+    account_id = _import_chase_checking(client)
     two_coffees_csv = (
         "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
         "DEBIT,06/28/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2500.00,,\n"
         "DEBIT,06/28/2026,COFFEE SHOP,-5.00,DEBIT_CARD,2495.00,,\n"
     )
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579-2.csv", two_coffees_csv, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking",
-        },
-    )
+    _import_chase_checking(client, account_id=account_id, csv_text=two_coffees_csv)
     sheet_csv = (
         "Date,Description,Amount,Category\n"
         "06/28/2026,Coffee Shop,-5.00,Dining Out\n"
@@ -414,34 +473,16 @@ def test_categorize_from_file_apply_never_matches_the_same_posting_twice(client)
 
 
 def test_postings_leaves_category_none_when_no_seed_rule_matches(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["category_id"] is None  # generic payroll text doesn't match the EQORE-specific seed rule
 
 
 def test_manual_override_wins_over_no_rule_match(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:salary"}
@@ -454,18 +495,9 @@ def test_manual_override_wins_over_no_rule_match(client) -> None:
 
 
 def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     posting_id = payroll["posting_id"]
 
     client.put(f"/api/accounting/postings/{posting_id}/override", json={"category_id": "income:salary"})
@@ -481,18 +513,9 @@ def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -
 
 
 def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/split",
@@ -511,18 +534,9 @@ def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) ->
 
 
 def test_put_posting_split_rejects_legs_that_dont_sum_correctly(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/split",
@@ -532,18 +546,9 @@ def test_put_posting_split_rejects_legs_that_dont_sum_correctly(client) -> None:
 
 
 def test_delete_posting_split_restores_the_original_posting(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/split",
@@ -556,16 +561,7 @@ def test_delete_posting_split_restores_the_original_posting(client) -> None:
 
 
 def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     paystub_text = (
         "Pay Date: 06/30/2026\nGross Pay: $2,000.00\nTotal Taxes: $500.00\nNet Pay: $1,500.00\n"
         "Direct Deposit\nChecking ending in 9579 $1,500.00\n"
@@ -580,7 +576,7 @@ def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monke
     assert body["statement"]["gross_pay"] == pytest.approx(2000.0)
 
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert body["is_fully_matched"]
     assert body["matches"][0]["posting_id"] == payroll["posting_id"]
 
@@ -616,18 +612,9 @@ class _FakeLLMProvider:
 
 
 def test_ai_suggest_category_applies_a_valid_suggestion(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
     monkeypatch.setattr(
@@ -645,18 +632,9 @@ def test_ai_suggest_category_applies_a_valid_suggestion(client, monkeypatch) -> 
 
 
 def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "not-a-real-category", "subcategory_id": null}'
     monkeypatch.setattr(
@@ -673,18 +651,9 @@ def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monk
 
 
 def test_ai_suggest_category_with_lock_category_id_only_fills_the_subcategory(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:reimbursement"}
     )
@@ -707,18 +676,9 @@ def test_ai_suggest_category_with_lock_category_id_only_fills_the_subcategory(cl
 
 
 def test_ai_suggest_category_with_lock_category_id_discards_a_disagreeing_guess(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     client.put(f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:salary"})
 
     fake_response = '{"category_id": "income:reimbursement", "subcategory_id": null}'
@@ -739,18 +699,9 @@ def test_ai_suggest_category_with_lock_category_id_discards_a_disagreeing_guess(
 
 
 def test_ai_suggest_category_503s_when_no_provider_is_configured(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda session, user_id: [])
     response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
@@ -764,18 +715,9 @@ def test_ai_suggest_category_404s_for_an_unknown_posting(client, monkeypatch) ->
 
 
 def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
     monkeypatch.setattr(
@@ -791,18 +733,9 @@ def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, m
 
 
 def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
     monkeypatch.setattr(
@@ -821,18 +754,9 @@ def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> 
 
 
 def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["category_id"] is None
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
@@ -853,18 +777,9 @@ def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) 
 
 
 def test_validate_pending_ignores_postings_outside_the_given_list(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
     monkeypatch.setattr(
@@ -881,18 +796,9 @@ def test_validate_pending_ignores_postings_outside_the_given_list(client, monkey
 
 
 def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     client.put(
         "/api/accounting/category-patterns",
@@ -910,37 +816,19 @@ def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
 
 
 def test_pattern_suggest_category_returns_unapplied_when_nothing_matches(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/pattern-suggest-category")
     assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
 
 
 def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_one_call(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
-    card_payment = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] < 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
+    card_payment = next(p for p in postings if p["account_id"] == account_id and p["amount"] < 0)
 
     client.put(
         "/api/accounting/category-patterns",
@@ -967,18 +855,9 @@ def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_o
 
 
 def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_disagrees(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/override",
         json={"category_id": "income:bonus"},
@@ -1090,36 +969,24 @@ def test_llm_settings_delete_clears_the_override(client) -> None:
 
 
 def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     body = client.get("/api/accounting/net-worth").json()
     assert body["assets"] == pytest.approx(1430.0)
-    checking_row = next(row for row in body["accounts"] if row["account_id"] == "chase:checking:9579")
+    checking_row = next(row for row in body["accounts"] if row["account_id"] == account_id)
     assert checking_row["balance"] == pytest.approx(1430.0)
 
 
 def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(trades_api.app.state, "config", AppConfig(ibkr={"cache_dir": tmp_path / "empty-ibkr"}))
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "external:interactive-brokers",
-            "name": "Interactive Brokers",
-            "kind": "external_investment",
-            "institution": "external",
-            "currency": "USD",
-            "parent_account_id": None,
-            "external_ref": "trades",
-            "meta": {},
-        },
+    investment = _create_account(
+        client,
+        name="Interactive Brokers",
+        kind="external_investment",
+        institution="external",
+        currency="USD",
+        parent_account_id=None,
+        external_ref="trades",
+        meta={},
     )
     client.put(
         "/api/accounting/transfer-rules",
@@ -1130,12 +997,13 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
                 "account_id": None,
                 "category_id": None,
                 "subcategory_id": None,
-                "counterparty_account_id": "external:interactive-brokers",
+                "counterparty_account_id": investment["account_id"],
                 "priority": 0,
                 "description": "",
             }
         ],
     )
+    sofi_savings = _create_account(client, name="SoFi Savings", kind="savings", institution="SoFi")
     sofi_savings_csv = (
         "Date,Description,Type,Amount,Current balance,Status\n"
         "2026-07-01,INTERACTIVE BROK,DIRECT_PAY,-2500,14.21,Posted\n"
@@ -1146,77 +1014,41 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
         data={
             "institution": "SoFi",
             "account_kind": "savings",
-            "account_id": "sofi:savings:3680",
-            "account_name": "SoFi Savings (...3680)",
+            "account_id": sofi_savings["account_id"],
+            "account_name": "SoFi Savings",
         },
     )
     response = client.get("/api/accounting/net-worth")
     assert response.status_code == 200
     body = response.json()
-    investment_row = next(row for row in body["accounts"] if row["account_id"] == "external:interactive-brokers")
+    investment_row = next(row for row in body["accounts"] if row["account_id"] == investment["account_id"])
     assert investment_row["balance"] == pytest.approx(0.0)
 
 
 def test_transfer_suggestions_finds_the_chase_card_payoff(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     credit_card_csv = (
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
         "06/29/2026,06/29/2026,Something else entirely,Other,Sale,70.00,\n"
     )
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase1234.csv", credit_card_csv, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "credit_card",
-            "account_id": "chase:credit_card:1234",
-            "account_name": "Chase Credit Card (...1234)",
-        },
-    )
+    credit_card_account_id = _import_chase_credit_card(client, credit_card_csv)
     suggestions = client.get("/api/accounting/transfer-suggestions").json()
     assert len(suggestions) == 1
     assert {suggestions[0]["account_id"], suggestions[0]["other_account_id"]} == {
-        "chase:checking:9579",
-        "chase:credit_card:1234",
+        account_id,
+        credit_card_account_id,
     }
     assert suggestions[0]["description"]
     assert suggestions[0]["other_description"]
 
 
 def test_transfer_suggestions_respects_a_wider_window_days(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     credit_card_csv = (
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
         "06/24/2026,06/24/2026,Something else entirely,Other,Sale,70.00,\n"
     )
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase1234.csv", credit_card_csv, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "credit_card",
-            "account_id": "chase:credit_card:1234",
-            "account_name": "Chase Credit Card (...1234)",
-        },
-    )
+    _import_chase_credit_card(client, credit_card_csv)
     # The two postings are 5 days apart (06/24 vs 06/29) — outside the
     # default 3-day window, but within a wider one.
     assert client.get("/api/accounting/transfer-suggestions").json() == []
@@ -1225,16 +1057,7 @@ def test_transfer_suggestions_respects_a_wider_window_days(client) -> None:
 
 
 def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "generic:checking:0001",
-            "name": "Generic Checking",
-            "kind": "checking",
-            "institution": "Generic",
-            "currency": "USD",
-        },
-    )
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic")
     client.post(
         "/api/accounting/import/canonical",
         files={
@@ -1247,7 +1070,7 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
         data={
             "institution": "Generic",
             "account_kind": "checking",
-            "account_id": "generic:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
@@ -1263,7 +1086,7 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
         data={
             "institution": "Generic",
             "account_kind": "checking",
-            "account_id": "generic:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
             "separator": ",",
         },
@@ -1271,7 +1094,7 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
     suggestions = client.get("/api/accounting/duplicate-suggestions").json()
     assert len(suggestions) == 1
     group = suggestions[0]
-    assert group["account_id"] == "generic:checking:0001"
+    assert group["account_id"] == account["account_id"]
     assert len(group["postings"]) == 2
 
     transaction_ids = [posting["transaction_id"] for posting in group["postings"]]
@@ -1291,36 +1114,18 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
 
     postings = client.get("/api/accounting/postings").json()
     remaining_transaction_ids = {
-        posting["transaction_id"] for posting in postings if posting["account_id"] == "generic:checking:0001"
+        posting["transaction_id"] for posting in postings if posting["account_id"] == account["account_id"]
     }
     assert remaining_transaction_ids == {transaction_ids[0]}
 
 
 def _seed_chase_transfer_suggestion(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     credit_card_csv = (
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
         "06/29/2026,06/29/2026,Something else entirely,Other,Sale,70.00,\n"
     )
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase1234.csv", credit_card_csv, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "credit_card",
-            "account_id": "chase:credit_card:1234",
-            "account_name": "Chase Credit Card (...1234)",
-        },
-    )
+    _import_chase_credit_card(client, credit_card_csv)
 
 
 def test_transfer_suggestions_include_a_stable_suggestion_id(client) -> None:
@@ -1381,23 +1186,14 @@ def test_restoring_an_unknown_suggestion_is_a_404(client) -> None:
 
 
 def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "generic:checking:0001",
-            "name": "Generic Checking",
-            "kind": "checking",
-            "institution": "Generic",
-            "currency": "USD",
-        },
-    )
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic")
     client.post(
         "/api/accounting/import/canonical",
         files={"file": ("a.csv", "Date,Description,Amount\n2026-06-30,WHOLE FOODS #123,-42.50\n", "text/csv")},
         data={
             "institution": "Generic",
             "account_kind": "checking",
-            "account_id": "generic:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
@@ -1407,7 +1203,7 @@ def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(cli
         data={
             "institution": "Generic",
             "account_kind": "checking",
-            "account_id": "generic:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
             "separator": ",",
         },
@@ -1425,40 +1221,22 @@ def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(cli
 
 
 def test_postings_report_which_rule_resolved_them(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["resolved_by_transfer_rule_id"] is None
 
     # `counterparty_account_id` is now a real foreign key into `accounts` (see
     # `accounting.db.automation.TransferRule`) — the account it names must already
     # exist, unlike before when a rule could forward-reference one created later.
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "employer:eqore",
-            "name": "EQORE",
-            "kind": "income_source",
-            "institution": "internal",
-            "currency": "USD",
-        },
-    )
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
     client.put(
         "/api/accounting/transfer-rules",
         json=[
             {
                 "rule_id": "payroll-rule",
                 "description_contains": "PAYROLL",
-                "counterparty_account_id": "employer:eqore",
+                "counterparty_account_id": employer["account_id"],
                 "category_id": "income:salary",
                 "priority": 0,
             }
@@ -1466,7 +1244,7 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
     )
 
     updated = client.get("/api/accounting/postings").json()
-    updated_payroll = next(p for p in updated if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
     assert updated_payroll["resolved_by_transfer_rule_id"] == "payroll-rule"
     assert updated_payroll["category_id"] == "income:salary"
 
@@ -1558,6 +1336,7 @@ def test_category_rename_404s_for_an_unknown_category(client) -> None:
 
 
 def test_category_rename_merges_into_an_existing_category_and_repoints_postings(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
     client.post(
         "/api/accounting/import/canonical",
@@ -1565,7 +1344,7 @@ def test_category_rename_merges_into_an_existing_category_and_repoints_postings(
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
@@ -1592,11 +1371,12 @@ def test_category_rename_merges_into_an_existing_category_and_repoints_postings(
     assert "expense:food" in body["categories"]
 
     postings = client.get("/api/accounting/postings").json()
-    grocery_leg = next(p for p in postings if p["account_id"] == "generic-bank:checking:0001")
+    grocery_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert grocery_leg["category_id"] == "expense:food"
 
 
 def test_category_rename_merge_repoints_a_manual_override(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
     client.post(
         "/api/accounting/import/canonical",
@@ -1604,14 +1384,14 @@ def test_category_rename_merge_repoints_a_manual_override(client) -> None:
         data={
             "institution": "Generic Bank",
             "account_kind": "checking",
-            "account_id": "generic-bank:checking:0001",
+            "account_id": account["account_id"],
             "account_name": "Generic Checking",
         },
     )
     store = client.get("/api/accounting/store").json()
     nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
     postings = client.get("/api/accounting/postings").json()
-    other_posting = next(p for p in postings if p["account_id"] != "generic-bank:checking:0001")
+    other_posting = next(p for p in postings if p["account_id"] != account["account_id"])
     client.put(
         f"/api/accounting/postings/{other_posting['posting_id']}/override",
         json={"category_id": nourriture["category_id"]},
@@ -1634,6 +1414,307 @@ def test_category_rename_merge_repoints_a_manual_override(client) -> None:
     postings = client.get("/api/accounting/postings").json()
     overridden = next(p for p in postings if p["posting_id"] == other_posting["posting_id"])
     assert overridden["category_id"] == "expense:food"
+
+
+def test_post_category_creates_a_new_top_level_category(client) -> None:
+    response = client.post(
+        "/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["category_id"] == "expense:custom"
+    store = client.get("/api/accounting/store").json()
+    assert "expense:custom" in store["categories"]
+
+
+def test_post_category_409s_on_a_same_classification_duplicate_name(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    response = client.post(
+        "/api/accounting/categories", json={"name": "custom", "classification": "expense", "color": "#111111"}
+    )
+    assert response.status_code == 409
+
+
+def test_post_category_allows_the_same_name_under_a_different_classification(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    response = client.post(
+        "/api/accounting/categories", json={"name": "Custom", "classification": "income", "color": "#111111"}
+    )
+    assert response.status_code == 200
+
+
+def test_post_subcategory_creates_a_new_subcategory(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    response = client.post(
+        "/api/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["category_id"] == "expense:custom:gadgets"
+    assert body["parent_category_id"] == "expense:custom"
+
+
+def test_post_subcategory_404s_for_an_unknown_parent(client) -> None:
+    response = client.post(
+        "/api/accounting/categories/expense:nope/subcategories", json={"name": "Gadgets", "color": "#222222"}
+    )
+    assert response.status_code == 404
+
+
+def test_post_subcategory_409s_on_a_same_name_sibling(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"})
+    response = client.post(
+        "/api/accounting/categories/expense:custom/subcategories", json={"name": "gadgets", "color": "#333333"}
+    )
+    assert response.status_code == 409
+
+
+def test_post_subcategory_allows_the_same_name_under_a_different_parent(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post(
+        "/api/accounting/categories", json={"name": "Other Top", "classification": "expense", "color": "#444444"}
+    )
+    client.post("/api/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"})
+    response = client.post(
+        "/api/accounting/categories/expense:other-top/subcategories", json={"name": "Gadgets", "color": "#555555"}
+    )
+    assert response.status_code == 200
+
+
+def test_category_rename_preview_reports_no_merge_for_a_plain_rename(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    response = client.get("/api/accounting/categories/expense:custom/rename-preview", params={"name": "Renamed"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["will_merge"] is False
+    assert body["target_name"] is None
+
+
+def test_category_rename_preview_404s_for_an_unknown_category(client) -> None:
+    response = client.get("/api/accounting/categories/expense:nope/rename-preview", params={"name": "Anything"})
+    assert response.status_code == 404
+
+
+def test_category_rename_preview_reports_merge_for_a_top_level_same_classification_collision(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
+    response = client.get("/api/accounting/categories/expense:custom/rename-preview", params={"name": "Food"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["will_merge"] is True
+    assert body["target_name"] == "Food"
+
+
+def test_category_rename_preview_reports_no_merge_across_different_classifications(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories", json={"name": "Food", "classification": "income", "color": "#111111"})
+    response = client.get("/api/accounting/categories/expense:custom/rename-preview", params={"name": "Food"})
+    assert response.status_code == 200
+    assert response.json()["will_merge"] is False
+
+
+def test_category_rename_preview_reports_merge_for_a_subcategory_same_parent_collision(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"})
+    client.post("/api/accounting/categories/expense:custom/subcategories", json={"name": "Books", "color": "#333333"})
+    response = client.get("/api/accounting/categories/expense:custom:gadgets/rename-preview", params={"name": "Books"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["will_merge"] is True
+    assert body["target_name"] == "Books"
+
+
+def test_category_rename_preview_reports_no_merge_across_different_parents(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post(
+        "/api/accounting/categories", json={"name": "Other Top", "classification": "expense", "color": "#444444"}
+    )
+    client.post("/api/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"})
+    client.post(
+        "/api/accounting/categories/expense:other-top/subcategories", json={"name": "Books", "color": "#333333"}
+    )
+    response = client.get("/api/accounting/categories/expense:custom:gadgets/rename-preview", params={"name": "Books"})
+    assert response.status_code == 200
+    assert response.json()["will_merge"] is False
+
+
+def test_category_rename_preview_reports_a_budget_the_merge_would_delete(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
+    client.put(
+        "/api/accounting/budgets",
+        json=[
+            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:custom", "amount": 100.0},
+            {"budget_id": "b2", "month": "2026-06", "category_id": "expense:food", "amount": 200.0},
+        ],
+    )
+    response = client.get("/api/accounting/categories/expense:custom/rename-preview", params={"name": "Food"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["will_merge"] is True
+    assert body["budgets_to_delete"] == [{"month": "2026-06", "amount": pytest.approx(100.0), "currency": "USD"}]
+
+
+def test_category_rename_preview_reports_no_budgets_to_delete_without_a_collision(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
+    client.put(
+        "/api/accounting/budgets",
+        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:custom", "amount": 100.0}],
+    )
+    response = client.get("/api/accounting/categories/expense:custom/rename-preview", params={"name": "Food"})
+    assert response.status_code == 200
+    assert response.json()["budgets_to_delete"] == []
+
+
+def test_category_rename_merge_drops_the_merged_away_budget_instead_of_failing(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
+    client.put(
+        "/api/accounting/budgets",
+        json=[
+            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:custom", "amount": 100.0},
+            {"budget_id": "b2", "month": "2026-06", "category_id": "expense:food", "amount": 200.0},
+        ],
+    )
+    response = client.post("/api/accounting/categories/expense:custom/rename", json={"name": "Food"})
+    assert response.status_code == 200
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert len(budgets) == 1
+    assert budgets[0]["category_id"] == "expense:food"
+    assert budgets[0]["amount"] == pytest.approx(200.0)
+
+
+def _write_posting_with_tags(
+    db_session, account_id: str, posting_id: str, transaction_id: str, tag_ids: list[str]
+) -> None:
+    """Give a posting a real `posting_tags` row, bypassing the store's own tag-rename endpoints.
+
+    Nothing exposed over HTTP today writes `posting_tags` directly (see
+    `accounting.importers.ingest._write_ledger`, the only place that ever
+    does) — no importer format has a Tags column, and
+    `PUT /postings/{id}/override` only ever writes the separate
+    `tag_ids_override` array. Calling `_write_ledger` straight from the test
+    is the only way to get a real join-table row to merge/repoint.
+    """
+    posting = Posting(
+        posting_id=posting_id,
+        transaction_id=transaction_id,
+        account_id=account_id,
+        posted_at=datetime(2026, 1, 1, tzinfo=UTC),
+        amount=10.0,
+        currency="USD",
+        tag_ids=tag_ids,
+        description="test",
+    )
+    frame = pl.DataFrame([posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    ingest_module._write_ledger(frame, db_session, user_id=DEFAULT_USER_ID)
+
+
+def test_tag_rename_without_a_collision_just_renames(client) -> None:
+    trip = client.post("/api/accounting/tags", json={"name": "Trip"}).json()
+    response = client.post(f"/api/accounting/tags/{trip['tag_id']}/rename", json={"name": "Vacation"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["merged"] is False
+    assert body["tags"][trip["tag_id"]]["name"] == "Vacation"
+
+
+def test_tag_rename_404s_for_an_unknown_tag(client) -> None:
+    response = client.post("/api/accounting/tags/tag:nope/rename", json={"name": "Anything"})
+    assert response.status_code == 404
+
+
+def test_tag_rename_merges_into_an_existing_tag_and_repoints_posting_tags(client, db_session) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    trip = client.post("/api/accounting/tags", json={"name": "Trip"}).json()
+    vacation = client.post("/api/accounting/tags", json={"name": "Vacation"}).json()
+    _write_posting_with_tags(db_session, account["account_id"], "p1", "t1", [trip["tag_id"]])
+
+    response = client.post(f"/api/accounting/tags/{trip['tag_id']}/rename", json={"name": "Vacation"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["merged"] is True
+    assert trip["tag_id"] not in body["tags"]
+    assert vacation["tag_id"] in body["tags"]
+
+    postings = client.get("/api/accounting/postings").json()
+    p1 = next(p for p in postings if p["posting_id"] == "p1")
+    assert p1["tag_ids"] == [vacation["tag_id"]]
+
+
+def test_tag_rename_merge_handles_a_posting_already_tagged_with_both(client, db_session) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    trip = client.post("/api/accounting/tags", json={"name": "Trip"}).json()
+    vacation = client.post("/api/accounting/tags", json={"name": "Vacation"}).json()
+    _write_posting_with_tags(db_session, account["account_id"], "p1", "t1", [trip["tag_id"], vacation["tag_id"]])
+
+    response = client.post(f"/api/accounting/tags/{trip['tag_id']}/rename", json={"name": "Vacation"})
+    assert response.status_code == 200
+
+    postings = client.get("/api/accounting/postings").json()
+    p1 = next(p for p in postings if p["posting_id"] == "p1")
+    assert p1["tag_ids"] == [vacation["tag_id"]]
+
+
+def test_tag_rename_merge_repoints_a_tag_ids_override(client, db_session) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    trip = client.post("/api/accounting/tags", json={"name": "Trip"}).json()
+    vacation = client.post("/api/accounting/tags", json={"name": "Vacation"}).json()
+    _write_posting_with_tags(db_session, account["account_id"], "p1", "t1", [])
+    client.put("/api/accounting/postings/p1/override", json={"tag_ids": [trip["tag_id"]]})
+
+    client.post(f"/api/accounting/tags/{trip['tag_id']}/rename", json={"name": "Vacation"})
+
+    postings = client.get("/api/accounting/postings").json()
+    p1 = next(p for p in postings if p["posting_id"] == "p1")
+    assert p1["tag_ids"] == [vacation["tag_id"]]
+
+
+def test_post_tag_creates_a_new_tag(client) -> None:
+    response = client.post("/api/accounting/tags", json={"name": "Trip"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tag_id"] == "tag:trip"
+    store = client.get("/api/accounting/store").json()
+    assert "tag:trip" in store["tags"]
+
+
+def test_post_tag_409s_on_a_duplicate_name_case_insensitive(client) -> None:
+    client.post("/api/accounting/tags", json={"name": "Trip"})
+    response = client.post("/api/accounting/tags", json={"name": "trip"})
+    assert response.status_code == 409
+
+
+def test_post_tag_allows_a_distinct_name(client) -> None:
+    client.post("/api/accounting/tags", json={"name": "Trip"})
+    response = client.post("/api/accounting/tags", json={"name": "Move"})
+    assert response.status_code == 200
+
+
+def test_tag_rename_preview_reports_no_merge_for_a_plain_rename(client) -> None:
+    client.post("/api/accounting/tags", json={"name": "Trip"})
+    response = client.get("/api/accounting/tags/tag:trip/rename-preview", params={"name": "Renamed"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["will_merge"] is False
+    assert body["target_name"] is None
+
+
+def test_tag_rename_preview_404s_for_an_unknown_tag(client) -> None:
+    response = client.get("/api/accounting/tags/tag:nope/rename-preview", params={"name": "Anything"})
+    assert response.status_code == 404
+
+
+def test_tag_rename_preview_reports_merge_for_a_name_collision(client) -> None:
+    client.post("/api/accounting/tags", json={"name": "Trip"})
+    client.post("/api/accounting/tags", json={"name": "Vacation"})
+    response = client.get("/api/accounting/tags/tag:trip/rename-preview", params={"name": "Vacation"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["will_merge"] is True
+    assert body["target_name"] == "Vacation"
 
 
 def test_put_categories_removes_other_once_it_is_left_alone(client) -> None:
@@ -1684,16 +1765,7 @@ def test_put_other_assets_persists(client) -> None:
 
 
 def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
     payment = next(p for p in postings if p["amount"] < 0)
     client.put(f"/api/accounting/postings/{payment['posting_id']}/override", json={"category_id": "expense:admin-fees"})
@@ -1744,16 +1816,7 @@ def test_rebuild_with_nothing_imported_is_a_404(client) -> None:
 
 
 def test_rebuild_reconstructs_from_raw_after_import(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     response = client.post("/api/accounting/rebuild")
     assert response.status_code == 200
 
@@ -1784,31 +1847,13 @@ def _mock_fetch(monkeypatch) -> None:
 def test_net_worth_succeeds_for_a_eur_account_once_rates_are_synced(client, monkeypatch) -> None:
     _mock_fetch(monkeypatch)
     exchange_rates.update_rate_history_cache(accounting_api.state.config)
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "EUR",
-        },
-    )
+    _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
     response = client.get("/api/accounting/net-worth")
     assert response.status_code == 200
 
 
 def test_net_worth_400s_when_a_needed_currency_was_never_synced(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "EUR",
-        },
-    )
+    _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
     response = client.get("/api/accounting/net-worth")
     assert response.status_code == 400
 
@@ -1835,16 +1880,22 @@ def test_get_exchange_rate_history_after_sync(client, monkeypatch) -> None:
 def test_post_account_creates_a_new_account(client) -> None:
     response = client.post(
         "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "EUR",
-        },
+        json={"name": "BNP Checking", "kind": "checking", "institution": "BNP", "currency": "EUR"},
     )
     assert response.status_code == 200
-    assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
+    account_id = response.json()["account_id"]
+    assert account_id
+    assert account_id in client.get("/api/accounting/store").json()["accounts"]
+
+
+def test_post_account_twice_with_no_last_four_creates_two_distinct_accounts(client) -> None:
+    first = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+    second = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+    assert first["account_id"] != second["account_id"]
+
+    accounts = client.get("/api/accounting/store").json()["accounts"]
+    assert first["account_id"] in accounts
+    assert second["account_id"] in accounts
 
 
 def test_accounts_are_isolated_between_users(client, db_session) -> None:
@@ -1858,90 +1909,66 @@ def test_accounts_are_isolated_between_users(client, db_session) -> None:
     db_session.add(dbm.User(id=other_user_id, email="other@example.com", hashed_password="unset"))  # noqa: S106
     db_session.commit()
 
-    account = {
-        "account_id": "bnp:checking:0001",
-        "name": "BNP Checking",
-        "kind": "checking",
-        "institution": "BNP",
-        "currency": "EUR",
-    }
-    response = client.post("/api/accounting/accounts", json=account)
-    assert response.status_code == 200
-    assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+    assert account["account_id"] in client.get("/api/accounting/store").json()["accounts"]
 
     trades_api.app.dependency_overrides[get_current_user_id] = lambda: other_user_id
     try:
         # The first user's account must not be visible to the second user...
         other_store = client.get("/api/accounting/store").json()
-        assert "bnp:checking:0001" not in other_store["accounts"]
+        assert account["account_id"] not in other_store["accounts"]
 
-        # ...and the second user must be free to register their own account
-        # under the exact same id, with no conflict against the first user's.
-        response = client.post("/api/accounting/accounts", json=account)
-        assert response.status_code == 200
-        assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
+        # ...and the second user is free to register their own account too,
+        # getting back its own distinct, server-generated id.
+        other_account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+        assert other_account["account_id"] != account["account_id"]
+        assert other_account["account_id"] in client.get("/api/accounting/store").json()["accounts"]
     finally:
         trades_api.app.dependency_overrides[get_current_user_id] = lambda: DEFAULT_USER_ID
 
     # Back as the first user, their own account is unaffected by the second
-    # user's same-id account, and still the only one they can see.
-    assert "bnp:checking:0001" in client.get("/api/accounting/store").json()["accounts"]
-
-
-def test_post_account_conflicts_on_a_duplicate_id(client) -> None:
-    account = {
-        "account_id": "bnp:checking:0001",
-        "name": "BNP Checking",
-        "kind": "checking",
-        "institution": "BNP",
-        "currency": "EUR",
-    }
-    client.post("/api/accounting/accounts", json=account)
-    response = client.post("/api/accounting/accounts", json=account)
-    assert response.status_code == 409
+    # user's account, and still the only one they can see.
+    assert account["account_id"] in client.get("/api/accounting/store").json()["accounts"]
 
 
 def test_put_account_fully_edits_an_account_with_no_postings(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "EUR",
-        },
-    )
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
     response = client.put(
-        "/api/accounting/accounts/bnp:checking:0001",
+        f"/api/accounting/accounts/{account['account_id']}",
         json={"name": "BNP Main", "institution": "BNP Paribas", "kind": "savings", "currency": "USD"},
     )
     assert response.status_code == 200
-    updated = client.get("/api/accounting/store").json()["accounts"]["bnp:checking:0001"]
+    updated = client.get("/api/accounting/store").json()["accounts"][account["account_id"]]
     assert updated["institution"] == "BNP Paribas"
     assert updated["kind"] == "savings"
     assert updated["currency"] == "USD"
 
 
-def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+def test_put_account_updates_last_four_independently_and_it_round_trips_through_store(client) -> None:
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    assert account["last_four"] is None
+
     response = client.put(
-        "/api/accounting/accounts/chase:checking:9579",
+        f"/api/accounting/accounts/{account['account_id']}",
+        json={"name": "BNP Checking", "institution": "BNP", "kind": "checking", "currency": "USD", "last_four": "4321"},
+    )
+    assert response.status_code == 200
+    assert response.json()["last_four"] == "4321"
+
+    store = client.get("/api/accounting/store").json()
+    assert store["accounts"][account["account_id"]]["last_four"] == "4321"
+
+
+def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) -> None:
+    account_id = _import_chase_checking(client)
+    response = client.put(
+        f"/api/accounting/accounts/{account_id}",
         json={"name": "Chase Checking", "institution": "Chase", "kind": "savings", "currency": "USD"},
     )
     assert response.status_code == 400
 
     renamed = client.put(
-        "/api/accounting/accounts/chase:checking:9579",
+        f"/api/accounting/accounts/{account_id}",
         json={"name": "Renamed", "institution": "Chase", "kind": "checking", "currency": "USD"},
     )
     assert renamed.status_code == 200
@@ -1952,7 +1979,6 @@ def test_post_account_accepts_an_external_investment_pulling_from_trades(client)
     response = client.post(
         "/api/accounting/accounts",
         json={
-            "account_id": "external:interactive-brokers",
             "name": "Interactive Brokers",
             "kind": "external_investment",
             "institution": "external",
@@ -1961,39 +1987,28 @@ def test_post_account_accepts_an_external_investment_pulling_from_trades(client)
         },
     )
     assert response.status_code == 200
-    created = client.get("/api/accounting/store").json()["accounts"]["external:interactive-brokers"]
+    account_id = response.json()["account_id"]
+    created = client.get("/api/accounting/store").json()["accounts"][account_id]
     assert created["external_ref"] == "trades"
 
 
 def test_post_account_accepts_a_manually_tracked_external_investment(client) -> None:
     response = client.post(
         "/api/accounting/accounts",
-        json={
-            "account_id": "external:friends-fund",
-            "name": "Friend's Fund",
-            "kind": "external_investment",
-            "institution": "external",
-            "currency": "USD",
-        },
+        json={"name": "Friend's Fund", "kind": "external_investment", "institution": "external", "currency": "USD"},
     )
     assert response.status_code == 200
-    created = client.get("/api/accounting/store").json()["accounts"]["external:friends-fund"]
+    account_id = response.json()["account_id"]
+    created = client.get("/api/accounting/store").json()["accounts"][account_id]
     assert created["external_ref"] is None
 
 
 def test_put_account_can_switch_an_external_investment_between_trades_and_manual(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "external:friends-fund",
-            "name": "Friend's Fund",
-            "kind": "external_investment",
-            "institution": "external",
-            "currency": "USD",
-        },
+    account = _create_account(
+        client, name="Friend's Fund", kind="external_investment", institution="external", currency="USD"
     )
     response = client.put(
-        "/api/accounting/accounts/external:friends-fund",
+        f"/api/accounting/accounts/{account['account_id']}",
         json={
             "name": "Friend's Fund",
             "institution": "external",
@@ -2006,7 +2021,7 @@ def test_put_account_can_switch_an_external_investment_between_trades_and_manual
     assert response.json()["external_ref"] == "trades"
 
     back_to_manual = client.put(
-        "/api/accounting/accounts/external:friends-fund",
+        f"/api/accounting/accounts/{account['account_id']}",
         json={"name": "Friend's Fund", "institution": "external", "kind": "external_investment", "currency": "USD"},
     )
     assert back_to_manual.status_code == 200
@@ -2014,16 +2029,7 @@ def test_put_account_can_switch_an_external_investment_between_trades_and_manual
 
 
 def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     # A rule that would repoint the payroll deposit's placeholder leg to a
     # real account — the raw ledger export must stay unaffected by it,
     # unlike `GET /postings` (the resolved view `TransactionsTab` shows).
@@ -2036,7 +2042,7 @@ def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> 
                 "account_id": None,
                 "category_id": None,
                 "subcategory_id": None,
-                "counterparty_account_id": "chase:checking:9579",
+                "counterparty_account_id": account_id,
                 "priority": 0,
                 "description": "",
             }
@@ -2051,16 +2057,7 @@ def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> 
 
 
 def test_accounting_statements_export_returns_a_zip_of_every_raw_upload(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     response = client.get("/api/accounting/statements/export")
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
@@ -2077,131 +2074,68 @@ def test_get_supported_import_kinds_lists_registered_standardizers(client) -> No
 
 
 def test_put_opening_balance_is_reflected_in_net_worth(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
     response = client.put(
-        "/api/accounting/accounts/bnp:checking:0001/opening-balance",
-        json={"account_id": "bnp:checking:0001", "amount": 250.0, "as_of_date": "2026-01-01T00:00:00"},
+        f"/api/accounting/accounts/{account['account_id']}/opening-balance",
+        json={"account_id": account["account_id"], "amount": 250.0, "as_of_date": "2026-01-01T00:00:00"},
     )
     assert response.status_code == 200
     net_worth = client.get("/api/accounting/net-worth", params={"as_of": "2026-06-01"}).json()
-    row = next(r for r in net_worth["accounts"] if r["account_id"] == "bnp:checking:0001")
+    row = next(r for r in net_worth["accounts"] if r["account_id"] == account["account_id"])
     assert row["balance"] == pytest.approx(250.0)
 
-    delete_response = client.delete("/api/accounting/accounts/bnp:checking:0001/opening-balance")
+    delete_response = client.delete(f"/api/accounting/accounts/{account['account_id']}/opening-balance")
     assert delete_response.status_code == 200
     net_worth_after = client.get("/api/accounting/net-worth", params={"as_of": "2026-06-01"}).json()
-    row_after = next(r for r in net_worth_after["accounts"] if r["account_id"] == "bnp:checking:0001")
+    row_after = next(r for r in net_worth_after["accounts"] if r["account_id"] == account["account_id"])
     assert row_after["balance"] == pytest.approx(0.0)
 
 
 def test_net_worth_history_by_account_returns_a_row_per_account_per_date(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     response = client.get(
         "/api/accounting/net-worth/history/by-account",
         params={"start": "2026-06-28", "end": "2026-06-30", "interval_days": 1},
     )
     assert response.status_code == 200
     rows = response.json()
-    dates = {row["date"] for row in rows if row["account_id"] == "chase:checking:9579"}
+    dates = {row["date"] for row in rows if row["account_id"] == account_id}
     assert dates == {"2026-06-28", "2026-06-29", "2026-06-30"}
 
 
 def test_delete_account_removes_an_account_with_no_postings(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "EUR",
-        },
-    )
-    response = client.delete("/api/accounting/accounts/bnp:checking:0001")
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
+    response = client.delete(f"/api/accounting/accounts/{account['account_id']}")
     assert response.status_code == 200
-    assert "bnp:checking:0001" not in client.get("/api/accounting/store").json()["accounts"]
+    assert account["account_id"] not in client.get("/api/accounting/store").json()["accounts"]
 
 
 def test_delete_account_blocked_once_it_has_postings(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
-    response = client.delete("/api/accounting/accounts/chase:checking:9579")
+    account_id = _import_chase_checking(client)
+    response = client.delete(f"/api/accounting/accounts/{account_id}")
     assert response.status_code == 400
-    assert "chase:checking:9579" in client.get("/api/accounting/store").json()["accounts"]
+    assert account_id in client.get("/api/accounting/store").json()["accounts"]
 
 
 def test_close_account_marks_it_closed_with_no_transfers(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
-    response = client.post("/api/accounting/accounts/bnp:checking:0001/close", json={"transfers": []})
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    response = client.post(f"/api/accounting/accounts/{account['account_id']}/close", json={"transfers": []})
     assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["accounts"]["bnp:checking:0001"]["closed"] is True
+    assert client.get("/api/accounting/store").json()["accounts"][account["account_id"]]["closed"] is True
 
 
 def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:savings:0002",
-            "name": "BNP Savings",
-            "kind": "savings",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
+    checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    savings = _create_account(client, name="BNP Savings", kind="savings", institution="BNP", currency="USD")
     response = client.post(
-        "/api/accounting/accounts/bnp:checking:0001/close",
+        f"/api/accounting/accounts/{checking['account_id']}/close",
         json={
             "transfers": [
                 {
                     "transfer_id": "close-bnp-checking-0001",
                     "date": "2026-06-30T00:00:00",
-                    "from_account_id": "bnp:checking:0001",
-                    "to_account_id": "bnp:savings:0002",
+                    "from_account_id": checking["account_id"],
+                    "to_account_id": savings["account_id"],
                     "from_amount": 100.0,
                     "to_amount": 100.0,
                     "description": "Closing out BNP checking",
@@ -2211,45 +2145,27 @@ def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client)
     )
     assert response.status_code == 200
     store = client.get("/api/accounting/store").json()
-    assert store["accounts"]["bnp:checking:0001"]["closed"] is True
+    assert store["accounts"][checking["account_id"]]["closed"] is True
     assert len(store["manual_transfers"]) == 1
 
     net_worth = client.get("/api/accounting/net-worth", params={"as_of": "2026-07-01"}).json()
     balances = {row["account_id"]: row["balance"] for row in net_worth["accounts"]}
-    assert balances["bnp:checking:0001"] == pytest.approx(-100.0)
-    assert balances["bnp:savings:0002"] == pytest.approx(100.0)
+    assert balances[checking["account_id"]] == pytest.approx(-100.0)
+    assert balances[savings["account_id"]] == pytest.approx(100.0)
 
 
 def test_close_account_rejects_a_transfer_whose_from_account_doesnt_match(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:savings:0002",
-            "name": "BNP Savings",
-            "kind": "savings",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
+    checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    savings = _create_account(client, name="BNP Savings", kind="savings", institution="BNP", currency="USD")
     response = client.post(
-        "/api/accounting/accounts/bnp:checking:0001/close",
+        f"/api/accounting/accounts/{checking['account_id']}/close",
         json={
             "transfers": [
                 {
                     "transfer_id": "close-bnp-checking-0001",
                     "date": "2026-06-30T00:00:00",
-                    "from_account_id": "bnp:savings:0002",
-                    "to_account_id": "bnp:checking:0001",
+                    "from_account_id": savings["account_id"],
+                    "to_account_id": checking["account_id"],
                     "from_amount": 100.0,
                     "to_amount": 100.0,
                 }
@@ -2260,24 +2176,15 @@ def test_close_account_rejects_a_transfer_whose_from_account_doesnt_match(client
 
 
 def test_close_account_rejects_a_transfer_to_an_unknown_account(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
+    checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
     response = client.post(
-        "/api/accounting/accounts/bnp:checking:0001/close",
+        f"/api/accounting/accounts/{checking['account_id']}/close",
         json={
             "transfers": [
                 {
                     "transfer_id": "close-bnp-checking-0001",
                     "date": "2026-06-30T00:00:00",
-                    "from_account_id": "bnp:checking:0001",
+                    "from_account_id": checking["account_id"],
                     "to_account_id": "does-not-exist",
                     "from_amount": 100.0,
                     "to_amount": 100.0,
@@ -2289,33 +2196,15 @@ def test_close_account_rejects_a_transfer_to_an_unknown_account(client) -> None:
 
 
 def test_reopen_account_clears_the_closed_flag_but_keeps_recorded_transfers(client) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "bnp:checking:0001",
-            "name": "BNP Checking",
-            "kind": "checking",
-            "institution": "BNP",
-            "currency": "USD",
-        },
-    )
-    client.post("/api/accounting/accounts/bnp:checking:0001/close", json={"transfers": []})
-    response = client.post("/api/accounting/accounts/bnp:checking:0001/reopen")
+    account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    client.post(f"/api/accounting/accounts/{account['account_id']}/close", json={"transfers": []})
+    response = client.post(f"/api/accounting/accounts/{account['account_id']}/reopen")
     assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["accounts"]["bnp:checking:0001"]["closed"] is False
+    assert client.get("/api/accounting/store").json()["accounts"][account["account_id"]]["closed"] is False
 
 
 def test_net_worth_history_returns_one_point_per_interval(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     response = client.get(
         "/api/accounting/net-worth/history", params={"start": "2026-06-29", "end": "2026-06-30", "interval_days": 1}
     )
@@ -2326,16 +2215,7 @@ def test_net_worth_history_returns_one_point_per_interval(client) -> None:
 
 
 def test_category_totals_buckets_uncategorized_payroll_as_income(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     response = client.get(
         "/api/accounting/income-statement/category-totals", params={"start": "2026-06-01", "end": "2026-06-30"}
     )
@@ -2346,18 +2226,9 @@ def test_category_totals_buckets_uncategorized_payroll_as_income(client) -> None
 
 
 def test_category_totals_excludes_unconfirmed_pending_suggestions(client, monkeypatch) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    account_id = _import_chase_checking(client)
     postings = client.get("/api/accounting/postings").json()
-    payroll = next(p for p in postings if p["account_id"] == "chase:checking:9579" and p["amount"] > 0)
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
     monkeypatch.setattr(
@@ -2414,16 +2285,7 @@ def test_put_simulator_scenarios_persists(client) -> None:
 
 
 def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:
-    client.post(
-        "/api/accounting/accounts",
-        json={
-            "account_id": "sofi:savings:3680",
-            "name": "SoFi Savings",
-            "kind": "savings",
-            "institution": "SoFi",
-            "currency": "USD",
-        },
-    )
+    account = _create_account(client, name="SoFi Savings", kind="savings", institution="SoFi")
     # Seeded directly as a posting, not via `importers.sofi.statement_pdf`'s
     # real PDF/text parser — this test is checking that the interest-summary
     # endpoint correctly aggregates an already-categorized "Interest Earned"
@@ -2432,7 +2294,7 @@ def test_interest_summary_reports_savings_interest_earned(client, db_session) ->
     interest_posting = Posting(
         posting_id="p1",
         transaction_id="t1",
-        account_id="sofi:savings:3680",
+        account_id=account["account_id"],
         posted_at=datetime(2026, 4, 30),
         amount=7.70,
         currency="USD",
@@ -2448,7 +2310,7 @@ def test_interest_summary_reports_savings_interest_earned(client, db_session) ->
     response = client.get("/api/accounting/interest-summary", params={"as_of": "2026-04-30"})
     assert response.status_code == 200
     rows = response.json()
-    savings_row = next(row for row in rows if row["account_id"] == "sofi:savings:3680")
+    savings_row = next(row for row in rows if row["account_id"] == account["account_id"])
     assert savings_row["interest_earned_this_year"] == pytest.approx(7.70)
     # The seeded ledger has only this one posting, so the account's
     # running balance is the interest posting alone.
@@ -2456,16 +2318,7 @@ def test_interest_summary_reports_savings_interest_earned(client, db_session) ->
 
 
 def test_monthly_income_expense_reports_both_sides(client) -> None:
-    client.post(
-        "/api/accounting/import",
-        files={"file": ("Chase9579.csv", CHASE_CHECKING_CSV, "text/csv")},
-        data={
-            "institution": "Chase",
-            "account_kind": "checking",
-            "account_id": "chase:checking:9579",
-            "account_name": "Chase Checking (...9579)",
-        },
-    )
+    _import_chase_checking(client)
     response = client.get(
         "/api/accounting/income-statement/monthly", params={"start": "2026-06-01", "end": "2026-06-30"}
     )

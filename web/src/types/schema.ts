@@ -75,6 +75,100 @@ export interface paths {
      *         one it did (see `store.normalize_categories`).
      */
     put: operations['put_categories_api_accounting_categories_put']
+    /**
+     * Post Category
+     * @description Create a new top-level category, refusing a same-classification, same-name duplicate.
+     *
+     *     Unlike `put_categories` (a whole-tree replace, where a client-computed
+     *     id that happens to collide with an existing one silently overwrites
+     *     it), this only ever adds a category — a name collision is rejected
+     *     outright rather than clobbering the existing entry.
+     *
+     *     Returns
+     *     -------
+     *     Category
+     *         The category just persisted, including its computed `category_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         409 if a top-level category of the same classification already
+     *         has this name (case-insensitive).
+     */
+    post: operations['post_category_api_accounting_categories_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/categories/{parent_id}/subcategories': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Subcategory
+     * @description Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
+     *
+     *     Returns
+     *     -------
+     *     Category
+     *         The subcategory just persisted, including its computed `category_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
+     *         already has this name (case-insensitive).
+     */
+    post: operations['post_subcategory_api_accounting_categories__parent_id__subcategories_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/categories/{category_id}/rename-preview': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Category Rename Preview
+     * @description Report whether renaming `category_id` to `name` would merge it into an existing category.
+     *
+     *     Calls the same pure `plan_category_rename`/`remap_category_ids`
+     *     `post_category_rename` itself uses, but never persists anything — a
+     *     caller can show a confirmation dialog first (including which budgets,
+     *     if any, would be silently discarded — see `budgets_to_delete`), and
+     *     only actually call `POST /categories/{category_id}/rename` once the
+     *     user accepts.
+     *
+     *     Returns
+     *     -------
+     *     CategoryRenamePreviewResponse
+     *         `will_merge` is true if this rename would fold into an existing
+     *         category rather than just changing a name; `target_name` is that
+     *         existing category's name, or `None` when `will_merge` is false;
+     *         `budgets_to_delete` lists every `Budget`/`GeneralBudget` entry the
+     *         merged-away category holds that the merge target already has one
+     *         for, and which would therefore be discarded (see
+     *         `store.remap_category_ids`).
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `category_id` doesn't exist.
+     */
+    get: operations['get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get']
+    put?: never
     post?: never
     delete?: never
     options?: never
@@ -102,7 +196,11 @@ export interface paths {
      *     `store.plan_category_rename` for the exact matching rules: a top-level
      *     category only merges into another top-level category of the same
      *     classification; a subcategory only merges into a sibling under the
-     *     same parent.
+     *     same parent. If the merge target already has a budget for a month the
+     *     merged-away category also budgeted, the merged-away category's budget
+     *     is discarded (see `store.remap_category_ids`) — call
+     *     `GET /categories/{category_id}/rename-preview` first to warn about
+     *     that before committing to the rename.
      *
      *     Returns
      *     -------
@@ -141,7 +239,101 @@ export interface paths {
      *         The tags just persisted, keyed by `tag_id`.
      */
     put: operations['put_tags_api_accounting_tags_put']
+    /**
+     * Post Tag
+     * @description Create a new tag, refusing a same-name (case-insensitive) duplicate.
+     *
+     *     Unlike `put_tags` (a whole-list replace, where a client-computed id
+     *     that happens to collide with an existing one silently overwrites it),
+     *     this only ever adds a tag — a name collision is rejected outright
+     *     rather than clobbering the existing entry.
+     *
+     *     Returns
+     *     -------
+     *     Tag
+     *         The tag just persisted, including its computed `tag_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         409 if a tag with this name (case-insensitive) already exists.
+     */
+    post: operations['post_tag_api_accounting_tags_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/tags/{tag_id}/rename-preview': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Tag Rename Preview
+     * @description Report whether renaming `tag_id` to `name` would merge it into an existing tag.
+     *
+     *     Calls the same pure `plan_tag_rename` `post_tag_rename` itself uses,
+     *     but never persists anything — a caller can show a confirmation dialog
+     *     first, and only actually call `POST /tags/{tag_id}/rename` once the
+     *     user accepts.
+     *
+     *     Returns
+     *     -------
+     *     TagRenamePreviewResponse
+     *         `will_merge` is true if this rename would fold into an existing
+     *         tag rather than just changing a name; `target_name` is that
+     *         existing tag's name, or `None` when `will_merge` is false.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `tag_id` doesn't exist.
+     */
+    get: operations['get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get']
+    put?: never
     post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/tags/{tag_id}/rename': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Tag Rename
+     * @description Rename a tag, merging it into an existing same-named tag if there is one.
+     *
+     *     A merge repoints every reference to the merged-away id — the
+     *     `posting_tags` join table and every posting override's
+     *     `tag_ids_override` array (see `store.remap_tag_ids`) — before the
+     *     merged-away tag itself is deleted, so a foreign key never briefly
+     *     points at a row about to disappear.
+     *
+     *     Returns
+     *     -------
+     *     TagRenameResponse
+     *         `tags` is the full tag map after the change; `merged` is true if
+     *         this rename actually folded into an existing tag rather than just
+     *         changing a name.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `tag_id` doesn't exist.
+     */
+    post: operations['post_tag_rename_api_accounting_tags__tag_id__rename_post']
     delete?: never
     options?: never
     head?: never
@@ -313,17 +505,12 @@ export interface paths {
     put?: never
     /**
      * Post Account
-     * @description Register a new account.
+     * @description Register a new account, generating its id.
      *
      *     Returns
      *     -------
      *     Account
-     *         The account just persisted.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         409 if an account with this id already exists.
+     *         The account just persisted, including its newly-generated `account_id`.
      */
     post: operations['post_account_api_accounting_accounts_post']
     delete?: never
@@ -625,7 +812,15 @@ export interface paths {
     put?: never
     /**
      * Post Import
-     * @description Register the account if it's new, then archive and import the uploaded CSV.
+     * @description Archive and import the uploaded CSV against an already-registered account.
+     *
+     *     `account_name`, `currency`, and `parent_account_id` are no longer used
+     *     to construct anything here — every account this endpoint is called
+     *     with must already exist (see `AccountCreate`/`POST /accounts`), so the
+     *     account's own `parent_account_id` (not this form field) is what's
+     *     threaded into the standardizer. Kept as accepted form fields anyway
+     *     rather than narrowing this endpoint's request contract as part of this
+     *     change.
      *
      *     Returns
      *     -------
@@ -634,7 +829,8 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         400 if no importer exists for this institution/account-kind combination.
+     *         422 if `account_id` doesn't already exist; 400 if no importer exists
+     *         for this institution/account-kind combination.
      */
     post: operations['post_import_api_accounting_import_post']
     delete?: never
@@ -691,7 +887,7 @@ export interface paths {
     put?: never
     /**
      * Post Canonical Import
-     * @description Register the account if it's new, then import the file through the canonical fallback parser.
+     * @description Import the file, against an already-registered account, through the canonical fallback parser.
      *
      *     Used when no dedicated standardizer exists for `institution`/`account_kind`
      *     (see `supported_import_kinds`) — the canonical parser guesses column
@@ -704,6 +900,12 @@ export interface paths {
      *     `CanonicalCategoryOverridesRequest`) renames or merges it — typically
      *     collected via `post_canonical_import_preview` first.
      *
+     *     `institution`, `account_name`, `currency`, and `parent_account_id` are
+     *     accepted but unused — every account this endpoint is called with must
+     *     already exist (see `AccountCreate`/`POST /accounts`). Kept as accepted
+     *     form fields anyway rather than narrowing this endpoint's request
+     *     contract as part of this change.
+     *
      *     Returns
      *     -------
      *     CanonicalImportResult
@@ -712,9 +914,10 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         422 if the file couldn't be parsed — the message explains what
-     *         columns are supported, and (when the column separator couldn't be
-     *         guessed) asks the user to pick one and retry with `separator` set.
+     *         422 if `account_id` doesn't already exist, or if the file couldn't
+     *         be parsed — the message explains what columns are supported, and
+     *         (when the column separator couldn't be guessed) asks the user to
+     *         pick one and retry with `separator` set.
      */
     post: operations['post_canonical_import_api_accounting_import_canonical_post']
     delete?: never
@@ -2913,7 +3116,10 @@ export interface components {
      *     a single transaction. `closed` marks a real-world account that no
      *     longer exists at its institution — its transaction history stays
      *     exactly as imported (never deleted), it just stops being offered as a
-     *     destination for new imports or transfers.
+     *     destination for new imports or transfers. `last_four` is the real
+     *     trailing digits the institution shows for this account, when it shows
+     *     any at all — `None` for vaults, cash, loans, and virtual counterparties,
+     *     which have none.
      */
     Account: {
       /** Account Id */
@@ -2942,6 +3148,8 @@ export interface components {
        * @enum {string}
        */
       currency: 'USD' | 'EUR'
+      /** Last Four */
+      last_four?: string | null
       /** Parent Account Id */
       parent_account_id?: string | null
       /** External Ref */
@@ -2974,6 +3182,46 @@ export interface components {
       manual_transfers: components['schemas']['ManualTransfer'][]
     }
     /**
+     * AccountCreate
+     * @description Request body for `POST /api/accounting/accounts` — everything but the server-generated `account_id`.
+     */
+    AccountCreate: {
+      /** Name */
+      name: string
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind:
+        | 'checking'
+        | 'savings'
+        | 'credit_card'
+        | 'vault'
+        | 'cash'
+        | 'loan'
+        | 'income_source'
+        | 'expense_payee'
+        | 'external_investment'
+        | 'other_asset'
+      /** Institution */
+      institution: string
+      /**
+       * Currency
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+      /** Last Four */
+      last_four?: string | null
+      /** Parent Account Id */
+      parent_account_id?: string | null
+      /** External Ref */
+      external_ref?: string | null
+      /** Meta */
+      meta?: {
+        [key: string]: string
+      }
+    }
+    /**
      * AccountIdResponse
      * @description Response body naming one account, for endpoints whose only real effect is removing something.
      */
@@ -2993,6 +3241,8 @@ export interface components {
      *     `external_ref` is never locked — it only ever changes which value an
      *     `external_investment` account shows (see `dashboard.net_worth`), never
      *     what it has already recorded, so it's free to toggle regardless of postings.
+     *     `last_four` is never locked either, for the same reason: it never
+     *     affects identity or any stored history.
      */
     AccountUpdate: {
       /** Name */
@@ -3019,6 +3269,8 @@ export interface components {
        * @enum {string}
        */
       currency: 'USD' | 'EUR'
+      /** Last Four */
+      last_four?: string | null
       /** External Ref */
       external_ref?: string | null
       /** Meta */
@@ -3330,6 +3582,27 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
+     * BudgetToDeletePreview
+     * @description One `Budget`/`GeneralBudget` entry a category merge would discard rather than keep.
+     *
+     *     The merged-away category's own entry is what's described here — the
+     *     merge target's entry for the same month/category always survives
+     *     unchanged (see `store.remap_category_ids`). `month` is `None` for a
+     *     `GeneralBudget` (applies to every month alike), or `"YYYY-MM"` for a
+     *     per-month `Budget`.
+     */
+    BudgetToDeletePreview: {
+      /** Month */
+      month: string | null
+      /** Amount */
+      amount: number
+      /**
+       * Currency
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+    }
+    /**
      * BulkSuggestResult
      * @description Response body for `POST /postings/pattern-suggest-category/bulk`.
      */
@@ -3492,6 +3765,21 @@ export interface components {
       color: string
     }
     /**
+     * CategoryCreate
+     * @description Request body for `POST /categories` — a new top-level category.
+     */
+    CategoryCreate: {
+      /** Name */
+      name: string
+      /**
+       * Classification
+       * @enum {string}
+       */
+      classification: 'income' | 'expense'
+      /** Color */
+      color: string
+    }
+    /**
      * CategoryPattern
      * @description A user-maintained description-match pattern that *suggests* a category — never applies one silently.
      *
@@ -3525,6 +3813,21 @@ export interface components {
        * @default true
        */
       active: boolean
+    }
+    /**
+     * CategoryRenamePreviewResponse
+     * @description Response body for `GET /categories/{category_id}/rename-preview`.
+     */
+    CategoryRenamePreviewResponse: {
+      /** Will Merge */
+      will_merge: boolean
+      /** Target Name */
+      target_name: string | null
+      /**
+       * Budgets To Delete
+       * @default []
+       */
+      budgets_to_delete: components['schemas']['BudgetToDeletePreview'][]
     }
     /**
      * CategoryRenameRequest
@@ -3717,7 +4020,7 @@ export interface components {
     }
     /**
      * DetectedAccount
-     * @description A best-guess bank, account kind, and stable account id for one uploaded CSV — see `importers.detect`.
+     * @description A best-guess bank and account kind for one uploaded CSV — see `importers.detect`.
      */
     DetectedAccount: {
       /** Institution */
@@ -3737,12 +4040,6 @@ export interface components {
         | 'expense_payee'
         | 'external_investment'
         | 'other_asset'
-      /** Account Id */
-      account_id: string
-      /** Account Name */
-      account_name: string
-      /** Parent Account Id */
-      parent_account_id?: string | null
     }
     /**
      * DismissSuggestionRequest
@@ -3860,8 +4157,7 @@ export interface components {
      *
      *     `account_last4` is the bank account digits the paystub itself prints
      *     next to a deposit line, when it prints one at all — used to match
-     *     against a real `Account.account_id`'s own trailing digits (see the
-     *     `{institution}:{kind}:{last4}` convention) during reconciliation.
+     *     against a real `Account.last_four` during reconciliation.
      */
     EarningsDeposit: {
       /** Label */
@@ -3958,7 +4254,7 @@ export interface components {
      * Goal
      * @description A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
      *
-     *     See `dashboard.goals.goal_balance`: the balance at any point in time
+     *     See `dashboard.goals.all_goal_balances`: the balance at any point in time
      *     is always the running sum of contributions up to that date, computed
      *     fresh, the same way an account's balance is never a cached figure
      *     (see `Budget`'s own docstring for the same reasoning applied to
@@ -5065,6 +5361,16 @@ export interface components {
       average_previous_months_cumulative: number
     }
     /**
+     * SubcategoryCreate
+     * @description Request body for `POST /categories/{parent_id}/subcategories` — a new subcategory.
+     */
+    SubcategoryCreate: {
+      /** Name */
+      name: string
+      /** Color */
+      color: string
+    }
+    /**
      * SuggestedBudgetAmount
      * @description Response body for `GET /budgets/suggested-amount`.
      */
@@ -5202,6 +5508,44 @@ export interface components {
       tag_id: string
       /** Name */
       name: string
+    }
+    /**
+     * TagCreate
+     * @description Request body for `POST /tags` — a new tag.
+     */
+    TagCreate: {
+      /** Name */
+      name: string
+    }
+    /**
+     * TagRenamePreviewResponse
+     * @description Response body for `GET /tags/{tag_id}/rename-preview`.
+     */
+    TagRenamePreviewResponse: {
+      /** Will Merge */
+      will_merge: boolean
+      /** Target Name */
+      target_name: string | null
+    }
+    /**
+     * TagRenameRequest
+     * @description Request body for `POST /tags/{tag_id}/rename`.
+     */
+    TagRenameRequest: {
+      /** Name */
+      name: string
+    }
+    /**
+     * TagRenameResponse
+     * @description Response body for `POST /tags/{tag_id}/rename`.
+     */
+    TagRenameResponse: {
+      /** Tags */
+      tags: {
+        [key: string]: components['schemas']['Tag']
+      }
+      /** Merged */
+      merged: boolean
     }
     /**
      * TaxOwedRow
@@ -5634,6 +5978,107 @@ export interface operations {
       }
     }
   }
+  post_category_api_accounting_categories_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CategoryCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Category']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_subcategory_api_accounting_categories__parent_id__subcategories_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        parent_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SubcategoryCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Category']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get: {
+    parameters: {
+      query: {
+        name: string
+      }
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryRenamePreviewResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   post_category_rename_api_accounting_categories__category_id__rename_post: {
     parameters: {
       query?: never
@@ -5693,6 +6138,107 @@ export interface operations {
           'application/json': {
             [key: string]: components['schemas']['Tag']
           }
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_tag_api_accounting_tags_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TagCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Tag']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get: {
+    parameters: {
+      query: {
+        name: string
+      }
+      header?: never
+      path: {
+        tag_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TagRenamePreviewResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_tag_rename_api_accounting_tags__tag_id__rename_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        tag_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TagRenameRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TagRenameResponse']
         }
       }
       /** @description Validation Error */
@@ -5921,7 +6467,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['Account']
+        'application/json': components['schemas']['AccountCreate']
       }
     }
     responses: {

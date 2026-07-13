@@ -11,11 +11,20 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import (
     AccountCloseRequest,
     AccountCloseResponse,
+    AccountCreate,
     AccountIdResponse,
     AccountingStoreResponse,
     AccountUpdate,
+    BudgetToDeletePreview,
+    CategoryCreate,
+    CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
+    SubcategoryCreate,
+    TagCreate,
+    TagRenamePreviewResponse,
+    TagRenameRequest,
+    TagRenameResponse,
 )
 from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
 from accounting.importers.ingest import remap_ledger_category_ids
@@ -38,9 +47,12 @@ from accounting.store import (
     load_store,
     normalize_categories,
     plan_category_rename,
+    plan_tag_rename,
     remap_category_ids,
+    remap_tag_ids,
     save_overrides,
     save_store,
+    slugify,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -94,6 +106,108 @@ def get_currencies() -> list[Currency]:
     return list(SUPPORTED_CURRENCIES.values())
 
 
+@router.post("/categories")
+def post_category(
+    request: CategoryCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Category:
+    """Create a new top-level category, refusing a same-classification, same-name duplicate.
+
+    Unlike `put_categories` (a whole-tree replace, where a client-computed
+    id that happens to collide with an existing one silently overwrites
+    it), this only ever adds a category — a name collision is rejected
+    outright rather than clobbering the existing entry.
+
+    Returns
+    -------
+    Category
+        The category just persisted, including its computed `category_id`.
+
+    Raises
+    ------
+    HTTPException
+        409 if a top-level category of the same classification already
+        has this name (case-insensitive).
+    """
+    store = load_store(session, user_id)
+    normalized_name = request.name.strip().lower()
+    collision = any(
+        category.parent_category_id is None
+        and category.classification == request.classification
+        and category.name.strip().lower() == normalized_name
+        for category in store.categories.values()
+    )
+    if collision:
+        raise HTTPException(
+            status_code=409, detail=f"A {request.classification} category named {request.name!r} already exists"
+        )
+
+    category_id = f"{request.classification}:{slugify(request.name)}"
+    new_category = Category(
+        category_id=category_id,
+        name=request.name,
+        classification=request.classification,
+        parent_category_id=None,
+        color=request.color,
+    )
+    store = store.model_copy(
+        update={"categories": normalize_categories({**store.categories, category_id: new_category})}
+    )
+    save_store(store, session, user_id)
+    return new_category
+
+
+@router.post("/categories/{parent_id}/subcategories")
+def post_subcategory(
+    parent_id: str,
+    request: SubcategoryCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Category:
+    """Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
+
+    Returns
+    -------
+    Category
+        The subcategory just persisted, including its computed `category_id`.
+
+    Raises
+    ------
+    HTTPException
+        404 if `parent_id` doesn't exist; 409 if a sibling subcategory
+        already has this name (case-insensitive).
+    """
+    store = load_store(session, user_id)
+    parent = store.categories.get(parent_id)
+    if parent is None:
+        raise HTTPException(status_code=404, detail=f"Category {parent_id!r} not found")
+
+    normalized_name = request.name.strip().lower()
+    collision = any(
+        category.parent_category_id == parent_id and category.name.strip().lower() == normalized_name
+        for category in store.categories.values()
+    )
+    if collision:
+        raise HTTPException(
+            status_code=409, detail=f"A subcategory named {request.name!r} already exists under {parent.name!r}"
+        )
+
+    category_id = f"{parent_id}:{slugify(request.name)}"
+    new_category = Category(
+        category_id=category_id,
+        name=request.name,
+        classification=parent.classification,
+        parent_category_id=parent_id,
+        color=request.color,
+    )
+    store = store.model_copy(
+        update={"categories": normalize_categories({**store.categories, category_id: new_category})}
+    )
+    save_store(store, session, user_id)
+    return new_category
+
+
 @router.put("/categories")
 def put_categories(
     categories: dict[str, Category],
@@ -115,6 +229,66 @@ def put_categories(
     return store.categories
 
 
+@router.get("/categories/{category_id}/rename-preview")
+def get_category_rename_preview(
+    category_id: str,
+    name: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryRenamePreviewResponse:
+    """Report whether renaming `category_id` to `name` would merge it into an existing category.
+
+    Calls the same pure `plan_category_rename`/`remap_category_ids`
+    `post_category_rename` itself uses, but never persists anything — a
+    caller can show a confirmation dialog first (including which budgets,
+    if any, would be silently discarded — see `budgets_to_delete`), and
+    only actually call `POST /categories/{category_id}/rename` once the
+    user accepts.
+
+    Returns
+    -------
+    CategoryRenamePreviewResponse
+        `will_merge` is true if this rename would fold into an existing
+        category rather than just changing a name; `target_name` is that
+        existing category's name, or `None` when `will_merge` is false;
+        `budgets_to_delete` lists every `Budget`/`GeneralBudget` entry the
+        merged-away category holds that the merge target already has one
+        for, and which would therefore be discarded (see
+        `store.remap_category_ids`).
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    store = load_store(session, user_id)
+    if category_id not in store.categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    categories, id_remap = plan_category_rename(store.categories, category_id, name)
+    target_id = id_remap.get(category_id)
+    target_name = store.categories[target_id].name if target_id is not None else None
+
+    updated = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
+    dropped_budget_ids = {budget.budget_id for budget in store.budgets} - {
+        budget.budget_id for budget in updated.budgets
+    }
+    dropped_general_keys = set(store.general_budgets) - set(updated.general_budgets)
+    budgets_to_delete = [
+        BudgetToDeletePreview(month=budget.month, amount=budget.amount, currency=budget.currency)
+        for budget in store.budgets
+        if budget.budget_id in dropped_budget_ids
+    ] + [
+        BudgetToDeletePreview(
+            month=None, amount=store.general_budgets[key].amount, currency=store.general_budgets[key].currency
+        )
+        for key in dropped_general_keys
+    ]
+    return CategoryRenamePreviewResponse(
+        will_merge=target_id is not None, target_name=target_name, budgets_to_delete=budgets_to_delete
+    )
+
+
 @router.post("/categories/{category_id}/rename")
 def post_category_rename(
     category_id: str,
@@ -131,7 +305,11 @@ def post_category_rename(
     `store.plan_category_rename` for the exact matching rules: a top-level
     category only merges into another top-level category of the same
     classification; a subcategory only merges into a sibling under the
-    same parent.
+    same parent. If the merge target already has a budget for a month the
+    merged-away category also budgeted, the merged-away category's budget
+    is discarded (see `store.remap_category_ids`) — call
+    `GET /categories/{category_id}/rename-preview` first to warn about
+    that before committing to the rename.
 
     Returns
     -------
@@ -150,10 +328,7 @@ def post_category_rename(
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
     categories, id_remap = plan_category_rename(store.categories, category_id, request.name)
-    try:
-        store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+    store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
 
     # Every reference to a merged-away category must be repointed *before* `save_store`
     # deletes that category row below — postings and manual overrides both foreign-key
@@ -201,6 +376,121 @@ def put_tags(
     store = store.model_copy(update={"tags": tags})
     save_store(store, session, user_id)
     return store.tags
+
+
+@router.post("/tags")
+def post_tag(
+    request: TagCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Tag:
+    """Create a new tag, refusing a same-name (case-insensitive) duplicate.
+
+    Unlike `put_tags` (a whole-list replace, where a client-computed id
+    that happens to collide with an existing one silently overwrites it),
+    this only ever adds a tag — a name collision is rejected outright
+    rather than clobbering the existing entry.
+
+    Returns
+    -------
+    Tag
+        The tag just persisted, including its computed `tag_id`.
+
+    Raises
+    ------
+    HTTPException
+        409 if a tag with this name (case-insensitive) already exists.
+    """
+    store = load_store(session, user_id)
+    normalized_name = request.name.strip().lower()
+    collision = any(tag.name.strip().lower() == normalized_name for tag in store.tags.values())
+    if collision:
+        raise HTTPException(status_code=409, detail=f"A tag named {request.name!r} already exists")
+
+    tag_id = f"tag:{slugify(request.name)}"
+    new_tag = Tag(tag_id=tag_id, name=request.name)
+    store = store.model_copy(update={"tags": {**store.tags, tag_id: new_tag}})
+    save_store(store, session, user_id)
+    return new_tag
+
+
+@router.get("/tags/{tag_id}/rename-preview")
+def get_tag_rename_preview(
+    tag_id: str,
+    name: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TagRenamePreviewResponse:
+    """Report whether renaming `tag_id` to `name` would merge it into an existing tag.
+
+    Calls the same pure `plan_tag_rename` `post_tag_rename` itself uses,
+    but never persists anything — a caller can show a confirmation dialog
+    first, and only actually call `POST /tags/{tag_id}/rename` once the
+    user accepts.
+
+    Returns
+    -------
+    TagRenamePreviewResponse
+        `will_merge` is true if this rename would fold into an existing
+        tag rather than just changing a name; `target_name` is that
+        existing tag's name, or `None` when `will_merge` is false.
+
+    Raises
+    ------
+    HTTPException
+        404 if `tag_id` doesn't exist.
+    """
+    store = load_store(session, user_id)
+    if tag_id not in store.tags:
+        raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
+
+    _tags, id_remap = plan_tag_rename(store.tags, tag_id, name)
+    target_id = id_remap.get(tag_id)
+    target_name = store.tags[target_id].name if target_id is not None else None
+    return TagRenamePreviewResponse(will_merge=target_id is not None, target_name=target_name)
+
+
+@router.post("/tags/{tag_id}/rename")
+def post_tag_rename(
+    tag_id: str,
+    request: TagRenameRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TagRenameResponse:
+    """Rename a tag, merging it into an existing same-named tag if there is one.
+
+    A merge repoints every reference to the merged-away id — the
+    `posting_tags` join table and every posting override's
+    `tag_ids_override` array (see `store.remap_tag_ids`) — before the
+    merged-away tag itself is deleted, so a foreign key never briefly
+    points at a row about to disappear.
+
+    Returns
+    -------
+    TagRenameResponse
+        `tags` is the full tag map after the change; `merged` is true if
+        this rename actually folded into an existing tag rather than just
+        changing a name.
+
+    Raises
+    ------
+    HTTPException
+        404 if `tag_id` doesn't exist.
+    """
+    store = load_store(session, user_id)
+    if tag_id not in store.tags:
+        raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
+
+    tags, id_remap = plan_tag_rename(store.tags, tag_id, request.name)
+    store = store.model_copy(update={"tags": tags})
+
+    # Every reference to a merged-away tag must be repointed *before* `save_store`
+    # deletes that tag row below — `posting_tags` foreign-keys into `tags`, so the
+    # delete would otherwise fail with a constraint violation.
+    remap_tag_ids(id_remap, session, user_id)
+    save_store(store, session, user_id)
+
+    return TagRenameResponse(tags=store.tags, merged=bool(id_remap))
 
 
 @router.put("/transfer-rules")
@@ -323,28 +613,32 @@ def put_simulator_scenarios(
 
 @router.post("/accounts")
 def post_account(
-    account: Account,
+    account: AccountCreate,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Account:
-    """Register a new account.
+    """Register a new account, generating its id.
 
     Returns
     -------
     Account
-        The account just persisted.
-
-    Raises
-    ------
-    HTTPException
-        409 if an account with this id already exists.
+        The account just persisted, including its newly-generated `account_id`.
     """
     store = load_store(session, user_id)
-    if account.account_id in store.accounts:
-        raise HTTPException(status_code=409, detail=f"Account {account.account_id!r} already exists")
-    store = store.model_copy(update={"accounts": {**store.accounts, account.account_id: account}})
+    new_account = Account(
+        account_id=uuid.uuid4().hex,
+        name=account.name,
+        kind=account.kind,
+        institution=account.institution,
+        currency=account.currency,
+        last_four=account.last_four,
+        parent_account_id=account.parent_account_id,
+        external_ref=account.external_ref,
+        meta=account.meta,
+    )
+    store = store.model_copy(update={"accounts": {**store.accounts, new_account.account_id: new_account}})
     save_store(store, session, user_id)
-    return account
+    return new_account
 
 
 @router.put("/accounts/{account_id}")
@@ -389,6 +683,7 @@ def put_account(
             "institution": update.institution,
             "kind": update.kind,
             "currency": update.currency,
+            "last_four": update.last_four,
             "external_ref": update.external_ref,
             "meta": update.meta,
         }

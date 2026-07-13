@@ -341,6 +341,16 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
     ledger cache and manual per-posting overrides live outside
     `AccountingStore` entirely and must be remapped separately.
 
+    If the merge target already has a budget (or general budget) for the
+    same month/category/subcategory the merged-away category also had one
+    for, the merged-away category's entry is dropped rather than kept —
+    the survivor's own existing entry always wins, since there's no
+    principled way to combine two different budgeted amounts. A caller
+    that wants to warn about this before committing to the merge should
+    call this same function itself and diff `store.budgets`/
+    `general_budgets` against the result (see
+    `api.routers.store.get_category_rename_preview`).
+
     Parameters
     ----------
     store
@@ -353,13 +363,8 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
     -------
     AccountingStore
         The same store, with every `category_id`/`subcategory_id` field
-        referencing a merged-away id repointed to its replacement.
-
-    Raises
-    ------
-    ValueError
-        If the merge would collide two budgets (or two general budgets)
-        onto the same category/subcategory/month, so neither is silently dropped.
+        referencing a merged-away id repointed to its replacement, and
+        any now-colliding budget entry dropped in favor of the survivor's.
     """
     if not id_remap:
         return store
@@ -373,6 +378,15 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         """
         return id_remap.get(category_id, category_id) if category_id is not None else None
 
+    def was_remapped(category_id: str | None, subcategory_id: str | None) -> bool:
+        """Whether either id belonged to a category this merge is moving away from.
+
+        Returns
+        -------
+        bool
+        """
+        return category_id in id_remap or subcategory_id in id_remap
+
     rules = [
         rule.model_copy(update={"category_id": remap(rule.category_id), "subcategory_id": remap(rule.subcategory_id)})
         for rule in store.rules
@@ -384,34 +398,25 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         for pattern_id, pattern in store.category_patterns.items()
     }
     budgets_by_key: dict[tuple[str, str, str | None], Budget] = {}
-    for budget in store.budgets:
+    # Sorted so a budget the merge doesn't touch (including the survivor's own)
+    # claims its key first — a colliding merged-away budget is then skipped
+    # instead of overwriting it.
+    for budget in sorted(store.budgets, key=lambda b: was_remapped(b.category_id, b.subcategory_id)):
         updated_budget = budget.model_copy(
             update={"category_id": remap(budget.category_id), "subcategory_id": remap(budget.subcategory_id)}
         )
         budget_key = updated_budget.month, updated_budget.category_id, updated_budget.subcategory_id
-        collision = budgets_by_key.get(budget_key)
-        if collision is not None:
-            message = (
-                f"Merging categories would collide two budgets for {budget_key[0]}: "
-                f"{collision.amount} ({collision.budget_id}) and {updated_budget.amount} ({updated_budget.budget_id}). "
-                "Delete or reconcile one of them before merging."
-            )
-            raise ValueError(message)
+        if budget_key in budgets_by_key:
+            continue
         budgets_by_key[budget_key] = updated_budget
     general_budgets: dict[str, GeneralBudget] = {}
-    for general_key, general in store.general_budgets.items():
+    for general_key, general in sorted(store.general_budgets.items(), key=lambda item: item[0] in id_remap):
         updated_general = general.model_copy(
             update={"category_id": remap(general.category_id), "subcategory_id": remap(general.subcategory_id)}
         )
         new_key = id_remap.get(general_key, general_key)
-        general_collision = general_budgets.get(new_key)
-        if general_collision is not None:
-            message = (
-                f"Merging categories would collide two general budgets: "
-                f"{general_collision.amount} and {updated_general.amount}. "
-                "Delete or reconcile one of them before merging."
-            )
-            raise ValueError(message)
+        if new_key in general_budgets:
+            continue
         general_budgets[new_key] = updated_general
     posting_splits = {
         posting_id: split.model_copy(
@@ -435,6 +440,110 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
             "posting_splits": posting_splits,
         }
     )
+
+
+def plan_tag_rename(tags: dict[str, Tag], tag_id: str, new_name: str) -> tuple[dict[str, Tag], dict[str, str]]:
+    """Rename a tag, merging it into an existing same-named tag if there is one.
+
+    Mirrors `plan_category_rename`'s no-parent/no-classification case: a
+    `Tag` has neither, so the merge match is pure case-insensitive name
+    equality against every *other* tag — no classification or parent to
+    additionally scope it by.
+
+    Parameters
+    ----------
+    tags
+        Every tag, keyed by `tag_id`.
+    tag_id
+        The tag being renamed.
+    new_name
+        Its new display name.
+
+    Returns
+    -------
+    tuple[dict[str, Tag], dict[str, str]]
+        The updated tag map, with the merged-away id removed (or just the
+        one renamed tag, if nothing merged); and an `old_id -> new_id` map
+        for a caller to repoint every reference elsewhere (see
+        `remap_tag_ids`) — empty when this rename didn't merge into
+        anything.
+    """
+    tag = tags[tag_id]
+    normalized_name = new_name.strip().lower()
+    target = next(
+        (
+            candidate
+            for candidate in tags.values()
+            if candidate.tag_id != tag_id and candidate.name.strip().lower() == normalized_name
+        ),
+        None,
+    )
+    if target is None:
+        renamed = dict(tags)
+        renamed[tag_id] = tag.model_copy(update={"name": new_name})
+        return renamed, {}
+
+    result = dict(tags)
+    del result[tag_id]
+    return result, {tag_id: target.tag_id}
+
+
+def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID) -> None:
+    """Repoint every tag reference that lives outside `AccountingStore` after a merge.
+
+    Doesn't touch `store.tags` itself (the caller already applied
+    `plan_tag_rename`'s own result there, the same division of labor as
+    `remap_category_ids`/`store.categories`) — this only fixes the two
+    other places a tag id is stored, neither of which `AccountingStore`
+    holds: the `posting_tags` join table (a real FK to `tags.id`) and each
+    posting override's `tag_ids_override` (a raw array of tag natural
+    keys, not FK-linked). That's also why this — unlike the pure
+    `remap_category_ids` — needs a `session`/`user_id` of its own.
+
+    A posting already tagged with both the merged-away and target tag
+    would violate `posting_tags`' own `(user_id, posting_id, tag_id)`
+    uniqueness on a plain update, so that row is deleted instead of
+    retargeted, rather than left to raise.
+
+    Parameters
+    ----------
+    id_remap
+        `old_id -> new_id`, as returned by `plan_tag_rename` — a no-op
+        when empty.
+    session
+        An open database session.
+    user_id
+        Whose tags these are.
+    """
+    if not id_remap:
+        return
+
+    for old_tag_id, new_tag_id in id_remap.items():
+        old_id = _tag_id(user_id, old_tag_id)
+        new_id = _tag_id(user_id, new_tag_id)
+        already_tagged_postings = {
+            row.posting_id for row in session.query(adb.PostingTag.posting_id).filter_by(user_id=user_id, tag_id=new_id)
+        }
+        session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).filter(
+            adb.PostingTag.posting_id.in_(already_tagged_postings)
+        ).delete(synchronize_session=False)
+        session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).update(
+            {"tag_id": new_id}, synchronize_session=False
+        )
+    session.flush()
+
+    overrides = load_overrides(session, user_id)
+    overrides = {
+        posting_id: override.model_copy(
+            update={
+                "tag_ids": list(dict.fromkeys(id_remap.get(tag_id, tag_id) for tag_id in override.tag_ids))
+                if override.tag_ids is not None
+                else None
+            }
+        )
+        for posting_id, override in overrides.items()
+    }
+    save_overrides(overrides, session, user_id)
 
 
 def default_categories() -> dict[str, Category]:
@@ -599,6 +708,7 @@ def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUI
         kind=row.kind,  # type: ignore[arg-type]
         institution=row.institution,
         currency=row.currency,  # type: ignore[arg-type]
+        last_four=row.last_four,
         parent_account_id=account_natural_key_by_id.get(row.parent_account_id)
         if row.parent_account_id is not None
         else None,
@@ -1050,6 +1160,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
                 kind=account.kind,
                 institution=account.institution,
                 currency=account.currency,
+                last_four=account.last_four,
                 parent_account_id=None,
                 external_ref=account.external_ref,
                 meta=account.meta,
@@ -1073,6 +1184,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
                 kind=account.kind,
                 institution=account.institution,
                 currency=account.currency,
+                last_four=account.last_four,
                 parent_account_id=_account_id(user_id, account.parent_account_id)
                 if account.parent_account_id is not None
                 else None,
