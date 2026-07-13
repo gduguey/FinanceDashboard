@@ -3,7 +3,7 @@ from datetime import date, datetime
 import polars as pl
 import pytest
 
-from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, goal_balance, unallocated_balance
+from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.currency import DisplayCurrency
 from accounting.models import Account, GoalContribution, Posting
 
@@ -62,31 +62,41 @@ def _contribution(
     )
 
 
-def test_goal_balance_sums_contributions_up_to_and_including_the_date() -> None:
+def test_all_goal_balances_sums_contributions_up_to_and_including_the_date() -> None:
     contributions = contributions_to_frame({
         "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01"),
         "c2": _contribution("c2", "emergency-fund", 300.0, "2026-06-15"),
         "c3": _contribution("c3", "emergency-fund", 200.0, "2026-06-25"),
     })
-    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 15)) == pytest.approx(800.0)
-    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30)) == pytest.approx(1000.0)
-    assert goal_balance(contributions, "emergency-fund", date(2026, 5, 31)) == pytest.approx(0.0)
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 6, 15)) == {
+        "emergency-fund": pytest.approx(800.0)
+    }
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 6, 30)) == {
+        "emergency-fund": pytest.approx(1000.0)
+    }
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 5, 31)) == {
+        "emergency-fund": pytest.approx(0.0)
+    }
 
 
-def test_goal_balance_reflects_a_withdrawal_as_a_negative_contribution() -> None:
+def test_all_goal_balances_reflects_a_withdrawal_as_a_negative_contribution() -> None:
     contributions = contributions_to_frame({
         "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01"),
         "c2": _contribution("c2", "emergency-fund", -100.0, "2026-06-10"),
     })
-    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30)) == pytest.approx(400.0)
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 6, 30)) == {
+        "emergency-fund": pytest.approx(400.0)
+    }
 
 
-def test_goal_balance_ignores_other_goals_contributions() -> None:
+def test_all_goal_balances_ignores_other_goals_contributions() -> None:
     contributions = contributions_to_frame({
         "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01"),
         "c2": _contribution("c2", "vacation", 1000.0, "2026-06-01"),
     })
-    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30)) == pytest.approx(500.0)
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 6, 30)) == {
+        "emergency-fund": pytest.approx(500.0)
+    }
 
 
 def test_all_goal_balances_defaults_a_goal_with_no_contributions_to_zero() -> None:
@@ -125,19 +135,21 @@ def test_unallocated_balance_with_no_contributions_yet_equals_net_income() -> No
 _EUR_DISPLAY = DisplayCurrency(code="EUR", rates_to_base={"USD": 1.0, "EUR": 2.0})
 
 
-def test_goal_balance_converts_contributions_into_the_display_currency() -> None:
+def test_all_goal_balances_converts_contributions_into_the_display_currency() -> None:
     contributions = contributions_to_frame({
         "c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01", currency="USD"),
     })
     # 1 EUR = 2 USD, so 500 USD converts to 250 EUR.
-    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30), display=_EUR_DISPLAY) == pytest.approx(
-        250.0
-    )
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 6, 30), display=_EUR_DISPLAY) == {
+        "emergency-fund": pytest.approx(250.0)
+    }
 
 
-def test_goal_balance_defaults_to_usd_when_no_display_currency_given() -> None:
+def test_all_goal_balances_defaults_to_usd_when_no_display_currency_given() -> None:
     contributions = contributions_to_frame({"c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01")})
-    assert goal_balance(contributions, "emergency-fund", date(2026, 6, 30)) == pytest.approx(500.0)
+    assert all_goal_balances(contributions, ["emergency-fund"], date(2026, 6, 30)) == {
+        "emergency-fund": pytest.approx(500.0)
+    }
 
 
 def test_all_goal_balances_converts_every_goal_into_the_display_currency() -> None:
@@ -147,11 +159,6 @@ def test_all_goal_balances_converts_every_goal_into_the_display_currency() -> No
     })
     balances = all_goal_balances(contributions, ["emergency-fund", "vacation"], date(2026, 6, 30), display=_EUR_DISPLAY)
     assert balances == {"emergency-fund": pytest.approx(250.0), "vacation": pytest.approx(100.0)}
-
-
-def test_goal_balance_accepts_a_lazyframe() -> None:
-    contributions = contributions_to_frame({"c1": _contribution("c1", "emergency-fund", 500.0, "2026-06-01")})
-    assert goal_balance(contributions.lazy(), "emergency-fund", date(2026, 6, 30)) == pytest.approx(500.0)
 
 
 def test_all_goal_balances_accepts_a_lazyframe() -> None:

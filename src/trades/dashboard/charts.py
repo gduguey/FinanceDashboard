@@ -28,10 +28,10 @@ def reallocation_markers(ledger: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     """Find dates where a sell funded a same-day buy of a different symbol.
 
     The ledger has no explicit "this sell and that buy were one
-    reallocation decision" link (see `counterfactuals.decision_counterfactual_value`,
-    which instead takes explicit event IDs from the caller); for chart
-    markers, a same-day `SELL` + `BUY` is a reasonable heuristic for "this
-    was a reallocation, not independent trades."
+    reallocation decision" link — an id-based approach would need the
+    caller to supply explicit event IDs; for chart markers, a same-day
+    `SELL` + `BUY` is a reasonable heuristic for "this was a
+    reallocation, not independent trades."
 
     Parameters
     ----------
