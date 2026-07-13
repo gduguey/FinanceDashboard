@@ -17,6 +17,8 @@ from accounting.api.api_models import (
     AccountUpdate,
     BudgetToDeletePreview,
     CategoryCreate,
+    CategoryDeletePreviewResponse,
+    CategoryDeleteResponse,
     CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
@@ -27,7 +29,7 @@ from accounting.api.api_models import (
     TagRenameResponse,
 )
 from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
-from accounting.importers.ingest import remap_ledger_category_ids
+from accounting.importers.ingest import load_ledger, remap_ledger_category_ids, uncategorize_ledger_postings
 from accounting.models import (
     SUPPORTED_CURRENCIES,
     Account,
@@ -43,6 +45,8 @@ from accounting.models import (
     TransferRule,
 )
 from accounting.store import (
+    category_ids_to_delete,
+    get_store_version,
     load_overrides,
     load_store,
     normalize_categories,
@@ -53,6 +57,7 @@ from accounting.store import (
     save_overrides,
     save_store,
     slugify,
+    uncategorize_category_ids,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -70,7 +75,12 @@ def get_store(
     -------
     AccountingStoreResponse
         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
-        keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a list).
+        keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
+        list). `version` is this user's current save counter (see
+        `store.get_store_version`) — a client should remember it and send
+        it back as the `X-Expected-Store-Version` header on its next
+        mutating request, so `save_store` can detect if something else
+        changed this data in the meantime.
     """
     _postings, store = _resolved_postings_and_store(state.config, session, user_id)
     return AccountingStoreResponse(
@@ -91,6 +101,7 @@ def get_store(
         goal_contributions=store.goal_contributions,
         recurring_additions=store.recurring_additions,
         withdrawal_priorities=store.withdrawal_priorities,
+        version=get_store_version(session, user_id),
     )
 
 
@@ -227,6 +238,110 @@ def put_categories(
     store = store.model_copy(update={"categories": normalize_categories(categories)})
     save_store(store, session, user_id)
     return store.categories
+
+
+def _posting_count_for_categories(category_ids: set[str], session: Session, user_id: uuid.UUID) -> int:
+    """How many raw ledger postings currently carry any of `category_ids` as their category or subcategory.
+
+    Returns
+    -------
+    int
+    """
+    ledger = load_ledger(session, user_id)
+    if ledger.is_empty():
+        return 0
+    matches = ledger.filter(ledger["category_id"].is_in(category_ids) | ledger["subcategory_id"].is_in(category_ids))
+    return matches.height
+
+
+@router.get("/categories/{category_id}/delete-preview")
+def get_category_delete_preview(
+    category_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryDeletePreviewResponse:
+    """Report how many postings deleting `category_id` would uncategorize, before actually deleting it.
+
+    A caller can show a confirmation dialog with this count first, and
+    only actually call `DELETE /categories/{category_id}` once the user
+    accepts.
+
+    Returns
+    -------
+    CategoryDeletePreviewResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    store = load_store(session, user_id)
+    if category_id not in store.categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    ids_to_delete = category_ids_to_delete(store.categories, category_id)
+    return CategoryDeletePreviewResponse(posting_count=_posting_count_for_categories(ids_to_delete, session, user_id))
+
+
+@router.delete("/categories/{category_id}")
+def delete_category(
+    category_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryDeleteResponse:
+    """Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
+
+    Every posting currently carrying `category_id` (or one of its
+    subcategories) as its own `category_id`/`subcategory_id` has that
+    field cleared rather than left dangling — the same "uncategorized"
+    state a posting that was never categorized at all is already in.
+    Anything else referencing the deleted id(s) is cleared where the
+    field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
+    entirely where it isn't (`Budget`, `GeneralBudget`, `CategoryPattern`
+    all require a `category_id`) — see `store.uncategorize_category_ids`.
+
+    Returns
+    -------
+    CategoryDeleteResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    store = load_store(session, user_id)
+    if category_id not in store.categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    ids_to_delete = category_ids_to_delete(store.categories, category_id)
+    posting_count = _posting_count_for_categories(ids_to_delete, session, user_id)
+
+    remaining_categories = {
+        existing_id: category for existing_id, category in store.categories.items() if existing_id not in ids_to_delete
+    }
+    store = uncategorize_category_ids(store, ids_to_delete)
+    store = store.model_copy(update={"categories": normalize_categories(remaining_categories)})
+
+    # Every reference to a deleted category must be cleared *before* `save_store`
+    # deletes that category row below — postings and manual overrides both
+    # foreign-key into `categories`, so the delete would otherwise fail with a
+    # constraint violation (same ordering `post_category_rename` needs).
+    uncategorize_ledger_postings(ids_to_delete, session, user_id)
+
+    def clear(field_id: str | None) -> str | None:
+        return None if field_id in ids_to_delete else field_id
+
+    overrides = load_overrides(session, user_id)
+    overrides = {
+        posting_id: override.model_copy(
+            update={"category_id": clear(override.category_id), "subcategory_id": clear(override.subcategory_id)}
+        )
+        for posting_id, override in overrides.items()
+    }
+    save_overrides(overrides, session, user_id)
+
+    save_store(store, session, user_id)
+    return CategoryDeleteResponse(categories=store.categories, uncategorized_posting_count=posting_count)
 
 
 @router.get("/categories/{category_id}/rename-preview")

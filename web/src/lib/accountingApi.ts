@@ -54,13 +54,40 @@ import type {
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
+// A change made elsewhere (another tab, another device, or just an
+// earlier request from this same tab) since the last `GET /store` this
+// module saw — see App.tsx's mutationCache for how this is surfaced.
+export class StoreVersionConflictError extends ApiError {}
+
+// The most recent `version` this module has seen out of any accounting
+// response — updated below on every response that carries one (in
+// practice only `GET /store`, including the refetch most mutations
+// trigger via query invalidation), and sent back on every non-GET
+// request so the backend can tell whether anything changed in between.
+// Module-level rather than threaded through every one of ~30 mutation
+// call sites individually, mirroring how the backend reads it off
+// `session.info` in one place (`accounting.store.save_store`) instead of
+// threading it through its own ~30 call sites.
+let lastKnownStoreVersion: number | null = null
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const method = init?.method ?? 'GET'
+  const headers = new Headers(init?.headers)
+  if (method !== 'GET' && lastKnownStoreVersion !== null) {
+    headers.set('X-Expected-Store-Version', String(lastKnownStoreVersion))
+  }
+  const response = await fetch(path, { ...init, headers })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new ApiError(body?.detail ?? `${response.status} ${response.statusText}`)
+    const message = body?.detail ?? `${response.status} ${response.statusText}`
+    if (response.status === 409) throw new StoreVersionConflictError(message)
+    throw new ApiError(message)
   }
-  return response.json() as Promise<T>
+  const data = (await response.json()) as T
+  if (data && typeof data === 'object' && 'version' in data && typeof data.version === 'number') {
+    lastKnownStoreVersion = data.version
+  }
+  return data
 }
 
 const jsonInit = (method: string, body: unknown): RequestInit => ({
@@ -122,6 +149,10 @@ export interface CategoryRenamePreview {
   budgets_to_delete: BudgetToDeletePreview[]
 }
 
+export interface CategoryDeletePreview {
+  posting_count: number
+}
+
 export interface TagCreate {
   name: string
 }
@@ -175,6 +206,13 @@ export const accountingApi = {
     request<{ categories: Record<string, Category>; merged: boolean }>(
       `/api/accounting/categories/${encodeURIComponent(categoryId)}/rename`,
       jsonInit('POST', { name }),
+    ),
+  categoryDeletePreview: (categoryId: string) =>
+    request<CategoryDeletePreview>(`/api/accounting/categories/${encodeURIComponent(categoryId)}/delete-preview`),
+  deleteCategory: (categoryId: string) =>
+    request<{ categories: Record<string, Category>; uncategorized_posting_count: number }>(
+      `/api/accounting/categories/${encodeURIComponent(categoryId)}`,
+      { method: 'DELETE' },
     ),
   putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
   createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),

@@ -1416,6 +1416,81 @@ def test_category_rename_merge_repoints_a_manual_override(client) -> None:
     assert overridden["category_id"] == "expense:food"
 
 
+def test_category_delete_preview_counts_postings_pointing_at_the_category(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/accounting/store").json()
+    nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
+
+    response = client.get(f"/api/accounting/categories/{nourriture['category_id']}/delete-preview")
+    assert response.status_code == 200
+    assert response.json()["posting_count"] == 1
+
+
+def test_category_delete_preview_is_zero_for_an_unused_category(client) -> None:
+    response = client.get("/api/accounting/categories/expense:food-drink/delete-preview")
+    assert response.status_code == 200
+    assert response.json()["posting_count"] == 0
+
+
+def test_category_delete_preview_404s_for_an_unknown_category(client) -> None:
+    response = client.get("/api/accounting/categories/expense:nope/delete-preview")
+    assert response.status_code == 404
+
+
+def test_category_delete_removes_the_category_and_uncategorizes_its_postings(client) -> None:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/accounting/store").json()
+    nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
+
+    response = client.delete(f"/api/accounting/categories/{nourriture['category_id']}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["uncategorized_posting_count"] == 1
+    assert nourriture["category_id"] not in body["categories"]
+
+    postings = client.get("/api/accounting/postings").json()
+    grocery_leg = next(p for p in postings if p["account_id"] == account["account_id"])
+    assert grocery_leg["category_id"] is None
+
+
+def test_category_delete_cascades_to_subcategories(client) -> None:
+    client.post("/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"})
+    client.post("/api/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"})
+
+    response = client.delete("/api/accounting/categories/expense:custom")
+    assert response.status_code == 200
+    body = response.json()
+    assert "expense:custom" not in body["categories"]
+    assert "expense:custom:gadgets" not in body["categories"]
+
+
+def test_category_delete_404s_for_an_unknown_category(client) -> None:
+    response = client.delete("/api/accounting/categories/expense:nope")
+    assert response.status_code == 404
+
+
 def test_post_category_creates_a_new_top_level_category(client) -> None:
     response = client.post(
         "/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
@@ -2326,3 +2401,41 @@ def test_monthly_income_expense_reports_both_sides(client) -> None:
     month = response.json()[0]
     assert month["income"] == pytest.approx(1500.0)
     assert month["expense"] == pytest.approx(70.0)
+
+
+def test_get_store_returns_a_version(client) -> None:
+    response = client.get("/api/accounting/store")
+    assert response.status_code == 200
+    assert isinstance(response.json()["version"], int)
+
+
+def test_mutation_with_the_current_expected_version_succeeds_and_bumps(client) -> None:
+    version = client.get("/api/accounting/store").json()["version"]
+    response = client.post(
+        "/api/accounting/categories",
+        json={"name": "Custom", "classification": "expense", "color": "#000000"},
+        headers={"X-Expected-Store-Version": str(version)},
+    )
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["version"] == version + 1
+
+
+def test_mutation_with_a_stale_expected_version_409s(client) -> None:
+    version = client.get("/api/accounting/store").json()["version"]
+    # Someone else's save lands first.
+    client.post("/api/accounting/categories", json={"name": "Other", "classification": "expense", "color": "#111111"})
+
+    response = client.post(
+        "/api/accounting/categories",
+        json={"name": "Custom", "classification": "expense", "color": "#000000"},
+        headers={"X-Expected-Store-Version": str(version)},
+    )
+    assert response.status_code == 409
+    assert "changed elsewhere" in response.json()["detail"]
+
+
+def test_mutation_with_no_expected_version_header_still_succeeds(client) -> None:
+    response = client.post(
+        "/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
+    )
+    assert response.status_code == 200

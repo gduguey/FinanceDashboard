@@ -19,7 +19,12 @@ export interface paths {
      *     -------
      *     AccountingStoreResponse
      *         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
-     *         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a list).
+     *         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
+     *         list). `version` is this user's current save counter (see
+     *         `store.get_store_version`) — a client should remember it and send
+     *         it back as the `X-Expected-Store-Version` header on its next
+     *         mutating request, so `save_store` can detect if something else
+     *         changed this data in the meantime.
      */
     get: operations['get_store_api_accounting_store_get']
     put?: never
@@ -128,6 +133,77 @@ export interface paths {
      */
     post: operations['post_subcategory_api_accounting_categories__parent_id__subcategories_post']
     delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/categories/{category_id}/delete-preview': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Category Delete Preview
+     * @description Report how many postings deleting `category_id` would uncategorize, before actually deleting it.
+     *
+     *     A caller can show a confirmation dialog with this count first, and
+     *     only actually call `DELETE /categories/{category_id}` once the user
+     *     accepts.
+     *
+     *     Returns
+     *     -------
+     *     CategoryDeletePreviewResponse
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `category_id` doesn't exist.
+     */
+    get: operations['get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/categories/{category_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Category
+     * @description Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
+     *
+     *     Every posting currently carrying `category_id` (or one of its
+     *     subcategories) as its own `category_id`/`subcategory_id` has that
+     *     field cleared rather than left dangling — the same "uncategorized"
+     *     state a posting that was never categorized at all is already in.
+     *     Anything else referencing the deleted id(s) is cleared where the
+     *     field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
+     *     entirely where it isn't (`Budget`, `GeneralBudget`, `CategoryPattern`
+     *     all require a `category_id`) — see `store.uncategorize_category_ids`.
+     *
+     *     Returns
+     *     -------
+     *     CategoryDeleteResponse
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `category_id` doesn't exist.
+     */
+    delete: operations['delete_category_api_accounting_categories__category_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -3342,6 +3418,8 @@ export interface components {
       recurring_additions: components['schemas']['RecurringAddition'][]
       /** Withdrawal Priorities */
       withdrawal_priorities: components['schemas']['WithdrawalPriorityEntry'][]
+      /** Version */
+      version: number
     }
     /**
      * AllocationRow
@@ -3778,6 +3856,30 @@ export interface components {
       classification: 'income' | 'expense'
       /** Color */
       color: string
+    }
+    /**
+     * CategoryDeletePreviewResponse
+     * @description Response body for `GET /categories/{category_id}/delete-preview`.
+     *
+     *     `posting_count` includes every subcategory's postings too, when
+     *     `category_id` is a top-level category (deleting one takes its
+     *     subcategories with it — see `store.category_ids_to_delete`).
+     */
+    CategoryDeletePreviewResponse: {
+      /** Posting Count */
+      posting_count: number
+    }
+    /**
+     * CategoryDeleteResponse
+     * @description Response body for `DELETE /categories/{category_id}`.
+     */
+    CategoryDeleteResponse: {
+      /** Categories */
+      categories: {
+        [key: string]: components['schemas']['Category']
+      }
+      /** Uncategorized Posting Count */
+      uncategorized_posting_count: number
     }
     /**
      * CategoryPattern
@@ -5904,7 +6006,9 @@ export interface operations {
   get_store_api_accounting_store_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -5919,12 +6023,23 @@ export interface operations {
           'application/json': components['schemas']['AccountingStoreResponse']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   get_currencies_api_accounting_currencies_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -5939,12 +6054,23 @@ export interface operations {
           'application/json': components['schemas']['Currency'][]
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_categories_api_accounting_categories_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -5981,7 +6107,9 @@ export interface operations {
   post_category_api_accounting_categories_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6014,7 +6142,9 @@ export interface operations {
   post_subcategory_api_accounting_categories__parent_id__subcategories_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         parent_id: string
       }
@@ -6046,12 +6176,80 @@ export interface operations {
       }
     }
   }
+  get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryDeletePreviewResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_category_api_accounting_categories__category_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryDeleteResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get: {
     parameters: {
       query: {
         name: string
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         category_id: string
       }
@@ -6082,7 +6280,9 @@ export interface operations {
   post_category_rename_api_accounting_categories__category_id__rename_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         category_id: string
       }
@@ -6117,7 +6317,9 @@ export interface operations {
   put_tags_api_accounting_tags_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6154,7 +6356,9 @@ export interface operations {
   post_tag_api_accounting_tags_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6189,7 +6393,9 @@ export interface operations {
       query: {
         name: string
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         tag_id: string
       }
@@ -6220,7 +6426,9 @@ export interface operations {
   post_tag_rename_api_accounting_tags__tag_id__rename_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         tag_id: string
       }
@@ -6255,7 +6463,9 @@ export interface operations {
   put_transfer_rules_api_accounting_transfer_rules_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6288,7 +6498,9 @@ export interface operations {
   put_category_patterns_api_accounting_category_patterns_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6325,7 +6537,9 @@ export interface operations {
   put_other_assets_api_accounting_other_assets_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6358,7 +6572,9 @@ export interface operations {
   put_budgets_api_accounting_budgets_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6391,7 +6607,9 @@ export interface operations {
   put_general_budgets_api_accounting_general_budgets_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6428,7 +6646,9 @@ export interface operations {
   put_simulator_scenarios_api_accounting_simulator_scenarios_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6461,7 +6681,9 @@ export interface operations {
   post_account_api_accounting_accounts_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6494,7 +6716,9 @@ export interface operations {
   put_account_api_accounting_accounts__account_id__put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         account_id: string
       }
@@ -6529,7 +6753,9 @@ export interface operations {
   delete_account_api_accounting_accounts__account_id__delete: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         account_id: string
       }
@@ -6560,7 +6786,9 @@ export interface operations {
   close_account_api_accounting_accounts__account_id__close_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         account_id: string
       }
@@ -6595,7 +6823,9 @@ export interface operations {
   reopen_account_api_accounting_accounts__account_id__reopen_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         account_id: string
       }
@@ -6626,7 +6856,9 @@ export interface operations {
   put_opening_balance_api_accounting_accounts__account_id__opening_balance_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         account_id: string
       }
@@ -6661,7 +6893,9 @@ export interface operations {
   delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         account_id: string
       }
@@ -6694,7 +6928,9 @@ export interface operations {
       query: {
         currency: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6725,7 +6961,9 @@ export interface operations {
       query: {
         currency: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6754,7 +6992,9 @@ export interface operations {
   post_detect_api_accounting_detect_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6787,7 +7027,9 @@ export interface operations {
   get_supported_import_kinds_api_accounting_supported_import_kinds_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6802,12 +7044,23 @@ export interface operations {
           'application/json': components['schemas']['SupportedImportKind'][]
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   get_sync_status_api_accounting_sync_status_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6822,12 +7075,23 @@ export interface operations {
           'application/json': components['schemas']['SyncStatus']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   post_import_api_accounting_import_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6860,7 +7124,9 @@ export interface operations {
   post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6893,7 +7159,9 @@ export interface operations {
   post_canonical_import_api_accounting_import_canonical_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6926,7 +7194,9 @@ export interface operations {
   post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6959,7 +7229,9 @@ export interface operations {
   post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -6992,7 +7264,9 @@ export interface operations {
   post_paystub_reconciliation_api_accounting_import_paystub_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7025,7 +7299,9 @@ export interface operations {
   post_rebuild_api_accounting_rebuild_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7040,12 +7316,23 @@ export interface operations {
           'application/json': components['schemas']['RebuildResult']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   get_postings_api_accounting_postings_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7060,12 +7347,23 @@ export interface operations {
           'application/json': components['schemas']['PostingRow'][]
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   get_ledger_export_api_accounting_ledger_export_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7080,12 +7378,23 @@ export interface operations {
           'application/json': components['schemas']['Posting'][]
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   get_statements_export_api_accounting_statements_export_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7100,12 +7409,23 @@ export interface operations {
           'application/json': unknown
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_posting_override_api_accounting_postings__posting_id__override_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         posting_id: string
       }
@@ -7140,7 +7460,9 @@ export interface operations {
   put_posting_split_api_accounting_postings__posting_id__split_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         posting_id: string
       }
@@ -7175,7 +7497,9 @@ export interface operations {
   delete_posting_split_api_accounting_postings__posting_id__split_delete: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         posting_id: string
       }
@@ -7206,7 +7530,9 @@ export interface operations {
   put_posting_merges_api_accounting_posting_merges_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7243,7 +7569,9 @@ export interface operations {
   post_validate_pending_api_accounting_postings_validate_pending_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7278,7 +7606,9 @@ export interface operations {
       query?: {
         window_days?: number
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7309,7 +7639,9 @@ export interface operations {
       query?: {
         window_days?: number
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7338,7 +7670,9 @@ export interface operations {
   get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7353,12 +7687,23 @@ export interface operations {
           'application/json': components['schemas']['DismissedSuggestion'][]
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7391,7 +7736,9 @@ export interface operations {
   delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         suggestion_id: string
       }
@@ -7422,7 +7769,9 @@ export interface operations {
   get_llm_usage_api_accounting_llm_usage_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7439,6 +7788,15 @@ export interface operations {
           }
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   verify_llm_settings_api_accounting_settings_llm_verify_post: {
@@ -7446,7 +7804,9 @@ export interface operations {
       query: {
         provider: string
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7475,7 +7835,9 @@ export interface operations {
   get_llm_settings_api_accounting_settings_llm_get: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7490,12 +7852,23 @@ export interface operations {
           'application/json': components['schemas']['LlmSettings']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   put_llm_settings_api_accounting_settings_llm_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7528,7 +7901,9 @@ export interface operations {
   delete_llm_settings_api_accounting_settings_llm_delete: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7543,6 +7918,15 @@ export interface operations {
           'application/json': components['schemas']['LlmSettings']
         }
       }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
     }
   }
   post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post: {
@@ -7550,7 +7934,9 @@ export interface operations {
       query?: {
         lock_category_id?: string | null
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         posting_id: string
       }
@@ -7583,7 +7969,9 @@ export interface operations {
       query?: {
         lock_category_id?: string | null
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path: {
         posting_id: string
       }
@@ -7614,7 +8002,9 @@ export interface operations {
   post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7653,7 +8043,9 @@ export interface operations {
         annual_rate_pct: number
         compounding_frequency?: 'annually' | 'monthly' | 'daily'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7684,7 +8076,9 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7716,7 +8110,9 @@ export interface operations {
         as_of?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7750,7 +8146,9 @@ export interface operations {
         interval_days?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7784,7 +8182,9 @@ export interface operations {
         interval_days?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7819,7 +8219,9 @@ export interface operations {
         tag_id?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7852,7 +8254,9 @@ export interface operations {
         end: string
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7885,7 +8289,9 @@ export interface operations {
         lookback_months?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7917,7 +8323,9 @@ export interface operations {
         month: string
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7952,7 +8360,9 @@ export interface operations {
         subcategory_id?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -7981,7 +8391,9 @@ export interface operations {
   put_goals_api_accounting_goals_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8018,7 +8430,9 @@ export interface operations {
   put_goal_contributions_api_accounting_goal_contributions_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8055,7 +8469,9 @@ export interface operations {
   put_recurring_additions_api_accounting_recurring_additions_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8088,7 +8504,9 @@ export interface operations {
   put_withdrawal_priorities_api_accounting_withdrawal_priorities_put: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8124,7 +8542,9 @@ export interface operations {
         as_of?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8155,7 +8575,9 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8186,7 +8608,9 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }
@@ -8215,7 +8639,9 @@ export interface operations {
   post_simulate_contribution_api_accounting_goals_simulate_contribution_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
       path?: never
       cookie?: never
     }

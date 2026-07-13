@@ -266,6 +266,33 @@ def remap_ledger_category_ids(id_remap: dict[str, str], session: Session, user_i
     _write_ledger(ledger, session, user_id=user_id)
 
 
+def uncategorize_ledger_postings(category_ids: set[str], session: Session, user_id: uuid.UUID) -> None:
+    """Clear `category_id`/`subcategory_id` on every posting currently assigned to any of `category_ids`, in place.
+
+    The delete-side counterpart to `remap_ledger_category_ids`: a category
+    delete (see `store.category_ids_to_delete`) has no replacement id to
+    repoint postings at, so this nulls the field out instead — the same
+    "uncategorized" state a posting that was never categorized at all is
+    already in.
+
+    Parameters
+    ----------
+    category_ids
+        Every category id being deleted (see `store.category_ids_to_delete`)
+        — a no-op when empty.
+    session
+        An open database session.
+    user_id
+        Whose ledger this is.
+    """
+    if not category_ids:
+        return
+    ledger = load_ledger(session, user_id=user_id)
+    cleared = dict.fromkeys(category_ids)
+    ledger = ledger.with_columns(pl.col("category_id").replace(cleared), pl.col("subcategory_id").replace(cleared))
+    _write_ledger(ledger, session, user_id=user_id)
+
+
 def _fingerprint(row: dict[str, Any]) -> _Fingerprint:
     """Build the (account, date, amount, description) tuple that makes two transactions look identical.
 

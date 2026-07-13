@@ -67,6 +67,7 @@ class AccountingStoreResponse(BaseModel):
     goal_contributions: dict[str, GoalContribution]
     recurring_additions: list[RecurringAddition]
     withdrawal_priorities: list[WithdrawalPriorityEntry]
+    version: int
 
 
 class CurrentExchangeRate(BaseModel):
@@ -136,6 +137,24 @@ class SubcategoryCreate(BaseModel):
 
     name: str = Field(min_length=1)
     color: str
+
+
+class CategoryDeletePreviewResponse(BaseModel):
+    """Response body for `GET /categories/{category_id}/delete-preview`.
+
+    `posting_count` includes every subcategory's postings too, when
+    `category_id` is a top-level category (deleting one takes its
+    subcategories with it — see `store.category_ids_to_delete`).
+    """
+
+    posting_count: int
+
+
+class CategoryDeleteResponse(BaseModel):
+    """Response body for `DELETE /categories/{category_id}`."""
+
+    categories: dict[str, Category]
+    uncategorized_posting_count: int
 
 
 class TagCreate(BaseModel):
