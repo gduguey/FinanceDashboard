@@ -10,6 +10,7 @@ import type {
   CategorizeFromFileApplyResult,
   CategorizeFromFilePreview,
   Category,
+  CategoryClassification,
   CategoryPattern,
   CategoryTotalRow,
   Currency,
@@ -77,13 +78,57 @@ export interface ImportAccountInfo {
   parent_account_id?: string | null
 }
 
+export interface AccountCreate {
+  name: string
+  kind: string
+  institution: string
+  currency: string
+  last_four?: string | null
+  parent_account_id?: string | null
+  external_ref?: string | null
+  meta: Record<string, string>
+}
+
 export interface AccountUpdate {
   name: string
   institution: string
   kind: string
   currency: string
+  last_four?: string | null
   external_ref?: string | null
   meta: Record<string, string>
+}
+
+export interface CategoryCreate {
+  name: string
+  classification: CategoryClassification
+  color: string
+}
+
+export interface SubcategoryCreate {
+  name: string
+  color: string
+}
+
+export interface BudgetToDeletePreview {
+  month: string | null
+  amount: number
+  currency: string
+}
+
+export interface CategoryRenamePreview {
+  will_merge: boolean
+  target_name: string | null
+  budgets_to_delete: BudgetToDeletePreview[]
+}
+
+export interface TagCreate {
+  name: string
+}
+
+export interface TagRenamePreview {
+  will_merge: boolean
+  target_name: string | null
 }
 
 function queryString(params: Record<string, string | number | undefined>): string {
@@ -115,17 +160,38 @@ export const accountingApi = {
     request<ExchangeRateHistoryPoint[]>(`/api/accounting/exchange-rates/history${queryString({ currency })}`),
   putCategories: (categories: Record<string, Category>) =>
     request<Record<string, Category>>('/api/accounting/categories', jsonInit('PUT', categories)),
+  createCategory: (category: CategoryCreate) =>
+    request<Category>('/api/accounting/categories', jsonInit('POST', category)),
+  createSubcategory: (parentId: string, subcategory: SubcategoryCreate) =>
+    request<Category>(
+      `/api/accounting/categories/${encodeURIComponent(parentId)}/subcategories`,
+      jsonInit('POST', subcategory),
+    ),
+  categoryRenamePreview: (categoryId: string, name: string) =>
+    request<CategoryRenamePreview>(
+      `/api/accounting/categories/${encodeURIComponent(categoryId)}/rename-preview${queryString({ name })}`,
+    ),
   renameCategory: (categoryId: string, name: string) =>
     request<{ categories: Record<string, Category>; merged: boolean }>(
       `/api/accounting/categories/${encodeURIComponent(categoryId)}/rename`,
       jsonInit('POST', { name }),
     ),
   putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
+  createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),
+  tagRenamePreview: (tagId: string, name: string) =>
+    request<TagRenamePreview>(
+      `/api/accounting/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`,
+    ),
+  renameTag: (tagId: string, name: string) =>
+    request<{ tags: Record<string, Tag>; merged: boolean }>(
+      `/api/accounting/tags/${encodeURIComponent(tagId)}/rename`,
+      jsonInit('POST', { name }),
+    ),
   putTransferRules: (rules: TransferRule[]) =>
     request<TransferRule[]>('/api/accounting/transfer-rules', jsonInit('PUT', rules)),
   putOtherAssets: (otherAssets: OtherAsset[]) =>
     request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
-  postAccount: (account: Account) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
+  postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
     request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
   deleteAccount: (accountId: string) =>

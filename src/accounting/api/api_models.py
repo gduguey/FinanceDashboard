@@ -100,12 +100,89 @@ class CategoryRenameResponse(BaseModel):
     merged: bool
 
 
+class BudgetToDeletePreview(BaseModel):
+    """One `Budget`/`GeneralBudget` entry a category merge would discard rather than keep.
+
+    The merged-away category's own entry is what's described here — the
+    merge target's entry for the same month/category always survives
+    unchanged (see `store.remap_category_ids`). `month` is `None` for a
+    `GeneralBudget` (applies to every month alike), or `"YYYY-MM"` for a
+    per-month `Budget`.
+    """
+
+    month: str | None
+    amount: float
+    currency: CurrencyCode
+
+
+class CategoryRenamePreviewResponse(BaseModel):
+    """Response body for `GET /categories/{category_id}/rename-preview`."""
+
+    will_merge: bool
+    target_name: str | None
+    budgets_to_delete: list[BudgetToDeletePreview] = []
+
+
+class CategoryCreate(BaseModel):
+    """Request body for `POST /categories` — a new top-level category."""
+
+    name: str = Field(min_length=1)
+    classification: CategoryClassification
+    color: str
+
+
+class SubcategoryCreate(BaseModel):
+    """Request body for `POST /categories/{parent_id}/subcategories` — a new subcategory."""
+
+    name: str = Field(min_length=1)
+    color: str
+
+
+class TagCreate(BaseModel):
+    """Request body for `POST /tags` — a new tag."""
+
+    name: str = Field(min_length=1)
+
+
+class TagRenameRequest(BaseModel):
+    """Request body for `POST /tags/{tag_id}/rename`."""
+
+    name: str
+
+
+class TagRenameResponse(BaseModel):
+    """Response body for `POST /tags/{tag_id}/rename`."""
+
+    tags: dict[str, Tag]
+    merged: bool
+
+
+class TagRenamePreviewResponse(BaseModel):
+    """Response body for `GET /tags/{tag_id}/rename-preview`."""
+
+    will_merge: bool
+    target_name: str | None
+
+
 class ProjectionPoint(BaseModel):
     """One projected month's balance, for `GET /simulator/project` — see `dashboard.simulator.ProjectionPoint`."""
 
     month: int
     balance: float
     contributions_to_date: float
+
+
+class AccountCreate(BaseModel):
+    """Request body for `POST /api/accounting/accounts` — everything but the server-generated `account_id`."""
+
+    name: str = Field(min_length=1)
+    kind: AccountKind
+    institution: str = Field(min_length=1)
+    currency: CurrencyCode
+    last_four: str | None = None
+    parent_account_id: str | None = None
+    external_ref: str | None = None
+    meta: dict[str, str] = Field(default_factory=dict)
 
 
 class AccountUpdate(BaseModel):
@@ -119,12 +196,15 @@ class AccountUpdate(BaseModel):
     `external_ref` is never locked — it only ever changes which value an
     `external_investment` account shows (see `dashboard.net_worth`), never
     what it has already recorded, so it's free to toggle regardless of postings.
+    `last_four` is never locked either, for the same reason: it never
+    affects identity or any stored history.
     """
 
     name: str
     institution: str
     kind: AccountKind
     currency: CurrencyCode
+    last_four: str | None = None
     external_ref: str | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
@@ -157,13 +237,10 @@ class DetectRequest(BaseModel):
 
 
 class DetectedAccount(BaseModel):
-    """A best-guess bank, account kind, and stable account id for one uploaded CSV — see `importers.detect`."""
+    """A best-guess bank and account kind for one uploaded CSV — see `importers.detect`."""
 
     institution: str
     account_kind: AccountKind
-    account_id: str
-    account_name: str
-    parent_account_id: str | None = None
 
 
 class SupportedImportKind(BaseModel):

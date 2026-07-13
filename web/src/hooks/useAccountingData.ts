@@ -1,8 +1,15 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type AccountUpdate, accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
+import {
+  type AccountCreate,
+  type AccountUpdate,
+  accountingApi,
+  type CategoryCreate,
+  type ImportAccountInfo,
+  type SubcategoryCreate,
+  type TagCreate,
+} from '@/lib/accountingApi'
 import { BASE_CURRENCY } from '@/lib/currency'
 import type {
-  Account,
   Budget,
   CanonicalCategoryOverrides,
   Category,
@@ -376,6 +383,35 @@ export function useSetCategories() {
   })
 }
 
+// Unlike `useSetCategories` (a whole-tree replace), this refuses a
+// same-classification, same-name duplicate server-side (409) instead of
+// silently overwriting whatever already had that computed id.
+export function useCreateCategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (category: CategoryCreate) => accountingApi.createCategory(category),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateSubcategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ parentId, subcategory }: { parentId: string; subcategory: SubcategoryCreate }) =>
+      accountingApi.createSubcategory(parentId, subcategory),
+    onSuccess: invalidate,
+  })
+}
+
+// Read-only — reports whether a rename would merge into an existing
+// category without persisting anything, so no cache invalidation.
+export function useCategoryRenamePreview() {
+  return useMutation({
+    mutationFn: ({ categoryId, name }: { categoryId: string; name: string }) =>
+      accountingApi.categoryRenamePreview(categoryId, name),
+  })
+}
+
 // Renaming to an existing category's (or, for a subcategory, an existing
 // sibling's) name merges into it — repointing postings, rules, budgets,
 // and manual overrides — so this invalidates everything, not just the
@@ -393,6 +429,36 @@ export function useSetTags() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (tags: Record<string, Tag>) => accountingApi.putTags(tags),
+    onSuccess: invalidate,
+  })
+}
+
+// Unlike `useSetTags` (a whole-list replace), this refuses a same-name
+// (case-insensitive) duplicate server-side (409) instead of silently
+// overwriting whatever already had that computed id.
+export function useCreateTag() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (tag: TagCreate) => accountingApi.createTag(tag),
+    onSuccess: invalidate,
+  })
+}
+
+// Read-only — reports whether a rename would merge into an existing tag
+// without persisting anything, so no cache invalidation.
+export function useTagRenamePreview() {
+  return useMutation({
+    mutationFn: ({ tagId, name }: { tagId: string; name: string }) => accountingApi.tagRenamePreview(tagId, name),
+  })
+}
+
+// Renaming to an existing tag's name merges into it — repointing
+// `posting_tags` rows and `tag_ids_override` arrays — so this invalidates
+// everything, not just the tag list, unlike a plain `useSetTags` edit.
+export function useRenameTag() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ tagId, name }: { tagId: string; name: string }) => accountingApi.renameTag(tagId, name),
     onSuccess: invalidate,
   })
 }
@@ -432,7 +498,7 @@ export function useSetGeneralBudgets() {
 export function useCreateAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (account: Account) => accountingApi.postAccount(account),
+    mutationFn: (account: AccountCreate) => accountingApi.postAccount(account),
     onSuccess: invalidate,
   })
 }

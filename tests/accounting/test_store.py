@@ -1,6 +1,6 @@
 import pytest
 
-from accounting.models import Budget, Category, CategoryPattern, GeneralBudget, TransferRule
+from accounting.models import Budget, Category, CategoryPattern, GeneralBudget, Tag, TransferRule
 from accounting.store import (
     CATEGORY_COLOR_PALETTE,
     AccountingStore,
@@ -8,6 +8,7 @@ from accounting.store import (
     next_available_color,
     normalize_categories,
     plan_category_rename,
+    plan_tag_rename,
     remap_category_ids,
     slugify,
 )
@@ -201,7 +202,7 @@ def test_remap_category_ids_updates_every_reference() -> None:
     assert updated.general_budgets["expense:food"].category_id == "expense:food"
 
 
-def test_remap_category_ids_raises_on_colliding_budgets_instead_of_dropping_one() -> None:
+def test_remap_category_ids_drops_the_merged_away_categorys_colliding_budget() -> None:
     store = AccountingStore(
         budgets=[
             Budget(budget_id="b1", month="2026-06", category_id="expense:nourriture", amount=100.0),
@@ -209,11 +210,12 @@ def test_remap_category_ids_raises_on_colliding_budgets_instead_of_dropping_one(
         ]
     )
     id_remap = {"expense:nourriture": "expense:food"}
-    with pytest.raises(ValueError, match="collide"):
-        remap_category_ids(store, id_remap)
+    updated = remap_category_ids(store, id_remap)
+    assert [budget.budget_id for budget in updated.budgets] == ["b2"]
+    assert updated.budgets[0].amount == pytest.approx(200.0)
 
 
-def test_remap_category_ids_raises_on_colliding_general_budgets_instead_of_dropping_one() -> None:
+def test_remap_category_ids_drops_the_merged_away_categorys_colliding_general_budget() -> None:
     store = AccountingStore(
         general_budgets={
             "expense:nourriture": GeneralBudget(category_id="expense:nourriture", amount=50.0),
@@ -221,8 +223,21 @@ def test_remap_category_ids_raises_on_colliding_general_budgets_instead_of_dropp
         }
     )
     id_remap = {"expense:nourriture": "expense:food"}
-    with pytest.raises(ValueError, match="collide"):
-        remap_category_ids(store, id_remap)
+    updated = remap_category_ids(store, id_remap)
+    assert list(updated.general_budgets) == ["expense:food"]
+    assert updated.general_budgets["expense:food"].amount == pytest.approx(75.0)
+
+
+def test_remap_category_ids_with_no_collision_keeps_both_budgets() -> None:
+    store = AccountingStore(
+        budgets=[
+            Budget(budget_id="b1", month="2026-06", category_id="expense:nourriture", amount=100.0),
+            Budget(budget_id="b2", month="2026-07", category_id="expense:food", amount=200.0),
+        ]
+    )
+    id_remap = {"expense:nourriture": "expense:food"}
+    updated = remap_category_ids(store, id_remap)
+    assert {budget.budget_id for budget in updated.budgets} == {"b1", "b2"}
 
 
 def test_normalize_categories_adds_other_when_a_first_real_subcategory_appears() -> None:
@@ -258,3 +273,41 @@ def test_normalize_categories_leaves_a_category_with_no_subcategories_alone() ->
     parent = Category(category_id="income:salary", name="Salary", classification="income", color="#222222")
     result = normalize_categories({parent.category_id: parent})
     assert result == {parent.category_id: parent}
+
+
+def _tag(tag_id: str, name: str) -> Tag:
+    return Tag(tag_id=tag_id, name=name)
+
+
+def test_plan_tag_rename_with_a_new_unique_name_just_renames() -> None:
+    tags = {"tag:trip": _tag("tag:trip", "Trip")}
+    updated, id_remap = plan_tag_rename(tags, "tag:trip", "Vacation")
+    assert updated["tag:trip"].name == "Vacation"
+    assert id_remap == {}
+
+
+def test_plan_tag_rename_merges_two_tags_with_the_same_name() -> None:
+    tags = {
+        "tag:trip": _tag("tag:trip", "Trip"),
+        "tag:vacation": _tag("tag:vacation", "Vacation"),
+    }
+    updated, id_remap = plan_tag_rename(tags, "tag:trip", "Vacation")
+    assert "tag:trip" not in updated
+    assert "tag:vacation" in updated
+    assert id_remap == {"tag:trip": "tag:vacation"}
+
+
+def test_plan_tag_rename_matches_names_case_insensitively() -> None:
+    tags = {
+        "tag:trip": _tag("tag:trip", "Trip"),
+        "tag:vacation": _tag("tag:vacation", "Vacation"),
+    }
+    _updated, id_remap = plan_tag_rename(tags, "tag:trip", "vacation")
+    assert id_remap == {"tag:trip": "tag:vacation"}
+
+
+def test_plan_tag_rename_never_matches_itself() -> None:
+    tags = {"tag:trip": _tag("tag:trip", "Trip")}
+    updated, id_remap = plan_tag_rename(tags, "tag:trip", "Trip")
+    assert id_remap == {}
+    assert updated["tag:trip"].name == "Trip"

@@ -45,6 +45,7 @@ from accounting.store import (
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     load_overrides,
     load_store,
+    remap_tag_ids,
     save_overrides,
     save_store,
 )
@@ -95,6 +96,67 @@ def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, pos
         )
     )
     session.flush()
+
+
+def _seed_tags(session: Session, user_id: uuid.UUID, *tag_ids_and_names: tuple[str, str]) -> None:
+    """Persist real `Tag` rows so a `PostingTag`/override can FK or reference them by natural key."""
+    store = load_store(session, user_id=user_id)
+    store = store.model_copy(
+        update={"tags": {**store.tags, **{tag_id: Tag(tag_id=tag_id, name=name) for tag_id, name in tag_ids_and_names}}}
+    )
+    save_store(store, session, user_id=user_id)
+
+
+def _seed_posting_tag(session: Session, user_id: uuid.UUID, posting_id: str, tag_id: str) -> None:
+    session.add(
+        adb.PostingTag(
+            user_id=user_id,
+            posting_id=derive_id(user_id, "postings", posting_id),
+            tag_id=derive_id(user_id, "tags", tag_id),
+        )
+    )
+    session.flush()
+
+
+def test_remap_tag_ids_is_a_noop_for_an_empty_remap(db_session: Session, test_user_id: uuid.UUID) -> None:
+    remap_tag_ids({}, db_session, user_id=test_user_id)
+
+
+def test_remap_tag_ids_repoints_a_posting_tags_row(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting_tag(db_session, test_user_id, "p1", "tag:trip")
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    row = db_session.query(adb.PostingTag).filter_by(user_id=test_user_id).one()
+    assert row.tag_id == derive_id(test_user_id, "tags", "tag:vacation")
+
+
+def test_remap_tag_ids_deletes_the_old_row_when_the_posting_already_has_the_target_tag(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting_tag(db_session, test_user_id, "p1", "tag:trip")
+    _seed_posting_tag(db_session, test_user_id, "p1", "tag:vacation")
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    rows = db_session.query(adb.PostingTag).filter_by(user_id=test_user_id).all()
+    assert len(rows) == 1
+    assert rows[0].tag_id == derive_id(test_user_id, "tags", "tag:vacation")
+
+
+def test_remap_tag_ids_repoints_a_tag_ids_override(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:other"])}, db_session, user_id=test_user_id)
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
+    assert reloaded.tag_ids == ["tag:vacation", "tag:other"]
 
 
 def test_load_store_with_no_data_yet_seeds_defaults(db_session: Session, test_user_id: uuid.UUID) -> None:

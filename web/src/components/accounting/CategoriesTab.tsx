@@ -19,9 +19,18 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useRenameCategory, useSetCategories, useSetCategoryPatterns } from '@/hooks/useAccountingData'
+import {
+  useCategoryRenamePreview,
+  useCreateCategory,
+  useCreateSubcategory,
+  useRenameCategory,
+  useSetCategories,
+  useSetCategoryPatterns,
+} from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
+import type { BudgetToDeletePreview } from '@/lib/accountingApi'
 import { nextAvailableColor } from '@/lib/colors'
+import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { Category, CategoryClassification, CategoryPattern } from '@/types/accounting'
 
@@ -29,7 +38,8 @@ import type { Category, CategoryClassification, CategoryPattern } from '@/types/
 // which point it grows to fit what's typed (`field-sizing-content`) rather
 // than reflowing the row around a fixed-width box. Commits on blur/Enter,
 // reverts on Escape or an empty result (a category always needs a name).
-function InlineNameInput({
+// Exported so `TagsTab` can reuse the exact same rename affordance.
+export function InlineNameInput({
   value,
   onCommit,
   className,
@@ -138,14 +148,6 @@ function TaxonomyIdeasSection() {
   )
 }
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-}
-
 function ClassificationSection({
   classification,
   categories,
@@ -154,9 +156,26 @@ function ClassificationSection({
   categories: Record<string, Category>
 }) {
   const setCategories = useSetCategories()
+  const createCategory = useCreateCategory()
+  const createSubcategory = useCreateSubcategory()
+  const renamePreview = useCategoryRenamePreview()
   const renameCategoryMutation = useRenameCategory()
   const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryError, setNewCategoryError] = useState<string | null>(null)
   const [subcategoryDrafts, setSubcategoryDrafts] = useState<Record<string, string>>({})
+  const [subcategoryErrors, setSubcategoryErrors] = useState<Record<string, string>>({})
+  // A merging rename needs the user's confirmation (see
+  // `useCategoryRenamePreview`) before it commits — while that's pending,
+  // `renameResetTick` forces the `InlineNameInput` that triggered it to
+  // remount (via its `key`), which is what actually reverts its draft text
+  // back to the category's real name on Decline.
+  const [pendingRename, setPendingRename] = useState<{
+    categoryId: string
+    name: string
+    targetName: string
+    budgetsToDelete: BudgetToDeletePreview[]
+  } | null>(null)
+  const [renameResetTick, setRenameResetTick] = useState(0)
 
   const topLevel = Object.values(categories)
     .filter((category) => category.classification === classification && category.parent_category_id === null)
@@ -164,13 +183,17 @@ function ClassificationSection({
 
   function addCategory() {
     if (!newCategoryName) return
-    const id = `${classification}:${slugify(newCategoryName)}`
     const color = nextAvailableColor(Object.values(categories).map((category) => category.color))
-    setCategories.mutate({
-      ...categories,
-      [id]: { category_id: id, name: newCategoryName, classification, parent_category_id: null, color },
-    })
-    setNewCategoryName('')
+    createCategory.mutate(
+      { name: newCategoryName, classification, color },
+      {
+        onSuccess: () => {
+          setNewCategoryName('')
+          setNewCategoryError(null)
+        },
+        onError: () => setNewCategoryError('This category already exists'),
+      },
+    )
   }
 
   function removeCategory(categoryId: string) {
@@ -182,20 +205,49 @@ function ClassificationSection({
     setCategories.mutate(next)
   }
 
-  function renameCategory(categoryId: string, name: string) {
+  async function renameCategory(categoryId: string, name: string) {
+    const preview = await renamePreview.mutateAsync({ categoryId, name })
+    if (preview.will_merge) {
+      setPendingRename({
+        categoryId,
+        name,
+        targetName: preview.target_name ?? name,
+        budgetsToDelete: preview.budgets_to_delete,
+      })
+      return
+    }
     renameCategoryMutation.mutate({ categoryId, name })
+  }
+
+  function acceptPendingRename() {
+    if (!pendingRename) return
+    renameCategoryMutation.mutate({ categoryId: pendingRename.categoryId, name: pendingRename.name })
+    setPendingRename(null)
+  }
+
+  function declinePendingRename() {
+    setPendingRename(null)
+    setRenameResetTick((tick) => tick + 1)
   }
 
   function addSubcategory(parent: Category) {
     const name = subcategoryDrafts[parent.category_id]?.trim()
     if (!name) return
-    const id = `${parent.category_id}:${slugify(name)}`
     const color = nextAvailableColor(Object.values(categories).map((category) => category.color))
-    setCategories.mutate({
-      ...categories,
-      [id]: { category_id: id, name, classification, parent_category_id: parent.category_id, color },
-    })
-    setSubcategoryDrafts((prev) => ({ ...prev, [parent.category_id]: '' }))
+    createSubcategory.mutate(
+      { parentId: parent.category_id, subcategory: { name, color } },
+      {
+        onSuccess: () => {
+          setSubcategoryDrafts((prev) => ({ ...prev, [parent.category_id]: '' }))
+          setSubcategoryErrors((prev) => ({ ...prev, [parent.category_id]: '' }))
+        },
+        onError: () =>
+          setSubcategoryErrors((prev) => ({
+            ...prev,
+            [parent.category_id]: 'This subcategory already exists in this category',
+          })),
+      },
+    )
   }
 
   return (
@@ -214,6 +266,7 @@ function ClassificationSection({
                 <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                   <span className="inline-block size-2 shrink-0 rounded-full" style={{ background: category.color }} />
                   <InlineNameInput
+                    key={`${category.category_id}:${renameResetTick}`}
                     value={category.name}
                     onCommit={(name) => renameCategory(category.category_id, name)}
                     className="text-sm font-medium"
@@ -240,6 +293,7 @@ function ClassificationSection({
                         child.name
                       ) : (
                         <InlineNameInput
+                          key={`${child.category_id}:${renameResetTick}`}
                           value={child.name}
                           onCommit={(name) => renameCategory(child.category_id, name)}
                           className="h-4 text-xs"
@@ -256,32 +310,77 @@ function ClassificationSection({
                     </Badge>
                   )
                 })}
-                <Input
-                  className="h-6 w-32 text-xs"
-                  placeholder="+ subcategory"
-                  value={subcategoryDrafts[category.category_id] ?? ''}
-                  onChange={(event) =>
-                    setSubcategoryDrafts((prev) => ({ ...prev, [category.category_id]: event.target.value }))
-                  }
-                  onKeyDown={(event) => event.key === 'Enter' && addSubcategory(category)}
-                />
+                <div className="flex flex-col gap-0.5">
+                  <Input
+                    className="h-6 w-32 text-xs"
+                    placeholder="+ subcategory"
+                    value={subcategoryDrafts[category.category_id] ?? ''}
+                    onChange={(event) => {
+                      setSubcategoryDrafts((prev) => ({ ...prev, [category.category_id]: event.target.value }))
+                      setSubcategoryErrors((prev) => ({ ...prev, [category.category_id]: '' }))
+                    }}
+                    onKeyDown={(event) => event.key === 'Enter' && addSubcategory(category)}
+                  />
+                  {subcategoryErrors[category.category_id] && (
+                    <span className="text-xs text-destructive">{subcategoryErrors[category.category_id]}</span>
+                  )}
+                </div>
               </div>
             </div>
           )
         })}
         <div className="flex items-end gap-2">
-          <Input
-            className="w-48"
-            placeholder="New category name"
-            value={newCategoryName}
-            onChange={(event) => setNewCategoryName(event.target.value)}
-            onKeyDown={(event) => event.key === 'Enter' && addCategory()}
-          />
+          <div className="flex flex-col gap-0.5">
+            <Input
+              className="w-48"
+              placeholder="New category name"
+              value={newCategoryName}
+              onChange={(event) => {
+                setNewCategoryName(event.target.value)
+                setNewCategoryError(null)
+              }}
+              onKeyDown={(event) => event.key === 'Enter' && addCategory()}
+            />
+            {newCategoryError && <span className="text-xs text-destructive">{newCategoryError}</span>}
+          </div>
           <Button size="sm" onClick={addCategory}>
             Add category
           </Button>
         </div>
       </CardContent>
+      {pendingRename && (
+        <Dialog open onOpenChange={(open) => !open && declinePendingRename()}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Merge categories?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Renaming to '{pendingRename.name}' will merge into the existing category '{pendingRename.targetName}' —
+              this can't be undone.
+            </p>
+            {pendingRename.budgetsToDelete.length > 0 && (
+              <p className="text-sm text-destructive">
+                '{pendingRename.targetName}' already has a budget for the same month
+                {pendingRename.budgetsToDelete.length > 1 ? 's' : ''} — the following will be fully deleted:{' '}
+                {pendingRename.budgetsToDelete
+                  .map((budget) =>
+                    budget.month
+                      ? `${formatCurrency(budget.amount, budget.currency)} (${budget.month})`
+                      : `${formatCurrency(budget.amount, budget.currency)} (every month)`,
+                  )
+                  .join(', ')}
+                .
+              </p>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={declinePendingRename}>
+                Decline
+              </Button>
+              <Button onClick={acceptPendingRename}>Accept</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </Card>
   )
 }
