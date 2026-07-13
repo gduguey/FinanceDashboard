@@ -6,8 +6,6 @@ import pytest
 from trades.config import AppConfig
 from trades.ledger.counterfactuals import (
     benchmark_counterfactual_series,
-    benchmark_counterfactual_value,
-    decision_counterfactual_value,
     hysa_counterfactual_series,
     hysa_counterfactual_value,
 )
@@ -17,32 +15,6 @@ CONFIG = AppConfig()
 
 def _cashflows(*rows: tuple[str, float]) -> pl.DataFrame:
     return pl.DataFrame([{"event_datetime": datetime.fromisoformat(when), "amount": amount} for when, amount in rows])
-
-
-def _event(
-    event_id: str,
-    event_datetime: str,
-    event_type: str,
-    symbol: str = "CASH",
-    shares: float | None = None,
-    price: float | None = None,
-    amount: float = 0.0,
-) -> dict:
-    return {
-        "event_id": event_id,
-        "event_datetime": datetime.fromisoformat(event_datetime),
-        "symbol": symbol,
-        "event_type": event_type,
-        "shares": shares,
-        "price": price,
-        "amount": amount,
-        "currency": "USD",
-        "meta": {},
-    }
-
-
-def _ledger(*events: dict) -> pl.DataFrame:
-    return pl.DataFrame(list(events))
 
 
 def _carry_forward(prices: dict[date, float]):
@@ -117,41 +89,15 @@ def test_hysa_counterfactual_uses_a_varying_rate_series() -> None:
     assert value == pytest.approx(expected)
 
 
-def test_benchmark_counterfactual_buys_shares_at_the_deposit_date_price() -> None:
-    prices = {date(2025, 1, 1): 100.0, date(2025, 6, 1): 120.0}
-    value = benchmark_counterfactual_value(
-        _cashflows(("2025-01-01", -1000.0)), as_of=date(2025, 6, 1), price_lookup=_carry_forward(prices)
-    )
-    assert value == pytest.approx(1000.0 / 100.0 * 120.0)
-
-
-def test_benchmark_counterfactual_sums_shares_bought_across_multiple_deposits() -> None:
+def test_benchmark_counterfactual_series_a_withdrawal_sells_shares() -> None:
     prices = {date(2025, 1, 1): 100.0, date(2025, 2, 1): 200.0, date(2025, 6, 1): 120.0}
-    value = benchmark_counterfactual_value(
-        _cashflows(("2025-01-01", -1000.0), ("2025-02-01", -1000.0)),
-        as_of=date(2025, 6, 1),
-        price_lookup=_carry_forward(prices),
-    )
-    expected_shares = 1000.0 / 100.0 + 1000.0 / 200.0
-    assert value == pytest.approx(expected_shares * 120.0)
-
-
-def test_benchmark_counterfactual_a_withdrawal_sells_shares() -> None:
-    prices = {date(2025, 1, 1): 100.0, date(2025, 2, 1): 200.0, date(2025, 6, 1): 120.0}
-    value = benchmark_counterfactual_value(
+    series = benchmark_counterfactual_series(
         _cashflows(("2025-01-01", -1000.0), ("2025-02-01", 400.0)),
-        as_of=date(2025, 6, 1),
+        end=date(2025, 6, 1),
         price_lookup=_carry_forward(prices),
     )
     expected_shares = 1000.0 / 100.0 - 400.0 / 200.0
-    assert value == pytest.approx(expected_shares * 120.0)
-
-
-def test_benchmark_counterfactual_with_no_cashflows_is_zero() -> None:
-    empty = pl.DataFrame(schema={"event_datetime": pl.Datetime, "amount": pl.Float64})
-    assert benchmark_counterfactual_value(empty, as_of=date(2025, 6, 1), price_lookup=lambda d: 100.0) == pytest.approx(
-        0.0
-    )
+    assert series["value"][-1] == pytest.approx(expected_shares * 120.0)
 
 
 def test_hysa_counterfactual_series_has_one_row_per_day_since_the_first_flow() -> None:
@@ -213,17 +159,6 @@ def test_benchmark_counterfactual_series_has_one_row_per_day_since_the_first_flo
     assert series["value"].to_list() == pytest.approx([shares * 100.0, shares * 110.0, shares * 120.0])
 
 
-def test_benchmark_counterfactual_series_last_value_matches_the_scalar_function() -> None:
-    prices = {date(2025, 1, 1): 100.0, date(2025, 6, 1): 120.0}
-    series = benchmark_counterfactual_series(
-        _cashflows(("2025-01-01", -1000.0)), end=date(2025, 6, 1), price_lookup=_carry_forward(prices)
-    )
-    value = benchmark_counterfactual_value(
-        _cashflows(("2025-01-01", -1000.0)), as_of=date(2025, 6, 1), price_lookup=_carry_forward(prices)
-    )
-    assert series["value"][-1] == pytest.approx(value)
-
-
 def test_benchmark_counterfactual_series_with_no_cashflows_is_empty() -> None:
     empty = pl.DataFrame(schema={"event_datetime": pl.Datetime, "amount": pl.Float64})
     series = benchmark_counterfactual_series(empty, end=date(2025, 1, 3), price_lookup=lambda d: 100.0)
@@ -238,59 +173,8 @@ def test_benchmark_counterfactual_series_with_cashflows_entirely_after_end_is_em
     assert series.schema == {"date": pl.Date, "value": pl.Float64}
 
 
-def test_benchmark_counterfactual_raises_on_missing_price() -> None:
+def test_benchmark_counterfactual_series_raises_on_missing_price() -> None:
     with pytest.raises(ValueError, match="No price available"):
-        benchmark_counterfactual_value(
-            _cashflows(("2025-01-01", -1000.0)), as_of=date(2025, 6, 1), price_lookup=lambda d: None
+        benchmark_counterfactual_series(
+            _cashflows(("2025-01-01", -1000.0)), end=date(2025, 6, 1), price_lookup=lambda d: None
         )
-
-
-def test_decision_counterfactual_replays_the_ledger_without_a_reallocations_sell_and_buy() -> None:
-    ledger = _ledger(
-        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
-        _event("b1", "2026-01-02", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
-        _event("s1", "2026-06-01", "SELL", symbol="VOO", shares=2.0, price=600.0, amount=1200.0),
-        _event("b2", "2026-06-01", "BUY", symbol="BND", shares=2.0, price=600.0, amount=1200.0),
-    )
-    prices = {"VOO": 700.0}
-    value = decision_counterfactual_value(
-        ledger,
-        skip_event_ids=["s1", "b2"],
-        price_lookup=lambda symbol, as_of: prices.get(symbol),
-        as_of=date(2026, 12, 1),
-        config=CONFIG,
-    )
-    assert value == pytest.approx(1400.0)
-
-
-def test_decision_counterfactual_with_no_skipped_events_matches_actual_replay() -> None:
-    ledger = _ledger(
-        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
-        _event("b1", "2026-01-02", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
-    )
-    value = decision_counterfactual_value(
-        ledger,
-        skip_event_ids=[],
-        price_lookup=lambda symbol, as_of: 700.0,
-        as_of=date(2026, 12, 1),
-        config=CONFIG,
-    )
-    assert value == pytest.approx(1400.0)
-
-
-def test_decision_counterfactual_ignores_ledger_events_after_as_of() -> None:
-    ledger = _ledger(
-        _event("d1", "2026-01-01", "DEPOSIT", amount=1000.0),
-        _event("b1", "2026-01-02", "BUY", symbol="VOO", shares=2.0, price=500.0, amount=1000.0),
-        _event("d2", "2026-08-01", "DEPOSIT", amount=500.0),
-        _event("b2", "2026-08-02", "BUY", symbol="BND", shares=5.0, price=100.0, amount=500.0),
-    )
-    prices = {"VOO": 700.0}
-    value = decision_counterfactual_value(
-        ledger,
-        skip_event_ids=[],
-        price_lookup=lambda symbol, as_of: prices.get(symbol),
-        as_of=date(2026, 6, 1),
-        config=CONFIG,
-    )
-    assert value == pytest.approx(1400.0)

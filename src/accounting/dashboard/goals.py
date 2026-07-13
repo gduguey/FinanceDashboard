@@ -85,35 +85,6 @@ def _with_converted_amount(frame: pl.LazyFrame, display: DisplayCurrency) -> pl.
     return frame.join(rate_table, on="currency", how="left").with_columns(amount=converted).drop("rate_to_base")
 
 
-def goal_balance(
-    contributions: pl.DataFrame | pl.LazyFrame,
-    goal_id: str,
-    as_of: date,
-    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
-) -> float:
-    """Return the goal's running balance at `as_of` — the sum of its own contributions up to and including that day.
-
-    Parameters
-    ----------
-    contributions
-        As `contributions_to_frame` returns.
-    goal_id
-        Which goal to sum.
-    as_of
-        Last day to include, inclusive.
-    display
-        The currency (and rate) every contribution's amount is converted into before summing.
-
-    Returns
-    -------
-    float
-        `0.0` for a goal with no contributions yet.
-    """
-    legs = contributions.lazy().filter((pl.col("goal_id") == goal_id) & (pl.col("date").dt.date() <= as_of))
-    total = _with_converted_amount(legs, display).select(pl.col("amount").sum().fill_null(0.0)).collect().item()
-    return float(total)
-
-
 def all_goal_balances(
     contributions: pl.DataFrame | pl.LazyFrame,
     goal_ids: list[str],
@@ -122,8 +93,8 @@ def all_goal_balances(
 ) -> dict[str, float]:
     """Every id in `goal_ids`'s running balance at `as_of`, in one pass over `contributions`.
 
-    One `group_by` rather than calling `goal_balance` once per id (which
-    would re-filter and re-convert the whole `contributions` frame
+    One `group_by` rather than filtering and summing per id one at a time
+    (which would re-filter and re-convert the whole `contributions` frame
     `len(goal_ids)` times) — the same reasoning
     `ledger.replay.account_balances_over_time` gives for not calling
     `account_balances` once per date.
