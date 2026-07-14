@@ -32,8 +32,12 @@ ssh "$HOST" "
         echo \"::error:: CLERK_PUBLISHABLE_KEY missing from .env.docker — aborting rather than building a frontend with no Clerk key\"
         exit 1
     fi
+    # Optional — which landing page variant to build in (see
+    # web/src/components/layout/landing-pages/index.ts). Blank is fine: the
+    # frontend falls back to a code-level default when unset.
+    VITE_LANDING_PAGE=\$(grep -m1 '^LANDING_PAGE=' .env.docker | cut -d= -f2- || true)
     echo \"==> Building image tagged \$VERSION\"
-    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose -f deploy/docker-compose.yml up -d --build
+    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" VITE_LANDING_PAGE=\"\$VITE_LANDING_PAGE\" docker compose -f deploy/docker-compose.yml up -d --build
     # Host-wide prune: this VM only ever runs this one app's stack, so
     # cleaning up every dangling image on the host is safe here — not a
     # shared/multi-tenant machine where that would risk another stack's cache.

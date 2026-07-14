@@ -20,6 +20,13 @@ ARG VITE_CLERK_PUBLISHABLE_KEY
 RUN test -n "$VITE_CLERK_PUBLISHABLE_KEY" || { echo "VITE_CLERK_PUBLISHABLE_KEY build arg is required" >&2; exit 1; }
 ENV VITE_CLERK_PUBLISHABLE_KEY=$VITE_CLERK_PUBLISHABLE_KEY
 
+# Optional — selects which landing page variant gets built in (see
+# web/src/components/layout/landing-pages/index.ts). Unlike the Clerk key
+# above, a blank value is fine: the frontend falls back to a code-level
+# default rather than refusing to build.
+ARG VITE_LANDING_PAGE
+ENV VITE_LANDING_PAGE=$VITE_LANDING_PAGE
+
 RUN npm run build
 
 # Stage 2: Build Python environment

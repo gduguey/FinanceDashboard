@@ -9,6 +9,9 @@ services:
       # or the shell environment, same gotcha as APP_VERSION below.
       args:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        # Optional (see the Dockerfile) — empty is fine if LANDING_PAGE isn't
+        # set in .env.docker.
+        VITE_LANDING_PAGE: ${VITE_LANDING_PAGE:-}
     # Tags the built image with the app's own version (from `pyproject.toml`,
     # SemVer, bumped by CI) so `docker images`/`docker inspect` can show
     # exactly what's running, not just whatever `git log` says on the VM.

@@ -19,6 +19,9 @@ services:
       # deploy-staging.sh exports this from .env.staging before `--build`.
       args:
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        # Optional (see the Dockerfile) — empty is fine if LANDING_PAGE isn't
+        # set in .env.staging.
+        VITE_LANDING_PAGE: ${VITE_LANDING_PAGE:-}
     # Same convention as production (tagged with the app's own version, not
     # `latest`), a distinct image name so the two stacks never share a tag.
     image: financedashboard-api-staging:${APP_VERSION:-dev}
