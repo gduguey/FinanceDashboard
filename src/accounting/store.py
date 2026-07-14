@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import colorsys
 import re
+import uuid
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,7 +46,6 @@ from accounting.models import (
 from db.base import VersionConflictError, check_and_bump_version, derive_id, get_version, natural_keys_by_id
 
 if TYPE_CHECKING:
-    import uuid
     from collections.abc import Callable, Iterable
 
     from sqlalchemy.orm import Session
@@ -610,15 +611,15 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
     `plan_tag_rename`'s own result there, the same division of labor as
     `remap_category_ids`/`store.categories`) — this only fixes the two
     other places a tag id is stored, neither of which `AccountingStore`
-    holds: the `posting_tags` join table (a real FK to `tags.id`) and each
-    posting override's `tag_ids_override` (a raw array of tag natural
-    keys, not FK-linked). That's also why this — unlike the pure
-    `remap_category_ids` — needs a `session`/`user_id` of its own.
+    holds: the `posting_tags` join table and each posting override's
+    `PostingOverrideTag` rows — both real FKs to `tags.id`, repointed the
+    same way. That's also why this — unlike the pure `remap_category_ids`
+    — needs a `session`/`user_id` of its own.
 
-    A posting already tagged with both the merged-away and target tag
-    would violate `posting_tags`' own `(user_id, posting_id, tag_id)`
-    uniqueness on a plain update, so that row is deleted instead of
-    retargeted, rather than left to raise.
+    A posting (or override) already tagged with both the merged-away and
+    target tag would violate one of these tables' own uniqueness on a
+    plain update, so that row is deleted instead of retargeted, rather
+    than left to raise.
 
     Parameters
     ----------
@@ -636,6 +637,7 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
     for old_tag_id, new_tag_id in id_remap.items():
         old_id = _tag_id(user_id, old_tag_id)
         new_id = _tag_id(user_id, new_tag_id)
+
         already_tagged_postings = {
             row.posting_id for row in session.query(adb.PostingTag.posting_id).filter_by(user_id=user_id, tag_id=new_id)
         }
@@ -645,20 +647,18 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
         session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).update(
             {"tag_id": new_id}, synchronize_session=False
         )
-    session.flush()
 
-    overrides = load_overrides(session, user_id)
-    overrides = {
-        posting_id: override.model_copy(
-            update={
-                "tag_ids": list(dict.fromkeys(id_remap.get(tag_id, tag_id) for tag_id in override.tag_ids))
-                if override.tag_ids is not None
-                else None
-            }
+        already_tagged_overrides = {
+            row.override_id
+            for row in session.query(adb.PostingOverrideTag.override_id).filter_by(user_id=user_id, tag_id=new_id)
+        }
+        session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).filter(
+            adb.PostingOverrideTag.override_id.in_(already_tagged_overrides)
+        ).delete(synchronize_session=False)
+        session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).update(
+            {"tag_id": new_id}, synchronize_session=False
         )
-        for posting_id, override in overrides.items()
-    }
-    save_overrides(overrides, session, user_id)
+    session.commit()
 
 
 def default_categories() -> dict[str, Category]:
@@ -1690,6 +1690,17 @@ def load_overrides(session: Session, user_id: uuid.UUID) -> dict[str, ManualOver
         + [row.previous_subcategory_id for row in pending_rows],
     )
 
+    override_tag_rows = list(
+        session.query(adb.PostingOverrideTag).filter(
+            adb.PostingOverrideTag.user_id == user_id,
+            adb.PostingOverrideTag.override_id.in_([row.id for row in override_rows]),
+        )
+    )
+    tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, [row.tag_id for row in override_tag_rows])
+    tag_ids_by_override_id: dict[uuid.UUID, list[str]] = defaultdict(list)
+    for override_tag_row in override_tag_rows:
+        tag_ids_by_override_id[override_tag_row.override_id].append(tag_natural_key_by_id[override_tag_row.tag_id])
+
     overrides: dict[str, ManualOverride] = {}
     for override_row in override_rows:
         overrides[posting_natural_key_by_id[override_row.posting_id]] = ManualOverride(
@@ -1702,7 +1713,7 @@ def load_overrides(session: Session, user_id: uuid.UUID) -> dict[str, ManualOver
             subcategory_id=category_natural_key_by_id.get(override_row.subcategory_id)
             if override_row.subcategory_id is not None
             else None,
-            tag_ids=override_row.tag_ids_override,
+            tag_ids=tag_ids_by_override_id.get(override_row.id, []) if override_row.tags_overridden else None,
         )
     for pending_row in pending_rows:
         posting_key = posting_natural_key_by_id[pending_row.posting_id]
@@ -1742,21 +1753,36 @@ def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_
     session.query(adb.PostingOverride).filter_by(user_id=user_id).delete()
     session.query(adb.PostingPendingSuggestion).filter_by(user_id=user_id).delete()
 
-    session.add_all(
-        adb.PostingOverride(
-            user_id=user_id,
-            posting_id=_posting_id(user_id, posting_id),
-            account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
-            category_id=_category_id(user_id, override.category_id),
-            subcategory_id=_category_id(user_id, override.subcategory_id),
-            tag_ids_override=override.tag_ids,
+    override_rows: list[adb.PostingOverride] = []
+    override_tag_rows: list[adb.PostingOverrideTag] = []
+    for posting_id, override in overrides.items():
+        if (
+            override.account_id is None
+            and override.category_id is None
+            and override.subcategory_id is None
+            and override.tag_ids is None
+        ):
+            continue
+        override_row_id = uuid.uuid4()
+        override_rows.append(
+            adb.PostingOverride(
+                id=override_row_id,
+                user_id=user_id,
+                posting_id=_posting_id(user_id, posting_id),
+                account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
+                category_id=_category_id(user_id, override.category_id),
+                subcategory_id=_category_id(user_id, override.subcategory_id),
+                tags_overridden=override.tag_ids is not None,
+            )
         )
-        for posting_id, override in overrides.items()
-        if override.account_id is not None
-        or override.category_id is not None
-        or override.subcategory_id is not None
-        or override.tag_ids is not None
-    )
+        if override.tag_ids is not None:
+            override_tag_rows.extend(
+                adb.PostingOverrideTag(user_id=user_id, override_id=override_row_id, tag_id=_tag_id(user_id, tag_id))
+                for tag_id in dict.fromkeys(override.tag_ids)
+            )
+    session.add_all(override_rows)
+    session.flush()
+    session.add_all(override_tag_rows)
     session.add_all(
         adb.PostingPendingSuggestion(
             user_id=user_id,

@@ -1670,8 +1670,9 @@ def _write_posting_with_tags(
     `accounting.importers.ingest._write_ledger`, the only place that ever
     does) — no importer format has a Tags column, and
     `PUT /postings/{id}/override` only ever writes the separate
-    `tag_ids_override` array. Calling `_write_ledger` straight from the test
-    is the only way to get a real join-table row to merge/repoint.
+    `posting_override_tags` join table. Calling `_write_ledger` straight
+    from the test is the only way to get a real `posting_tags` row to
+    merge/repoint.
     """
     posting = Posting(
         posting_id=posting_id,
