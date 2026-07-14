@@ -30,6 +30,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 from db.settings import DatabaseSettings
+from db.timestamped_backups import prune_local_timestamped_files, prune_r2_timestamped_objects, timestamped_filename
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOCAL_BACKUP_DIR = _REPO_ROOT / "data" / "backups" / "postgres"
@@ -172,7 +173,7 @@ def backup_relative_path(taken_at: datetime) -> str:
     -------
     str
     """
-    return f"{taken_at.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}.dump"
+    return timestamped_filename(taken_at, ".dump")
 
 
 def upload_backup(data: bytes, relative_path: str, credentials: BackupR2Credentials | None = None) -> str:
@@ -289,11 +290,7 @@ def prune_old_backups(retention_count: int | None = None, credentials: BackupR2C
     resolved_retention_count = retention_count if retention_count is not None else get_backup_settings().retention_count
     resolved = credentials if credentials is not None else get_backup_r2_credentials()
     if not resolved.configured():
-        backups = sorted(_LOCAL_BACKUP_DIR.glob("*.dump"), key=lambda path: path.name, reverse=True)
-        to_delete = backups[resolved_retention_count:]
-        for path in to_delete:
-            path.unlink()
-        return [str(path) for path in to_delete]
+        return prune_local_timestamped_files(_LOCAL_BACKUP_DIR, "*.dump", resolved_retention_count)
 
     client = boto3.client(
         "s3",
@@ -302,12 +299,8 @@ def prune_old_backups(retention_count: int | None = None, credentials: BackupR2C
         aws_secret_access_key=resolved.secret_access_key.get_secret_value() if resolved.secret_access_key else None,
         region_name="auto",
     )
-    response = client.list_objects_v2(Bucket=resolved.bucket_name, Prefix=f"{_R2_PREFIX}/")
-    keys = sorted((entry["Key"] for entry in response.get("Contents", [])), reverse=True)
-    to_delete_keys = keys[resolved_retention_count:]
-    for key in to_delete_keys:
-        client.delete_object(Bucket=resolved.bucket_name, Key=key)
-    return to_delete_keys
+    assert resolved.bucket_name is not None  # noqa: S101 — configured() above already guarantees this; documents the invariant for mypy
+    return prune_r2_timestamped_objects(client, resolved.bucket_name, f"{_R2_PREFIX}/", resolved_retention_count)
 
 
 def run_backup(retention_count: int | None = None) -> str:
