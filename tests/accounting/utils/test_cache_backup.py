@@ -1,13 +1,17 @@
-"""Tests for `accounting.utils.cache_backup`: one "last known good" backup per cache file."""
+"""Tests for `accounting.utils.cache_backup`: newest-N backup/restore for cache files, sharing `db.backup`'s own retention."""
 
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime
 
-from botocore.exceptions import ClientError
-
+from db.backup import BackupSettings
 from accounting.utils import cache_backup
 from accounting.utils.cache_backup import CacheBackupR2Credentials, backup_cache_file, restore_cache_file
+
+_T1 = datetime(2026, 7, 14, 12, 0, 0, tzinfo=UTC)
+_T2 = datetime(2026, 7, 14, 12, 5, 0, tzinfo=UTC)
+_T3 = datetime(2026, 7, 14, 12, 10, 0, tzinfo=UTC)
 
 
 class _FakeS3Client:
@@ -18,9 +22,13 @@ class _FakeS3Client:
         self.objects[Key] = Body
 
     def get_object(self, Bucket, Key):  # noqa: N803
-        if Key not in self.objects:
-            raise ClientError({"Error": {"Code": "404"}}, "GetObject")
         return {"Body": io.BytesIO(self.objects[Key])}
+
+    def list_objects_v2(self, Bucket, Prefix):  # noqa: N803
+        return {"Contents": [{"Key": key} for key in self.objects if key.startswith(Prefix)]}
+
+    def delete_object(self, Bucket, Key):  # noqa: N803
+        del self.objects[Key]
 
 
 def _configured_credentials() -> CacheBackupR2Credentials:
@@ -71,9 +79,10 @@ def test_r2_backup_then_restore_round_trips_bytes(monkeypatch, tmp_path) -> None
 
     backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials)
 
-    assert fake_client.objects == {
-        "cache-backups/accounting/exchange_rates.csv": b"date,currency,rate_to_base\n2026-06-01,EUR,1.10\n"
-    }
+    assert len(fake_client.objects) == 1
+    (key, body) = next(iter(fake_client.objects.items()))
+    assert key.startswith("cache-backups/accounting/exchange_rates.csv/")
+    assert body == b"date,currency,rate_to_base\n2026-06-01,EUR,1.10\n"
 
     local_path.write_text("this is now corrupted")
     restored = restore_cache_file(local_path, "exchange_rates.csv", credentials=credentials)
@@ -95,6 +104,99 @@ def test_r2_restore_returns_false_and_leaves_local_path_untouched_when_nothing_b
 
     assert restored is False
     assert local_path.read_text() == "still here"
+
+
+def test_backup_cache_file_keeps_multiple_local_versions_and_restore_uses_the_newest(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backups")
+    monkeypatch.setattr(cache_backup, "get_backup_settings", lambda: BackupSettings(_env_file=None))
+    local_path = tmp_path / "exchange_rates.csv"
+    credentials = CacheBackupR2Credentials(_env_file=None)
+
+    local_path.write_text("version-1")
+    backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials, taken_at=_T1)
+    local_path.write_text("version-2")
+    backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials, taken_at=_T2)
+
+    versions = list((tmp_path / "backups" / "exchange_rates.csv").glob("*.csv"))
+    assert len(versions) == 2
+
+    local_path.write_text("corrupted")
+    restore_cache_file(local_path, "exchange_rates.csv", credentials=credentials)
+
+    assert local_path.read_text() == "version-2"
+
+
+def test_backup_cache_file_prunes_local_versions_beyond_retention_count(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "backups")
+    monkeypatch.setattr(
+        cache_backup, "get_backup_settings", lambda: BackupSettings(_env_file=None, BACKUP_RETENTION_COUNT=2)
+    )
+    local_path = tmp_path / "exchange_rates.csv"
+    credentials = CacheBackupR2Credentials(_env_file=None)
+
+    for version, taken_at in enumerate((_T1, _T2, _T3)):
+        local_path.write_text(f"version-{version}")
+        backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials, taken_at=taken_at)
+
+    versions = list((tmp_path / "backups" / "exchange_rates.csv").glob("*.csv"))
+    assert len(versions) == 2
+
+
+def test_backup_cache_file_keeps_multiple_r2_versions_and_restore_uses_the_newest(monkeypatch, tmp_path) -> None:
+    fake_client = _FakeS3Client()
+    monkeypatch.setattr(cache_backup.boto3, "client", lambda *args, **kwargs: fake_client)
+    monkeypatch.setattr(cache_backup, "get_backup_settings", lambda: BackupSettings(_env_file=None))
+    local_path = tmp_path / "exchange_rates.csv"
+    credentials = _configured_credentials()
+
+    local_path.write_text("version-1")
+    backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials, taken_at=_T1)
+    local_path.write_text("version-2")
+    backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials, taken_at=_T2)
+
+    assert len(fake_client.objects) == 2
+
+    local_path.write_text("corrupted")
+    restore_cache_file(local_path, "exchange_rates.csv", credentials=credentials)
+
+    assert local_path.read_text() == "version-2"
+
+
+def test_backup_cache_file_prunes_r2_versions_beyond_retention_count(monkeypatch, tmp_path) -> None:
+    fake_client = _FakeS3Client()
+    monkeypatch.setattr(cache_backup.boto3, "client", lambda *args, **kwargs: fake_client)
+    monkeypatch.setattr(
+        cache_backup, "get_backup_settings", lambda: BackupSettings(_env_file=None, BACKUP_RETENTION_COUNT=2)
+    )
+    local_path = tmp_path / "exchange_rates.csv"
+    credentials = _configured_credentials()
+
+    for version, taken_at in enumerate((_T1, _T2, _T3)):
+        local_path.write_text(f"version-{version}")
+        backup_cache_file(local_path, "exchange_rates.csv", credentials=credentials, taken_at=taken_at)
+
+    assert len(fake_client.objects) == 2
+
+
+def test_backup_cache_file_migrates_a_pre_retention_single_file_backup_to_a_directory(tmp_path, monkeypatch) -> None:
+    """A backup written before this module kept multiple versions was a plain file at this same path."""
+    backups_root = tmp_path / "backups"
+    monkeypatch.setattr(cache_backup, "_LOCAL_BACKUP_ROOT", backups_root)
+    stale_backup_path = backups_root / "exchange_rates.csv"
+    stale_backup_path.parent.mkdir(parents=True)
+    stale_backup_path.write_bytes(b"old single-slot backup")
+
+    local_path = tmp_path / "exchange_rates.csv"
+    local_path.write_bytes(b"fresh version")
+
+    backup_cache_file(
+        local_path, "exchange_rates.csv", credentials=CacheBackupR2Credentials(_env_file=None), taken_at=_T1
+    )
+
+    assert stale_backup_path.is_dir()
+    versions = list(stale_backup_path.glob("*.csv"))
+    assert len(versions) == 1
+    assert versions[0].read_bytes() == b"fresh version"
 
 
 def test_resolve_is_none_when_unconfigured() -> None:

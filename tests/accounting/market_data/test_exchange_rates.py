@@ -153,9 +153,9 @@ def test_update_rate_history_cache_backs_up_the_cache_file_after_writing(tmp_pat
 
     exchange_rates.update_rate_history_cache(config)
 
-    backup_path = tmp_path / "backups" / "exchange_rates.csv"
-    assert backup_path.exists()
-    assert backup_path.read_bytes() == config.exchange_rates_csv_path.read_bytes()
+    versions = list((tmp_path / "backups" / "exchange_rates.csv").glob("*.csv"))
+    assert len(versions) == 1
+    assert versions[0].read_bytes() == config.exchange_rates_csv_path.read_bytes()
 
 
 def test_load_rate_history_repairs_a_corrupted_cache_from_backup(tmp_path, monkeypatch) -> None:

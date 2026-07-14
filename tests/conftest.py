@@ -38,6 +38,7 @@ from db.settings import AppRuntimeDatabaseSettings, DatabaseSettings, TestDataba
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 """Not tied to any real account — a stable, arbitrary id for tests and fixtures to seed a `User` row under.
@@ -53,17 +54,21 @@ user fresh, from that user's own verified session.
 # imported unconditionally, so a tree with only one of them still collects fine.
 try:
     import accounting.db  # noqa: F401  (registers accounting.* tables on Base.metadata)
+    import accounting.utils.cache_backup as accounting_cache_backup
     import accounting.utils.statement_archive as accounting_storage
 except ModuleNotFoundError:
+    accounting_cache_backup = None
     accounting_storage = None
 
-try:
+try:  # noqa: PLW0717 — six guarded imports for one optional package, not meaningfully splittable
     import trades.api as trades_api
     import trades.db  # noqa: F401  (registers trades.* tables on Base.metadata)
+    import trades.utils.cache_backup as trades_cache_backup
     import trades.utils.statement_archive as trades_storage
     from db.current_user import get_current_user_id
     from trades.api.auth import require_clerk_session
 except ModuleNotFoundError:
+    trades_cache_backup = None
     trades_storage = None
     trades_api = None
     require_clerk_session = None
@@ -82,6 +87,22 @@ def _no_r2_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             accounting_storage, "get_r2_credentials", lambda: accounting_storage.R2Credentials(_env_file=None)
         )
+
+
+@pytest.fixture(autouse=True)
+def _cache_backups_use_a_tmp_dir_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Redirect both cache-backup modules' local-disk fallback into this test's own `tmp_path`.
+
+    Most market-data tests only mock the fetch, not `backup_cache_file`
+    itself — without this, a real (R2-disabled, per `_no_r2_by_default`)
+    call would fall back to writing real files into this repo's own
+    `data/backups/cache/` directory, accumulating across every test run
+    instead of staying isolated per test.
+    """
+    if accounting_cache_backup is not None:
+        monkeypatch.setattr(accounting_cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "cache-backups" / "accounting")
+    if trades_cache_backup is not None:
+        monkeypatch.setattr(trades_cache_backup, "_LOCAL_BACKUP_ROOT", tmp_path / "cache-backups" / "trades")
 
 
 @pytest.fixture(autouse=True)
