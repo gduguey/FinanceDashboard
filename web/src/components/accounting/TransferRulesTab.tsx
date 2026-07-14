@@ -150,8 +150,6 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
       rule_id: `manual:${Date.now()}`,
       description_contains: draft.descriptionContains,
       account_id: null,
-      category_id: null,
-      subcategory_id: null,
       counterparty_account_id: draft.counterpartyAccountId,
       priority: 100,
       description: '',

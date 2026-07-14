@@ -337,10 +337,11 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
 
     Doesn't touch `store.categories` itself (the caller already applied
     `plan_category_rename`'s own result there) — this only fixes the other
-    places a category id is stored: transfer rules, category patterns,
-    budgets (both per-month and general), and posting splits. The raw
-    ledger cache and manual per-posting overrides live outside
-    `AccountingStore` entirely and must be remapped separately.
+    places a category id is stored: category patterns, budgets (both
+    per-month and general), and posting splits. `TransferRule` has no
+    category fields of its own (see its own docstring). The raw ledger
+    cache and manual per-posting overrides live outside `AccountingStore`
+    entirely and must be remapped separately.
 
     If the merge target already has a budget (or general budget) for the
     same month/category/subcategory the merged-away category also had one
@@ -388,10 +389,6 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         """
         return category_id in id_remap or subcategory_id in id_remap
 
-    rules = [
-        rule.model_copy(update={"category_id": remap(rule.category_id), "subcategory_id": remap(rule.subcategory_id)})
-        for rule in store.rules
-    ]
     patterns = {
         pattern_id: pattern.model_copy(
             update={"category_id": remap(pattern.category_id), "subcategory_id": remap(pattern.subcategory_id)}
@@ -434,7 +431,6 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
     }
     return store.model_copy(
         update={
-            "rules": rules,
             "category_patterns": patterns,
             "budgets": list(budgets_by_key.values()),
             "general_budgets": general_budgets,
@@ -479,9 +475,10 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
     entirely (see `importers.ingest.uncategorize_ledger_postings` and the
     router's own override pass, mirroring `remap_category_ids`'s split).
 
-    `TransferRule`/`PostingSplitLeg` have nullable `category_id`/
-    `subcategory_id` fields, so a reference there is simply cleared —
-    unlike a merge, there's no replacement id to repoint at.
+    `PostingSplitLeg` has nullable `category_id`/`subcategory_id` fields,
+    so a reference there is simply cleared — unlike a merge, there's no
+    replacement id to repoint at. `TransferRule` has no category fields of
+    its own (see its own docstring), so there's nothing to clear there.
     `Budget`/`GeneralBudget`/`CategoryPattern` require a `category_id`
     (never null): a row whose own `category_id` is being deleted has
     nothing left to be, so it's dropped entirely; one only referencing a
@@ -511,10 +508,6 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
         """
         return None if field_id in category_ids else field_id
 
-    rules = [
-        rule.model_copy(update={"category_id": clear(rule.category_id), "subcategory_id": clear(rule.subcategory_id)})
-        for rule in store.rules
-    ]
     patterns = {
         pattern_id: pattern.model_copy(update={"subcategory_id": clear(pattern.subcategory_id)})
         for pattern_id, pattern in store.category_patterns.items()
@@ -549,7 +542,6 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
     }
     return store.model_copy(
         update={
-            "rules": rules,
             "category_patterns": patterns,
             "budgets": budgets,
             "general_budgets": general_budgets,
@@ -854,7 +846,6 @@ def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.
 def _rule_from_row(
     row: adb.TransferRule,
     account_natural_key_by_id: dict[uuid.UUID, str],
-    category_natural_key_by_id: dict[uuid.UUID, str],
 ) -> TransferRule:
     """Convert one persisted `TransferRule` row back into its pydantic model, using natural keys.
 
@@ -866,8 +857,6 @@ def _rule_from_row(
         rule_id=row.natural_key,
         description_contains=row.description_contains,
         account_id=account_natural_key_by_id.get(row.account_id) if row.account_id is not None else None,
-        category_id=category_natural_key_by_id.get(row.category_id) if row.category_id is not None else None,
-        subcategory_id=category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None,
         counterparty_account_id=account_natural_key_by_id.get(row.counterparty_account_id)
         if row.counterparty_account_id is not None
         else None,
@@ -979,7 +968,7 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         for row in session.query(adb.Tag).filter_by(user_id=user_id)
     }
     rules = [
-        _rule_from_row(row, account_natural_key_by_id, category_natural_key_by_id)
+        _rule_from_row(row, account_natural_key_by_id)
         for row in session.query(adb.TransferRule).filter_by(user_id=user_id)
     ]
     category_patterns = {
@@ -1469,8 +1458,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
             natural_key=rule.rule_id,
             description_contains=rule.description_contains,
             account_id=_account_id(user_id, rule.account_id) if rule.account_id is not None else None,
-            category_id=_category_id(user_id, rule.category_id),
-            subcategory_id=_category_id(user_id, rule.subcategory_id),
             counterparty_account_id=_account_id(user_id, rule.counterparty_account_id)
             if rule.counterparty_account_id is not None
             else None,

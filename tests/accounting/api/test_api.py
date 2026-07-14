@@ -1237,7 +1237,6 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
                 "rule_id": "payroll-rule",
                 "description_contains": "PAYROLL",
                 "counterparty_account_id": employer["account_id"],
-                "category_id": "income:salary",
                 "priority": 0,
             }
         ],
@@ -1246,7 +1245,6 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
     assert updated_payroll["resolved_by_transfer_rule_id"] == "payroll-rule"
-    assert updated_payroll["category_id"] == "income:salary"
 
 
 def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:

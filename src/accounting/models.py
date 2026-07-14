@@ -159,12 +159,16 @@ class Tag(BaseModel):
 
 
 class TransferRule(BaseModel):
-    """A user-maintained trigger/action pair for automatically resolving a posting's counterparty and category.
+    """A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
 
     Named specifically for what it's for — linking two of your own
     accounts together as an internal transfer — to avoid reading as the
     same thing as a `CategoryPattern` below, which only ever suggests a
-    category and never resolves a counterparty.
+    category and never resolves a counterparty. Resolving a counterparty
+    into a real account you hold makes the transaction an internal
+    transfer, which is never categorizable in the first place (see
+    `dashboard.income_statement.real_income_expense_legs`) — so unlike
+    `CategoryPattern`, this has no category fields of its own to set.
 
     Every field on the trigger side must match for the rule to apply
     (`description_contains` is a case-insensitive substring check;
@@ -189,8 +193,6 @@ class TransferRule(BaseModel):
     rule_id: str = Field(min_length=1)
     description_contains: str = Field(min_length=1)
     account_id: str | None = None
-    category_id: str | None = None
-    subcategory_id: str | None = None
     counterparty_account_id: str | None = None
     priority: int = 0
     description: str = ""

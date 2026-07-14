@@ -40,18 +40,20 @@ EQORE_RULE = TransferRule(
     rule_id="eqore-payroll",
     description_contains="EQORE Inc.",
     counterparty_account_id="employer:eqore",
-    category_id="income:salary",
 )
 
 
-def test_apply_rules_matches_a_rule_and_sets_category() -> None:
+def test_transfer_rule_has_no_category_fields() -> None:
+    assert "category_id" not in TransferRule.model_fields
+    assert "subcategory_id" not in TransferRule.model_fields
+
+
+def test_apply_rules_matches_a_rule_and_repoints_the_counterparty() -> None:
     postings = postings_to_frame(
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
     )
     resolved = apply_rules(postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT})
 
-    real_leg = resolved.filter(pl.col("account_id") == "sofi:savings:3680").row(0, named=True)
-    assert real_leg["category_id"] == "income:salary"
     counterparty_leg = resolved.filter(pl.col("account_id") == "employer:eqore").row(0, named=True)
     assert counterparty_leg["amount"] == pytest.approx(-2000.0)
 
