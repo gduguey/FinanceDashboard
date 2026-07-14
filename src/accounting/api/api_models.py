@@ -25,6 +25,7 @@ from accounting.models import (
     GeneralBudget,
     Goal,
     GoalContribution,
+    GoalContributionOrigin,
     ManualTransfer,
     OpeningBalance,
     OtherAsset,
@@ -46,8 +47,11 @@ class AccountingStoreResponse(BaseModel):
 
     Mirrors `store.AccountingStore` field-for-field, except `rules` is
     exposed as `transfer_rules` (the name every other endpoint and the
-    frontend already use for it) and `dismissed_suggestions` is omitted —
-    nothing in the frontend reads the whole store for those.
+    frontend already use for it). Dismissed suggestions aren't part of
+    `AccountingStore` at all — see `GET /dismissed-suggestions` and
+    `store.list_dismissed_suggestions`/`dismissed_suggestion_ids`, which
+    query that table directly rather than through the whole-store
+    round-trip every other entity here goes through.
     """
 
     accounts: dict[str, Account]
@@ -114,6 +118,50 @@ class BudgetToDeletePreview(BaseModel):
     month: str | None
     amount: float
     currency: CurrencyCode
+
+
+class BudgetUpsert(BaseModel):
+    """Request body for `POST /api/accounting/budgets` — sets one month's target for one category.
+
+    `budget_id` is never taken from the client — derived server-side from
+    `(month, category_id, subcategory_id)`, the same natural key
+    `PUT /budgets/{budget_id}` used to require the whole list to encode
+    implicitly. Posting this twice for the same `(month, category_id,
+    subcategory_id)` replaces the existing target rather than erroring —
+    unlike a category/tag name, there's no ambiguity a human needs to
+    confirm here, every tuple maps to exactly one budget.
+    """
+
+    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    amount: float
+    currency: CurrencyCode = "USD"
+
+
+class GeneralBudgetUpsert(BaseModel):
+    """Request body for `POST /api/accounting/general-budgets` — sets one category's standing target.
+
+    Same upsert-by-natural-key reasoning as `BudgetUpsert`, keyed by
+    `(category_id, subcategory_id)` instead of also including a month.
+    """
+
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    amount: float
+    currency: CurrencyCode = "USD"
+
+
+class BudgetIdResponse(BaseModel):
+    """Response body naming one budget, for endpoints whose only real effect is removing something."""
+
+    budget_id: str
+
+
+class GeneralBudgetKeyResponse(BaseModel):
+    """Response body naming one general budget's key, for endpoints whose only real effect is removing something."""
+
+    key: str
 
 
 class CategoryRenamePreviewResponse(BaseModel):
@@ -401,6 +449,68 @@ class PostingIdResponse(BaseModel):
     """Response body naming one posting, for endpoints whose only real effect is removing something."""
 
     posting_id: str
+
+
+class PostingMergeUpsert(BaseModel):
+    """Request body for `POST /api/accounting/posting-merges` — records one duplicate-resolution decision.
+
+    `merge_id` is never taken from the client — derived server-side from
+    `kept_transaction_id`, since a transaction can only ever be the kept
+    side of one merge decision at a time. Posting this twice for the same
+    `kept_transaction_id` replaces the existing decision.
+    """
+
+    kept_transaction_id: str = Field(min_length=1)
+    duplicate_transaction_ids: list[str] = Field(min_length=1)
+    description: str | None = None
+
+
+class PostingMergeIdResponse(BaseModel):
+    """Response body naming one posting merge, for endpoints whose only real effect is removing something."""
+
+    merge_id: str
+
+
+class GoalContributionCreate(BaseModel):
+    """Request body for `POST /api/accounting/goal-contributions` — records one new dated allocation.
+
+    `contribution_id` is never taken from the client — unlike a budget's
+    `(month, category_id)`, a contribution is an arbitrary event with no
+    natural key to derive one from, so the server generates an opaque one.
+    """
+
+    goal_id: str = Field(min_length=1)
+    date: datetime
+    amount: float
+    currency: CurrencyCode = "USD"
+    note: str = ""
+    source_posting_id: str | None = None
+    origin: GoalContributionOrigin = "manual"
+    edited: bool = False
+
+
+class GoalContributionUpdate(BaseModel):
+    """Request body for `PUT /api/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
+
+    Every field is required, mirroring `PUT /accounts/{account_id}` — the
+    caller already merges its patch into the existing row client-side
+    before sending, so there's no partial-update ambiguity to resolve here.
+    """
+
+    goal_id: str = Field(min_length=1)
+    date: datetime
+    amount: float
+    currency: CurrencyCode = "USD"
+    note: str = ""
+    source_posting_id: str | None = None
+    origin: GoalContributionOrigin = "manual"
+    edited: bool = False
+
+
+class GoalContributionIdResponse(BaseModel):
+    """Response body naming one goal contribution, for endpoints whose only real effect is removing something."""
+
+    contribution_id: str
 
 
 class LlmProviderUsage(BaseModel):

@@ -44,12 +44,16 @@ from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     StoreVersionConflictError,
+    dismiss_suggestion,
+    dismissed_suggestion_ids,
     get_store_version,
+    list_dismissed_suggestions,
     load_overrides,
     load_store,
     remap_tag_ids,
     save_overrides,
     save_store,
+    undismiss_suggestion,
 )
 
 if TYPE_CHECKING:
@@ -381,11 +385,6 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
                 )
             ],
             "withdrawal_priorities": [WithdrawalPriorityEntry(goal_id="g1", priority=1)],
-            "dismissed_suggestions": {
-                "ds1": DismissedSuggestion(
-                    suggestion_id="ds1", kind="duplicate", description="dup", dismissed_at=datetime(2026, 1, 6)
-                )
-            },
         }
     )
 
@@ -410,7 +409,6 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
     assert reloaded.goal_contributions["gc1"].amount == 100
     assert reloaded.recurring_additions[0].value == 50
     assert reloaded.withdrawal_priorities[0].goal_id == "g1"
-    assert reloaded.dismissed_suggestions["ds1"].kind == "duplicate"
 
 
 def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -582,3 +580,115 @@ def test_save_store_with_a_stale_expected_version_raises_and_does_not_bump(
     with pytest.raises(StoreVersionConflictError):
         save_store(store, db_session, user_id=test_user_id)
     assert get_store_version(db_session, user_id=test_user_id) == current
+
+
+def test_dismissed_suggestion_ids_is_empty_for_a_user_who_never_dismissed_anything(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    assert dismissed_suggestion_ids(db_session, test_user_id, {"transfer:a", "duplicate:b"}) == set()
+
+
+def test_dismiss_then_check_ids_finds_only_the_dismissed_ones(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    found = dismissed_suggestion_ids(db_session, test_user_id, {"transfer:a", "duplicate:b"})
+
+    assert found == {"transfer:a"}
+
+
+def test_dismiss_suggestion_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
+    other_user_id = uuid.uuid4()
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com", hashed_password="unset"))  # noqa: S106
+    db_session.commit()
+    dismiss_suggestion(
+        db_session,
+        other_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    assert dismissed_suggestion_ids(db_session, test_user_id, {"transfer:a"}) == set()
+
+
+def test_list_dismissed_suggestions_is_empty_when_none_dismissed(db_session: Session, test_user_id: uuid.UUID) -> None:
+    assert list_dismissed_suggestions(db_session, test_user_id) == []
+
+
+def test_list_dismissed_suggestions_orders_most_recent_first(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+    )
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="duplicate:b",
+            kind="duplicate",
+            description="b",
+            dismissed_at=datetime(2026, 1, 5, tzinfo=UTC),
+        ),
+    )
+
+    listed = list_dismissed_suggestions(db_session, test_user_id)
+
+    assert [entry.suggestion_id for entry in listed] == ["duplicate:b", "transfer:a"]
+
+
+def test_dismiss_suggestion_twice_replaces_rather_than_duplicates(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a",
+            kind="transfer",
+            description="first",
+            dismissed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a",
+            kind="transfer",
+            description="second",
+            dismissed_at=datetime(2026, 1, 2, tzinfo=UTC),
+        ),
+    )
+
+    listed = list_dismissed_suggestions(db_session, test_user_id)
+
+    assert len(listed) == 1
+    assert listed[0].description == "second"
+
+
+def test_undismiss_suggestion_removes_it_and_reports_it_existed(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    removed = undismiss_suggestion(db_session, test_user_id, "transfer:a")
+
+    assert removed is True
+    assert list_dismissed_suggestions(db_session, test_user_id) == []
+
+
+def test_undismiss_suggestion_reports_false_when_nothing_to_remove(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    assert undismiss_suggestion(db_session, test_user_id, "transfer:nope") is False

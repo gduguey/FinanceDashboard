@@ -56,7 +56,7 @@ def month_bounds(month: str) -> tuple[date, date]:
     return start, next_month_start - timedelta(days=1)
 
 
-def _previous_month(month: str) -> str:
+def previous_month(month: str) -> str:
     """Return the `"YYYY-MM"` immediately before `month`.
 
     Returns
@@ -66,6 +66,37 @@ def _previous_month(month: str) -> str:
     start, _ = month_bounds(month)
     previous = start - timedelta(days=1)
     return previous.strftime("%Y-%m")
+
+
+def suggested_budget_amount_window(month: str, lookback_months: int) -> tuple[date, date] | None:
+    """First and last calendar day across the `lookback_months` months immediately before `month`.
+
+    The exact date range `suggested_budget_amount` needs `postings`
+    filtered to — lets a caller (e.g. an API endpoint scoping its own
+    `load_ledger` call) query only that range instead of the full history,
+    before calling `suggested_budget_amount` itself.
+
+    Parameters
+    ----------
+    month
+        The month (`"YYYY-MM"`) being budgeted; only months before it are looked at.
+    lookback_months
+        How many preceding calendar months to look at.
+
+    Returns
+    -------
+    tuple[datetime.date, datetime.date] or None
+        `(earliest_start, latest_end)`, or `None` if `lookback_months` is 0.
+    """
+    cursor = month
+    months: list[str] = []
+    for _ in range(lookback_months):
+        cursor = previous_month(cursor)
+        months.append(cursor)
+    if not months:
+        return None
+    bounds = [month_bounds(one_month) for one_month in months]
+    return min(start for start, _ in bounds), max(end for _, end in bounds)
 
 
 def suggested_budget_amount(
@@ -113,7 +144,7 @@ def suggested_budget_amount(
     cursor = month
     months: list[str] = []
     for _ in range(lookback_months):
-        cursor = _previous_month(cursor)
+        cursor = previous_month(cursor)
         months.append(cursor)
     if not months:
         return 0.0

@@ -1119,6 +1119,149 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
     assert remaining_transaction_ids == {transaction_ids[0]}
 
 
+def test_monthly_income_expense_correctly_drops_a_duplicate_that_straddles_the_query_window(client) -> None:
+    """A dashboard endpoint scoped to one month must still resolve a merge whose two sides are in different months.
+
+    `_resolved_postings_and_store` now passes `since`/`until` straight
+    through to `load_ledger`'s own SQL filter — safe even for a merge like
+    this one (kept side dated the last day of June, duplicate dated the
+    first day of July) because `apply_posting_merges` drops a duplicate
+    purely by transaction id, read from `store.posting_merges` in full
+    (never date-filtered), regardless of whether the transaction it was
+    merged into even appears in this same date-limited frame. So querying
+    "July only" still correctly drops the July-dated duplicate, even
+    though the June-dated kept transaction was never loaded at all.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic")
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("a.csv", "Date,Description,Amount\n2026-06-30,WHOLE FOODS #123,-42.50\n", "text/csv")},
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("b.csv", "Date,Description,Amount\n2026-07-01,Whole Foods Market,-42.50\n", "text/csv")},
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+            "separator": ",",
+        },
+    )
+    suggestions = client.get("/api/accounting/duplicate-suggestions").json()
+    assert len(suggestions) == 1
+    postings_in_group = suggestions[0]["postings"]
+    kept_id = next(p for p in postings_in_group if p["posted_at"].startswith("2026-06-30"))["transaction_id"]
+    duplicate_id = next(p for p in postings_in_group if p["posted_at"].startswith("2026-07-01"))["transaction_id"]
+    merge_response = client.put(
+        "/api/accounting/posting-merges",
+        json={"m1": {"merge_id": "m1", "kept_transaction_id": kept_id, "duplicate_transaction_ids": [duplicate_id]}},
+    )
+    assert merge_response.status_code == 200
+
+    july = client.get(
+        "/api/accounting/income-statement/monthly", params={"start": "2026-07-01", "end": "2026-07-31"}
+    ).json()
+    july_row = next((row for row in july if row["month"] == "2026-07"), None)
+    assert july_row is None or july_row["expense"] == pytest.approx(0.0)
+
+    june = client.get(
+        "/api/accounting/income-statement/monthly", params={"start": "2026-06-01", "end": "2026-06-30"}
+    ).json()
+    june_row = next(row for row in june if row["month"] == "2026-06")
+    assert june_row["expense"] == pytest.approx(42.50)
+
+
+def _two_duplicate_transaction_ids(client) -> tuple[str, str]:
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic")
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("a.csv", "Date,Description,Amount\n2026-06-30,WHOLE FOODS #123,-42.50\n", "text/csv")},
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("b.csv", "Date,Description,Amount\n2026-06-30,Whole Foods Market,-42.50\n", "text/csv")},
+        data={
+            "institution": "Generic",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+            "separator": ",",
+        },
+    )
+    suggestions = client.get("/api/accounting/duplicate-suggestions").json()
+    transaction_ids = [posting["transaction_id"] for posting in suggestions[0]["postings"]]
+    return transaction_ids[0], transaction_ids[1]
+
+
+def test_post_posting_merge_creates_one_and_resolves_the_duplicate(client) -> None:
+    kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
+
+    response = client.post(
+        "/api/accounting/posting-merges",
+        json={
+            "kept_transaction_id": kept_id,
+            "duplicate_transaction_ids": [duplicate_id],
+            "description": "Whole Foods",
+        },
+    )
+
+    assert response.status_code == 200
+    merge = response.json()
+    assert merge["merge_id"] == f"merge:{kept_id}"
+    assert merge["kept_transaction_id"] == kept_id
+    assert client.get("/api/accounting/duplicate-suggestions").json() == []
+
+
+def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_than_duplicates(client) -> None:
+    kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
+    client.post(
+        "/api/accounting/posting-merges",
+        json={"kept_transaction_id": kept_id, "duplicate_transaction_ids": [duplicate_id]},
+    )
+
+    response = client.post(
+        "/api/accounting/posting-merges",
+        json={"kept_transaction_id": kept_id, "duplicate_transaction_ids": [duplicate_id], "description": "updated"},
+    )
+
+    assert response.status_code == 200
+    merges = client.get("/api/accounting/store").json()["posting_merges"]
+    assert list(merges.keys()) == [f"merge:{kept_id}"]
+    assert merges[f"merge:{kept_id}"]["description"] == "updated"
+
+
+def test_delete_posting_merge_undoes_it(client) -> None:
+    kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
+    client.post(
+        "/api/accounting/posting-merges",
+        json={"kept_transaction_id": kept_id, "duplicate_transaction_ids": [duplicate_id]},
+    )
+
+    response = client.delete(f"/api/accounting/posting-merges/merge:{kept_id}")
+
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["posting_merges"] == {}
+    assert len(client.get("/api/accounting/duplicate-suggestions").json()) == 1
+
+
+def test_delete_posting_merge_404s_for_an_unknown_id(client) -> None:
+    response = client.delete("/api/accounting/posting-merges/does-not-exist")
+    assert response.status_code == 404
+
+
 def _seed_chase_transfer_suggestion(client) -> None:
     _import_chase_checking(client)
     credit_card_csv = (
@@ -1875,6 +2018,122 @@ def test_put_general_budgets_persists_separately_from_per_month_budgets(client) 
     store = client.get("/api/accounting/store").json()
     assert store["general_budgets"]["expense:food-drink"]["amount"] == pytest.approx(500.0)
     assert store["budgets"][0]["amount"] == pytest.approx(100.0)
+
+
+def test_post_budget_upserts_one_budget_without_touching_others(client) -> None:
+    client.put(
+        "/api/accounting/budgets",
+        json=[{"budget_id": "existing", "month": "2026-05", "category_id": "expense:transport", "amount": 40.0}],
+    )
+
+    response = client.post(
+        "/api/accounting/budgets",
+        json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 300.0, "currency": "USD"},
+    )
+
+    assert response.status_code == 200
+    created = response.json()
+    assert created["budget_id"] == "2026-06:expense:food-drink"
+    assert created["amount"] == pytest.approx(300.0)
+
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {"existing", "2026-06:expense:food-drink"}
+
+
+def test_post_budget_with_a_subcategory_includes_it_in_the_derived_id(client) -> None:
+    response = client.post(
+        "/api/accounting/budgets",
+        json={
+            "month": "2026-06",
+            "category_id": "expense:food-drink",
+            "subcategory_id": "expense:food-drink:groceries",
+            "amount": 200.0,
+        },
+    )
+    assert response.json()["budget_id"] == "2026-06:expense:food-drink:expense:food-drink:groceries"
+
+
+def test_post_budget_twice_for_the_same_key_replaces_rather_than_duplicates(client) -> None:
+    client.post(
+        "/api/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}
+    )
+    client.post(
+        "/api/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 250.0}
+    )
+
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    matching = [b for b in budgets if b["budget_id"] == "2026-06:expense:food-drink"]
+    assert len(matching) == 1
+    assert matching[0]["amount"] == pytest.approx(250.0)
+
+
+def test_delete_budget_removes_only_that_one(client) -> None:
+    client.put(
+        "/api/accounting/budgets",
+        json=[
+            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0},
+            {"budget_id": "b2", "month": "2026-06", "category_id": "expense:transport", "amount": 50.0},
+        ],
+    )
+
+    response = client.delete("/api/accounting/budgets/b1")
+
+    assert response.status_code == 200
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {"b2"}
+
+
+def test_delete_budget_404s_for_an_unknown_id(client) -> None:
+    response = client.delete("/api/accounting/budgets/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_post_general_budget_upserts_one_without_touching_others(client) -> None:
+    client.put(
+        "/api/accounting/general-budgets",
+        json={"expense:transport": {"category_id": "expense:transport", "amount": 40.0}},
+    )
+
+    response = client.post(
+        "/api/accounting/general-budgets", json={"category_id": "expense:food-drink", "amount": 500.0}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["amount"] == pytest.approx(500.0)
+    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
+    assert set(general_budgets.keys()) == {"expense:transport", "expense:food-drink"}
+
+
+def test_post_general_budget_with_a_subcategory_keys_by_subcategory(client) -> None:
+    response = client.post(
+        "/api/accounting/general-budgets",
+        json={"category_id": "expense:food-drink", "subcategory_id": "expense:food-drink:groceries", "amount": 200.0},
+    )
+    assert response.status_code == 200
+    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
+    assert "expense:food-drink:groceries" in general_budgets
+    assert "expense:food-drink" not in general_budgets
+
+
+def test_delete_general_budget_removes_only_that_one(client) -> None:
+    client.put(
+        "/api/accounting/general-budgets",
+        json={
+            "expense:food-drink": {"category_id": "expense:food-drink", "amount": 500.0},
+            "expense:transport": {"category_id": "expense:transport", "amount": 40.0},
+        },
+    )
+
+    response = client.delete("/api/accounting/general-budgets/expense:food-drink")
+
+    assert response.status_code == 200
+    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
+    assert set(general_budgets.keys()) == {"expense:transport"}
+
+
+def test_delete_general_budget_404s_for_an_unknown_key(client) -> None:
+    response = client.delete("/api/accounting/general-budgets/does-not-exist")
+    assert response.status_code == 404
 
 
 def test_get_suggested_budget_amount_returns_zero_with_no_history(client) -> None:

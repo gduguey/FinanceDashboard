@@ -750,7 +750,7 @@ export function ImportPage() {
           </TabsContent>
 
           <TabsContent value="duplicates">
-            {store && <DuplicateSuggestionsPanel accounts={store.accounts} existingMerges={store.posting_merges} />}
+            {store && <DuplicateSuggestionsPanel accounts={store.accounts} />}
           </TabsContent>
 
           <TabsContent value="paystub">
