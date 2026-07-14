@@ -8,9 +8,9 @@ import { ACTIVE_LANDING_PAGE, LANDING_PAGES } from '@/components/layout/landing-
 // component ever renders (no sidebar, no routes, no data fetch) until
 // Clerk confirms a signed-in session, so there's no flash of real
 // content while auth is still resolving or before sign-in completes.
-// A link to this app always resolves to the same page either way — the
-// active landing page while signed out, never Clerk's bare sign-in form
-// on its own. Swap ACTIVE_LANDING_PAGE in landing-pages/index.ts to change it.
+// A link to this app always resolves to one of the landing pages while
+// signed out — never Clerk's bare sign-in form on its own. Which one is
+// picked at random per page load; see landing-pages/index.ts's ROTATION.
 export function AuthGate({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth()
   const LandingPage = LANDING_PAGES[ACTIVE_LANDING_PAGE]

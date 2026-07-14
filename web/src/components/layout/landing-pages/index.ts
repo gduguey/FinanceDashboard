@@ -15,15 +15,26 @@ export const LANDING_PAGES = {
 
 export type LandingPageKey = keyof typeof LANDING_PAGES
 
-const DEFAULT_LANDING_PAGE: LandingPageKey = 'summitPiggyBank'
-
 function isLandingPageKey(key: string): key is LandingPageKey {
   return key in LANDING_PAGES
 }
 
-// Set via VITE_LANDING_PAGE (web/.env.local for local dev; LANDING_PAGE in
-// .env.docker/.env.staging on the VM — see deploy/deploy.sh) so switching
-// which page every signed-out visitor sees doesn't require a code change.
+// The pages that go into the random rotation — every signed-out visitor
+// gets one of these, picked at random on each page load. classicDashboard
+// is deliberately left out: it's the sober fallback kept in reserve, not
+// part of the rotation. Add a new variant's key here once it's ready to
+// go live alongside the others.
+const ROTATION: LandingPageKey[] = ['summitPiggyBank', 'bergeriePastoral', 'synthwaveChase']
+
+function randomLandingPage(): LandingPageKey {
+  return ROTATION[Math.floor(Math.random() * ROTATION.length)]
+}
+
+// VITE_LANDING_PAGE (web/.env.local for local dev; LANDING_PAGE in
+// .env.docker/.env.staging on the VM — see deploy/deploy.sh) pins one
+// specific page instead of randomizing — e.g. to force classicDashboard
+// back, or to preview a single variant. Falls back to the random rotation
+// when unset or invalid. Picked once per page load, not per re-render.
 const requested = import.meta.env.VITE_LANDING_PAGE
 export const ACTIVE_LANDING_PAGE: LandingPageKey =
-  requested && isLandingPageKey(requested) ? requested : DEFAULT_LANDING_PAGE
+  requested && isLandingPageKey(requested) ? requested : randomLandingPage()
