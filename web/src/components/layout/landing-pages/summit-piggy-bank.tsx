@@ -69,7 +69,6 @@ interface Coin {
 // See landing-pages/index.ts to make this the active one.
 export function SummitPiggyBankLanding() {
   const { openSignIn } = useClerk()
-  const [caught, setCaught] = useState(false)
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
   const [credits, setCredits] = useState(0)
   const [coins, setCoins] = useState<Coin[]>([])
@@ -94,7 +93,6 @@ export function SummitPiggyBankLanding() {
   const login = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
       e.stopPropagation()
-      setCaught(true)
       const pieces: ConfettiPiece[] = Array.from({ length: 90 }, (_, i) => ({
         id: i,
         left: Math.random() * 100,
@@ -250,21 +248,12 @@ export function SummitPiggyBankLanding() {
       </div>
 
       {/* ---- Drifting login buttons ---- */}
-      {!caught &&
-        LOGIN_BUTTONS.map((b) => (
-          <button key={b.id} className={`login ${b.cls}`} onClick={login}>
-            <span className="login-note">{b.note}</span>
-            {b.label}
-          </button>
-        ))}
-
-      {caught && (
-        <div className="welcome">
-          ★ ACCESS GRANTED ★<br />
-          WELCOME, PLAYER 1<br />
-          <span className="welcome-sub">the piggy shrine is counting your coins... 99%</span>
-        </div>
-      )}
+      {LOGIN_BUTTONS.map((b) => (
+        <button key={b.id} className={`login ${b.cls}`} onClick={login}>
+          <span className="login-note">{b.note}</span>
+          {b.label}
+        </button>
+      ))}
 
       {/* ---- Confetti ---- */}
       {confetti.map((p) => (
@@ -884,22 +873,6 @@ const css = `
   75%  { left: 46%; top: 90%; }
   100% { left: 40%; top: 84%; }
 }
-
-/* ================= WELCOME ================= */
-.welcome {
-  position: absolute;
-  left: 50%; top: 42%;
-  transform: translateX(-50%);
-  z-index: 13;
-  text-align: center;
-  font-size: clamp(12px, 2.4vw, 20px);
-  color: #fff;
-  text-shadow: 3px 3px 0 #ff2079, 0 0 16px rgba(255,230,0,0.9);
-  animation: blink 1.2s steps(1) infinite;
-  pointer-events: none;
-  line-height: 2;
-}
-.welcome-sub { font-size: 0.55em; color: #ffe600; }
 
 /* ================= CONFETTI ================= */
 .confetti {

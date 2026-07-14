@@ -68,7 +68,6 @@ interface Coin {
 // See landing-pages/index.ts to make this the active one.
 export function BergeriePastoralLanding() {
   const { openSignIn } = useClerk()
-  const [caught, setCaught] = useState(false)
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
   const [credits, setCredits] = useState(0)
   const [coins, setCoins] = useState<Coin[]>([])
@@ -85,7 +84,6 @@ export function BergeriePastoralLanding() {
   const login = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
       e.stopPropagation()
-      setCaught(true)
       const pieces: ConfettiPiece[] = Array.from({ length: 90 }, (_, i) => ({
         id: i,
         left: Math.random() * 100,
@@ -225,21 +223,12 @@ export function BergeriePastoralLanding() {
       </div>
 
       {/* ---- Drifting login buttons (they wander, they don't flee) ---- */}
-      {!caught &&
-        LOGIN_BUTTONS.map((b) => (
-          <button key={b.id} className={`login ${b.cls}`} onClick={login}>
-            <span className="login-note">{b.note}</span>
-            {b.label}
-          </button>
-        ))}
-
-      {caught && (
-        <div className="welcome">
-          ★ ACCÈS AUTORISÉ ★<br />
-          BIENVENUE, JOUEUR 1<br />
-          <span className="welcome-sub">les moutons comptent tes sous... 99%</span>
-        </div>
-      )}
+      {LOGIN_BUTTONS.map((b) => (
+        <button key={b.id} className={`login ${b.cls}`} onClick={login}>
+          <span className="login-note">{b.note}</span>
+          {b.label}
+        </button>
+      ))}
 
       {/* ---- Confetti ---- */}
       {confetti.map((p) => (
@@ -754,22 +743,6 @@ const css = `
   75%  { left: 45%; top: 88%; }
   100% { left: 30%; top: 82%; }
 }
-
-/* ================= WELCOME ================= */
-.welcome {
-  position: absolute;
-  left: 50%; top: 40%;
-  transform: translateX(-50%);
-  z-index: 11;
-  text-align: center;
-  font-size: clamp(12px, 2.4vw, 20px);
-  color: #fff;
-  text-shadow: 3px 3px 0 #2c7a28, 0 0 16px rgba(124,255,0,0.9);
-  animation: blink 1.2s steps(1) infinite;
-  pointer-events: none;
-  line-height: 2;
-}
-.welcome-sub { font-size: 0.55em; color: #ffe600; }
 
 /* ================= CONFETTI ================= */
 .confetti {

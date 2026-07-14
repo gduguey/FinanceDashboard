@@ -46,7 +46,6 @@ export function SynthwaveChaseLanding() {
   const arenaRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Position>({ x: 50, y: 62 })
   const [escapes, setEscapes] = useState(0)
-  const [caught, setCaught] = useState(false)
   const [bursts, setBursts] = useState<Burst[]>([])
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([])
   const [credits, setCredits] = useState(0)
@@ -71,7 +70,7 @@ export function SynthwaveChaseLanding() {
   }, [spawnBurst])
 
   const flee = () => {
-    if (caught || tired) return
+    if (tired) return
     const nx = 12 + Math.random() * 76
     const ny = 18 + Math.random() * 64
     setPos({ x: nx, y: ny })
@@ -80,8 +79,7 @@ export function SynthwaveChaseLanding() {
   }
 
   const catchIt = useCallback(() => {
-    if (!tired || caught) return
-    setCaught(true)
+    if (!tired) return
     const pieces: ConfettiPiece[] = Array.from({ length: 90 }, (_, i) => ({
       id: i,
       left: Math.random() * 100,
@@ -93,9 +91,9 @@ export function SynthwaveChaseLanding() {
     }))
     setConfetti(pieces)
     void openSignIn()
-  }, [tired, caught, openSignIn])
+  }, [tired, openSignIn])
 
-  const label = caught ? '★ ACCÈS AUTORISÉ ★' : FLEE_LABELS[Math.min(escapes, FLEE_LABELS.length - 1)]
+  const label = FLEE_LABELS[Math.min(escapes, FLEE_LABELS.length - 1)]
 
   return (
     <div className="crt" ref={arenaRef} onClick={() => setCredits((c) => c + 1)}>
@@ -136,7 +134,7 @@ export function SynthwaveChaseLanding() {
 
       {/* The fleeing login button */}
       <button
-        className={`login ${tired ? 'tired' : ''} ${caught ? 'caught' : ''}`}
+        className={`login ${tired ? 'tired' : ''}`}
         style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
         onMouseEnter={flee}
         onTouchStart={(e) => {
@@ -152,13 +150,6 @@ export function SynthwaveChaseLanding() {
       >
         {label}
       </button>
-
-      {caught && (
-        <div className="welcome">
-          BIENVENUE, JOUEUR 1<br />
-          <span className="welcome-sub">chargement de tes sous... 99%</span>
-        </div>
-      )}
 
       {/* Firecracker bursts */}
       {bursts.map((b) => (
@@ -356,29 +347,10 @@ const css = `
   background: #7cff00;
   animation: wobble 0.6s ease-in-out infinite;
 }
-.login.caught {
-  background: #00f0ff;
-  animation: none;
-  box-shadow: 6px 6px 0 #7c00ff, 0 0 50px rgba(0,240,255,0.9);
-}
 @keyframes wobble {
   0%,100% { transform: translate(-50%,-50%) rotate(-2deg); }
   50% { transform: translate(-50%,-50%) rotate(2deg) scale(1.04); }
 }
-
-.welcome {
-  position: absolute;
-  left: 50%; top: 34%;
-  transform: translateX(-50%);
-  z-index: 4;
-  text-align: center;
-  font-size: clamp(12px, 2.4vw, 20px);
-  color: #7cff00;
-  text-shadow: 0 0 16px rgba(124,255,0,0.9);
-  animation: blink 1.2s steps(1) infinite;
-  pointer-events: none;
-}
-.welcome-sub { font-size: 0.55em; color: #00f0ff; }
 
 /* ---------- Firecrackers ---------- */
 .burst { position: absolute; z-index: 3; pointer-events: none; }
