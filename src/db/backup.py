@@ -77,6 +77,33 @@ def get_backup_r2_credentials() -> BackupR2Credentials:
     return BackupR2Credentials()
 
 
+class BackupSettings(BaseSettings):
+    """How many of the newest backups to keep, read from `.env`/the environment.
+
+    Unlike `BackupR2Credentials`, this isn't a real credential — just an
+    operational knob — so it has a sensible default (14, roughly two weeks
+    at one backup per day) rather than requiring `BACKUP_RETENTION_COUNT`
+    to be set at all.
+    """
+
+    model_config = SettingsConfigDict(env_file=str(_REPO_ROOT / ".env"), env_file_encoding="utf-8", extra="ignore")
+
+    retention_count: int = Field(default=14, validation_alias="BACKUP_RETENTION_COUNT")
+
+
+def get_backup_settings() -> BackupSettings:
+    """Read backup configuration (currently just `retention_count`) from `.env`/the environment.
+
+    A thin wrapper so tests can monkeypatch this one seam, the same as
+    `get_backup_r2_credentials`.
+
+    Returns
+    -------
+    BackupSettings
+    """
+    return BackupSettings()
+
+
 def _libpq_url(database_url: str) -> str:
     """Strip a SQLAlchemy driver suffix (e.g. `postgresql+psycopg://`) down to a plain `postgresql://` URL.
 
@@ -237,7 +264,7 @@ def verify_backup_restorable(dump: bytes) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def prune_old_backups(retention_count: int = 14, credentials: BackupR2Credentials | None = None) -> list[str]:
+def prune_old_backups(retention_count: int | None = None, credentials: BackupR2Credentials | None = None) -> list[str]:
     """Delete every backup beyond the newest `retention_count`, wherever they're stored.
 
     Backups are named `{UTC timestamp}.dump` (see `backup_relative_path`),
@@ -247,7 +274,8 @@ def prune_old_backups(retention_count: int = 14, credentials: BackupR2Credential
     Parameters
     ----------
     retention_count
-        How many of the newest backups to keep.
+        How many of the newest backups to keep. Defaults to
+        `get_backup_settings().retention_count` when not given.
     credentials
         Defaults to `get_backup_r2_credentials()`; falls back to pruning
         `_LOCAL_BACKUP_DIR` if R2 isn't configured, the same fallback
@@ -258,10 +286,11 @@ def prune_old_backups(retention_count: int = 14, credentials: BackupR2Credential
     list[str]
         Every backup that was deleted: local paths, or R2 keys.
     """
+    resolved_retention_count = retention_count if retention_count is not None else get_backup_settings().retention_count
     resolved = credentials if credentials is not None else get_backup_r2_credentials()
     if not resolved.configured():
         backups = sorted(_LOCAL_BACKUP_DIR.glob("*.dump"), key=lambda path: path.name, reverse=True)
-        to_delete = backups[retention_count:]
+        to_delete = backups[resolved_retention_count:]
         for path in to_delete:
             path.unlink()
         return [str(path) for path in to_delete]
@@ -275,13 +304,13 @@ def prune_old_backups(retention_count: int = 14, credentials: BackupR2Credential
     )
     response = client.list_objects_v2(Bucket=resolved.bucket_name, Prefix=f"{_R2_PREFIX}/")
     keys = sorted((entry["Key"] for entry in response.get("Contents", [])), reverse=True)
-    to_delete_keys = keys[retention_count:]
+    to_delete_keys = keys[resolved_retention_count:]
     for key in to_delete_keys:
         client.delete_object(Bucket=resolved.bucket_name, Key=key)
     return to_delete_keys
 
 
-def run_backup(retention_count: int = 14) -> str:
+def run_backup(retention_count: int | None = None) -> str:
     """Dump the whole database, verify it, upload it, then prune old backups — the one function the cron entry calls.
 
     Order matters: the dump is verified restorable *before* it's uploaded
@@ -293,18 +322,20 @@ def run_backup(retention_count: int = 14) -> str:
     ----------
     retention_count
         How many of the newest backups to keep after this one uploads;
-        passed straight through to `prune_old_backups`.
+        passed straight through to `prune_old_backups`. Defaults to
+        `get_backup_settings().retention_count` when not given.
 
     Returns
     -------
     str
         Wherever the dump ended up (see `upload_backup`).
     """
+    resolved_retention_count = retention_count if retention_count is not None else get_backup_settings().retention_count
     dump = run_pg_dump(DatabaseSettings().database_url)  # type: ignore[call-arg]  # see db.session.get_engine's own note
     verify_backup_restorable(dump)
     relative_path = backup_relative_path(datetime.now(tz=UTC))
     destination = upload_backup(dump, relative_path)
-    prune_old_backups(retention_count)
+    prune_old_backups(resolved_retention_count)
     return destination
 
 

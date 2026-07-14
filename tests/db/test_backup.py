@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess  # noqa: S404 — only ever monkeypatched (subprocess.run) here, never actually invoked
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 import db.backup as backup_module
 from db.backup import (
     BackupR2Credentials,
+    BackupSettings,
     backup_relative_path,
     prune_old_backups,
     run_backup,
@@ -29,6 +31,18 @@ def test_backup_relative_path_formats_as_utc_timestamp() -> None:
     taken_at = datetime(2026, 7, 11, 3, 4, 5, tzinfo=UTC)
 
     assert backup_relative_path(taken_at) == "20260711T030405Z.dump"
+
+
+def test_backup_settings_defaults_retention_count_to_14_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BACKUP_RETENTION_COUNT", raising=False)
+
+    assert BackupSettings(_env_file=None).retention_count == 14
+
+
+def test_backup_settings_reads_retention_count_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BACKUP_RETENTION_COUNT", "30")
+
+    assert BackupSettings(_env_file=None).retention_count == 30
 
 
 def test_run_pg_dump_invokes_pg_dump_with_custom_format_and_the_given_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -210,7 +224,28 @@ def _real_postgres_reachable() -> bool:
         engine.dispose()
 
 
-@pytest.mark.skipif(not _real_postgres_reachable(), reason="No reachable local Postgres for this integration test")
+def _postgres_client_tools_available() -> bool:
+    """Whether `pg_dump`/`pg_restore` — the actual binaries `run_pg_dump`/`verify_backup_restorable` shell out to — are on PATH.
+
+    A reachable Postgres *server* (`_real_postgres_reachable`) says nothing
+    about whether these client tools are installed locally — they're two
+    independent prerequisites for `test_verify_backup_restorable_against_real_postgres`,
+    and conflating them turns "no pg_dump on this machine" into a hard
+    `FileNotFoundError` failure instead of a clean skip.
+    """
+    return shutil.which("pg_dump") is not None and shutil.which("pg_restore") is not None
+
+
+_INTEGRATION_TEST_SKIP_REASON = (
+    "No reachable local Postgres for this integration test"
+    if not _real_postgres_reachable()
+    else "pg_dump/pg_restore not installed on PATH for this integration test"
+    if not _postgres_client_tools_available()
+    else None
+)
+
+
+@pytest.mark.skipif(_INTEGRATION_TEST_SKIP_REASON is not None, reason=_INTEGRATION_TEST_SKIP_REASON or "")
 def test_verify_backup_restorable_against_real_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
     real_test_database_url = TestDatabaseSettings().database_url
     # See `_patch_maintenance_engine`'s own comment — a placeholder, just to get
@@ -354,6 +389,77 @@ def test_run_backup_verifies_before_uploading_then_prunes(monkeypatch: pytest.Mo
 
     assert destination == "backups/postgres/whatever.dump"
     assert call_order == ["verify", "upload", "prune"]
+
+
+def test_run_backup_uses_the_env_configured_retention_count_when_none_is_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backup_module, "run_pg_dump", lambda database_url: b"dump-bytes")
+    # See `_patch_maintenance_engine`'s own comment on why this placeholder env var is needed.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://placeholder/placeholder")
+    monkeypatch.setattr(
+        backup_module.DatabaseSettings, "database_url", property(lambda self: "postgresql://x/y"), raising=False
+    )
+    monkeypatch.setenv("BACKUP_RETENTION_COUNT", "5")
+    monkeypatch.setattr(backup_module, "get_backup_settings", lambda: BackupSettings(_env_file=None))
+    monkeypatch.setattr(backup_module, "verify_backup_restorable", lambda dump: None)
+    monkeypatch.setattr(backup_module, "upload_backup", lambda *a, **k: "backups/postgres/whatever.dump")  # type: ignore[misc]
+
+    seen: dict[str, int] = {}
+
+    def fake_prune(retention_count: int | None = None, credentials: BackupR2Credentials | None = None) -> list[str]:
+        assert retention_count is not None
+        seen["retention_count"] = retention_count
+        return []
+
+    monkeypatch.setattr(backup_module, "prune_old_backups", fake_prune)
+
+    run_backup()
+
+    assert seen["retention_count"] == 5
+
+
+def test_run_backup_passed_an_explicit_retention_count_ignores_the_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(backup_module, "run_pg_dump", lambda database_url: b"dump-bytes")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://placeholder/placeholder")
+    monkeypatch.setattr(
+        backup_module.DatabaseSettings, "database_url", property(lambda self: "postgresql://x/y"), raising=False
+    )
+    monkeypatch.setenv("BACKUP_RETENTION_COUNT", "5")
+    monkeypatch.setattr(backup_module, "verify_backup_restorable", lambda dump: None)
+    monkeypatch.setattr(backup_module, "upload_backup", lambda *a, **k: "backups/postgres/whatever.dump")  # type: ignore[misc]
+
+    seen: dict[str, int] = {}
+
+    def fake_prune(retention_count: int | None = None, credentials: BackupR2Credentials | None = None) -> list[str]:
+        assert retention_count is not None
+        seen["retention_count"] = retention_count
+        return []
+
+    monkeypatch.setattr(backup_module, "prune_old_backups", fake_prune)
+
+    run_backup(retention_count=3)
+
+    assert seen["retention_count"] == 3
+
+
+def test_prune_old_backups_uses_the_env_configured_retention_count_when_none_is_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backups_dir = tmp_path / "backups"
+    backups_dir.mkdir()
+    names = [f"2026070{i}T000000Z.dump" for i in range(1, 6)]
+    for name in names:
+        (backups_dir / name).write_bytes(b"x")
+    monkeypatch.setattr(backup_module, "_LOCAL_BACKUP_DIR", backups_dir)
+    monkeypatch.setenv("BACKUP_RETENTION_COUNT", "2")
+    monkeypatch.setattr(backup_module, "get_backup_settings", lambda: BackupSettings(_env_file=None))
+
+    deleted = prune_old_backups(credentials=BackupR2Credentials(_env_file=None))
+
+    remaining = sorted(p.name for p in backups_dir.glob("*.dump"))
+    assert remaining == names[-2:]
+    assert sorted(deleted) == sorted(str(backups_dir / name) for name in names[:-2])
 
 
 def test_run_backup_does_not_upload_or_prune_when_verification_fails(monkeypatch: pytest.MonkeyPatch) -> None:

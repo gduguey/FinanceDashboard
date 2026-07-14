@@ -561,8 +561,8 @@ previous-keys map until you've confirmed nothing still needs it.
 
 ## Backups: how they work, and how to restore one
 
-`db.backup.run_backup(retention_count=14)` (run as `python -m db.backup`)
-does four things, in order:
+`db.backup.run_backup()` (run as `python -m db.backup`) does four things,
+in order:
 
 1. **Dumps** the whole database with `pg_dump --format=custom`, connecting
    as `finance` (`DatabaseSettings`, never `AppRuntimeDatabaseSettings`) —
@@ -588,12 +588,13 @@ does four things, in order:
    `R2_BUCKET_NAME`, `R2_ENDPOINT_URL` all set) — otherwise it falls back
    to writing the same file to local disk, under `data/backups/postgres/`.
    Only reached once step 2 has passed.
-4. **Prunes** old backups (`prune_old_backups`) down to the newest 14 —
+4. **Prunes** old backups (`prune_old_backups`) down to the newest
+   `BACKUP_RETENTION_COUNT` (`BackupSettings`, defaults to 14 if unset) —
    whichever backend is active (R2 or local disk), backups are sorted
    newest-first by their timestamp-prefixed filename (already
-   lexicographically = chronologically sortable) and anything beyond the
-   newest 14 is deleted. Only ever runs after a successful verify + upload,
-   so a failed backup never causes a good one to be pruned away.
+   lexicographically = chronologically sortable) and anything beyond that
+   count is deleted. Only ever runs after a successful verify + upload, so
+   a failed backup never causes a good one to be pruned away.
 
 **This does not run by itself.** `python -m db.backup` is just a command —
 nothing in this repo schedules it automatically. Making it run on a
