@@ -2,12 +2,9 @@ import { SignInButton } from '@clerk/react'
 import { LineChart, ShieldCheck, Wallet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
-// The branded page every signed-out visitor lands on — see AuthGate for
-// why this, not Clerk's bare <SignIn /> form, is the first thing shown:
-// a link to this app's URL should always resolve to the same recognizable
-// page, sign-in itself opening as a modal on top of it rather than being
-// the page's entire content.
-export function LandingPage() {
+// The original, sober landing page — kept around as a fallback / for when
+// no themed variant is running. See landing-pages/index.ts to switch back.
+export function ClassicDashboardLanding() {
   return (
     <div className="flex min-h-screen flex-col bg-white">
       <nav className="border-b border-border px-6 py-4">

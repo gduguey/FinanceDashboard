@@ -54,8 +54,11 @@ ssh "$HOST" "
         echo \"::error:: CLERK_PUBLISHABLE_KEY missing from .env.staging — aborting rather than building a frontend with no Clerk key\"
         exit 1
     fi
+    # Optional — same as deploy.sh's .env.docker lookup, just against
+    # .env.staging instead.
+    VITE_LANDING_PAGE=\$(grep -m1 '^LANDING_PAGE=' .env.staging | cut -d= -f2- || true)
     echo \"==> Building image tagged \$VERSION\"
-    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" docker compose -p staging -f deploy/docker-compose.staging.yml up -d --build
+    APP_VERSION=\"\$VERSION\" VITE_CLERK_PUBLISHABLE_KEY=\"\$VITE_CLERK_PUBLISHABLE_KEY\" VITE_LANDING_PAGE=\"\$VITE_LANDING_PAGE\" docker compose -p staging -f deploy/docker-compose.staging.yml up -d --build
     docker image prune -f
 "
 echo "==> Done. Tail logs with: ssh $HOST 'cd $REMOTE_DIR && docker compose -p staging -f deploy/docker-compose.staging.yml logs -f'"
