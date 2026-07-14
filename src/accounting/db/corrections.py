@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import get_args
 
-from sqlalchemy import ARRAY, CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,10 +31,18 @@ class PostingOverride(Base):
     different lifecycle from a pending suggestion that gets deleted
     outright once resolved, not left with a cleared set of columns.
 
-    `tag_ids_override` stays a nullable array of tag `natural_key`s rather
-    than a join table: unlike `PostingTag`, this is a sparse *patch* where
-    `NULL` means "no override" and `[]` means "override to no tags" — not
-    a canonical list of entities to join against.
+    A posting's overridden tag set lives in `PostingOverrideTag` below, a
+    real FK-enforced join table, not an array column here — unlike a
+    single-valued field like `category_id`, "which tags" is inherently a
+    set, and Postgres has no way to enforce "every element of an array
+    references a real row" the way it enforces a scalar `ForeignKey`.
+    `tags_overridden` exists on this row specifically because a join
+    table's row *count* alone can't distinguish "no override" (0 rows,
+    ignore this posting's tags entirely) from "overridden to no tags" (0
+    rows, but deliberately so) — this flag is that missing bit; `True`
+    with zero matching `PostingOverrideTag` rows is exactly the "override
+    to no tags" case, `False` means "don't consult
+    `PostingOverrideTag` for this posting at all."
     """
 
     __tablename__ = "posting_overrides"
@@ -57,7 +65,31 @@ class PostingOverride(Base):
     subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    tag_ids_override: Mapped[list[str] | None] = mapped_column(ARRAY(String), default=None)
+    tags_overridden: Mapped[bool] = mapped_column(default=False)
+
+
+class PostingOverrideTag(Base):
+    """One tag in a posting override's overridden tag set — the FK-enforced replacement for a loose id array.
+
+    Mirrors `accounting.db.core.PostingTag` exactly, one row per
+    (override, tag) pair; see `PostingOverride.tags_overridden`'s own
+    docstring for why the override's own "was this touched at all" state
+    still needs a separate boolean rather than being inferred from
+    whether any rows exist here.
+    """
+
+    __tablename__ = "posting_override_tags"
+    __table_args__ = (
+        UniqueConstraint("user_id", "override_id", "tag_id", name="uq_posting_override_tags_user_override_tag"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    override_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_overrides.id", ondelete="CASCADE")
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
 
 
 class PostingPendingSuggestion(Base):

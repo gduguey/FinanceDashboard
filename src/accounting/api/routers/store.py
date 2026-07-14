@@ -575,10 +575,10 @@ def post_tag_rename(
     """Rename a tag, merging it into an existing same-named tag if there is one.
 
     A merge repoints every reference to the merged-away id — the
-    `posting_tags` join table and every posting override's
-    `tag_ids_override` array (see `store.remap_tag_ids`) — before the
-    merged-away tag itself is deleted, so a foreign key never briefly
-    points at a row about to disappear.
+    `posting_tags` and `posting_override_tags` join tables (see
+    `store.remap_tag_ids`) — before the merged-away tag itself is
+    deleted, so a foreign key never briefly points at a row about to
+    disappear.
 
     Returns
     -------

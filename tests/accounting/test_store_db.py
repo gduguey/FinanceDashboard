@@ -151,14 +151,48 @@ def test_remap_tag_ids_deletes_the_old_row_when_the_posting_already_has_the_targ
 
 
 def test_remap_tag_ids_repoints_a_tag_ids_override(db_session: Session, test_user_id: uuid.UUID) -> None:
-    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"), ("tag:other", "Other"))
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:other"])}, db_session, user_id=test_user_id)
 
     remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
 
     reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
-    assert reloaded.tag_ids == ["tag:vacation", "tag:other"]
+    # A join table carries no inherent order — unlike the old array, membership is
+    # all that's preserved, not insertion order.
+    assert set(reloaded.tag_ids) == {"tag:vacation", "tag:other"}
+
+
+def test_remap_tag_ids_deletes_the_old_override_row_when_the_posting_already_has_the_target_tag(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:vacation"])}, db_session, user_id=test_user_id)
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
+    assert reloaded.tag_ids == ["tag:vacation"]
+
+
+def test_save_overrides_rejects_a_tag_id_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    with pytest.raises(IntegrityError):
+        save_overrides({"p1": ManualOverride(tag_ids=["tag:does-not-exist"])}, db_session, user_id=test_user_id)
+
+
+def test_deleting_a_tag_row_cascades_and_clears_a_posting_override_tag(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip"])}, db_session, user_id=test_user_id)
+
+    db_session.query(adb.Tag).filter_by(user_id=test_user_id, id=derive_id(test_user_id, "tags", "tag:trip")).delete()
+    db_session.commit()
+
+    assert db_session.query(adb.PostingOverrideTag).filter_by(user_id=test_user_id).count() == 0
 
 
 def test_load_store_with_no_data_yet_seeds_defaults(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -222,6 +256,7 @@ def test_save_then_load_overrides_round_trips_a_tag_override_and_pending_fields(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     load_store(db_session, user_id=test_user_id)  # seeds the default categories an override can point at
+    _seed_tags(db_session, test_user_id, ("a", "A"), ("b", "B"))
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     override = ManualOverride(
         category_id="expense:food-drink",
@@ -232,10 +267,28 @@ def test_save_then_load_overrides_round_trips_a_tag_override_and_pending_fields(
     )
     save_overrides({"p1": override}, db_session, user_id=test_user_id)
     reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
-    assert reloaded.tag_ids == ["a", "b"]
+    assert set(reloaded.tag_ids) == {"a", "b"}
     assert reloaded.pending_source == "ai"
     assert reloaded.pending_selected is False
     assert reloaded.pending_previous_category_id == "expense:travel"
+
+
+def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_no_tags(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    save_overrides(
+        {
+            "p1": ManualOverride(category_id=None, tag_ids=None),  # no tag override at all
+            "p2": ManualOverride(category_id=None, tag_ids=[]),  # explicitly overridden to no tags
+        },
+        db_session,
+        user_id=test_user_id,
+    )
+    reloaded = load_overrides(db_session, user_id=test_user_id)
+    assert "p1" not in reloaded  # no field set at all, so no row was written in the first place
+    assert reloaded["p2"].tag_ids == []
 
 
 def test_save_then_load_store_round_trips_every_entity_type(db_session: Session, test_user_id: uuid.UUID) -> None:
