@@ -8,7 +8,6 @@ from accounting.models import (
     PostingSplit,
     PostingSplitLeg,
     Tag,
-    TransferRule,
 )
 from accounting.store import (
     CATEGORY_COLOR_PALETTE,
@@ -172,14 +171,6 @@ def test_plan_category_rename_does_not_merge_a_subcategory_with_the_same_name_un
 
 def test_remap_category_ids_updates_every_reference() -> None:
     store = AccountingStore(
-        rules=[
-            TransferRule(
-                rule_id="r1",
-                description_contains="x",
-                category_id="expense:nourriture",
-                subcategory_id="expense:nourriture:snacks",
-            )
-        ],
         category_patterns={
             "p1": CategoryPattern(
                 pattern_id="p1",
@@ -204,8 +195,6 @@ def test_remap_category_ids_updates_every_reference() -> None:
     )
     id_remap = {"expense:nourriture": "expense:food", "expense:nourriture:snacks": "expense:food:snacks"}
     updated = remap_category_ids(store, id_remap)
-    assert updated.rules[0].category_id == "expense:food"
-    assert updated.rules[0].subcategory_id == "expense:food:snacks"
     assert updated.category_patterns["p1"].category_id == "expense:food"
     assert updated.budgets[0].category_id == "expense:food"
     assert "expense:food" in updated.general_budgets
@@ -275,11 +264,6 @@ def test_category_ids_to_delete_for_a_top_level_category_includes_every_subcateg
 
 def test_uncategorize_category_ids_clears_nullable_references() -> None:
     store = AccountingStore(
-        rules=[
-            TransferRule(
-                rule_id="r1", description_contains="x", category_id="expense:food", subcategory_id="expense:food:snacks"
-            )
-        ],
         posting_splits={
             "p1": PostingSplit(
                 posting_id="p1",
@@ -291,8 +275,6 @@ def test_uncategorize_category_ids_clears_nullable_references() -> None:
         },
     )
     updated = uncategorize_category_ids(store, {"expense:food", "expense:food:snacks"})
-    assert updated.rules[0].category_id is None
-    assert updated.rules[0].subcategory_id is None
     assert updated.posting_splits["p1"].legs[0].category_id is None
     assert updated.posting_splits["p1"].legs[0].subcategory_id is None
     assert updated.posting_splits["p1"].legs[1].category_id == "expense:travel"

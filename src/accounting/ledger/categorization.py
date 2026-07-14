@@ -49,7 +49,7 @@ def _matching_rule(rules: list[TransferRule], description: str, account_id: str)
 
 
 def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dict[str, Account]) -> pl.DataFrame:
-    """Repoint every placeholder counterparty a matching rule resolves, and set categories.
+    """Repoint every placeholder counterparty a matching rule resolves.
 
     Only ever touches a transaction with exactly two postings, one of
     which is still on a placeholder account — anything else (an
@@ -71,7 +71,7 @@ def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dic
     Returns
     -------
     polars.DataFrame
-        The postings with resolved counterparties/categories where a rule matched.
+        The postings with resolved counterparties where a rule matched.
     """
     rows = postings.to_dicts()
     by_transaction: dict[str, list[dict[str, object]]] = {}
@@ -95,10 +95,6 @@ def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dic
             continue
 
         placeholder_leg["account_id"] = counterparty_account.account_id
-        if rule.category_id is not None:
-            real_leg["category_id"] = rule.category_id
-        if rule.subcategory_id is not None:
-            real_leg["subcategory_id"] = rule.subcategory_id
 
     return (
         pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
