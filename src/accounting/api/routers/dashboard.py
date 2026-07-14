@@ -330,7 +330,7 @@ def get_category_totals(
     -------
     list[CategoryTotalRow]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=start, until=end)
     parsed_account_ids = account_ids.split(",") if account_ids else None
     totals = collect_if_lazy(
         income_statement.category_totals(
@@ -361,7 +361,7 @@ def get_monthly_income_expense(
     -------
     list[MonthlyIncomeExpenseRow]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=start, until=end)
     rows = collect_if_lazy(
         income_statement.monthly_income_expense(
             postings, store.accounts, start, end, _display_currency(display_currency, store)
@@ -385,7 +385,8 @@ def get_spend_curve(
     -------
     list[SpendCurvePoint]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
+    since, until = income_statement.spend_curve_window(month, lookback_months)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=since, until=until)
     rows = collect_if_lazy(
         income_statement.spend_curve_vs_average(
             postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
@@ -415,7 +416,8 @@ def get_budget_comparison(
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
+    since, until = budgets.month_bounds(month)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=since, until=until)
     rows = budgets.budget_comparison(
         postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
     )
@@ -446,7 +448,9 @@ def get_suggested_budget_amount(
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id)
+    window = budgets.suggested_budget_amount_window(month, lookback_months)
+    since, until = window if window is not None else (None, None)
+    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=since, until=until)
     amount = budgets.suggested_budget_amount(
         postings,
         store.accounts,

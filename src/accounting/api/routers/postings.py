@@ -17,6 +17,8 @@ from accounting.api.api_models import (
     DismissSuggestionRequest,
     DuplicateGroup,
     PostingIdResponse,
+    PostingMergeIdResponse,
+    PostingMergeUpsert,
     PostingRow,
     SuggestionIdResponse,
     TransferSuggestion,
@@ -31,7 +33,16 @@ from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.pending import resolve_pending_suggestion
 from accounting.ledger.transfers import find_unmatched_transfer_candidates
 from accounting.models import DismissedSuggestion, ManualOverride, Posting, PostingMerge, PostingSplit, PostingSplitLeg
-from accounting.store import load_overrides, load_store, save_overrides, save_store
+from accounting.store import (
+    dismiss_suggestion,
+    dismissed_suggestion_ids,
+    list_dismissed_suggestions,
+    load_overrides,
+    load_store,
+    save_overrides,
+    save_store,
+    undismiss_suggestion,
+)
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -245,6 +256,67 @@ def put_posting_merges(
     return store.posting_merges
 
 
+def _merge_id(kept_transaction_id: str) -> str:
+    """Derive a posting merge's id from the transaction it keeps.
+
+    Returns
+    -------
+    str
+    """
+    return f"merge:{kept_transaction_id}"
+
+
+@router.post("/posting-merges")
+def post_posting_merge(
+    request: PostingMergeUpsert,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> PostingMerge:
+    """Upsert one duplicate-resolution decision, without touching any other merge already recorded.
+
+    Returns
+    -------
+    PostingMerge
+        The merge just persisted.
+    """
+    merge = PostingMerge(
+        merge_id=_merge_id(request.kept_transaction_id),
+        kept_transaction_id=request.kept_transaction_id,
+        duplicate_transaction_ids=request.duplicate_transaction_ids,
+        description=request.description,
+    )
+    store = load_store(session, user_id)
+    store = store.model_copy(update={"posting_merges": {**store.posting_merges, merge.merge_id: merge}})
+    save_store(store, session, user_id)
+    return merge
+
+
+@router.delete("/posting-merges/{merge_id}")
+def delete_posting_merge(
+    merge_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> PostingMergeIdResponse:
+    """Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
+
+    Returns
+    -------
+    PostingMergeIdResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if no merge with this id exists.
+    """
+    store = load_store(session, user_id)
+    if merge_id not in store.posting_merges:
+        raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
+    remaining = {mid: merge for mid, merge in store.posting_merges.items() if mid != merge_id}
+    store = store.model_copy(update={"posting_merges": remaining})
+    save_store(store, session, user_id)
+    return PostingMergeIdResponse(merge_id=merge_id)
+
+
 @router.post("/postings/validate-pending")
 def post_validate_pending(
     payload: ValidatePendingRequest,
@@ -332,12 +404,14 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `POST /dismissed-suggestions`).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
     rows = find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
+    suggestion_ids = [_transfer_suggestion_id(row) for row in rows]
+    dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)
     return [
-        TransferSuggestion(**row, suggestion_id=_transfer_suggestion_id(row))
-        for row in rows
-        if _transfer_suggestion_id(row) not in store.dismissed_suggestions
+        TransferSuggestion(**row, suggestion_id=suggestion_id)
+        for row, suggestion_id in zip(rows, suggestion_ids, strict=True)
+        if suggestion_id not in dismissed
     ]
 
 
@@ -362,12 +436,14 @@ def get_duplicate_suggestions(
         Each carries a `suggestion_id` for dismissing it. Excludes any
         group already dismissed (see `POST /dismissed-suggestions`).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
     groups = find_duplicate_candidates(postings, window_days=window_days)
+    suggestion_ids = [_duplicate_suggestion_id(group) for group in groups]
+    dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)
     return [
-        DuplicateGroup(**asdict(group), suggestion_id=_duplicate_suggestion_id(group))
-        for group in groups
-        if _duplicate_suggestion_id(group) not in store.dismissed_suggestions
+        DuplicateGroup(**asdict(group), suggestion_id=suggestion_id)
+        for group, suggestion_id in zip(groups, suggestion_ids, strict=True)
+        if suggestion_id not in dismissed
     ]
 
 
@@ -381,8 +457,7 @@ def get_dismissed_suggestions(
     -------
     list[DismissedSuggestion]
     """
-    store = load_store(session, user_id)
-    return sorted(store.dismissed_suggestions.values(), key=lambda entry: entry.dismissed_at, reverse=True)
+    return list_dismissed_suggestions(session, user_id)
 
 
 @router.post("/dismissed-suggestions")
@@ -398,17 +473,13 @@ def post_dismissed_suggestion(
     DismissedSuggestion
         The archived entry just persisted.
     """
-    store = load_store(session, user_id)
     entry = DismissedSuggestion(
         suggestion_id=request.suggestion_id,
         kind=request.kind,
         description=request.description,
         dismissed_at=datetime.now(tz=UTC),
     )
-    store = store.model_copy(
-        update={"dismissed_suggestions": {**store.dismissed_suggestions, entry.suggestion_id: entry}}
-    )
-    save_store(store, session, user_id)
+    dismiss_suggestion(session, user_id, entry)
     return entry
 
 
@@ -430,10 +501,6 @@ def delete_dismissed_suggestion(
     HTTPException
         404 if no archived entry has this id.
     """
-    store = load_store(session, user_id)
-    if suggestion_id not in store.dismissed_suggestions:
+    if not undismiss_suggestion(session, user_id, suggestion_id):
         raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
-    remaining = {key: value for key, value in store.dismissed_suggestions.items() if key != suggestion_id}
-    store = store.model_copy(update={"dismissed_suggestions": remaining})
-    save_store(store, session, user_id)
     return SuggestionIdResponse(suggestion_id=suggestion_id)

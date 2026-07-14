@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -34,6 +34,7 @@ from db.base import derive_id, natural_keys_by_id
 if TYPE_CHECKING:
     import uuid
     from collections.abc import Callable
+    from datetime import date
     from typing import Any
 
     from sqlalchemy.orm import Session
@@ -88,8 +89,10 @@ class IngestResult:
     skipped_rows: SkippedRowsInfo | None = None  # Rows that couldn't be parsed (bank-specific or canonical fallback)
 
 
-def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
-    """Load the full posting ledger.
+def load_ledger(
+    session: Session, user_id: uuid.UUID, *, since: date | None = None, until: date | None = None
+) -> pl.DataFrame:
+    """Load the posting ledger, optionally restricted to `[since, until]`.
 
     Parameters
     ----------
@@ -97,6 +100,14 @@ def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
         An open database session.
     user_id
         Whose ledger to load.
+    since
+        First day to include, inclusive. `None` (the default) means no
+        lower bound — every caller that needs the true full history
+        (import/merge logic diffing against everything, `GET /ledger/export`)
+        must leave this unset; only callers that already scope their own
+        result to a date range (dashboard aggregations) should pass it.
+    until
+        Last day to include, inclusive. Same defaulting reasoning as `since`.
 
     Returns
     -------
@@ -105,9 +116,16 @@ def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
         and dashboard module depends on that shape, not on how it's
         actually stored, so nothing downstream of this function needed to
         change when its own storage moved from `ledger.csv` to Postgres.
-        An empty frame if nothing has been imported yet.
+        An empty frame if nothing matches.
     """
-    rows = session.query(adb.Posting).filter_by(user_id=user_id).all()
+    # `posted_at` is a naive (timezone-unaware) column — the bounds below
+    # must be naive too, or psycopg rejects the comparison outright.
+    query = session.query(adb.Posting).filter_by(user_id=user_id)
+    if since is not None:
+        query = query.filter(adb.Posting.posted_at >= datetime.combine(since, time.min))
+    if until is not None:
+        query = query.filter(adb.Posting.posted_at <= datetime.combine(until, time.max))
+    rows = query.all()
     if not rows:
         return pl.DataFrame(schema=Posting.polars_schema)
 

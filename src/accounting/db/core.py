@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -125,6 +125,7 @@ class Posting(Base):
     __table_args__ = (
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         UniqueConstraint("user_id", "natural_key", name="uq_postings_user_natural_key"),
+        Index("ix_postings_user_posted_at", "user_id", "posted_at"),
         {"schema": SCHEMA},
     )
 

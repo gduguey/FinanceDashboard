@@ -15,8 +15,10 @@ import {
   useAccountingStore,
   useCategoryTotals,
   usePostings,
-  useSetBudgets,
-  useSetGeneralBudgets,
+  useRemoveBudget,
+  useRemoveGeneralBudget,
+  useSetBudget,
+  useSetGeneralBudget,
   useSuggestedBudgetAmount,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
@@ -196,8 +198,10 @@ export function BudgetPage() {
 
   const { data: store, isLoading: storeLoading } = useAccountingStore()
   const { data: postings } = usePostings()
-  const setBudgets = useSetBudgets()
-  const setGeneralBudgets = useSetGeneralBudgets()
+  const setBudget = useSetBudget()
+  const removeBudget = useRemoveBudget()
+  const setGeneralBudget = useSetGeneralBudget()
+  const removeGeneralBudget = useRemoveGeneralBudget()
 
   const { start, end } = monthBounds(month)
   const { data: actualCategoryTotals } = useCategoryTotals(start, end, undefined, undefined, displayCurrency)
@@ -254,40 +258,27 @@ export function BudgetPage() {
     return perMonth ? String(perMonth.amount) : ''
   }
 
+  // Each edit only sends the one budget that changed, not the user's
+  // whole budget history — see accounting.api.routers.store.post_budget/
+  // post_general_budget.
   function commitAmount(categoryId: string, subcategoryId: string | null, rawValue: string) {
     const amount = Number.parseFloat(rawValue)
     const isValid = rawValue.trim() !== '' && !Number.isNaN(amount)
     if (mode === 'general') {
       const key = subcategoryId ?? categoryId
-      const next = { ...(store?.general_budgets ?? {}) }
-      if (isValid)
-        next[key] = { category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }
-      else delete next[key]
-      setGeneralBudgets.mutate(next)
+      if (isValid) {
+        setGeneralBudget.mutate({ category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency })
+      } else if (store?.general_budgets[key]) {
+        removeGeneralBudget.mutate(key)
+      }
       return
     }
-    const otherEntries = (store?.budgets ?? []).filter(
-      (budget) =>
-        !(
-          budget.month === month &&
-          budget.category_id === categoryId &&
-          (budget.subcategory_id ?? null) === subcategoryId
-        ),
-    )
     const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
-    const thisEntry = isValid
-      ? [
-          {
-            budget_id: budgetId,
-            month,
-            category_id: categoryId,
-            subcategory_id: subcategoryId,
-            amount,
-            currency: displayCurrency,
-          },
-        ]
-      : []
-    setBudgets.mutate([...otherEntries, ...thisEntry])
+    if (isValid) {
+      setBudget.mutate({ month, category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency })
+    } else if ((store?.budgets ?? []).some((budget) => budget.budget_id === budgetId)) {
+      removeBudget.mutate(budgetId)
+    }
   }
 
   const comparison = expenseCategories

@@ -11,6 +11,7 @@ from accounting.dashboard.income_statement import (
     monthly_income_expense,
     net_income_expense_total,
     spend_curve_vs_average,
+    spend_curve_window,
 )
 from accounting.ledger.currency import DisplayCurrency
 from accounting.models import Account, Category, Posting
@@ -221,6 +222,24 @@ def test_spend_curve_tracks_cumulative_spend_for_the_selected_month() -> None:
     assert by_day[1] == pytest.approx(10.0)
     assert by_day[2] == pytest.approx(10.0)
     assert by_day[3] == pytest.approx(15.0)
+
+
+def test_spend_curve_window_spans_the_month_and_its_lookback() -> None:
+    since, until = spend_curve_window(date(2026, 6, 15), lookback_months=1)
+    assert since.isoformat() == "2026-05-01"
+    assert until.isoformat() == "2026-06-30"
+
+
+def test_spend_curve_window_crosses_a_year_boundary() -> None:
+    since, until = spend_curve_window(date(2026, 1, 15), lookback_months=2)
+    assert since.isoformat() == "2025-11-01"
+    assert until.isoformat() == "2026-01-31"
+
+
+def test_spend_curve_window_with_no_lookback_is_just_the_month() -> None:
+    since, until = spend_curve_window(date(2026, 6, 15), lookback_months=0)
+    assert since.isoformat() == "2026-06-01"
+    assert until.isoformat() == "2026-06-30"
 
 
 def test_net_income_expense_total_nets_income_minus_expense_up_to_a_date() -> None:

@@ -3,7 +3,12 @@ from datetime import datetime
 import polars as pl
 import pytest
 
-from accounting.dashboard.budgets import budget_comparison, month_bounds, suggested_budget_amount
+from accounting.dashboard.budgets import (
+    budget_comparison,
+    month_bounds,
+    suggested_budget_amount,
+    suggested_budget_amount_window,
+)
 from accounting.models import Account, Budget, Category, Posting
 
 SCHEMA = Posting.polars_schema
@@ -57,6 +62,26 @@ def test_month_bounds_spans_the_whole_calendar_month() -> None:
     start, end = month_bounds("2026-02")
     assert start.isoformat() == "2026-02-01"
     assert end.isoformat() == "2026-02-28"
+
+
+def test_suggested_budget_amount_window_spans_the_trailing_months() -> None:
+    window = suggested_budget_amount_window("2026-03", lookback_months=3)
+    assert window is not None
+    start, end = window
+    assert start.isoformat() == "2025-12-01"
+    assert end.isoformat() == "2026-02-28"
+
+
+def test_suggested_budget_amount_window_crosses_a_year_boundary() -> None:
+    window = suggested_budget_amount_window("2026-01", lookback_months=2)
+    assert window is not None
+    start, end = window
+    assert start.isoformat() == "2025-11-01"
+    assert end.isoformat() == "2025-12-31"
+
+
+def test_suggested_budget_amount_window_is_none_with_no_lookback() -> None:
+    assert suggested_budget_amount_window("2026-03", lookback_months=0) is None
 
 
 def test_suggested_budget_amount_is_the_median_of_trailing_months() -> None:

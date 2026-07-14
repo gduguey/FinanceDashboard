@@ -509,8 +509,52 @@ export interface paths {
          *         The budgets just persisted.
          */
         put: operations["put_budgets_api_accounting_budgets_put"];
-        post?: never;
+        /**
+         * Post Budget
+         * @description Set one month's spending target for one category (or subcategory), replacing any prior target for it.
+         *
+         *     Unlike `PUT /budgets`, only the one budget in the request body is
+         *     sent or touched — every other month/category's target is left alone,
+         *     so editing one cell in the budget grid no longer means re-sending
+         *     every budget the user has ever set.
+         *
+         *     Returns
+         *     -------
+         *     Budget
+         *         The budget just persisted.
+         */
+        post: operations["post_budget_api_accounting_budgets_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounting/budgets/{budget_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Budget
+         * @description Remove one month's target for one category.
+         *
+         *     Returns
+         *     -------
+         *     BudgetIdResponse
+         *         The id just removed.
+         *
+         *     Raises
+         *     ------
+         *     HTTPException
+         *         404 if no budget has this id.
+         */
+        delete: operations["delete_budget_api_accounting_budgets__budget_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -538,8 +582,50 @@ export interface paths {
          *         The general budgets just persisted.
          */
         put: operations["put_general_budgets_api_accounting_general_budgets_put"];
-        post?: never;
+        /**
+         * Post General Budget
+         * @description Set one category's (or subcategory's) standing target, replacing any prior one for it.
+         *
+         *     Unlike `PUT /general-budgets`, only the one entry in the request body
+         *     is sent or touched.
+         *
+         *     Returns
+         *     -------
+         *     GeneralBudget
+         *         The general budget just persisted.
+         */
+        post: operations["post_general_budget_api_accounting_general_budgets_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounting/general-budgets/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete General Budget
+         * @description Remove one category's (or subcategory's) standing target.
+         *
+         *     Returns
+         *     -------
+         *     GeneralBudgetKeyResponse
+         *         The key just removed.
+         *
+         *     Raises
+         *     ------
+         *     HTTPException
+         *         404 if no general budget has this key.
+         */
+        delete: operations["delete_general_budget_api_accounting_general_budgets__key__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1354,8 +1440,46 @@ export interface paths {
          *         The merges just persisted.
          */
         put: operations["put_posting_merges_api_accounting_posting_merges_put"];
-        post?: never;
+        /**
+         * Post Posting Merge
+         * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
+         *
+         *     Returns
+         *     -------
+         *     PostingMerge
+         *         The merge just persisted.
+         */
+        post: operations["post_posting_merge_api_accounting_posting_merges_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounting/posting-merges/{merge_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Posting Merge
+         * @description Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
+         *
+         *     Returns
+         *     -------
+         *     PostingMergeIdResponse
+         *
+         *     Raises
+         *     ------
+         *     HTTPException
+         *         404 if no merge with this id exists.
+         */
+        delete: operations["delete_posting_merge_api_accounting_posting_merges__merge_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2076,8 +2200,71 @@ export interface paths {
          *         The contributions just persisted, keyed by `contribution_id`.
          */
         put: operations["put_goal_contributions_api_accounting_goal_contributions_put"];
-        post?: never;
+        /**
+         * Post Goal Contribution
+         * @description Record one new dated allocation, without touching any other contribution already recorded.
+         *
+         *     Unlike a budget's `(month, category_id)`, a contribution is an
+         *     arbitrary event with no natural key to derive an id from, so the
+         *     server generates an opaque one — two contributions with identical
+         *     fields (e.g. the same goal, date, and amount entered twice) are
+         *     distinct rows, not a collision.
+         *
+         *     Returns
+         *     -------
+         *     GoalContribution
+         *         The contribution just persisted.
+         */
+        post: operations["post_goal_contribution_api_accounting_goal_contributions_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/accounting/goal-contributions/{contribution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Goal Contribution
+         * @description Replace one contribution's fields, without touching any other contribution.
+         *
+         *     Every field is required — the caller (`ContributionLedgerTable.tsx`'s
+         *     `update()`) already merges its patch into the existing row
+         *     client-side before sending, so there's no partial-update ambiguity to
+         *     resolve here.
+         *
+         *     Returns
+         *     -------
+         *     GoalContribution
+         *         The contribution just persisted.
+         *
+         *     Raises
+         *     ------
+         *     HTTPException
+         *         404 if no contribution with this id exists.
+         */
+        put: operations["put_goal_contribution_api_accounting_goal_contributions__contribution_id__put"];
+        post?: never;
+        /**
+         * Delete Goal Contribution
+         * @description Remove one contribution, without touching any other.
+         *
+         *     Returns
+         *     -------
+         *     GoalContributionIdResponse
+         *
+         *     Raises
+         *     ------
+         *     HTTPException
+         *         404 if no contribution with this id exists.
+         */
+        delete: operations["delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3140,39 +3327,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/{full_path}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Serve Frontend
-         * @description Serve the built React app for anything no route above matched.
-         *
-         *     Registered last on purpose: Starlette matches routes in registration
-         *     order, so every `/api/...` route (and `/docs`, `/openapi.json`)
-         *     defined earlier is tried first. Falls back to `index.html` for any
-         *     path that isn't a real file in `web/dist/` — e.g. a hard refresh on
-         *     `/settings` — so the frontend's client-side router gets a chance to
-         *     handle it instead of a bare 404.
-         *
-         *     Returns
-         *     -------
-         *     FileResponse
-         *         The requested static file if it exists under `web/dist/`,
-         *         otherwise `index.html` so client-side routing can take over.
-         */
-        get: operations["serve_frontend__full_path__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3330,8 +3484,11 @@ export interface components {
          *
          *     Mirrors `store.AccountingStore` field-for-field, except `rules` is
          *     exposed as `transfer_rules` (the name every other endpoint and the
-         *     frontend already use for it) and `dismissed_suggestions` is omitted —
-         *     nothing in the frontend reads the whole store for those.
+         *     frontend already use for it). Dismissed suggestions aren't part of
+         *     `AccountingStore` at all — see `GET /dismissed-suggestions` and
+         *     `store.list_dismissed_suggestions`/`dismissed_suggestion_ids`, which
+         *     query that table directly rather than through the whole-store
+         *     round-trip every other entity here goes through.
          */
         AccountingStoreResponse: {
             /** Accounts */
@@ -3632,6 +3789,14 @@ export interface components {
             currency: "USD" | "EUR";
         };
         /**
+         * BudgetIdResponse
+         * @description Response body naming one budget, for endpoints whose only real effect is removing something.
+         */
+        BudgetIdResponse: {
+            /** Budget Id */
+            budget_id: string;
+        };
+        /**
          * BudgetToDeletePreview
          * @description One `Budget`/`GeneralBudget` entry a category merge would discard rather than keep.
          *
@@ -3648,6 +3813,34 @@ export interface components {
             amount: number;
             /**
              * Currency
+             * @enum {string}
+             */
+            currency: "USD" | "EUR";
+        };
+        /**
+         * BudgetUpsert
+         * @description Request body for `POST /api/accounting/budgets` — sets one month's target for one category.
+         *
+         *     `budget_id` is never taken from the client — derived server-side from
+         *     `(month, category_id, subcategory_id)`, the same natural key
+         *     `PUT /budgets/{budget_id}` used to require the whole list to encode
+         *     implicitly. Posting this twice for the same `(month, category_id,
+         *     subcategory_id)` replaces the existing target rather than erroring —
+         *     unlike a category/tag name, there's no ambiguity a human needs to
+         *     confirm here, every tuple maps to exactly one budget.
+         */
+        BudgetUpsert: {
+            /** Month */
+            month: string;
+            /** Category Id */
+            category_id: string;
+            /** Subcategory Id */
+            subcategory_id?: string | null;
+            /** Amount */
+            amount: number;
+            /**
+             * Currency
+             * @default USD
              * @enum {string}
              */
             currency: "USD" | "EUR";
@@ -4315,6 +4508,35 @@ export interface components {
             currency: "USD" | "EUR";
         };
         /**
+         * GeneralBudgetKeyResponse
+         * @description Response body naming one general budget's key, for endpoints whose only real effect is removing something.
+         */
+        GeneralBudgetKeyResponse: {
+            /** Key */
+            key: string;
+        };
+        /**
+         * GeneralBudgetUpsert
+         * @description Request body for `POST /api/accounting/general-budgets` — sets one category's standing target.
+         *
+         *     Same upsert-by-natural-key reasoning as `BudgetUpsert`, keyed by
+         *     `(category_id, subcategory_id)` instead of also including a month.
+         */
+        GeneralBudgetUpsert: {
+            /** Category Id */
+            category_id: string;
+            /** Subcategory Id */
+            subcategory_id?: string | null;
+            /** Amount */
+            amount: number;
+            /**
+             * Currency
+             * @default USD
+             * @enum {string}
+             */
+            currency: "USD" | "EUR";
+        };
+        /**
          * Goal
          * @description A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
          *
@@ -4370,6 +4592,100 @@ export interface components {
         GoalContribution: {
             /** Contribution Id */
             contribution_id: string;
+            /** Goal Id */
+            goal_id: string;
+            /**
+             * Date
+             * Format: date-time
+             */
+            date: string;
+            /** Amount */
+            amount: number;
+            /**
+             * Currency
+             * @default USD
+             * @enum {string}
+             */
+            currency: "USD" | "EUR";
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Source Posting Id */
+            source_posting_id?: string | null;
+            /**
+             * Origin
+             * @default manual
+             * @enum {string}
+             */
+            origin: "manual" | "automation";
+            /**
+             * Edited
+             * @default false
+             */
+            edited: boolean;
+        };
+        /**
+         * GoalContributionCreate
+         * @description Request body for `POST /api/accounting/goal-contributions` — records one new dated allocation.
+         *
+         *     `contribution_id` is never taken from the client — unlike a budget's
+         *     `(month, category_id)`, a contribution is an arbitrary event with no
+         *     natural key to derive one from, so the server generates an opaque one.
+         */
+        GoalContributionCreate: {
+            /** Goal Id */
+            goal_id: string;
+            /**
+             * Date
+             * Format: date-time
+             */
+            date: string;
+            /** Amount */
+            amount: number;
+            /**
+             * Currency
+             * @default USD
+             * @enum {string}
+             */
+            currency: "USD" | "EUR";
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Source Posting Id */
+            source_posting_id?: string | null;
+            /**
+             * Origin
+             * @default manual
+             * @enum {string}
+             */
+            origin: "manual" | "automation";
+            /**
+             * Edited
+             * @default false
+             */
+            edited: boolean;
+        };
+        /**
+         * GoalContributionIdResponse
+         * @description Response body naming one goal contribution, for endpoints whose only real effect is removing something.
+         */
+        GoalContributionIdResponse: {
+            /** Contribution Id */
+            contribution_id: string;
+        };
+        /**
+         * GoalContributionUpdate
+         * @description Request body for `PUT /api/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
+         *
+         *     Every field is required, mirroring `PUT /accounts/{account_id}` — the
+         *     caller already merges its patch into the existing row client-side
+         *     before sending, so there's no partial-update ambiguity to resolve here.
+         */
+        GoalContributionUpdate: {
             /** Goal Id */
             goal_id: string;
             /**
@@ -5087,6 +5403,31 @@ export interface components {
         PostingMerge: {
             /** Merge Id */
             merge_id: string;
+            /** Kept Transaction Id */
+            kept_transaction_id: string;
+            /** Duplicate Transaction Ids */
+            duplicate_transaction_ids: string[];
+            /** Description */
+            description?: string | null;
+        };
+        /**
+         * PostingMergeIdResponse
+         * @description Response body naming one posting merge, for endpoints whose only real effect is removing something.
+         */
+        PostingMergeIdResponse: {
+            /** Merge Id */
+            merge_id: string;
+        };
+        /**
+         * PostingMergeUpsert
+         * @description Request body for `POST /api/accounting/posting-merges` — records one duplicate-resolution decision.
+         *
+         *     `merge_id` is never taken from the client — derived server-side from
+         *     `kept_transaction_id`, since a transaction can only ever be the kept
+         *     side of one merge decision at a time. Posting this twice for the same
+         *     `kept_transaction_id` replaces the existing decision.
+         */
+        PostingMergeUpsert: {
             /** Kept Transaction Id */
             kept_transaction_id: string;
             /** Duplicate Transaction Ids */
@@ -6562,6 +6903,74 @@ export interface operations {
             };
         };
     };
+    post_budget_api_accounting_budgets_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BudgetUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Budget"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_budget_api_accounting_budgets__budget_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path: {
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetIdResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     put_general_budgets_api_accounting_general_budgets_put: {
         parameters: {
             query?: never;
@@ -6588,6 +6997,74 @@ export interface operations {
                     "application/json": {
                         [key: string]: components["schemas"]["GeneralBudget"];
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_general_budget_api_accounting_general_budgets_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GeneralBudgetUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralBudget"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_general_budget_api_accounting_general_budgets__key__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GeneralBudgetKeyResponse"];
                 };
             };
             /** @description Validation Error */
@@ -7524,6 +8001,74 @@ export interface operations {
             };
         };
     };
+    post_posting_merge_api_accounting_posting_merges_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostingMergeUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostingMerge"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_posting_merge_api_accounting_posting_merges__merge_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path: {
+                merge_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostingMergeIdResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_validate_pending_api_accounting_postings_validate_pending_post: {
         parameters: {
             query?: never;
@@ -8411,6 +8956,111 @@ export interface operations {
                     "application/json": {
                         [key: string]: components["schemas"]["GoalContribution"];
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_goal_contribution_api_accounting_goal_contributions_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoalContributionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoalContribution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_goal_contribution_api_accounting_goal_contributions__contribution_id__put: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path: {
+                contribution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GoalContributionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoalContribution"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                "x-expected-store-version"?: number | null;
+            };
+            path: {
+                contribution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GoalContributionIdResponse"];
                 };
             };
             /** @description Validation Error */
@@ -9629,37 +10279,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
-                };
-            };
-        };
-    };
-    serve_frontend__full_path__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                full_path: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

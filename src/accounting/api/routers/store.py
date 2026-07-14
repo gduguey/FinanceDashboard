@@ -15,13 +15,17 @@ from accounting.api.api_models import (
     AccountIdResponse,
     AccountingStoreResponse,
     AccountUpdate,
+    BudgetIdResponse,
     BudgetToDeletePreview,
+    BudgetUpsert,
     CategoryCreate,
     CategoryDeletePreviewResponse,
     CategoryDeleteResponse,
     CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
+    GeneralBudgetKeyResponse,
+    GeneralBudgetUpsert,
     SubcategoryCreate,
     TagCreate,
     TagRenamePreviewResponse,
@@ -684,6 +688,76 @@ def put_budgets(
     return store.budgets
 
 
+def _budget_id(month: str, category_id: str, subcategory_id: str | None) -> str:
+    """Derive the natural key one `(month, category_id, subcategory_id)` tuple always maps to.
+
+    Returns
+    -------
+    str
+    """
+    return f"{month}:{category_id}:{subcategory_id}" if subcategory_id is not None else f"{month}:{category_id}"
+
+
+@router.post("/budgets")
+def post_budget(
+    request: BudgetUpsert,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Budget:
+    """Set one month's spending target for one category (or subcategory), replacing any prior target for it.
+
+    Unlike `PUT /budgets`, only the one budget in the request body is
+    sent or touched — every other month/category's target is left alone,
+    so editing one cell in the budget grid no longer means re-sending
+    every budget the user has ever set.
+
+    Returns
+    -------
+    Budget
+        The budget just persisted.
+    """
+    budget = Budget(
+        budget_id=_budget_id(request.month, request.category_id, request.subcategory_id),
+        month=request.month,
+        category_id=request.category_id,
+        subcategory_id=request.subcategory_id,
+        amount=request.amount,
+        currency=request.currency,
+    )
+    store = load_store(session, user_id)
+    remaining = [b for b in store.budgets if b.budget_id != budget.budget_id]
+    store = store.model_copy(update={"budgets": [*remaining, budget]})
+    save_store(store, session, user_id)
+    return budget
+
+
+@router.delete("/budgets/{budget_id}")
+def delete_budget(
+    budget_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> BudgetIdResponse:
+    """Remove one month's target for one category.
+
+    Returns
+    -------
+    BudgetIdResponse
+        The id just removed.
+
+    Raises
+    ------
+    HTTPException
+        404 if no budget has this id.
+    """
+    store = load_store(session, user_id)
+    if not any(b.budget_id == budget_id for b in store.budgets):
+        raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
+    remaining = [b for b in store.budgets if b.budget_id != budget_id]
+    store = store.model_copy(update={"budgets": remaining})
+    save_store(store, session, user_id)
+    return BudgetIdResponse(budget_id=budget_id)
+
+
 @router.put("/general-budgets")
 def put_general_budgets(
     general_budgets: dict[str, GeneralBudget],
@@ -705,6 +779,72 @@ def put_general_budgets(
     store = store.model_copy(update={"general_budgets": general_budgets})
     save_store(store, session, user_id)
     return store.general_budgets
+
+
+def _general_budget_key(category_id: str, subcategory_id: str | None) -> str:
+    """Which of `category_id`/`subcategory_id` a general budget is keyed by — whichever is more specific.
+
+    Returns
+    -------
+    str
+    """
+    return subcategory_id if subcategory_id is not None else category_id
+
+
+@router.post("/general-budgets")
+def post_general_budget(
+    request: GeneralBudgetUpsert,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GeneralBudget:
+    """Set one category's (or subcategory's) standing target, replacing any prior one for it.
+
+    Unlike `PUT /general-budgets`, only the one entry in the request body
+    is sent or touched.
+
+    Returns
+    -------
+    GeneralBudget
+        The general budget just persisted.
+    """
+    key = _general_budget_key(request.category_id, request.subcategory_id)
+    general_budget = GeneralBudget(
+        category_id=request.category_id,
+        subcategory_id=request.subcategory_id,
+        amount=request.amount,
+        currency=request.currency,
+    )
+    store = load_store(session, user_id)
+    store = store.model_copy(update={"general_budgets": {**store.general_budgets, key: general_budget}})
+    save_store(store, session, user_id)
+    return general_budget
+
+
+@router.delete("/general-budgets/{key}")
+def delete_general_budget(
+    key: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GeneralBudgetKeyResponse:
+    """Remove one category's (or subcategory's) standing target.
+
+    Returns
+    -------
+    GeneralBudgetKeyResponse
+        The key just removed.
+
+    Raises
+    ------
+    HTTPException
+        404 if no general budget has this key.
+    """
+    store = load_store(session, user_id)
+    if key not in store.general_budgets:
+        raise HTTPException(status_code=404, detail=f"General budget {key!r} not found")
+    remaining = {k: v for k, v in store.general_budgets.items() if k != key}
+    store = store.model_copy(update={"general_budgets": remaining})
+    save_store(store, session, user_id)
+    return GeneralBudgetKeyResponse(key=key)
 
 
 @router.put("/simulator/scenarios")

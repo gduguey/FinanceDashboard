@@ -4,6 +4,7 @@ import type {
   AccountingStore,
   Budget,
   BudgetComparisonRow,
+  BudgetUpsert,
   CanonicalCategoryOverrides,
   CanonicalImportPreview,
   CanonicalImportResult,
@@ -22,8 +23,11 @@ import type {
   DuplicateGroup,
   ExchangeRateHistoryPoint,
   GeneralBudget,
+  GeneralBudgetUpsert,
   Goal,
   GoalContribution,
+  GoalContributionCreate,
+  GoalContributionUpdate,
   GoalsSummary,
   ImportResult,
   InterestAccountRow,
@@ -41,6 +45,7 @@ import type {
   PaystubReconciliationResult,
   Posting,
   PostingMerge,
+  PostingMergeUpsert,
   PostingSplitLeg,
   ProjectionPoint,
   RecurringAddition,
@@ -381,8 +386,12 @@ export const accountingApi = {
     request<{ suggestion_id: string }>(`/api/accounting/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
       method: 'DELETE',
     }),
-  putPostingMerges: (merges: Record<string, PostingMerge>) =>
-    request<Record<string, PostingMerge>>('/api/accounting/posting-merges', jsonInit('PUT', merges)),
+  createPostingMerge: (merge: PostingMergeUpsert) =>
+    request<PostingMerge>('/api/accounting/posting-merges', jsonInit('POST', merge)),
+  removePostingMerge: (mergeId: string) =>
+    request<{ merge_id: string }>(`/api/accounting/posting-merges/${encodeURIComponent(mergeId)}`, {
+      method: 'DELETE',
+    }),
   netWorth: (asOf?: string, displayCurrency?: string) =>
     request<NetWorthSummary>(
       `/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`,
@@ -407,9 +416,13 @@ export const accountingApi = {
     request<SpendCurvePoint[]>(
       `/api/accounting/income-statement/spend-curve${queryString({ month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
     ),
-  putBudgets: (budgets: Budget[]) => request<Budget[]>('/api/accounting/budgets', jsonInit('PUT', budgets)),
-  putGeneralBudgets: (generalBudgets: Record<string, GeneralBudget>) =>
-    request<Record<string, GeneralBudget>>('/api/accounting/general-budgets', jsonInit('PUT', generalBudgets)),
+  setBudget: (budget: BudgetUpsert) => request<Budget>('/api/accounting/budgets', jsonInit('POST', budget)),
+  removeBudget: (budgetId: string) =>
+    request<{ budget_id: string }>(`/api/accounting/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
+  setGeneralBudget: (generalBudget: GeneralBudgetUpsert) =>
+    request<GeneralBudget>('/api/accounting/general-budgets', jsonInit('POST', generalBudget)),
+  removeGeneralBudget: (key: string) =>
+    request<{ key: string }>(`/api/accounting/general-budgets/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   budgetComparison: (month: string, displayCurrency?: string) =>
     request<BudgetComparisonRow[]>(
       `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,
@@ -446,8 +459,18 @@ export const accountingApi = {
     ),
   putGoals: (goals: Record<string, Goal>) =>
     request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
-  putGoalContributions: (contributions: Record<string, GoalContribution>) =>
-    request<Record<string, GoalContribution>>('/api/accounting/goal-contributions', jsonInit('PUT', contributions)),
+  createGoalContribution: (contribution: GoalContributionCreate) =>
+    request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
+  updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
+    request<GoalContribution>(
+      `/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`,
+      jsonInit('PUT', contribution),
+    ),
+  removeGoalContribution: (contributionId: string) =>
+    request<{ contribution_id: string }>(
+      `/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`,
+      { method: 'DELETE' },
+    ),
   putRecurringAdditions: (additions: RecurringAddition[]) =>
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>

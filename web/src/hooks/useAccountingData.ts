@@ -10,21 +10,22 @@ import {
 } from '@/lib/accountingApi'
 import { BASE_CURRENCY } from '@/lib/currency'
 import type {
-  Budget,
+  BudgetUpsert,
   CanonicalCategoryOverrides,
   Category,
   CategoryPattern,
   CurrencyCode,
   DismissSuggestionRequest,
-  GeneralBudget,
+  GeneralBudgetUpsert,
   Goal,
-  GoalContribution,
+  GoalContributionCreate,
+  GoalContributionUpdate,
   LlmSettingsUpdate,
   ManualOverride,
   ManualTransfer,
   OpeningBalance,
   OtherAsset,
-  PostingMerge,
+  PostingMergeUpsert,
   PostingSplitLeg,
   RecurringAddition,
   SimulatorScenario,
@@ -263,10 +264,18 @@ export function useRestoreSuggestion() {
   })
 }
 
-export function useSetPostingMerges() {
+export function useCreatePostingMerge() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (merges: Record<string, PostingMerge>) => accountingApi.putPostingMerges(merges),
+    mutationFn: (merge: PostingMergeUpsert) => accountingApi.createPostingMerge(merge),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemovePostingMerge() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (mergeId: string) => accountingApi.removePostingMerge(mergeId),
     onSuccess: invalidate,
   })
 }
@@ -499,18 +508,37 @@ export function useSetOtherAssets() {
   })
 }
 
-export function useSetBudgets() {
+// Single-item budget mutations — only send the one budget being changed
+// over the wire, not the user's entire budget history for every edit
+// (see accounting.api.routers.store.post_budget/post_general_budget).
+export function useSetBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (budgets: Budget[]) => accountingApi.putBudgets(budgets),
+    mutationFn: (budget: BudgetUpsert) => accountingApi.setBudget(budget),
     onSuccess: invalidate,
   })
 }
 
-export function useSetGeneralBudgets() {
+export function useRemoveBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (generalBudgets: Record<string, GeneralBudget>) => accountingApi.putGeneralBudgets(generalBudgets),
+    mutationFn: (budgetId: string) => accountingApi.removeBudget(budgetId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetGeneralBudget() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (generalBudget: GeneralBudgetUpsert) => accountingApi.setGeneralBudget(generalBudget),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveGeneralBudget() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (key: string) => accountingApi.removeGeneralBudget(key),
     onSuccess: invalidate,
   })
 }
@@ -733,10 +761,27 @@ export function useSetGoals() {
   })
 }
 
-export function useSetGoalContributions() {
+export function useCreateGoalContribution() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (contributions: Record<string, GoalContribution>) => accountingApi.putGoalContributions(contributions),
+    mutationFn: (contribution: GoalContributionCreate) => accountingApi.createGoalContribution(contribution),
+    onSuccess: invalidate,
+  })
+}
+
+export function useUpdateGoalContribution() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ contributionId, contribution }: { contributionId: string; contribution: GoalContributionUpdate }) =>
+      accountingApi.updateGoalContribution(contributionId, contribution),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveGoalContribution() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (contributionId: string) => accountingApi.removeGoalContribution(contributionId),
     onSuccess: invalidate,
   })
 }

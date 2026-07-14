@@ -296,6 +296,33 @@ def net_income_expense_total(
     return float(total)
 
 
+def spend_curve_window(month: date, lookback_months: int) -> tuple[date, date]:
+    """Compute the exact date range `spend_curve_vs_average` needs `postings` filtered to.
+
+    Lets a caller (e.g. an API endpoint scoping its own `load_ledger`
+    call) query only that range instead of the full history, before
+    calling `spend_curve_vs_average` itself. Mirrors that function's own
+    month-window computation exactly — see its docstring for what `month`
+    and `lookback_months` mean.
+
+    Returns
+    -------
+    tuple[datetime.date, datetime.date]
+        `(since, until)`, both inclusive: `since` is the first day of the
+        earliest lookback month, `until` is the last day of `month` itself.
+    """
+    month_start = month.replace(day=1)
+    next_month_start = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    until = next_month_start - timedelta(days=1)
+    since = month_start
+    cursor_end = month_start - timedelta(days=1)
+    for _ in range(lookback_months):
+        cursor_start = cursor_end.replace(day=1)
+        since = cursor_start
+        cursor_end = cursor_start - timedelta(days=1)
+    return since, until
+
+
 def spend_curve_vs_average(
     postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],

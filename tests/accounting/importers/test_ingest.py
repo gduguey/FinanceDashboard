@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -121,6 +121,53 @@ def test_ingest_csv_two_identical_same_day_purchases_both_survive(
     assert result.new_posting_count == 4  # 2 transactions x 2 postings, not 1x2
     ledger = load_ledger(db_session, user_id=test_user_id)
     assert ledger["transaction_id"].n_unique() == 2
+
+
+def test_load_ledger_with_since_excludes_postings_before_it(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    # CHASE_CHECKING_CSV has one transaction on 06/30 and one on 06/29 (2 postings each).
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+
+    ledger = load_ledger(db_session, user_id=test_user_id, since=date(2026, 6, 30))
+
+    assert len(ledger) == 2
+    assert set(ledger["posted_at"].dt.date().to_list()) == {date(2026, 6, 30)}
+
+
+def test_load_ledger_with_until_excludes_postings_after_it(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+
+    ledger = load_ledger(db_session, user_id=test_user_id, until=date(2026, 6, 29))
+
+    assert len(ledger) == 2
+    assert set(ledger["posted_at"].dt.date().to_list()) == {date(2026, 6, 29)}
+
+
+def test_load_ledger_since_and_until_are_both_inclusive(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+
+    ledger = load_ledger(db_session, user_id=test_user_id, since=date(2026, 6, 29), until=date(2026, 6, 30))
+
+    assert len(ledger) == 4
+
+
+def test_load_ledger_with_no_range_still_returns_everything(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+
+    assert len(load_ledger(db_session, user_id=test_user_id)) == 4
 
 
 def test_ingest_csv_reimporting_duplicate_purchases_stays_a_no_op(

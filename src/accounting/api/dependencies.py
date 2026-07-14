@@ -66,6 +66,9 @@ def _resolved_postings_and_store(
     config: AccountingConfig,  # noqa: ARG001
     session: Session,
     user_id: uuid.UUID,
+    *,
+    since: date | None = None,
+    until: date | None = None,
 ) -> tuple[Any, Any]:
     """Load the raw ledger and resolve it against the current rules and manual overrides.
 
@@ -76,12 +79,43 @@ def _resolved_postings_and_store(
     either; they already live in their own file and are only ever applied
     on top.
 
+    Parameters
+    ----------
+    config
+        Unused; kept for every caller's existing call shape.
+    session
+        An open database session.
+    user_id
+        Whose ledger to resolve.
+    since
+        First day to include, inclusive. `None` (the default, used by
+        every caller except the dashboard aggregation endpoints) means no
+        bound — the true full history, required for anything that needs
+        to see every posting ever (editing rules/splits/merges, imports,
+        the raw transaction list). Passed straight through to `load_ledger`,
+        so a caller that scopes this to its own date range never loads or
+        resolves years of postings it was going to throw away in Python
+        anyway. Safe to narrow this way because every resolution step
+        (`apply_rules`/`apply_posting_splits`/`apply_manual_overrides`/
+        `apply_posting_merges`) only ever looks at one posting/transaction
+        at a time — none of them need a *different* posting's date to
+        resolve a given one, `apply_posting_merges` included: it drops a
+        duplicate purely by transaction id, from `store.posting_merges`
+        (loaded in full, independently of `since`/`until`), never by
+        checking whether the transaction it was merged into is also
+        present in this same date-limited frame. `store.manual_transfers`
+        (added below, also independent of `load_ledger`'s own filter) is
+        the one thing still filtered again afterward, so a transfer dated
+        outside the window doesn't leak in.
+    until
+        Last day to include, inclusive. Same reasoning as `since`.
+
     Returns
     -------
     tuple[polars.DataFrame, accounting.store.AccountingStore]
         The fully resolved postings, and the current store.
     """
-    raw = load_ledger(session, user_id)
+    raw = load_ledger(session, user_id, since=since, until=until)
     store = load_store(session, user_id)
     resolved = apply_rules(raw, store.rules, store.accounts)
     resolved = apply_posting_splits(resolved, store.posting_splits)
@@ -90,12 +124,21 @@ def _resolved_postings_and_store(
     resolved = apply_posting_merges(resolved, store.posting_merges)
     if store.manual_transfers:
         manual = postings_for_manual_transfers(store.manual_transfers, store.accounts)
+        if since is not None:
+            manual = manual.filter(pl.col("posted_at").dt.date() >= since)
+        if until is not None:
+            manual = manual.filter(pl.col("posted_at").dt.date() <= until)
         resolved = pl.concat([resolved, manual], how="vertical")
     return resolved, store
 
 
 def _resolved_postings_for_aggregation(
-    config: AccountingConfig, session: Session, user_id: uuid.UUID
+    config: AccountingConfig,
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    since: date | None = None,
+    until: date | None = None,
 ) -> tuple[Any, Any]:
     """Like `_resolved_postings_and_store`, but clears category/subcategory for unconfirmed suggestions.
 
@@ -107,13 +150,22 @@ def _resolved_postings_for_aggregation(
     the budget endpoints would bucket a still-pending posting under its
     suggested category rather than leaving it in "Uncategorized".
 
+    Parameters
+    ----------
+    config, session, user_id
+        See `_resolved_postings_and_store`.
+    since, until
+        See `_resolved_postings_and_store` — every caller of *this*
+        function is a dashboard aggregation already scoped to its own
+        date range, so they should always be passed here.
+
     Returns
     -------
     tuple[polars.DataFrame, accounting.store.AccountingStore]
         The resolved postings (with any pending posting's category/subcategory
         nulled out), and the current store.
     """
-    postings, store = _resolved_postings_and_store(config, session, user_id)
+    postings, store = _resolved_postings_and_store(config, session, user_id, since=since, until=until)
     overrides = load_overrides(session, user_id)
     pending_ids = [posting_id for posting_id, override in overrides.items() if override.pending_source is not None]
     if not pending_ids:

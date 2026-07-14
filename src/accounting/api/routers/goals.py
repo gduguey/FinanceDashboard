@@ -10,6 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
+    GoalContributionCreate,
+    GoalContributionIdResponse,
+    GoalContributionUpdate,
     GoalsSummary,
     SimulateContributionRequest,
     SimulateContributionResult,
@@ -66,6 +69,113 @@ def put_goal_contributions(
     store = store.model_copy(update={"goal_contributions": contributions})
     save_store(store, session, user_id)
     return store.goal_contributions
+
+
+@router.post("/goal-contributions")
+def post_goal_contribution(
+    request: GoalContributionCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalContribution:
+    """Record one new dated allocation, without touching any other contribution already recorded.
+
+    Unlike a budget's `(month, category_id)`, a contribution is an
+    arbitrary event with no natural key to derive an id from, so the
+    server generates an opaque one — two contributions with identical
+    fields (e.g. the same goal, date, and amount entered twice) are
+    distinct rows, not a collision.
+
+    Returns
+    -------
+    GoalContribution
+        The contribution just persisted.
+    """
+    contribution = GoalContribution(
+        contribution_id=f"manual:{uuid.uuid4().hex}",
+        goal_id=request.goal_id,
+        date=request.date,
+        amount=request.amount,
+        currency=request.currency,
+        note=request.note,
+        source_posting_id=request.source_posting_id,
+        origin=request.origin,
+        edited=request.edited,
+    )
+    store = load_store(session, user_id)
+    store = store.model_copy(
+        update={"goal_contributions": {**store.goal_contributions, contribution.contribution_id: contribution}}
+    )
+    save_store(store, session, user_id)
+    return contribution
+
+
+@router.put("/goal-contributions/{contribution_id}")
+def put_goal_contribution(
+    contribution_id: str,
+    request: GoalContributionUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalContribution:
+    """Replace one contribution's fields, without touching any other contribution.
+
+    Every field is required — the caller (`ContributionLedgerTable.tsx`'s
+    `update()`) already merges its patch into the existing row
+    client-side before sending, so there's no partial-update ambiguity to
+    resolve here.
+
+    Returns
+    -------
+    GoalContribution
+        The contribution just persisted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no contribution with this id exists.
+    """
+    store = load_store(session, user_id)
+    if contribution_id not in store.goal_contributions:
+        raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
+    contribution = GoalContribution(
+        contribution_id=contribution_id,
+        goal_id=request.goal_id,
+        date=request.date,
+        amount=request.amount,
+        currency=request.currency,
+        note=request.note,
+        source_posting_id=request.source_posting_id,
+        origin=request.origin,
+        edited=request.edited,
+    )
+    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, contribution_id: contribution}})
+    save_store(store, session, user_id)
+    return contribution
+
+
+@router.delete("/goal-contributions/{contribution_id}")
+def delete_goal_contribution(
+    contribution_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalContributionIdResponse:
+    """Remove one contribution, without touching any other.
+
+    Returns
+    -------
+    GoalContributionIdResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if no contribution with this id exists.
+    """
+    store = load_store(session, user_id)
+    if contribution_id not in store.goal_contributions:
+        raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
+    remaining = {cid: c for cid, c in store.goal_contributions.items() if cid != contribution_id}
+    store = store.model_copy(update={"goal_contributions": remaining})
+    save_store(store, session, user_id)
+    return GoalContributionIdResponse(contribution_id=contribution_id)
 
 
 @router.put("/recurring-additions")

@@ -717,7 +717,16 @@ class AccountingStore(BaseModel):
 
     Exchange rates are not stored here — they're fetched and cached by
     `market_data.exchange_rates`, keyed by date, not something this store
-    holds a single current value of.
+    holds a single current value of. Dismissed suggestions aren't stored
+    here either, for a different reason: every other entity is read as
+    "give me the whole list," cheap since each stays bounded by how much a
+    person is actually organizing (dozens of accounts, categories, rules).
+    Dismissed suggestions are the one exception — only ever checked as
+    "has this one been dismissed," and unbounded over time — so routing
+    that table through `load_store`/`save_store` would make every
+    unrelated store mutation pay to load a table that only ever grows. See
+    `dismissed_suggestion_ids`/`list_dismissed_suggestions`/
+    `dismiss_suggestion`/`undismiss_suggestion`, which query it directly.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -739,7 +748,6 @@ class AccountingStore(BaseModel):
     goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
     recurring_additions: list[RecurringAddition] = Field(default_factory=list)
     withdrawal_priorities: list[WithdrawalPriorityEntry] = Field(default_factory=list)
-    dismissed_suggestions: dict[str, DismissedSuggestion] = Field(default_factory=dict)
 
 
 def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
@@ -1127,16 +1135,6 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         WithdrawalPriorityEntry(goal_id=goal_natural_key_by_id[row.goal_id], priority=row.priority)
         for row in session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id)
     ]
-    dismissed_suggestions = {
-        row.natural_key: DismissedSuggestion(
-            suggestion_id=row.natural_key,
-            kind=row.kind,  # type: ignore[arg-type]
-            description=row.description,
-            dismissed_at=row.dismissed_at,
-        )
-        for row in session.query(adb.DismissedSuggestion).filter_by(user_id=user_id)
-    }
-
     store = AccountingStore(
         accounts=accounts,
         categories=categories,
@@ -1155,7 +1153,6 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         goal_contributions=goal_contributions,
         recurring_additions=recurring_additions,
         withdrawal_priorities=withdrawal_priorities,
-        dismissed_suggestions=dismissed_suggestions,
     )
 
     missing_accounts = {k: v for k, v in default_accounts().items() if k not in store.accounts}
@@ -1305,7 +1302,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.CategoryPattern).filter_by(user_id=user_id).delete()
     session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
     session.query(adb.SimulatorScenario).filter_by(user_id=user_id).delete()
-    session.query(adb.DismissedSuggestion).filter_by(user_id=user_id).delete()
     session.flush()
 
     _upsert_and_prune(
@@ -1606,19 +1602,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         for duplicate_id in merge.duplicate_transaction_ids
     )
     session.add_all(
-        adb.DismissedSuggestion(
-            id=derive_id(user_id, "dismissed_suggestions", s.suggestion_id),
-            user_id=user_id,
-            natural_key=s.suggestion_id,
-            kind=s.kind,
-            description=s.description,
-            dismissed_at=s.dismissed_at,
-        )
-        for s in store.dismissed_suggestions.values()
-    )
-    session.flush()
-
-    session.add_all(
         adb.PostingSplitLeg(
             user_id=user_id,
             posting_split_id=derive_id(user_id, "posting_splits", split.posting_id),
@@ -1784,3 +1767,117 @@ def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_
     )
     session.commit()
     session.commit()
+
+
+def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
+    """Which of `suggestion_ids` have already been dismissed, without loading anything else.
+
+    `DismissedSuggestion` lives outside `AccountingStore` entirely — unlike
+    every other entity there, it's never read as "give me the whole
+    list to build something," only ever checked as "has this one
+    already been dismissed" against a handful of candidate suggestion
+    ids computed fresh on every request (see `postings.get_transfer_suggestions`/
+    `get_duplicate_suggestions`). Routing it through `load_store`'s full
+    read would mean every unrelated store mutation — editing a budget,
+    adding a goal — pays the cost of loading a table that only ever grows,
+    never shrinks, for no benefit.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose dismissed suggestions to check.
+    suggestion_ids
+        The candidate ids to check; never touches rows outside this set.
+
+    Returns
+    -------
+    set[str]
+        The subset of `suggestion_ids` already dismissed.
+    """
+    candidates = list(suggestion_ids)
+    if not candidates:
+        return set()
+    rows = session.query(adb.DismissedSuggestion.natural_key).filter(
+        adb.DismissedSuggestion.user_id == user_id, adb.DismissedSuggestion.natural_key.in_(candidates)
+    )
+    return {row.natural_key for row in rows}
+
+
+def list_dismissed_suggestions(session: Session, user_id: uuid.UUID) -> list[DismissedSuggestion]:
+    """Every archived (dismissed) suggestion, most recently dismissed first.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose dismissed suggestions to list.
+
+    Returns
+    -------
+    list[DismissedSuggestion]
+    """
+    rows = (
+        session
+        .query(adb.DismissedSuggestion)
+        .filter_by(user_id=user_id)
+        .order_by(adb.DismissedSuggestion.dismissed_at.desc())
+    )
+    return [
+        DismissedSuggestion(
+            suggestion_id=row.natural_key,
+            kind=row.kind,  # type: ignore[arg-type]
+            description=row.description,
+            dismissed_at=row.dismissed_at,
+        )
+        for row in rows
+    ]
+
+
+def dismiss_suggestion(session: Session, user_id: uuid.UUID, entry: DismissedSuggestion) -> None:
+    """Archive one suggestion so it stops being proposed, replacing any existing entry with the same id.
+
+    Parameters
+    ----------
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose suggestion this is.
+    entry
+        The suggestion to archive.
+    """
+    session.merge(
+        adb.DismissedSuggestion(
+            id=derive_id(user_id, "dismissed_suggestions", entry.suggestion_id),
+            user_id=user_id,
+            natural_key=entry.suggestion_id,
+            kind=entry.kind,
+            description=entry.description,
+            dismissed_at=entry.dismissed_at,
+        )
+    )
+    session.commit()
+
+
+def undismiss_suggestion(session: Session, user_id: uuid.UUID, suggestion_id: str) -> bool:
+    """Restore one dismissed suggestion so it can be proposed again.
+
+    Parameters
+    ----------
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose suggestion this is.
+    suggestion_id
+        The id to restore.
+
+    Returns
+    -------
+    bool
+        Whether an archived entry with this id existed to remove.
+    """
+    deleted = session.query(adb.DismissedSuggestion).filter_by(user_id=user_id, natural_key=suggestion_id).delete()
+    session.commit()
+    return deleted > 0

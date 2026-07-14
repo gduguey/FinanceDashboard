@@ -143,6 +143,97 @@ def test_put_goal_contributions_referencing_a_nonexistent_goal_fails() -> None:
     assert response.status_code == 500
 
 
+def test_post_goal_contribution_creates_one_with_a_server_generated_id(client) -> None:
+    _create_goal(client)
+
+    response = client.post(
+        "/api/accounting/goal-contributions",
+        json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
+    )
+
+    assert response.status_code == 200
+    created = response.json()
+    assert created["contribution_id"]
+    assert created["amount"] == pytest.approx(500.0)
+    assert created["origin"] == "manual"
+
+    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    assert set(contributions.keys()) == {created["contribution_id"]}
+
+
+def test_post_goal_contribution_twice_creates_two_distinct_rows(client) -> None:
+    _create_goal(client)
+    body = {"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"}
+
+    first = client.post("/api/accounting/goal-contributions", json=body)
+    second = client.post("/api/accounting/goal-contributions", json=body)
+
+    assert first.json()["contribution_id"] != second.json()["contribution_id"]
+    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    assert len(contributions) == 2
+
+
+def test_put_goal_contribution_replaces_one_without_touching_others(client) -> None:
+    _create_goal(client)
+    created = client.post(
+        "/api/accounting/goal-contributions",
+        json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
+    ).json()
+    other = client.post(
+        "/api/accounting/goal-contributions",
+        json={"goal_id": "emergency-fund", "date": "2026-06-11T00:00:00", "amount": 100.0, "currency": "USD"},
+    ).json()
+
+    response = client.put(
+        f"/api/accounting/goal-contributions/{created['contribution_id']}",
+        json={
+            "goal_id": "emergency-fund",
+            "date": "2026-06-10T00:00:00",
+            "amount": 750.0,
+            "currency": "USD",
+            "note": "topped up",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["amount"] == pytest.approx(750.0)
+    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    assert contributions[created["contribution_id"]]["amount"] == pytest.approx(750.0)
+    assert contributions[other["contribution_id"]]["amount"] == pytest.approx(100.0)
+
+
+def test_put_goal_contribution_404s_for_an_unknown_id(client) -> None:
+    _create_goal(client)
+    response = client.put(
+        "/api/accounting/goal-contributions/does-not-exist",
+        json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 750.0, "currency": "USD"},
+    )
+    assert response.status_code == 404
+
+
+def test_delete_goal_contribution_removes_only_that_one(client) -> None:
+    _create_goal(client)
+    created = client.post(
+        "/api/accounting/goal-contributions",
+        json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
+    ).json()
+    other = client.post(
+        "/api/accounting/goal-contributions",
+        json={"goal_id": "emergency-fund", "date": "2026-06-11T00:00:00", "amount": 100.0, "currency": "USD"},
+    ).json()
+
+    response = client.delete(f"/api/accounting/goal-contributions/{created['contribution_id']}")
+
+    assert response.status_code == 200
+    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    assert set(contributions.keys()) == {other["contribution_id"]}
+
+
+def test_delete_goal_contribution_404s_for_an_unknown_id(client) -> None:
+    response = client.delete("/api/accounting/goal-contributions/does-not-exist")
+    assert response.status_code == 404
+
+
 def test_goals_summary_converts_into_the_requested_display_currency(client, monkeypatch) -> None:
     monkeypatch.setattr(
         exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _fake_rate_history()

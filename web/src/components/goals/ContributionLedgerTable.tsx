@@ -8,10 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
+  useCreateGoalContribution,
   useCurrencies,
   useRatesToBase,
-  useSetGoalContributions,
+  useRemoveGoalContribution,
   useSimulateContribution,
+  useUpdateGoalContribution,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { BASE_CURRENCY, convertCurrency } from '@/lib/currency'
@@ -36,7 +38,9 @@ export function ContributionLedgerTable({
   contributions: Record<string, GoalContribution>
   goals: Record<string, Goal>
 }) {
-  const setContributions = useSetGoalContributions()
+  const createContribution = useCreateGoalContribution()
+  const updateContribution = useUpdateGoalContribution()
+  const removeContribution = useRemoveGoalContribution()
   const simulate = useSimulateContribution()
   const { data: currencies } = useCurrencies()
   const ratesToBase = useRatesToBase(
@@ -66,38 +70,30 @@ export function ContributionLedgerTable({
     const existing = contributions[contributionId]
     if (!existing) return
     const wasAutomated = existing.origin === 'automation'
-    setContributions.mutate({
-      ...contributions,
-      [contributionId]: { ...existing, ...patch, edited: wasAutomated ? true : existing.edited },
-    })
+    const { contribution_id: _id, ...merged } = { ...existing, ...patch, edited: wasAutomated ? true : existing.edited }
+    updateContribution.mutate({ contributionId, contribution: merged })
   }
 
   function remove(contributionId: string) {
-    const { [contributionId]: _removed, ...rest } = contributions
-    setContributions.mutate(rest)
+    removeContribution.mutate(contributionId)
     setWarnings(({ [contributionId]: _removedWarning, ...restWarnings }) => restWarnings)
   }
 
   function addRow() {
     if (goalList.length === 0) return
-    const contributionId = `manual:${Date.now()}`
-    setContributions.mutate({
-      ...contributions,
-      [contributionId]: {
-        contribution_id: contributionId,
-        goal_id: goalList[0].goal_id,
-        date: new Date(todayIsoDate()).toISOString(),
-        amount: 0,
-        // A contribution is always denominated in its own goal's currency
-        // (see `changeGoal`) — never a separately-chosen currency — so
-        // there's never a mismatch between "what this row says" and "what
-        // the goal it funds is tracked in".
-        currency: goalList[0].target_currency,
-        note: '',
-        source_posting_id: null,
-        origin: 'manual',
-        edited: false,
-      },
+    createContribution.mutate({
+      goal_id: goalList[0].goal_id,
+      date: new Date(todayIsoDate()).toISOString(),
+      amount: 0,
+      // A contribution is always denominated in its own goal's currency
+      // (see `changeGoal`) — never a separately-chosen currency — so
+      // there's never a mismatch between "what this row says" and "what
+      // the goal it funds is tracked in".
+      currency: goalList[0].target_currency,
+      note: '',
+      source_posting_id: null,
+      origin: 'manual',
+      edited: false,
     })
   }
 
