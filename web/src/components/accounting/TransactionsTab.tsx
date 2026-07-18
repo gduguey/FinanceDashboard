@@ -10,13 +10,16 @@ import {
   splitOriginalId,
 } from '@/components/accounting/transactionCategorization'
 import { CounterpartySelect } from '@/components/shared/CounterpartySelect'
+import { FilterPanel, FilterRow } from '@/components/shared/FilterPanel'
 import { FilterSelect } from '@/components/shared/FilterSelect'
+import { MultiSelectFilter } from '@/components/shared/MultiSelectFilter'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
@@ -33,8 +36,9 @@ import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions } from '@/lib/counterpartyAccounts'
 import { FILTER_ALL as ALL, matchesFilter } from '@/lib/filters'
-import { formatCurrency, formatDate } from '@/lib/format'
+import { formatCurrency, formatDate, formatMonthLong } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
+import { availableMonths } from '@/lib/months'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferRule } from '@/types/accounting'
 
@@ -52,6 +56,16 @@ const PENDING_ITEMS: Record<string, string> = {
   pattern: 'Pattern pending',
   [CONFIRMED]: 'Confirmed',
 }
+const RULE_FLAGGED_ITEMS: Record<string, string> = { [ALL]: 'All', yes: 'Rule-flagged', no: 'Not rule-flagged' }
+const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
+const CATEGORIZED_ITEMS: Record<string, string> = {
+  [ALL]: 'All',
+  categorized: 'Categorized',
+  uncategorized: 'Uncategorized',
+}
+const DATE_MODE_MONTH = 'month'
+const DATE_MODE_RANGE = 'range'
+const ALL_MONTHS = '__all_months__'
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
@@ -59,16 +73,22 @@ interface FilterState {
   search: string
   accountFilter: string
   accountExclude: boolean
-  categoryFilter: string
-  categoryExclude: boolean
+  // Multi-select, unlike every other filter here — an empty array means "no
+  // restriction", the same meaning `ALL` carries for the single-select ones.
+  categoryFilter: string[]
   subcategoryFilter: string
   subcategoryExclude: boolean
   tagFilter: string
   tagExclude: boolean
+  dateMode: typeof DATE_MODE_MONTH | typeof DATE_MODE_RANGE
+  month: string
   startDate: string
   endDate: string
   pendingFilter: string
   pendingExclude: boolean
+  ruleFlaggedFilter: string
+  incomeExpenseFilter: string
+  categorizedFilter: string
 }
 
 function defaultFilterState(): FilterState {
@@ -76,16 +96,22 @@ function defaultFilterState(): FilterState {
     search: '',
     accountFilter: ALL,
     accountExclude: false,
-    categoryFilter: ALL,
-    categoryExclude: false,
+    categoryFilter: [],
     subcategoryFilter: ALL,
     subcategoryExclude: false,
     tagFilter: ALL,
     tagExclude: false,
+    // Unscoped by default, same as the old plain from/to range — the month
+    // picker is there for when narrowing down is useful, not a forced default.
+    dateMode: DATE_MODE_MONTH,
+    month: ALL_MONTHS,
     startDate: '',
     endDate: '',
     pendingFilter: ALL,
     pendingExclude: false,
+    ruleFlaggedFilter: ALL,
+    incomeExpenseFilter: ALL,
+    categorizedFilter: ALL,
   }
 }
 
@@ -307,6 +333,11 @@ function TransactionsTable({
   onlyUncategorized: boolean
 }) {
   const [filters, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
+  // A filter bar persisted before categoryFilter became multi-select left a
+  // plain string in localStorage under this same key — coerce it back to
+  // "no restriction" rather than let a stale string silently break `.includes`
+  // (a string has `.includes` too, just substring-checking, not membership).
+  const categoryFilter = Array.isArray(filters.categoryFilter) ? filters.categoryFilter : []
   const [splitting, setSplitting] = useState<Posting | null>(null)
   const [suggestMessages, setSuggestMessages] = useState<Record<string, string>>({})
   const [bulkSuggesting, setBulkSuggesting] = useState(false)
@@ -447,13 +478,19 @@ function TransactionsTable({
     () => ({ [ALL]: 'All accounts', ...Object.fromEntries(realAccounts.map((a) => [a.account_id, a.name])) }),
     [realAccounts],
   )
-  const categoryItems = useMemo(
-    () => ({
-      [ALL]: 'All categories',
-      [UNCATEGORIZED]: 'Uncategorized',
-      ...Object.fromEntries(topLevelCategories.map((c) => [c.category_id, c.name])),
-    }),
+  const categoryOptions = useMemo(
+    () => [
+      { id: UNCATEGORIZED, name: 'Uncategorized' },
+      ...topLevelCategories.map((c) => ({ id: c.category_id, name: c.name })),
+    ],
     [topLevelCategories],
+  )
+  const monthItems = useMemo(
+    () => ({
+      [ALL_MONTHS]: 'All months',
+      ...Object.fromEntries(availableMonths(postings).map((month) => [month, formatMonthLong(month)])),
+    }),
+    [postings],
   )
   const subcategoryItems = useMemo(
     () => ({
@@ -490,11 +527,8 @@ function TransactionsTable({
         matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude),
       )
       .filter((posting) => {
-        const actual =
-          filters.categoryFilter === UNCATEGORIZED
-            ? posting.category_id === null
-            : posting.category_id === filters.categoryFilter
-        return matchesFilter(actual, filters.categoryFilter, filters.categoryExclude)
+        if (categoryFilter.length === 0) return true
+        return categoryFilter.includes(posting.category_id ?? UNCATEGORIZED)
       })
       .filter((posting) => {
         const actual =
@@ -506,8 +540,14 @@ function TransactionsTable({
       .filter((posting) =>
         matchesFilter((posting.tag_ids ?? []).includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
       )
-      .filter((posting) => !filters.startDate || posting.posted_at.slice(0, 10) >= filters.startDate)
-      .filter((posting) => !filters.endDate || posting.posted_at.slice(0, 10) <= filters.endDate)
+      .filter((posting) => {
+        if (filters.dateMode === DATE_MODE_MONTH) {
+          return filters.month === ALL_MONTHS || posting.posted_at.slice(0, 7) === filters.month
+        }
+        if (filters.startDate && posting.posted_at.slice(0, 10) < filters.startDate) return false
+        if (filters.endDate && posting.posted_at.slice(0, 10) > filters.endDate) return false
+        return true
+      })
       .filter((posting) => {
         const actual =
           filters.pendingFilter === CONFIRMED
@@ -515,7 +555,22 @@ function TransactionsTable({
             : posting.pending_source === filters.pendingFilter
         return matchesFilter(actual, filters.pendingFilter, filters.pendingExclude)
       })
-  }, [postings, filters, onlyUncategorized, withSubcategories, realIds])
+      .filter((posting) => {
+        if (filters.ruleFlaggedFilter === 'yes') return posting.resolved_by_transfer_rule_id != null
+        if (filters.ruleFlaggedFilter === 'no') return posting.resolved_by_transfer_rule_id == null
+        return true
+      })
+      .filter((posting) => {
+        if (filters.incomeExpenseFilter === ALL) return true
+        if (!realIds.has(posting.posting_id)) return false
+        return filters.incomeExpenseFilter === 'income' ? posting.amount >= 0 : posting.amount < 0
+      })
+      .filter((posting) => {
+        if (filters.categorizedFilter === 'categorized') return posting.category_id != null
+        if (filters.categorizedFilter === 'uncategorized') return posting.category_id == null
+        return true
+      })
+  }, [postings, filters, categoryFilter, onlyUncategorized, withSubcategories, realIds])
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'posted_at')
   const bulkTargets = useMemo(
@@ -560,6 +615,22 @@ function TransactionsTable({
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = somePendingSelected && !allPendingSelected
   }, [somePendingSelected, allPendingSelected])
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0
+    if (filters.accountFilter !== ALL) count++
+    count += categoryFilter.length
+    if (filters.subcategoryFilter !== ALL) count++
+    if (filters.tagFilter !== ALL) count++
+    if (filters.dateMode === DATE_MODE_MONTH ? filters.month !== ALL_MONTHS : filters.startDate || filters.endDate) {
+      count++
+    }
+    if ((filters.pendingFilter ?? ALL) !== ALL) count++
+    if (filters.ruleFlaggedFilter !== ALL) count++
+    if (filters.incomeExpenseFilter !== ALL) count++
+    if (filters.categorizedFilter !== ALL) count++
+    return count
+  }, [filters, categoryFilter])
 
   return (
     <Card>
@@ -607,60 +678,162 @@ function TransactionsTable({
             value={filters.search}
             onChange={(event) => setFilters({ ...filters, search: event.target.value })}
           />
-          <FilterSelect
-            value={filters.accountFilter}
-            exclude={filters.accountExclude}
-            items={accountItems}
-            width="min-w-40"
-            onValueChange={(value) => setFilters({ ...filters, accountFilter: value })}
-            onExcludeChange={(exclude) => setFilters({ ...filters, accountExclude: exclude })}
-          />
-          <FilterSelect
-            value={filters.categoryFilter}
-            exclude={filters.categoryExclude}
-            items={categoryItems}
-            width="min-w-40"
-            onValueChange={(value) => setFilters({ ...filters, categoryFilter: value })}
-            onExcludeChange={(exclude) => setFilters({ ...filters, categoryExclude: exclude })}
-          />
-          <FilterSelect
-            value={filters.subcategoryFilter}
-            exclude={filters.subcategoryExclude}
-            items={subcategoryItems}
-            width="min-w-40"
-            onValueChange={(value) => setFilters({ ...filters, subcategoryFilter: value })}
-            onExcludeChange={(exclude) => setFilters({ ...filters, subcategoryExclude: exclude })}
-          />
-          <FilterSelect
-            value={filters.tagFilter}
-            exclude={filters.tagExclude}
-            items={tagItems}
-            width="min-w-36"
-            onValueChange={(value) => setFilters({ ...filters, tagFilter: value })}
-            onExcludeChange={(exclude) => setFilters({ ...filters, tagExclude: exclude })}
-          />
-          <FilterSelect
-            value={filters.pendingFilter ?? ALL}
-            exclude={filters.pendingExclude ?? false}
-            items={PENDING_ITEMS}
-            width="min-w-32"
-            onValueChange={(value) => setFilters({ ...filters, pendingFilter: value })}
-            onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
-          />
-          <OptionalDateInput
-            value={filters.startDate}
-            onChange={(startDate) => setFilters({ ...filters, startDate })}
-            placeholder="Any start date"
-          />
-          <OptionalDateInput
-            value={filters.endDate}
-            onChange={(endDate) => setFilters({ ...filters, endDate })}
-            placeholder="Any end date"
-          />
-          <Button variant="ghost" size="sm" onClick={() => setFilters(defaultFilterState())}>
-            <RotateCcw className="size-3.5" />
-            Reset filters
-          </Button>
+          <FilterPanel activeCount={activeFilterCount}>
+            <FilterRow label="Date">
+              <div className="flex items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant={filters.dateMode === DATE_MODE_MONTH ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setFilters({ ...filters, dateMode: DATE_MODE_MONTH })}
+                >
+                  Month
+                </Button>
+                <Button
+                  type="button"
+                  variant={filters.dateMode === DATE_MODE_RANGE ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setFilters({ ...filters, dateMode: DATE_MODE_RANGE })}
+                >
+                  Range
+                </Button>
+              </div>
+              {filters.dateMode === DATE_MODE_MONTH ? (
+                <Select value={filters.month} onValueChange={(month) => month && setFilters({ ...filters, month })}>
+                  <SelectTrigger size="sm" className="mt-1.5 w-full">
+                    <SelectValue items={monthItems} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(monthItems).map(([id, name]) => (
+                      <SelectItem key={id} value={id}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="mt-1.5 flex flex-col gap-1.5">
+                  <OptionalDateInput
+                    value={filters.startDate}
+                    onChange={(startDate) => setFilters({ ...filters, startDate })}
+                    placeholder="Any start date"
+                  />
+                  <OptionalDateInput
+                    value={filters.endDate}
+                    onChange={(endDate) => setFilters({ ...filters, endDate })}
+                    placeholder="Any end date"
+                  />
+                </div>
+              )}
+            </FilterRow>
+            <FilterRow label="Account">
+              <FilterSelect
+                value={filters.accountFilter}
+                exclude={filters.accountExclude}
+                items={accountItems}
+                width="w-full"
+                onValueChange={(value) => setFilters({ ...filters, accountFilter: value })}
+                onExcludeChange={(exclude) => setFilters({ ...filters, accountExclude: exclude })}
+              />
+            </FilterRow>
+            <FilterRow label="Category">
+              <MultiSelectFilter
+                label="Category"
+                options={categoryOptions}
+                selected={categoryFilter}
+                onChange={(nextCategoryFilter) => setFilters({ ...filters, categoryFilter: nextCategoryFilter })}
+              />
+            </FilterRow>
+            <FilterRow label="Subcategory">
+              <FilterSelect
+                value={filters.subcategoryFilter}
+                exclude={filters.subcategoryExclude}
+                items={subcategoryItems}
+                width="w-full"
+                onValueChange={(value) => setFilters({ ...filters, subcategoryFilter: value })}
+                onExcludeChange={(exclude) => setFilters({ ...filters, subcategoryExclude: exclude })}
+              />
+            </FilterRow>
+            <FilterRow label="Tag">
+              <FilterSelect
+                value={filters.tagFilter}
+                exclude={filters.tagExclude}
+                items={tagItems}
+                width="w-full"
+                onValueChange={(value) => setFilters({ ...filters, tagFilter: value })}
+                onExcludeChange={(exclude) => setFilters({ ...filters, tagExclude: exclude })}
+              />
+            </FilterRow>
+            <FilterRow label="AI/pattern suggestion status">
+              <FilterSelect
+                value={filters.pendingFilter ?? ALL}
+                exclude={filters.pendingExclude ?? false}
+                items={PENDING_ITEMS}
+                width="w-full"
+                onValueChange={(value) => setFilters({ ...filters, pendingFilter: value })}
+                onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
+              />
+            </FilterRow>
+            <FilterRow label="Rule-flagged">
+              <Select
+                value={filters.ruleFlaggedFilter ?? ALL}
+                onValueChange={(value) => value && setFilters({ ...filters, ruleFlaggedFilter: value })}
+              >
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue items={RULE_FLAGGED_ITEMS} />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(RULE_FLAGGED_ITEMS).map(([id, name]) => (
+                    <SelectItem key={id} value={id}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FilterRow>
+            <FilterRow label="Income / expense">
+              <Select
+                value={filters.incomeExpenseFilter ?? ALL}
+                onValueChange={(value) => value && setFilters({ ...filters, incomeExpenseFilter: value })}
+              >
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue items={INCOME_EXPENSE_ITEMS} />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(INCOME_EXPENSE_ITEMS).map(([id, name]) => (
+                    <SelectItem key={id} value={id}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FilterRow>
+            <FilterRow label="Categorized">
+              <Select
+                value={filters.categorizedFilter ?? ALL}
+                onValueChange={(value) => value && setFilters({ ...filters, categorizedFilter: value })}
+              >
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue items={CATEGORIZED_ITEMS} />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(CATEGORIZED_ITEMS).map(([id, name]) => (
+                    <SelectItem key={id} value={id}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FilterRow>
+          </FilterPanel>
+          {activeFilterCount > 0 && (
+            <Button variant="ghost" size="sm" onClick={() => setFilters(defaultFilterState())}>
+              <RotateCcw className="size-3.5" />
+              Reset filters
+            </Button>
+          )}
         </div>
       </CardHeader>
       <CardContent>
