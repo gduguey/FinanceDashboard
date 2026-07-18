@@ -186,6 +186,10 @@ class TransferRule(BaseModel):
     later, never read by the matching logic. `active` lets a rule be
     switched off without deleting it — an inactive rule is skipped by
     matching entirely, as if it weren't in the list at all.
+    `excluded_transaction_ids` opts specific, otherwise-matching
+    transactions out of this one rule, without disabling it for anything
+    else it correctly resolves — the excluded transaction simply falls
+    back to whatever the next-matching rule (or no rule) would have done.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -197,6 +201,7 @@ class TransferRule(BaseModel):
     priority: int = 0
     description: str = ""
     active: bool = True
+    excluded_transaction_ids: list[str] = Field(default_factory=list)
 
 
 class CategoryPattern(BaseModel):

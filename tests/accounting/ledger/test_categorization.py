@@ -284,3 +284,49 @@ def test_resolved_transfer_rule_ids_by_transaction_omits_transactions_no_rule_ma
         postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
     )
     assert resolved_by == {}
+
+
+def test_apply_rules_skips_a_rule_for_an_excluded_transaction() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    transaction_id = postings.row(0, named=True)["transaction_id"]
+    excluded_rule = EQORE_RULE.model_copy(update={"excluded_transaction_ids": [transaction_id]})
+
+    resolved = apply_rules(
+        postings, [excluded_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+
+    counterparties = set(resolved["account_id"].unique().to_list()) - {"sofi:savings:3680"}
+    assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
+
+
+def test_apply_rules_still_matches_other_transactions_when_one_is_excluded() -> None:
+    excluded_pair = _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    other_pair = _placeholder_pair("sofi-savings", "2", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    postings = postings_to_frame([*excluded_pair, *other_pair])
+    excluded_transaction_id = excluded_pair[0].transaction_id
+    other_transaction_id = other_pair[0].transaction_id
+    excluded_rule = EQORE_RULE.model_copy(update={"excluded_transaction_ids": [excluded_transaction_id]})
+
+    resolved = apply_rules(
+        postings, [excluded_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+
+    resolved_transaction_ids = set(
+        resolved.filter(pl.col("account_id") == "employer:eqore")["transaction_id"].to_list()
+    )
+    assert resolved_transaction_ids == {other_transaction_id}
+
+
+def test_resolved_transfer_rule_ids_by_transaction_omits_an_excluded_transaction() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    transaction_id = postings.row(0, named=True)["transaction_id"]
+    excluded_rule = EQORE_RULE.model_copy(update={"excluded_transaction_ids": [transaction_id]})
+
+    resolved_by = resolved_transfer_rule_ids_by_transaction(
+        postings, [excluded_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+    assert resolved_by == {}

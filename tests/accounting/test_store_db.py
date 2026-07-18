@@ -460,6 +460,35 @@ def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Sess
         save_store(store, db_session, user_id=test_user_id)
 
 
+def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "rules": [TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"])],
+        }
+    )
+    save_store(store, db_session, user_id=test_user_id)
+    reloaded = load_store(db_session, user_id=test_user_id)
+
+    assert reloaded.rules[0].excluded_transaction_ids == ["t1"]
+
+
+def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transaction_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "rules": [
+                TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
+            ],
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
 def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
     store = load_store(db_session, user_id=test_user_id)
     store = store.model_copy(

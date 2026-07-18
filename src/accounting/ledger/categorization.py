@@ -29,7 +29,9 @@ _PLACEHOLDER_ACCOUNT_IDS = {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCO
 _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per transaction
 
 
-def _matching_rule(rules: list[TransferRule], description: str, account_id: str) -> TransferRule | None:
+def _matching_rule(
+    rules: list[TransferRule], description: str, account_id: str, transaction_id: str
+) -> TransferRule | None:
     """Find the highest-priority active rule whose `description_contains` matches, scoped to `account_id` if set.
 
     Returns
@@ -43,6 +45,8 @@ def _matching_rule(rules: list[TransferRule], description: str, account_id: str)
         if rule.description_contains.lower() not in lowered:
             continue
         if rule.account_id is not None and rule.account_id != account_id:
+            continue
+        if transaction_id in rule.excluded_transaction_ids:
             continue
         return rule
     return None
@@ -78,7 +82,7 @@ def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dic
     for row in rows:
         by_transaction.setdefault(row["transaction_id"], []).append(row)
 
-    for legs in by_transaction.values():
+    for transaction_id, legs in by_transaction.items():
         if len(legs) != _TWO_LEG_TRANSACTION:
             continue
         placeholder_legs = [leg for leg in legs if leg["account_id"] in _PLACEHOLDER_ACCOUNT_IDS]
@@ -87,7 +91,7 @@ def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dic
             continue
         placeholder_leg, real_leg = placeholder_legs[0], real_legs[0]
 
-        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]))
+        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
         if rule is None or rule.counterparty_account_id is None:
             continue
         counterparty_account = accounts.get(rule.counterparty_account_id)
@@ -148,7 +152,7 @@ def resolved_transfer_rule_ids_by_transaction(
             continue
         real_leg = real_legs[0]
 
-        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]))
+        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
         if rule is None or rule.counterparty_account_id is None:
             continue
         if accounts.get(rule.counterparty_account_id) is None:

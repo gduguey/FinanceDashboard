@@ -45,6 +45,29 @@ class TransferRule(Base):
     active: Mapped[bool] = mapped_column(default=True)
 
 
+class TransferRuleExclusion(Base):
+    """One transaction opted out of matching one otherwise-applicable `TransferRule`.
+
+    Mirrors `PostingMergeDuplicate`'s own shape (a join table with a real
+    foreign key into `transactions`, not a JSON array of ids) for the same
+    reason: `transaction_id` values are deterministic (`db.base.derive_id`),
+    so a lasting reference into `transactions` survives a ledger rebuild.
+    """
+
+    __tablename__ = "transfer_rule_exclusions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "rule_id", "transaction_id", name="uq_transfer_rule_exclusions_user_rule_txn"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transfer_rules.id", ondelete="CASCADE")
+    )
+    transaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id"))
+
+
 class CategoryPattern(Base):
     """A user-maintained description-match pattern that *suggests* a category — never applies one silently."""
 

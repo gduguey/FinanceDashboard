@@ -8,7 +8,7 @@ transitively) before doing so, or these tables silently won't exist yet.
 
 from __future__ import annotations
 
-from accounting.db.automation import CategoryPattern, TransferRule
+from accounting.db.automation import CategoryPattern, TransferRule, TransferRuleExclusion
 from accounting.db.budgets import Budget, GeneralBudget
 from accounting.db.concurrency import StoreVersion
 from accounting.db.core import (
@@ -64,5 +64,6 @@ __all__ = [
     "Tag",
     "Transaction",
     "TransferRule",
+    "TransferRuleExclusion",
     "WithdrawalPriorityEntry",
 ]

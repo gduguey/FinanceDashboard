@@ -854,6 +854,7 @@ def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.
 def _rule_from_row(
     row: adb.TransferRule,
     account_natural_key_by_id: dict[uuid.UUID, str],
+    excluded_transaction_ids: list[str],
 ) -> TransferRule:
     """Convert one persisted `TransferRule` row back into its pydantic model, using natural keys.
 
@@ -871,6 +872,7 @@ def _rule_from_row(
         priority=row.priority,
         description=row.description,
         active=row.active,
+        excluded_transaction_ids=excluded_transaction_ids,
     )
 
 
@@ -975,9 +977,24 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         row.natural_key: Tag(tag_id=row.natural_key, name=row.name)
         for row in session.query(adb.Tag).filter_by(user_id=user_id)
     }
+    rule_rows = list(session.query(adb.TransferRule).filter_by(user_id=user_id))
+    exclusion_rows = list(session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id))
+    exclusion_transaction_natural_key_by_id = natural_keys_by_id(
+        session, adb.Transaction, user_id, [exclusion.transaction_id for exclusion in exclusion_rows]
+    )
+    exclusions_by_rule: dict[uuid.UUID, list[adb.TransferRuleExclusion]] = _group_by(
+        exclusion_rows, key=lambda row: row.rule_id
+    )
     rules = [
-        _rule_from_row(row, account_natural_key_by_id)
-        for row in session.query(adb.TransferRule).filter_by(user_id=user_id)
+        _rule_from_row(
+            row,
+            account_natural_key_by_id,
+            [
+                exclusion_transaction_natural_key_by_id[exclusion.transaction_id]
+                for exclusion in exclusions_by_rule.get(row.id, [])
+            ],
+        )
+        for row in rule_rows
     ]
     category_patterns = {
         row.natural_key: _pattern_from_row(row, category_natural_key_by_id)
@@ -1298,6 +1315,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.GeneralBudget).filter_by(user_id=user_id).delete()
     session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
     session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
+    session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id).delete()
     session.query(adb.TransferRule).filter_by(user_id=user_id).delete()
     session.query(adb.CategoryPattern).filter_by(user_id=user_id).delete()
     session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
@@ -1499,6 +1517,16 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         for gb in store.general_budgets.values()
     )
     session.flush()
+
+    session.add_all(
+        adb.TransferRuleExclusion(
+            user_id=user_id,
+            rule_id=derive_id(user_id, "transfer_rules", rule.rule_id),
+            transaction_id=_transaction_id(user_id, transaction_id),
+        )
+        for rule in store.rules
+        for transaction_id in rule.excluded_transaction_ids
+    )
 
     session.add_all(
         adb.Budget(
