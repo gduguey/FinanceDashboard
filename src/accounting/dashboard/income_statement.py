@@ -354,9 +354,15 @@ def spend_curve_vs_average(
         `trades.dashboard.cash_sitting.daily_cash_balances`'s own
         event-replay walk) and collects internally regardless of
         `postings`'s type — only the final result's type is chosen to match it.
+        A lookback month that starts before the ledger's very first real
+        expense is left out of the average entirely, rather than averaged
+        in as a flat 0 — otherwise a new user with only 1-2 months of
+        imported history sees the average line dragged down near zero by
+        months that were never actually theirs to spend nothing in.
     """
     was_eager = isinstance(postings, pl.DataFrame)
     legs = real_income_expense_legs(postings, accounts, display).filter(pl.col("amount") < 0)
+    earliest_expense_date = legs.select(pl.col("posted_at").dt.date().min()).collect().item()
     month_start = month.replace(day=1)
 
     def _cumulative_by_day(period_start: date, period_end: date) -> dict[int, float]:
@@ -388,6 +394,9 @@ def spend_curve_vs_average(
     cursor_end = month_start - timedelta(days=1)
     for _ in range(lookback_months):
         cursor_start = cursor_end.replace(day=1)
+        if earliest_expense_date is None or cursor_end < earliest_expense_date:
+            cursor_end = cursor_start - timedelta(days=1)
+            continue
         previous_daily.append(_cumulative_by_day(cursor_start, cursor_end))
         cursor_end = cursor_start - timedelta(days=1)
 
@@ -405,7 +414,11 @@ def spend_curve_vs_average(
         rows.append({
             "day": day,
             "current_month_cumulative": running_current,
-            "average_previous_months_cumulative": (sum(averages) / len(averages)) if averages else 0.0,
+            # `None`, not 0.0, when no prior month has real history to
+            # average — a flat 0 line would misleadingly look like "you
+            # usually spend nothing," rather than "there's nothing to
+            # compare against yet."
+            "average_previous_months_cumulative": (sum(averages) / len(averages)) if previous_daily else None,
         })
     result = pl.DataFrame(
         rows,
