@@ -8,3 +8,11 @@ export function matchesFilter(actual: boolean, filterValue: string | undefined, 
   if (!filterValue || filterValue === FILTER_ALL) return true
   return exclude ? !actual : actual
 }
+
+// The multi-select counterpart to `matchesFilter` — "no values picked" is
+// the multi-select's own "no restriction" state, playing the same role
+// `FILTER_ALL` plays for a single-select filter.
+export function matchesMultiFilter(actual: boolean, selectedCount: number, exclude: boolean | undefined): boolean {
+  if (selectedCount === 0) return true
+  return exclude ? !actual : actual
+}

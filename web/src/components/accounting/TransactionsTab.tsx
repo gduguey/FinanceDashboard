@@ -35,7 +35,7 @@ import {
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions } from '@/lib/counterpartyAccounts'
-import { FILTER_ALL as ALL, matchesFilter } from '@/lib/filters'
+import { FILTER_ALL as ALL, matchesFilter, matchesMultiFilter } from '@/lib/filters'
 import { formatCurrency, formatDate, formatMonthLong } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { availableMonths } from '@/lib/months'
@@ -50,12 +50,11 @@ const TABLE_COLUMN_COUNT = 9
 const UNCATEGORIZED = '__uncategorized__'
 const NO_SUBCATEGORY = '__no_subcategory__'
 const CONFIRMED = '__confirmed__'
-const PENDING_ITEMS: Record<string, string> = {
-  [ALL]: 'All',
-  ai: 'AI pending',
-  pattern: 'Pattern pending',
-  [CONFIRMED]: 'Confirmed',
-}
+const PENDING_OPTIONS = [
+  { id: 'ai', name: 'AI pending' },
+  { id: 'pattern', name: 'Pattern pending' },
+  { id: CONFIRMED, name: 'Confirmed' },
+]
 const RULE_FLAGGED_ITEMS: Record<string, string> = { [ALL]: 'All', yes: 'Rule-flagged', no: 'Not rule-flagged' }
 const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
 const CATEGORIZED_ITEMS: Record<string, string> = {
@@ -73,18 +72,21 @@ interface FilterState {
   search: string
   accountFilter: string
   accountExclude: boolean
-  // Multi-select, unlike every other filter here — an empty array means "no
-  // restriction", the same meaning `ALL` carries for the single-select ones.
+  // Multi-select, unlike accountFilter/ruleFlaggedFilter/incomeExpenseFilter/
+  // categorizedFilter (each still single-value, an "all-or-one" choice that
+  // doesn't benefit from picking several) — an empty array means "no
+  // restriction", the same meaning `ALL` carries for those.
   categoryFilter: string[]
-  subcategoryFilter: string
+  categoryExclude: boolean
+  subcategoryFilter: string[]
   subcategoryExclude: boolean
-  tagFilter: string
+  tagFilter: string[]
   tagExclude: boolean
   dateMode: typeof DATE_MODE_MONTH | typeof DATE_MODE_RANGE
   month: string
   startDate: string
   endDate: string
-  pendingFilter: string
+  pendingFilter: string[]
   pendingExclude: boolean
   ruleFlaggedFilter: string
   incomeExpenseFilter: string
@@ -97,9 +99,10 @@ function defaultFilterState(): FilterState {
     accountFilter: ALL,
     accountExclude: false,
     categoryFilter: [],
-    subcategoryFilter: ALL,
+    categoryExclude: false,
+    subcategoryFilter: [],
     subcategoryExclude: false,
-    tagFilter: ALL,
+    tagFilter: [],
     tagExclude: false,
     // Unscoped by default, same as the old plain from/to range — the month
     // picker is there for when narrowing down is useful, not a forced default.
@@ -107,7 +110,7 @@ function defaultFilterState(): FilterState {
     month: ALL_MONTHS,
     startDate: '',
     endDate: '',
-    pendingFilter: ALL,
+    pendingFilter: [],
     pendingExclude: false,
     ruleFlaggedFilter: ALL,
     incomeExpenseFilter: ALL,
@@ -337,7 +340,12 @@ function TransactionsTable({
   // plain string in localStorage under this same key — coerce it back to
   // "no restriction" rather than let a stale string silently break `.includes`
   // (a string has `.includes` too, just substring-checking, not membership).
+  // subcategoryFilter/tagFilter/pendingFilter carry the exact same risk,
+  // having gone from single-select to multi-select the same way.
   const categoryFilter = Array.isArray(filters.categoryFilter) ? filters.categoryFilter : []
+  const subcategoryFilter = Array.isArray(filters.subcategoryFilter) ? filters.subcategoryFilter : []
+  const tagFilter = Array.isArray(filters.tagFilter) ? filters.tagFilter : []
+  const pendingFilter = Array.isArray(filters.pendingFilter) ? filters.pendingFilter : []
   const [splitting, setSplitting] = useState<Posting | null>(null)
   const [suggestMessages, setSuggestMessages] = useState<Record<string, string>>({})
   const [bulkSuggesting, setBulkSuggesting] = useState(false)
@@ -492,18 +500,14 @@ function TransactionsTable({
     }),
     [postings],
   )
-  const subcategoryItems = useMemo(
-    () => ({
-      [ALL]: 'All subcategories',
-      [NO_SUBCATEGORY]: 'None',
-      ...Object.fromEntries(subcategories.map((c) => [c.category_id, `${c.parentName} › ${c.name}`])),
-    }),
+  const subcategoryOptions = useMemo(
+    () => [
+      { id: NO_SUBCATEGORY, name: 'None' },
+      ...subcategories.map((c) => ({ id: c.category_id, name: `${c.parentName} › ${c.name}` })),
+    ],
     [subcategories],
   )
-  const tagItems = useMemo(
-    () => ({ [ALL]: 'All tags', ...Object.fromEntries(tagOptions.map((t) => [t.tag_id, t.name])) }),
-    [tagOptions],
-  )
+  const tagFilterOptions = useMemo(() => tagOptions.map((t) => ({ id: t.tag_id, name: t.name })), [tagOptions])
 
   const withSubcategories = useMemo(() => categoriesWithSubcategories(categories), [categories])
   const ruleLabelById = useMemo(
@@ -527,19 +531,17 @@ function TransactionsTable({
         matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude),
       )
       .filter((posting) => {
-        if (categoryFilter.length === 0) return true
-        return categoryFilter.includes(posting.category_id ?? UNCATEGORIZED)
+        const actual = categoryFilter.includes(posting.category_id ?? UNCATEGORIZED)
+        return matchesMultiFilter(actual, categoryFilter.length, filters.categoryExclude)
       })
       .filter((posting) => {
-        const actual =
-          filters.subcategoryFilter === NO_SUBCATEGORY
-            ? posting.subcategory_id === null
-            : posting.subcategory_id === filters.subcategoryFilter
-        return matchesFilter(actual, filters.subcategoryFilter, filters.subcategoryExclude)
+        const actual = subcategoryFilter.includes(posting.subcategory_id ?? NO_SUBCATEGORY)
+        return matchesMultiFilter(actual, subcategoryFilter.length, filters.subcategoryExclude)
       })
-      .filter((posting) =>
-        matchesFilter((posting.tag_ids ?? []).includes(filters.tagFilter), filters.tagFilter, filters.tagExclude),
-      )
+      .filter((posting) => {
+        const actual = tagFilter.some((tagId) => (posting.tag_ids ?? []).includes(tagId))
+        return matchesMultiFilter(actual, tagFilter.length, filters.tagExclude)
+      })
       .filter((posting) => {
         if (filters.dateMode === DATE_MODE_MONTH) {
           return filters.month === ALL_MONTHS || posting.posted_at.slice(0, 7) === filters.month
@@ -549,11 +551,8 @@ function TransactionsTable({
         return true
       })
       .filter((posting) => {
-        const actual =
-          filters.pendingFilter === CONFIRMED
-            ? posting.pending_source === null
-            : posting.pending_source === filters.pendingFilter
-        return matchesFilter(actual, filters.pendingFilter, filters.pendingExclude)
+        const actual = pendingFilter.includes(posting.pending_source ?? CONFIRMED)
+        return matchesMultiFilter(actual, pendingFilter.length, filters.pendingExclude)
       })
       .filter((posting) => {
         if (filters.ruleFlaggedFilter === 'yes') return posting.resolved_by_transfer_rule_id != null
@@ -570,7 +569,17 @@ function TransactionsTable({
         if (filters.categorizedFilter === 'uncategorized') return posting.category_id == null
         return true
       })
-  }, [postings, filters, categoryFilter, onlyUncategorized, withSubcategories, realIds])
+  }, [
+    postings,
+    filters,
+    categoryFilter,
+    subcategoryFilter,
+    tagFilter,
+    pendingFilter,
+    onlyUncategorized,
+    withSubcategories,
+    realIds,
+  ])
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'posted_at')
   const bulkTargets = useMemo(
@@ -619,18 +628,15 @@ function TransactionsTable({
   const activeFilterCount = useMemo(() => {
     let count = 0
     if (filters.accountFilter !== ALL) count++
-    count += categoryFilter.length
-    if (filters.subcategoryFilter !== ALL) count++
-    if (filters.tagFilter !== ALL) count++
+    count += categoryFilter.length + subcategoryFilter.length + tagFilter.length + pendingFilter.length
     if (filters.dateMode === DATE_MODE_MONTH ? filters.month !== ALL_MONTHS : filters.startDate || filters.endDate) {
       count++
     }
-    if ((filters.pendingFilter ?? ALL) !== ALL) count++
     if (filters.ruleFlaggedFilter !== ALL) count++
     if (filters.incomeExpenseFilter !== ALL) count++
     if (filters.categorizedFilter !== ALL) count++
     return count
-  }, [filters, categoryFilter])
+  }, [filters, categoryFilter, subcategoryFilter, tagFilter, pendingFilter])
 
   return (
     <Card>
@@ -743,36 +749,38 @@ function TransactionsTable({
                 label="Category"
                 options={categoryOptions}
                 selected={categoryFilter}
-                onChange={(nextCategoryFilter) => setFilters({ ...filters, categoryFilter: nextCategoryFilter })}
+                exclude={filters.categoryExclude}
+                onSelectedChange={(next) => setFilters({ ...filters, categoryFilter: next })}
+                onExcludeChange={(exclude) => setFilters({ ...filters, categoryExclude: exclude })}
               />
             </FilterRow>
             <FilterRow label="Subcategory">
-              <FilterSelect
-                value={filters.subcategoryFilter}
+              <MultiSelectFilter
+                label="Subcategory"
+                options={subcategoryOptions}
+                selected={subcategoryFilter}
                 exclude={filters.subcategoryExclude}
-                items={subcategoryItems}
-                width="w-full"
-                onValueChange={(value) => setFilters({ ...filters, subcategoryFilter: value })}
+                onSelectedChange={(next) => setFilters({ ...filters, subcategoryFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, subcategoryExclude: exclude })}
               />
             </FilterRow>
             <FilterRow label="Tag">
-              <FilterSelect
-                value={filters.tagFilter}
+              <MultiSelectFilter
+                label="Tag"
+                options={tagFilterOptions}
+                selected={tagFilter}
                 exclude={filters.tagExclude}
-                items={tagItems}
-                width="w-full"
-                onValueChange={(value) => setFilters({ ...filters, tagFilter: value })}
+                onSelectedChange={(next) => setFilters({ ...filters, tagFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, tagExclude: exclude })}
               />
             </FilterRow>
             <FilterRow label="AI/pattern suggestion status">
-              <FilterSelect
-                value={filters.pendingFilter ?? ALL}
+              <MultiSelectFilter
+                label="Status"
+                options={PENDING_OPTIONS}
+                selected={pendingFilter}
                 exclude={filters.pendingExclude ?? false}
-                items={PENDING_ITEMS}
-                width="w-full"
-                onValueChange={(value) => setFilters({ ...filters, pendingFilter: value })}
+                onSelectedChange={(next) => setFilters({ ...filters, pendingFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
               />
             </FilterRow>
