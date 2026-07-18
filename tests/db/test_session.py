@@ -39,3 +39,38 @@ def test_session_scope_sets_the_current_user_id_session_variable(monkeypatch, _d
         current = session.execute(text("SELECT current_setting('app.current_user_id', true)")).scalar()
         assert current == str(user_id)
         session.rollback()
+
+
+def test_current_user_id_reverts_to_empty_string_not_null_after_a_mid_request_commit(
+    monkeypatch,
+    _db_engine: Engine,  # noqa: PT019 — needs the fixture's returned Engine, not just its setup side effect
+) -> None:
+    """The exact gotcha `set_rls_user` exists to guard against.
+
+    `app.current_user_id` is a custom, never-declared GUC — its reset
+    value (what a transaction-scoped `set_config(..., true)` reverts to
+    once that transaction commits) is an empty string, not `NULL`. A
+    caller that assumes a plain `current_setting(..., true) IS NULL`
+    fallback after a mid-request commit is wrong; every RLS policy's
+    `(current_setting(...))::uuid` cast fails outright on `''` instead.
+    """
+    monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+    user_id = uuid.uuid4()
+
+    with session_module.session_scope(user_id) as session:
+        session.commit()
+        current = session.execute(text("SELECT current_setting('app.current_user_id', true)")).scalar()
+        assert not current
+        session.rollback()
+
+
+def test_set_rls_user_re_establishes_it_after_a_mid_request_commit(monkeypatch, _db_engine: Engine) -> None:  # noqa: PT019 — needs the fixture's returned Engine, not just its setup side effect
+    monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+    user_id = uuid.uuid4()
+
+    with session_module.session_scope(user_id) as session:
+        session.commit()
+        session_module.set_rls_user(session, user_id)
+        current = session.execute(text("SELECT current_setting('app.current_user_id', true)")).scalar()
+        assert current == str(user_id)
+        session.rollback()

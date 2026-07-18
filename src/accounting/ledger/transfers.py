@@ -42,6 +42,7 @@ import polars as pl
 from accounting.ledger.categorization import matching_rule
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS, TransferLink
 from accounting.store import load_store, save_store
+from db.session import set_rls_user
 
 if TYPE_CHECKING:
     import uuid
@@ -376,7 +377,12 @@ def reconcile_and_persist_rule_links(
         call when reconciling after a rule change.
     session
         An open database session; `session.commit()` is called (via
-        `save_store`) only if at least one new link was found.
+        `save_store`) only if at least one new link was found. Every
+        caller of this function calls `session.commit()` itself first
+        (via `_write_ledger` or `save_store`, persisting whatever it just
+        changed), so this function's own first read needs Row-Level
+        Security re-scoped — see `db.session.set_rls_user`'s own
+        docstring for why that mid-request commit alone breaks it.
     user_id
         Whose store/ledger this is.
 
@@ -385,6 +391,7 @@ def reconcile_and_persist_rule_links(
     list[TransferLink]
         Newly persisted links, empty if nothing new was found.
     """
+    set_rls_user(session, user_id)
     store = load_store(session, user_id)
     new_links = reconcile_rule_links(postings, store.rules, store.accounts, store.posting_splits, store.transfer_links)
     if not new_links:
