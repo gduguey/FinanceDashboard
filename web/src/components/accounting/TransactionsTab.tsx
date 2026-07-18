@@ -486,6 +486,9 @@ function TransactionsTable({
       <CardHeader className="flex flex-row flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle>{onlyUncategorized ? 'Needs categorizing' : 'All transactions'}</CardTitle>
+          <span className="text-xs text-muted-foreground">
+            {sorted.length.toLocaleString()} transaction{sorted.length === 1 ? '' : 's'}
+          </span>
           {bulkTargets.length > 0 && (
             <Button
               variant="outline"
