@@ -9,6 +9,7 @@ import {
   needsCategorizing,
   splitOriginalId,
 } from '@/components/accounting/transactionCategorization'
+import { CounterpartySelect } from '@/components/shared/CounterpartySelect'
 import { FilterSelect } from '@/components/shared/FilterSelect'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
@@ -25,10 +26,12 @@ import {
   usePatternSuggestCategory,
   usePatternSuggestCategoryBulk,
   useSetPostingOverride,
+  useSetTransferRules,
   useValidatePending,
 } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
+import { counterpartyOptions } from '@/lib/counterpartyAccounts'
 import { FILTER_ALL as ALL, matchesFilter } from '@/lib/filters'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
@@ -108,11 +111,14 @@ interface TransactionRowProps {
   aiMessage: string | undefined
   aiPending: boolean
   aiAvailable: boolean
+  counterpartyAccounts: Account[]
   onOverride: (postingId: string, override: Partial<ManualOverride>) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
   onUndoSplit: (originalPostingId: string) => void
   onToggleSelected: (postingId: string, selected: boolean) => void
+  onMarkAsTransfer: (transactionId: string, counterpartyAccountId: string) => void
+  onExcludeFromRule: (transactionId: string, ruleId: string) => void
 }
 
 // Extracted and memoized so that state changes scoped to one row (an AI
@@ -134,14 +140,18 @@ const TransactionRow = memo(function TransactionRow({
   aiMessage,
   aiPending,
   aiAvailable,
+  counterpartyAccounts,
   onOverride,
   onAiSuggest,
   onSplit,
   onUndoSplit,
   onToggleSelected,
+  onMarkAsTransfer,
+  onExcludeFromRule,
 }: TransactionRowProps) {
   const originalId = splitOriginalId(posting.posting_id)
   const pendingClass = posting.pending_source ? PENDING_ROW_CLASS[posting.pending_source] : undefined
+  const [pickingTransfer, setPickingTransfer] = useState(false)
   return (
     <TableRow ref={ref} data-index={dataIndex} className={pendingClass}>
       <TableCell>
@@ -161,13 +171,47 @@ const TransactionRow = memo(function TransactionRow({
       <TableCell className="whitespace-nowrap text-muted-foreground">
         {accountName}
         {resolvedByRuleLabel && (
-          <span
-            className="ml-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
-            title={`Resolved by rule: ${resolvedByRuleLabel} — deleting that rule reverts this posting`}
-          >
-            via rule
+          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+            <span title={`Resolved by rule: ${resolvedByRuleLabel} — deleting that rule reverts this posting`}>
+              via rule
+            </span>
+            {posting.resolved_by_transfer_rule_id && (
+              <button
+                type="button"
+                className="hover:text-foreground"
+                title={`Exclude this one transaction from "${resolvedByRuleLabel}" — everything else it matches keeps working`}
+                onClick={() =>
+                  posting.resolved_by_transfer_rule_id &&
+                  onExcludeFromRule(posting.transaction_id, posting.resolved_by_transfer_rule_id)
+                }
+              >
+                ×
+              </button>
+            )}
           </span>
         )}
+        {isRealIncomeExpense &&
+          (pickingTransfer ? (
+            <span className="ml-1 inline-block" onClick={(event) => event.stopPropagation()}>
+              <CounterpartySelect
+                accounts={counterpartyAccounts}
+                value={null}
+                onChange={(accountId) => {
+                  if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
+                  setPickingTransfer(false)
+                }}
+              />
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="ml-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+              title="Flag this transaction as a transfer to one of your other accounts"
+              onClick={() => setPickingTransfer(true)}
+            >
+              flag as transfer
+            </button>
+          ))}
       </TableCell>
       <TableCell className="max-w-[200px]">
         <Truncate text={posting.description} />
@@ -274,8 +318,22 @@ function TransactionsTable({
   const patternSuggest = usePatternSuggestCategory()
   const patternSuggestBulk = usePatternSuggestCategoryBulk()
   const validatePending = useValidatePending()
+  const setTransferRules = useSetTransferRules()
   const { data: llmUsage } = useLlmUsage()
   const aiAvailable = anyLlmProviderAvailable(llmUsage)
+  const counterpartyAccounts = useMemo(() => counterpartyOptions(accounts), [accounts])
+  // The placeholder leg of each transaction — never rendered as its own
+  // row (see `filtered` below) but needed here to know *which* posting a
+  // "mark as transfer" override actually has to target: the visible row is
+  // always the real leg, but repointing a transfer's counterparty means
+  // overriding the still-placeholder sibling, not the real leg itself.
+  const placeholderPostingIdByTransactionId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const posting of postings) {
+      if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) lookup.set(posting.transaction_id, posting.posting_id)
+    }
+    return lookup
+  }, [postings])
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
@@ -331,6 +389,25 @@ function TransactionsTable({
   const handleOverride = useCallback(
     (postingId: string, override: Partial<ManualOverride>) => setOverride.mutate({ postingId, override }),
     [setOverride],
+  )
+  const handleMarkAsTransfer = useCallback(
+    (transactionId: string, counterpartyAccountId: string) => {
+      const placeholderPostingId = placeholderPostingIdByTransactionId.get(transactionId)
+      if (!placeholderPostingId) return
+      setOverride.mutate({ postingId: placeholderPostingId, override: { account_id: counterpartyAccountId } })
+    },
+    [setOverride, placeholderPostingIdByTransactionId],
+  )
+  const handleExcludeFromRule = useCallback(
+    (transactionId: string, ruleId: string) => {
+      const updated = rules.map((rule) =>
+        rule.rule_id === ruleId
+          ? { ...rule, excluded_transaction_ids: [...(rule.excluded_transaction_ids ?? []), transactionId] }
+          : rule,
+      )
+      setTransferRules.mutate(updated)
+    },
+    [rules, setTransferRules],
   )
   const handleUndoSplit = useCallback(
     (originalPostingId: string) => deleteSplit.mutate(originalPostingId),
@@ -691,11 +768,14 @@ function TransactionsTable({
                         aiSuggest.isPending || bulkSuggesting || patternSuggest.isPending || bulkPatternSuggesting
                       }
                       aiAvailable={aiAvailable}
+                      counterpartyAccounts={counterpartyAccounts}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
                       onSplit={setSplitting}
                       onUndoSplit={handleUndoSplit}
                       onToggleSelected={handleToggleSelected}
+                      onMarkAsTransfer={handleMarkAsTransfer}
+                      onExcludeFromRule={handleExcludeFromRule}
                     />
                   )
                 })}

@@ -6108,6 +6108,10 @@ export interface components {
          *     later, never read by the matching logic. `active` lets a rule be
          *     switched off without deleting it — an inactive rule is skipped by
          *     matching entirely, as if it weren't in the list at all.
+         *     `excluded_transaction_ids` opts specific, otherwise-matching
+         *     transactions out of this one rule, without disabling it for anything
+         *     else it correctly resolves — the excluded transaction simply falls
+         *     back to whatever the next-matching rule (or no rule) would have done.
          */
         TransferRule: {
             /** Rule Id */
@@ -6133,6 +6137,8 @@ export interface components {
              * @default true
              */
             active: boolean;
+            /** Excluded Transaction Ids */
+            excluded_transaction_ids?: string[];
         };
         /**
          * TransferSuggestion

@@ -1,5 +1,6 @@
 import { Pencil, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { CounterpartySelect } from '@/components/shared/CounterpartySelect'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
@@ -7,63 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { NumberInput } from '@/components/ui/number-input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { useSetTransferRules } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
+import { counterpartyOptions } from '@/lib/counterpartyAccounts'
 import type { Account, TransferRule } from '@/types/accounting'
-
-// The two placeholder counterparties every posting starts pointed at (see
-// `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
-// aren't things a transfer rule ever repoints a posting *to* — a rule's
-// whole job is to repoint a posting away from one of these, so they're
-// excluded from the counterparty picker.
-const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
-const NO_COUNTERPARTY = '__none__'
-
-function counterpartyOptions(accounts: Record<string, Account>): Account[] {
-  return Object.values(accounts)
-    .filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id))
-    .sort((a, b) => a.name.localeCompare(b.name))
-}
-
-function CounterpartySelect({
-  accounts,
-  value,
-  onChange,
-  disabled,
-}: {
-  accounts: Account[]
-  value: string | null
-  onChange: (accountId: string | null) => void
-  disabled?: boolean
-}) {
-  const items = {
-    [NO_COUNTERPARTY]: 'None',
-    ...Object.fromEntries(accounts.map((account) => [account.account_id, account.name])),
-  }
-  return (
-    <Select
-      value={value ?? NO_COUNTERPARTY}
-      onValueChange={(next) => onChange(next === NO_COUNTERPARTY ? null : (next ?? null))}
-      disabled={disabled}
-    >
-      <SelectTrigger size="sm" className="w-48">
-        <SelectValue items={items} />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={NO_COUNTERPARTY}>None</SelectItem>
-        {accounts.map((account) => (
-          <SelectItem key={account.account_id} value={account.account_id}>
-            {account.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}
 
 function TransferRuleEditDialog({
   rule,
