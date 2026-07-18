@@ -1,6 +1,7 @@
 import { Pencil, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -212,7 +213,9 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
               <TableRow key={rule.rule_id} className={rule.active ? '' : 'opacity-50'}>
                 <TableCell className="font-medium">{rule.description_contains}</TableCell>
                 <TableCell className="text-muted-foreground">{counterpartyName(rule)}</TableCell>
-                <TableCell className="max-w-xs truncate text-muted-foreground">{rule.description || '—'}</TableCell>
+                <TableCell className="max-w-xs text-muted-foreground">
+                  {rule.description ? <Truncate text={rule.description} /> : '—'}
+                </TableCell>
                 <TableCell className="text-muted-foreground">{rule.priority}</TableCell>
                 <TableCell>
                   <Switch
