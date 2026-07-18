@@ -1,6 +1,7 @@
 import { Avatar as AvatarPrimitive } from '@base-ui/react/avatar'
 import { useClerk, useUser } from '@clerk/react'
 import { ChevronsUpDown, LogOut, UserCog } from 'lucide-react'
+import { Truncate } from '@/components/shared/Truncate'
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from '@/components/ui/menu'
 
 // Bottom-of-sidebar row instead of Clerk's own floating `<UserButton />` —
@@ -30,8 +31,8 @@ export function SidebarAccountMenu() {
           </AvatarPrimitive.Fallback>
         </AvatarPrimitive.Root>
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm font-semibold text-foreground">{name}</span>
-          {email && <span className="truncate text-xs text-muted-foreground/70">{email}</span>}
+          <Truncate text={name} className="text-sm font-semibold text-foreground" />
+          {email && <Truncate text={email} className="text-xs text-muted-foreground/70" />}
         </span>
         <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground/50" />
       </MenuTrigger>

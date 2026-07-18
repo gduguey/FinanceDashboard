@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Brush, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -194,7 +195,7 @@ export function NetWorthHistoryChart({
                         className={`flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted ${hidden ? 'opacity-40' : ''}`}
                       >
                         <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: account.color }} />
-                        <span className="flex-1 truncate">{account.name}</span>
+                        <Truncate text={account.name} className="flex-1" />
                       </button>
                     </li>
                   )

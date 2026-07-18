@@ -12,6 +12,7 @@ import {
 import { FilterSelect } from '@/components/shared/FilterSelect'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -168,7 +169,9 @@ const TransactionRow = memo(function TransactionRow({
           </span>
         )}
       </TableCell>
-      <TableCell className="max-w-[200px] truncate">{posting.description}</TableCell>
+      <TableCell className="max-w-[200px]">
+        <Truncate text={posting.description} />
+      </TableCell>
       <TableCell className="text-right tabular-nums">{formatCurrency(posting.amount, posting.currency)}</TableCell>
       <TableCell>
         {isRealIncomeExpense ? (
