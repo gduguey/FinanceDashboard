@@ -226,7 +226,6 @@ export function ContributionLedgerTable({
                   Amount
                 </SortableTableHead>
                 <TableHead>Note</TableHead>
-                <TableHead>Source</TableHead>
                 <SortableTableHead active={sort.key === 'origin'} desc={sort.desc} onClick={() => toggleSort('origin')}>
                   Origin
                 </SortableTableHead>
@@ -292,9 +291,6 @@ export function ContributionLedgerTable({
                       value={contribution.note}
                       onChange={(event) => update(contribution.contribution_id, { note: event.target.value })}
                     />
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {contribution.source_posting_id ?? '—'}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {contribution.origin === 'automation'
