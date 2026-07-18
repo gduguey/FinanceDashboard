@@ -4,6 +4,7 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -273,14 +274,14 @@ export function ContributionLedgerTable({
                           <TooltipContent>{warnings[contribution.contribution_id]}</TooltipContent>
                         </Tooltip>
                       )}
-                      <Input
-                        type="number"
+                      <NumberInput
                         className="h-7 w-24 text-right text-xs"
                         value={contribution.amount}
-                        onChange={(event) =>
-                          update(contribution.contribution_id, { amount: Number(event.target.value) })
-                        }
-                        onBlur={() => checkContribution(contribution)}
+                        onCommit={(amount) => {
+                          const resolved = amount ?? 0
+                          update(contribution.contribution_id, { amount: resolved })
+                          checkContribution({ ...contribution, amount: resolved })
+                        }}
                       />
                       <span className="w-9 text-left text-xs text-muted-foreground">{contribution.currency}</span>
                     </div>

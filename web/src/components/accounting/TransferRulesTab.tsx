@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -100,10 +101,9 @@ function TransferRuleEditDialog({
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Priority (lower wins ties)
-            <Input
-              type="number"
+            <NumberInput
               value={draft.priority}
-              onChange={(event) => setDraft((prev) => ({ ...prev, priority: Number(event.target.value) }))}
+              onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? 0 }))}
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
