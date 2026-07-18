@@ -435,6 +435,23 @@ export function BudgetPage() {
                       </Fragment>
                     )
                   })}
+                  {comparison.length > 0 && (
+                    <TableRow className="border-t-2 font-semibold">
+                      <TableCell>Total</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(budgetedTotal, displayCurrency)}
+                      </TableCell>
+                      <TableCell className="text-right">—</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(actualTotal, displayCurrency)}
+                      </TableCell>
+                      <TableCell
+                        className={`text-right tabular-nums ${budgetedTotal - actualTotal < 0 ? 'text-destructive' : ''}`}
+                      >
+                        {formatCurrency(budgetedTotal - actualTotal, displayCurrency)}
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             )}
@@ -457,14 +474,6 @@ export function BudgetPage() {
               title="Budgeted cash flow"
             />
           </div>
-        )}
-
-        {comparison.length > 0 && (
-          <p className="text-center text-xs text-muted-foreground">
-            Budgeted {formatCurrency(budgetedTotal, displayCurrency)} vs. actual{' '}
-            {formatCurrency(actualTotal, displayCurrency)} across {comparison.length} budgeted categor
-            {comparison.length === 1 ? 'y' : 'ies'} this month.
-          </p>
         )}
       </div>
     </div>
