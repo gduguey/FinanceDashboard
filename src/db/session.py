@@ -57,16 +57,48 @@ def session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(), expire_on_commit=False)
 
 
+def set_rls_user(session: Session, user_id: uuid.UUID) -> None:
+    """(Re-)establish the `app.current_user_id` session variable every Row-Level Security policy checks.
+
+    Scoped to the session's *current* transaction only (`set_config`'s
+    `is_local=true` — Postgres has no bind-parameter form of `SET LOCAL`
+    itself, only of the equivalent `set_config` function), so it's reset
+    the moment that transaction ends — never leaking into a pooled
+    connection's next, unrelated request.
+
+    That reset is the gotcha this function exists to let a caller undo:
+    `app.current_user_id` is a custom (placeholder) GUC, never declared by
+    any loaded extension, and Postgres's reset value for an *undeclared*
+    GUC is an empty string, not `NULL` — so `current_setting(..., true)`
+    returns `''`, not `None`/unset, the moment a `session.commit()` ends
+    the transaction this was set in. Any code that calls `session.commit()`
+    mid-request and then runs a *further* RLS-protected query on that same
+    session (e.g. `ledger.transfers.reconcile_and_persist_rule_links`,
+    called after `store.save_store`'s own commit) must call this again
+    first, or every RLS policy's own `(current_setting(...))::uuid` cast
+    fails outright on the empty string — confirmed empirically, not
+    theoretical (see `tests.db.test_session`).
+
+    Parameters
+    ----------
+    session
+        An open database session, already inside (or about to start) a transaction.
+    user_id
+        The user to scope this transaction's RLS policies to.
+    """
+    session.execute(text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": str(user_id)})
+
+
 @contextmanager
 def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
     """Open one `Session` scoped to `user_id` for Row-Level Security, outside a FastAPI request.
 
     Does exactly what `get_db` does for a request — build a session and
     set the `app.current_user_id` session variable every RLS policy checks
-    — but takes the acting user explicitly rather than through
-    `get_current_user_id()`, since a cron script or CLI entrypoint has no
-    "current request" to read that from. Every caller outside a request
-    passes a real, specific user id it already has in hand — e.g.
+    (see `set_rls_user`) — but takes the acting user explicitly rather than
+    through `get_current_user_id()`, since a cron script or CLI entrypoint
+    has no "current request" to read that from. Every caller outside a
+    request passes a real, specific user id it already has in hand — e.g.
     `trades.market_data.price_sync` loops over every real user id (read via
     the superuser role, the same way `db.backup` bypasses RLS) and opens
     one of these per user; `trades.api.webhooks` passes the fresh id it
@@ -84,7 +116,7 @@ def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
     Session
     """
     with session_factory()() as session:
-        session.execute(text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": str(user_id)})
+        set_rls_user(session, user_id)
         yield session
 
 
@@ -92,12 +124,11 @@ def get_db(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Itera
     """FastAPI dependency yielding one `Session` per request.
 
     Sets the Postgres session variable every Row-Level Security policy
-    checks (`current_setting('app.current_user_id', true)`) to the acting
-    user, scoped to this session's own transaction via `set_config`'s
-    `is_local=true` (Postgres has no bind-parameter form of `SET LOCAL`
-    itself, only of the equivalent `set_config` function) — so it's reset
-    the moment this request's transaction ends, never leaking into a
-    pooled connection's next, unrelated request.
+    checks — see `set_rls_user` — to the acting user, scoped to this
+    request's own transaction. Callers that call `session.commit()`
+    mid-request and then run a further query on this same session must
+    call `set_rls_user(session, user_id)` again first, or that later query
+    silently loses RLS scoping (see `set_rls_user`'s own docstring for why).
 
     `user_id` is resolved through `Depends(get_current_user_id)` rather
     than called as a plain function specifically so it's a real parent

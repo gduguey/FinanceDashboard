@@ -635,8 +635,15 @@ def put_transfer_rules(
     """
     store = load_store(session, user_id)
     store = store.model_copy(update={"rules": rules})
+    # Read before `save_store`'s own commit, not after — `save_store` ends
+    # this session's transaction, and a further read afterward (on this
+    # same session) needs Row-Level Security re-scoped first (see
+    # `ledger.transfers.reconcile_and_persist_rule_links`'s own docstring);
+    # saving rules never changes the ledger itself, so reading it first
+    # instead is equivalent and avoids that entirely.
+    raw_ledger = load_ledger(session, user_id)
     save_store(store, session, user_id)
-    reconcile_and_persist_rule_links(load_ledger(session, user_id), session, user_id)
+    reconcile_and_persist_rule_links(raw_ledger, session, user_id)
     return store.rules
 
 
