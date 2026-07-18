@@ -267,7 +267,12 @@ export function BudgetPage() {
     if (mode === 'general') {
       const key = subcategoryId ?? categoryId
       if (isValid) {
-        setGeneralBudget.mutate({ category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency })
+        setGeneralBudget.mutate({
+          category_id: categoryId,
+          subcategory_id: subcategoryId,
+          amount,
+          currency: displayCurrency,
+        })
       } else if (store?.general_budgets[key]) {
         removeGeneralBudget.mutate(key)
       }
@@ -275,7 +280,13 @@ export function BudgetPage() {
     }
     const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
     if (isValid) {
-      setBudget.mutate({ month, category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency })
+      setBudget.mutate({
+        month,
+        category_id: categoryId,
+        subcategory_id: subcategoryId,
+        amount,
+        currency: displayCurrency,
+      })
     } else if ((store?.budgets ?? []).some((budget) => budget.budget_id === budgetId)) {
       removeBudget.mutate(budgetId)
     }

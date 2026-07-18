@@ -4,7 +4,7 @@ import { TransferSuggestionsPanel } from '@/components/accounting/TransferSugges
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useAccountingStore } from '@/hooks/useAccountingData'
+import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
 
 // Was the "Transfer rules" tab inside the old combined Accounting page,
 // promoted to its own top-level page under Setup. The transfer-suggestions
@@ -13,6 +13,7 @@ import { useAccountingStore } from '@/hooks/useAccountingData'
 // not reviewing a transaction.
 export function RulesPage() {
   const { data: store, isLoading } = useAccountingStore()
+  const { data: postings } = usePostings()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') ?? 'rules'
 
@@ -33,7 +34,11 @@ export function RulesPage() {
               <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} />
             </TabsContent>
             <TabsContent value="suggestions">
-              <TransferSuggestionsPanel accounts={store.accounts} rules={store.transfer_rules} />
+              <TransferSuggestionsPanel
+                accounts={store.accounts}
+                rules={store.transfer_rules}
+                postings={postings ?? []}
+              />
             </TabsContent>
           </Tabs>
         )}

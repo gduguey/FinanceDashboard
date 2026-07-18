@@ -19,6 +19,7 @@ function makePosting(overrides: Partial<Posting> & Pick<Posting, 'posting_id'>):
     currency: 'USD',
     description: '',
     pending_selected: true,
+    is_linked_transfer: false,
     ...overrides,
   }
 }

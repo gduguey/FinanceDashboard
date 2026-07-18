@@ -11,6 +11,16 @@ in the store (see `TransferRule`). Nothing here mutates the ledger cache on disk
 it is applied fresh every time postings are read, so a manual correction
 (see `ManualOverride`) applied afterward is never at risk of being
 clobbered by re-running a rule.
+
+A rule matching a counterparty of an `IMPORTABLE_ACCOUNT_KINDS` kind
+(`checking`/`savings`/`credit_card`/`vault`) is the one case `apply_rules`
+never repoints directly: that account might already have its own,
+independently-imported posting for the same event, so repointing here
+could double-count it. Resolving those safely (finding a unique matching
+transaction, or leaving it uncategorized) is `ledger.transfers.reconcile_rule_links`'s
+job instead, which — unlike everything else in this module — does need to
+persist what it finds, since a live candidate search can't safely run
+fresh on every date-scoped dashboard read (see its own docstring).
 """
 
 from __future__ import annotations
@@ -19,7 +29,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.models import Account, ManualOverride, Posting, PostingMerge, PostingSplit
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, Posting, PostingMerge, PostingSplit
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
@@ -29,10 +39,14 @@ _PLACEHOLDER_ACCOUNT_IDS = {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCO
 _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per transaction
 
 
-def _matching_rule(
+def matching_rule(
     rules: list[TransferRule], description: str, account_id: str, transaction_id: str
 ) -> TransferRule | None:
     """Find the highest-priority active rule whose `description_contains` matches, scoped to `account_id` if set.
+
+    Shared with `ledger.transfers.reconcile_rule_links`, which needs the
+    exact same matching semantics to decide which transaction a rule
+    would resolve, before deciding *how* it's safe to resolve it.
 
     Returns
     -------
@@ -91,11 +105,16 @@ def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dic
             continue
         placeholder_leg, real_leg = placeholder_legs[0], real_legs[0]
 
-        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
+        rule = matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
         if rule is None or rule.counterparty_account_id is None:
             continue
         counterparty_account = accounts.get(rule.counterparty_account_id)
-        if counterparty_account is None:
+        if counterparty_account is None or counterparty_account.kind in IMPORTABLE_ACCOUNT_KINDS:
+            # An importable-kind counterparty (checking/savings/credit_card/vault)
+            # might already have its own, independently-imported transaction for
+            # this same event — repointing here could double-count it. Left as
+            # a placeholder; `ledger.transfers.reconcile_rule_links` is what
+            # safely resolves this, via a persisted `TransferLink`, at write time.
             continue
 
         placeholder_leg["account_id"] = counterparty_account.account_id
@@ -152,10 +171,15 @@ def resolved_transfer_rule_ids_by_transaction(
             continue
         real_leg = real_legs[0]
 
-        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
+        rule = matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
         if rule is None or rule.counterparty_account_id is None:
             continue
-        if accounts.get(rule.counterparty_account_id) is None:
+        counterparty_account = accounts.get(rule.counterparty_account_id)
+        if counterparty_account is None or counterparty_account.kind in IMPORTABLE_ACCOUNT_KINDS:
+            # Mirrors `apply_rules`'s own skip exactly — a rule matching an
+            # importable-kind counterparty doesn't resolve anything by
+            # itself (see `ledger.transfers.reconcile_rule_links`), so it
+            # must not be reported as "via rule" here either.
             continue
         resolved_by[transaction_id] = rule.rule_id
     return resolved_by

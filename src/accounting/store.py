@@ -40,6 +40,7 @@ from accounting.models import (
     RecurringAddition,
     SimulatorScenario,
     Tag,
+    TransferLink,
     TransferRule,
     WithdrawalPriorityEntry,
 )
@@ -744,6 +745,7 @@ class AccountingStore(BaseModel):
     simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
     posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
     posting_merges: dict[str, PostingMerge] = Field(default_factory=dict)
+    transfer_links: list[TransferLink] = Field(default_factory=list)
     goals: dict[str, Goal] = Field(default_factory=dict)
     goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
     recurring_additions: list[RecurringAddition] = Field(default_factory=list)
@@ -938,6 +940,24 @@ def _merge_from_rows(
     )
 
 
+def _transfer_link_from_row(
+    row: adb.TransferLink, transaction_ids: list[uuid.UUID], transaction_natural_key_by_id: dict[uuid.UUID, str]
+) -> TransferLink:
+    """Convert one persisted `TransferLink` row (plus its two membership rows) back into its pydantic model.
+
+    Returns
+    -------
+    TransferLink
+    """
+    first, second = sorted(transaction_natural_key_by_id[transaction_id] for transaction_id in transaction_ids)
+    return TransferLink(
+        link_id=row.natural_key,
+        transaction_id_a=first,
+        transaction_id_b=second,
+        source=row.source,  # type: ignore[arg-type]
+    )
+
+
 def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa: PLR0914 (one local per AccountingStore field being loaded — splitting this up would just add indirection)
     """Read the persisted accounting store, seeding sensible defaults the first time.
 
@@ -1068,6 +1088,8 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
     merge_rows = list(session.query(adb.PostingMerge).filter_by(user_id=user_id))
     duplicate_rows = list(session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id))
     goal_contribution_rows = list(session.query(adb.GoalContribution).filter_by(user_id=user_id))
+    transfer_link_rows = list(session.query(adb.TransferLink).filter_by(user_id=user_id))
+    transfer_linked_transaction_rows = list(session.query(adb.TransferLinkedTransaction).filter_by(user_id=user_id))
 
     posting_natural_key_by_id = natural_keys_by_id(
         session,
@@ -1081,7 +1103,8 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         adb.Transaction,
         user_id,
         [merge.kept_transaction_id for merge in merge_rows]
-        + [duplicate.duplicate_transaction_id for duplicate in duplicate_rows],
+        + [duplicate.duplicate_transaction_id for duplicate in duplicate_rows]
+        + [row.transaction_id for row in transfer_linked_transaction_rows],
     )
 
     posting_split_natural_key_by_id = {
@@ -1104,6 +1127,17 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         )
         for row in merge_rows
     }
+    transactions_by_link: dict[uuid.UUID, list[adb.TransferLinkedTransaction]] = _group_by(
+        transfer_linked_transaction_rows, key=lambda row: row.link_id
+    )
+    transfer_links = [
+        _transfer_link_from_row(
+            row,
+            [member.transaction_id for member in transactions_by_link.get(row.id, [])],
+            transaction_natural_key_by_id,
+        )
+        for row in transfer_link_rows
+    ]
     goal_rows = list(session.query(adb.Goal).filter_by(user_id=user_id))
     goal_natural_key_by_id = {row.id: row.natural_key for row in goal_rows}
     goals = {
@@ -1166,6 +1200,7 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         simulator_scenarios=simulator_scenarios,
         posting_splits=posting_splits,
         posting_merges=posting_merges,
+        transfer_links=transfer_links,
         goals=goals,
         goal_contributions=goal_contributions,
         recurring_additions=recurring_additions,
@@ -1275,6 +1310,36 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
     check_and_bump_version(session, _STORE_VERSION_TABLE, user_id, expected_version)
 
 
+def _add_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: list[TransferLink]) -> None:
+    """Insert every `TransferLink` row and its two membership rows, self-contained (own internal flush).
+
+    `TransferLinkedTransaction.link_id` foreign-keys into `TransferLink.id`,
+    so the parent rows need their own flush before the membership rows can
+    be inserted — kept as one self-contained helper (rather than two
+    `session.add_all` calls inline in `save_store`) purely to keep that
+    function's own statement count down.
+    """
+    session.add_all(
+        adb.TransferLink(
+            id=derive_id(user_id, "transfer_links", link.link_id),
+            user_id=user_id,
+            natural_key=link.link_id,
+            source=link.source,
+        )
+        for link in transfer_links
+    )
+    session.flush()
+    session.add_all(
+        adb.TransferLinkedTransaction(
+            user_id=user_id,
+            link_id=derive_id(user_id, "transfer_links", link.link_id),
+            transaction_id=_transaction_id(user_id, transaction_id),
+        )
+        for link in transfer_links
+        for transaction_id in (link.transaction_id_a, link.transaction_id_b)
+    )
+
+
 def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> None:
     """Persist the accounting store, overwriting whatever was saved before.
 
@@ -1307,6 +1372,8 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.PostingSplit).filter_by(user_id=user_id).delete()
     session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id).delete()
     session.query(adb.PostingMerge).filter_by(user_id=user_id).delete()
+    session.query(adb.TransferLinkedTransaction).filter_by(user_id=user_id).delete()
+    session.query(adb.TransferLink).filter_by(user_id=user_id).delete()
     session.query(adb.GoalContribution).filter_by(user_id=user_id).delete()
     session.query(adb.RecurringAddition).filter_by(user_id=user_id).delete()
     session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id).delete()
@@ -1610,6 +1677,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for merge in store.posting_merges.values()
     )
+    _add_transfer_links(session, user_id, store.transfer_links)
     session.add_all(
         adb.PostingSplit(
             id=derive_id(user_id, "posting_splits", split.posting_id),

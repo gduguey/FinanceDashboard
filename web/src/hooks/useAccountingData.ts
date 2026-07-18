@@ -30,6 +30,7 @@ import type {
   RecurringAddition,
   SimulatorScenario,
   Tag,
+  TransferLinkCreate,
   TransferRule,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
@@ -276,6 +277,22 @@ export function useRemovePostingMerge() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (mergeId: string) => accountingApi.removePostingMerge(mergeId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateTransferLink() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (link: TransferLinkCreate) => accountingApi.createTransferLink(link),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveTransferLink() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (linkId: string) => accountingApi.removeTransferLink(linkId),
     onSuccess: invalidate,
   })
 }

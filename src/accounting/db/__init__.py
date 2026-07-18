@@ -35,6 +35,7 @@ from accounting.db.corrections import (
 from accounting.db.goals import Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
 from accounting.db.llm import LLMUsage
 from accounting.db.simulator import SimulatorScenario
+from accounting.db.transfers import TransferLink, TransferLinkedTransaction
 
 __all__ = [
     "Account",
@@ -63,6 +64,8 @@ __all__ = [
     "StoreVersion",
     "Tag",
     "Transaction",
+    "TransferLink",
+    "TransferLinkedTransaction",
     "TransferRule",
     "TransferRuleExclusion",
     "WithdrawalPriorityEntry",

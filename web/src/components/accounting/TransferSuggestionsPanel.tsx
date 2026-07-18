@@ -7,12 +7,17 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { useDismissSuggestion, useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
+import {
+  useCreateTransferLink,
+  useDismissSuggestion,
+  useSetTransferRules,
+  useTransferSuggestions,
+} from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
+import type { Account, Posting, TransferRule, TransferSuggestion } from '@/types/accounting'
 
 function suggestionKey(suggestion: TransferSuggestion): string {
   return suggestion.suggestion_id
@@ -104,14 +109,20 @@ function SuggestedRulePair({
   suggestion,
   accounts,
   existingRules,
+  transactionIds,
   onAdd,
+  onLink,
   onDismiss,
+  linkPending,
 }: {
   suggestion: TransferSuggestion
   accounts: Record<string, Account>
   existingRules: TransferRule[]
+  transactionIds: { transactionId: string; otherTransactionId: string } | null
   onAdd: (rules: TransferRule[]) => void
+  onLink: (transactionId: string, otherTransactionId: string) => void
   onDismiss: () => void
+  linkPending: boolean
 }) {
   const [drafts, setDrafts] = useState(() => suggestedRuleDrafts(suggestion))
   const existingRuleIds = new Set(existingRules.map((rule) => rule.rule_id))
@@ -130,8 +141,8 @@ function SuggestedRulePair({
   return (
     <div className="space-y-3">
       <p className="max-w-xl text-xs break-words text-muted-foreground">
-        Both rules below are needed to fully resolve this transfer — each one only fixes the transaction on its own
-        account; the other side stays exactly as it is until its own rule is added too.
+        Two ways to resolve this: link just this one pair (a one-off fact about these two transactions), or add rules
+        that also catch every future occurrence of this same description.
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         {drafts.map((draft, index) => (
@@ -144,7 +155,20 @@ function SuggestedRulePair({
           />
         ))}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!transactionIds || linkPending}
+          title={
+            transactionIds
+              ? 'Link just this pair, without adding an ongoing rule'
+              : "Couldn't resolve these postings to transactions"
+          }
+          onClick={() => transactionIds && onLink(transactionIds.transactionId, transactionIds.otherTransactionId)}
+        >
+          Link this pair
+        </Button>
         <Button size="sm" disabled={allAdded} onClick={handleAddBoth}>
           {allAdded ? 'Both rules added' : 'Add both rules'}
         </Button>
@@ -165,9 +189,11 @@ function SuggestedRulePair({
 export function TransferSuggestionsPanel({
   accounts,
   rules,
+  postings,
 }: {
   accounts: Record<string, Account>
   rules: TransferRule[]
+  postings: Posting[]
 }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.transfer-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
@@ -175,7 +201,26 @@ export function TransferSuggestionsPanel({
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
   const setRules = useSetTransferRules()
   const dismissSuggestion = useDismissSuggestion()
+  const createTransferLink = useCreateTransferLink()
   const { sorted, sort, toggleSort } = useSortableRows(data ?? [], 'posted_at')
+  // A suggestion pairs two postings, never transactions directly — needed
+  // to turn "link this pair" into the transaction ids `POST /transfer-links`
+  // actually takes.
+  const transactionIdByPostingId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const posting of postings) lookup.set(posting.posting_id, posting.transaction_id)
+    return lookup
+  }, [postings])
+
+  function transactionIdsFor(suggestion: TransferSuggestion) {
+    const transactionId = transactionIdByPostingId.get(suggestion.posting_id)
+    const otherTransactionId = transactionIdByPostingId.get(suggestion.other_posting_id)
+    return transactionId && otherTransactionId ? { transactionId, otherTransactionId } : null
+  }
+
+  function linkPair(transactionId: string, otherTransactionId: string) {
+    createTransferLink.mutate({ transaction_id_a: transactionId, transaction_id_b: otherTransactionId })
+  }
 
   function dismiss(suggestion: TransferSuggestion) {
     dismissSuggestion.mutate({
@@ -392,8 +437,11 @@ export function TransferSuggestionsPanel({
                               suggestion={suggestion}
                               accounts={accounts}
                               existingRules={rules}
+                              transactionIds={transactionIdsFor(suggestion)}
                               onAdd={addRules}
+                              onLink={linkPair}
                               onDismiss={() => dismiss(suggestion)}
+                              linkPending={createTransferLink.isPending}
                             />
                           </div>
                         </TableCell>

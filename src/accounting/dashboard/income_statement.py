@@ -54,14 +54,26 @@ def real_income_expense_legs(
     itself a public function that continues the lazy chain and only
     collects at its own final boundary (see e.g. `category_totals`).
 
+    Also excludes any transaction `ledger.transfers.apply_transfer_links`
+    marked `is_linked_transfer` — a confirmed pairing (manual, or a
+    `TransferRule` safely resolved via `ledger.transfers.reconcile_rule_links`)
+    between two independently-real transactions, same as an
+    unresolved-placeholder transfer is already excluded above. `postings`
+    not carrying that column at all (every caller that resolves through
+    the full pipeline does; a caller testing this function directly
+    against a raw fixture may not) is treated as "nothing is linked" —
+    this is the sole chokepoint for that exclusion, so every dashboard
+    aggregation below inherits it with no signature change of its own.
+
     Returns
     -------
     polars.LazyFrame
         The subset of `postings` on a real account whose transaction has
-        at least one virtual-counterparty leg, with `amount` replaced by
-        its `display.code`-converted value.
+        at least one virtual-counterparty leg and isn't a confirmed
+        transfer link, with `amount` replaced by its `display.code`-converted value.
     """
     lazy = postings.lazy()
+    has_link_column = "is_linked_transfer" in lazy.collect_schema().names()
     virtual_ids = [account.account_id for account in accounts.values() if account.kind in _VIRTUAL_KINDS]
     sibling_flags = (
         lazy
@@ -81,10 +93,13 @@ def real_income_expense_legs(
         {"account_currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
         schema={"account_currency": pl.Utf8, "rate_to_base": pl.Float64},
     )
+    real_leg_filter = pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids)
+    if has_link_column:
+        real_leg_filter &= ~pl.col("is_linked_transfer")
     legs = (
         lazy
         .join(sibling_flags, on="transaction_id", how="left")
-        .filter(pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids))
+        .filter(real_leg_filter)
         .drop("any_virtual_sibling")
         .join(real_currencies, on="account_id", how="left")
         .join(rate_table, on="account_currency", how="left")
