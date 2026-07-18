@@ -5755,7 +5755,7 @@ export interface components {
             /** Current Month Cumulative */
             current_month_cumulative: number;
             /** Average Previous Months Cumulative */
-            average_previous_months_cumulative: number;
+            average_previous_months_cumulative: number | null;
         };
         /**
          * SubcategoryCreate

@@ -32,7 +32,7 @@ export function SpendCurveChart({ displayCurrency, postings }: { displayCurrency
           width={72}
         />
         <Tooltip
-          formatter={(value) => formatCurrency(Number(value), displayCurrency)}
+          formatter={(value) => (value == null ? 'Not enough history yet' : formatCurrency(Number(value), displayCurrency))}
           labelFormatter={(label) => `Day ${label}`}
         />
         <Line

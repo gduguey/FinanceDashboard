@@ -718,7 +718,7 @@ class SpendCurvePoint(BaseModel):
 
     day: int
     current_month_cumulative: float
-    average_previous_months_cumulative: float
+    average_previous_months_cumulative: float | None
 
 
 class BudgetComparisonRow(BaseModel):
