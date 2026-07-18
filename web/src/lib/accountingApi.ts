@@ -53,6 +53,8 @@ import type {
   SpendCurvePoint,
   SyncStatus,
   Tag,
+  TransferLink,
+  TransferLinkCreate,
   TransferRule,
   TransferSuggestion,
   VerifyResult,
@@ -392,6 +394,12 @@ export const accountingApi = {
     request<{ merge_id: string }>(`/api/accounting/posting-merges/${encodeURIComponent(mergeId)}`, {
       method: 'DELETE',
     }),
+  createTransferLink: (link: TransferLinkCreate) =>
+    request<TransferLink>('/api/accounting/transfer-links', jsonInit('POST', link)),
+  removeTransferLink: (linkId: string) =>
+    request<{ link_id: string }>(`/api/accounting/transfer-links/${encodeURIComponent(linkId)}`, {
+      method: 'DELETE',
+    }),
   netWorth: (asOf?: string, displayCurrency?: string) =>
     request<NetWorthSummary>(
       `/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`,
@@ -467,10 +475,9 @@ export const accountingApi = {
       jsonInit('PUT', contribution),
     ),
   removeGoalContribution: (contributionId: string) =>
-    request<{ contribution_id: string }>(
-      `/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`,
-      { method: 'DELETE' },
-    ),
+    request<{ contribution_id: string }>(`/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`, {
+      method: 'DELETE',
+    }),
   putRecurringAdditions: (additions: RecurringAddition[]) =>
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>

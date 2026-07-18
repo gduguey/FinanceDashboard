@@ -21,6 +21,8 @@ from accounting.api.api_models import (
     PostingMergeUpsert,
     PostingRow,
     SuggestionIdResponse,
+    TransferLinkCreate,
+    TransferLinkIdResponse,
     TransferSuggestion,
     ValidatePendingRequest,
     ValidatePendingResult,
@@ -31,8 +33,16 @@ from accounting.ledger.categorization import resolved_transfer_rule_ids_by_trans
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.pending import resolve_pending_suggestion
-from accounting.ledger.transfers import find_unmatched_transfer_candidates
-from accounting.models import DismissedSuggestion, ManualOverride, Posting, PostingMerge, PostingSplit, PostingSplitLeg
+from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
+from accounting.models import (
+    DismissedSuggestion,
+    ManualOverride,
+    Posting,
+    PostingMerge,
+    PostingSplit,
+    PostingSplitLeg,
+    TransferLink,
+)
 from accounting.store import (
     dismiss_suggestion,
     dismissed_suggestion_ids,
@@ -317,6 +327,98 @@ def delete_posting_merge(
     return PostingMergeIdResponse(merge_id=merge_id)
 
 
+@router.post("/transfer-links")
+def post_transfer_link(
+    request: TransferLinkCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferLink:
+    """Confirm two transactions as the two sides of one real-world transfer.
+
+    Neither transaction's own posting is ever touched — see
+    `ledger.transfers.apply_transfer_links` for how this changes
+    classification instead. Re-confirming the exact same pair (from
+    either side) is a no-op, returning the existing link.
+
+    Returns
+    -------
+    TransferLink
+        The link just persisted (or the already-existing one, if this
+        exact pair was already linked).
+
+    Raises
+    ------
+    HTTPException
+        400 if either transaction names itself, or already has a
+        `PostingSplit`; 409 if either transaction is already part of a
+        *different* transfer link.
+    """
+    if request.transaction_id_a == request.transaction_id_b:
+        raise HTTPException(status_code=400, detail="Cannot link a transaction to itself")
+
+    link = make_transfer_link(request.transaction_id_a, request.transaction_id_b, source="manual")
+    store = load_store(session, user_id)
+
+    already_this_link = next((existing for existing in store.transfer_links if existing.link_id == link.link_id), None)
+    if already_this_link is not None:
+        return already_this_link
+
+    linked_transaction_ids = {
+        transaction_id
+        for existing in store.transfer_links
+        for transaction_id in (existing.transaction_id_a, existing.transaction_id_b)
+    }
+    for transaction_id in (link.transaction_id_a, link.transaction_id_b):
+        if transaction_id in linked_transaction_ids:
+            raise HTTPException(
+                status_code=409, detail=f"Transaction {transaction_id!r} is already part of another transfer link"
+            )
+
+    raw = load_ledger(session, user_id)
+    posting_to_transaction = dict(zip(raw["posting_id"].to_list(), raw["transaction_id"].to_list(), strict=True))
+    split_transaction_ids = {
+        posting_to_transaction[posting_id]
+        for posting_id in store.posting_splits
+        if posting_id in posting_to_transaction
+    }
+    for transaction_id in (link.transaction_id_a, link.transaction_id_b):
+        if transaction_id in split_transaction_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Transaction {transaction_id!r} has already been split and can't be linked",
+            )
+
+    store = store.model_copy(update={"transfer_links": [*store.transfer_links, link]})
+    save_store(store, session, user_id)
+    return link
+
+
+@router.delete("/transfer-links/{link_id}")
+def delete_transfer_link(
+    link_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferLinkIdResponse:
+    """Undo a confirmed transfer link, restoring both transactions to their prior classification.
+
+    Returns
+    -------
+    TransferLinkIdResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if no link with this id exists.
+    """
+    store = load_store(session, user_id)
+    if not any(existing.link_id == link_id for existing in store.transfer_links):
+        raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
+    remaining = [existing for existing in store.transfer_links if existing.link_id != link_id]
+    store = store.model_copy(update={"transfer_links": remaining})
+    save_store(store, session, user_id)
+    return TransferLinkIdResponse(link_id=link_id)
+
+
 @router.post("/postings/validate-pending")
 def post_validate_pending(
     payload: ValidatePendingRequest,
@@ -404,8 +506,11 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `POST /dismissed-suggestions`).
     """
-    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
-    rows = find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    candidates = find_unmatched_transfer_candidates(
+        postings, window_days=window_days, existing_links=store.transfer_links
+    )
+    rows = candidates.to_dicts()
     suggestion_ids = [_transfer_suggestion_id(row) for row in rows]
     dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)
     return [

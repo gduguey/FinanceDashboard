@@ -88,6 +88,9 @@ export type DismissedSuggestionKind = DismissedSuggestion['kind']
 export type DismissSuggestionRequest = components['schemas']['DismissSuggestionRequest']
 export type PostingMerge = components['schemas']['PostingMerge']
 export type PostingMergeUpsert = components['schemas']['PostingMergeUpsert']
+export type TransferLink = components['schemas']['TransferLink']
+export type TransferLinkSource = TransferLink['source']
+export type TransferLinkCreate = components['schemas']['TransferLinkCreate']
 export type LlmProviderUsage = components['schemas']['LlmProviderUsage']
 
 // `GET /api/accounting/llm-usage` returns a bare `symbol -> LlmProviderUsage`

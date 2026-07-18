@@ -27,8 +27,8 @@ import {
   useRebuildLedger,
   useSupportedImportKinds,
 } from '@/hooks/useAccountingData'
-import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, CanonicalCategoryOverrides, Category, CurrencyCode } from '@/types/accounting'
 
 const MAX_FILES_PER_DROP = 8

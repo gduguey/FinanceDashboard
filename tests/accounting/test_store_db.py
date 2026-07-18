@@ -37,6 +37,7 @@ from accounting.models import (
     RecurringAddition,
     SimulatorScenario,
     Tag,
+    TransferLink,
     TransferRule,
     WithdrawalPriorityEntry,
 )
@@ -483,6 +484,37 @@ def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transactio
             "rules": [
                 TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
             ],
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    store = load_store(db_session, user_id=test_user_id)
+    link = TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2", source="rule")
+    store = store.model_copy(update={"transfer_links": [link]})
+    save_store(store, db_session, user_id=test_user_id)
+    reloaded = load_store(db_session, user_id=test_user_id)
+
+    assert reloaded.transfer_links == [link]
+
+
+def test_transfer_link_naming_an_already_linked_transaction_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    _seed_posting(db_session, test_user_id, transaction_id="t3", posting_id="p3")
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "transfer_links": [
+                TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2"),
+                TransferLink(link_id="transfer-link:t1:t3", transaction_id_a="t1", transaction_id_b="t3"),
+            ]
         }
     )
     with pytest.raises(IntegrityError):

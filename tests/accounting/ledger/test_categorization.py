@@ -79,8 +79,15 @@ def test_apply_rules_does_not_match_when_the_counterparty_account_does_not_exist
     assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
 
 
-def test_apply_rules_repoints_a_transfer_to_a_pre_created_vault_account() -> None:
-    """A vault is an ordinary account + an ordinary rule — no vault-specific matching exists."""
+def test_apply_rules_never_repoints_a_transfer_onto_a_vault_account() -> None:
+    """A vault has its own CSV standardizer (see `importers.ingest.supported_import_kinds`) — an importable, unsafe repoint target.
+
+    Repointing straight onto it here is exactly the double-counting bug
+    this rule mechanism used to have (a vault's own independently-imported
+    statement could already carry this same transfer) — `apply_rules`
+    leaves it on the placeholder; `ledger.transfers.reconcile_rule_links`
+    is what safely links it, once (if) the vault's own side is imported.
+    """
     vault = Account(
         account_id="sofi:savings:3680:vault:travel",
         name="Travel Vault",
@@ -96,11 +103,17 @@ def test_apply_rules_repoints_a_transfer_to_a_pre_created_vault_account() -> Non
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(-250.0, "To Travel Vault"))
     )
     resolved = apply_rules(postings, [vault_rule], {"sofi:savings:3680": SOFI_SAVINGS, vault.account_id: vault})
-    assert set(resolved["account_id"].unique().to_list()) == {"sofi:savings:3680", vault.account_id}
-    assert resolved.filter(pl.col("account_id") == vault.account_id)["amount"].to_list() == pytest.approx([250.0])
+    assert set(resolved["account_id"].unique().to_list()) == {"sofi:savings:3680", UNCATEGORIZED_EXPENSE_ACCOUNT_ID}
 
 
-def test_apply_rules_respects_a_rule_scoped_to_one_account() -> None:
+def test_apply_rules_never_repoints_a_transfer_onto_a_credit_card_account() -> None:
+    """Same bug, different account kind: a Chase card payoff rule must never repoint onto the card itself.
+
+    The card's own statement may already independently carry a "Payment
+    Thank You" deposit for the exact same payoff — see
+    `tests/accounting/importers/test_bank_importers.py`'s
+    `test_standardize_chase_credit_card_keeps_payment_thank_you_rows`.
+    """
     chase_card = Account(
         account_id="chase:credit_card:8235",
         name="Chase Credit Card",
@@ -120,7 +133,8 @@ def test_apply_rules_respects_a_rule_scoped_to_one_account() -> None:
         )
     )
     resolved = apply_rules(matching, [scoped_rule], {"chase:credit_card:8235": chase_card})
-    assert "chase:credit_card:8235" in resolved["account_id"].unique().to_list()
+    assert "chase:credit_card:8235" not in resolved["account_id"].unique().to_list()
+    assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in resolved["account_id"].unique().to_list()
 
     elsewhere = postings_to_frame(
         _placeholder_pair(

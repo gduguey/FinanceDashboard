@@ -13,8 +13,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { useSetTransferRules } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { counterpartyOptions } from '@/lib/counterpartyAccounts'
+import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
 import type { Account, TransferRule } from '@/types/accounting'
+
+// Shown under the counterparty picker whenever the chosen account is one a
+// rule can't safely repoint straight onto (see
+// `lib.counterpartyAccounts.needsLinkingAccount`) — explains the actual
+// behavior so it doesn't read as "nothing happened" when a match isn't
+// found yet.
+function NeedsLinkingNote() {
+  return (
+    <p className="max-w-sm text-xs text-muted-foreground">
+      Matches will be linked to their counterpart transaction, not stamped directly — if no match exists yet, the
+      transaction stays uncategorized until one is imported.
+    </p>
+  )
+}
 
 function TransferRuleEditDialog({
   rule,
@@ -50,6 +64,9 @@ function TransferRuleEditDialog({
               onChange={(accountId) => setDraft((prev) => ({ ...prev, counterparty_account_id: accountId }))}
             />
           </label>
+          {needsLinkingAccount(accounts.find((account) => account.account_id === draft.counterparty_account_id)) && (
+            <NeedsLinkingNote />
+          )}
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Priority (lower wins ties)
             <NumberInput
@@ -209,6 +226,9 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
             Add transfer rule
           </Button>
         </div>
+        {needsLinkingAccount(options.find((account) => account.account_id === draft.counterpartyAccountId)) && (
+          <NeedsLinkingNote />
+        )}
       </CardContent>
       {editing && (
         <TransferRuleEditDialog rule={editing} accounts={options} onClose={() => setEditing(null)} onSave={saveRule} />

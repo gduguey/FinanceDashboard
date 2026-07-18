@@ -15,6 +15,7 @@ function makePosting(
     currency: 'USD',
     description: '',
     pending_selected: true,
+    is_linked_transfer: false,
     ...overrides,
   }
 }
@@ -58,6 +59,24 @@ describe('realIncomeExpensePostingIds', () => {
       makePosting({ posting_id: 'p2', transaction_id: 't1', account_id: 'uncategorized:income' }),
     ]
     expect(realIncomeExpensePostingIds(postings, accounts)).toEqual(new Set(['p1']))
+  })
+
+  it('excludes a confirmed transfer link even though its transaction still has an unresolved placeholder leg', () => {
+    const accounts: Record<string, Account> = {
+      checking: makeAccount({ account_id: 'checking', kind: 'checking' }),
+      incomeSource: makeAccount({ account_id: 'uncategorized:income', kind: 'income_source' }),
+    }
+    const postings = [
+      makePosting({
+        posting_id: 'p1',
+        transaction_id: 't1',
+        account_id: 'checking',
+        is_linked_transfer: true,
+        linked_transaction_id: 't2',
+      }),
+      makePosting({ posting_id: 'p2', transaction_id: 't1', account_id: 'uncategorized:income' }),
+    ]
+    expect(realIncomeExpensePostingIds(postings, accounts)).toEqual(new Set())
   })
 
   it('never includes a posting on a virtual placeholder account, even when its sibling is also virtual', () => {

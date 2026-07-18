@@ -34,6 +34,7 @@ from accounting.api.api_models import (
 )
 from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
 from accounting.importers.ingest import load_ledger, remap_ledger_category_ids, uncategorize_ledger_postings
+from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import (
     SUPPORTED_CURRENCIES,
     Account,
@@ -99,6 +100,7 @@ def get_store(
         simulator_scenarios=store.simulator_scenarios,
         posting_splits=store.posting_splits,
         posting_merges=store.posting_merges,
+        transfer_links=store.transfer_links,
         general_budgets=store.general_budgets,
         category_patterns=store.category_patterns,
         goals=store.goals,
@@ -620,6 +622,12 @@ def put_transfer_rules(
 ) -> list[TransferRule]:
     """Replace the whole transfer-rule list.
 
+    A newly added or edited rule can make a previously-unresolved
+    transaction newly, safely linkable — see
+    `ledger.transfers.reconcile_and_persist_rule_links`, run here against
+    the full, unscoped ledger so a match isn't missed just because it
+    falls outside some other endpoint's own date window.
+
     Returns
     -------
     list[TransferRule]
@@ -628,6 +636,7 @@ def put_transfer_rules(
     store = load_store(session, user_id)
     store = store.model_copy(update={"rules": rules})
     save_store(store, session, user_id)
+    reconcile_and_persist_rule_links(load_ledger(session, user_id), session, user_id)
     return store.rules
 
 

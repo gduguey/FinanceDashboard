@@ -37,6 +37,8 @@ from accounting.models import (
     RecurringAddition,
     SimulatorScenario,
     Tag,
+    TransferLink,
+    TransferLinkSource,
     TransferRule,
     WithdrawalPriorityEntry,
 )
@@ -65,6 +67,7 @@ class AccountingStoreResponse(BaseModel):
     simulator_scenarios: list[SimulatorScenario]
     posting_splits: dict[str, PostingSplit]
     posting_merges: dict[str, PostingMerge]
+    transfer_links: list[TransferLink]
     general_budgets: dict[str, GeneralBudget]
     category_patterns: dict[str, CategoryPattern]
     goals: dict[str, Goal]
@@ -435,14 +438,24 @@ class RebuildResult(BaseModel):
 class PostingRow(Posting):
     """One posting as displayed on the Transactions page — a `Posting` plus its current resolution state.
 
-    The three extra fields are display-only, bolted onto the resolved
-    ledger by `get_postings` itself rather than stored on the posting —
-    see `ledger.pending`/`ledger.categorization.resolved_transfer_rule_ids_by_transaction`.
+    The extra fields are display-only, bolted onto the resolved ledger by
+    `get_postings` itself rather than stored on the posting — see
+    `ledger.pending`/`ledger.categorization.resolved_transfer_rule_ids_by_transaction`/
+    `ledger.transfers.apply_transfer_links`. `resolved_by_transfer_rule_id`
+    is only ever set for a rule that *directly* repointed this posting's
+    placeholder (a safe, non-`IMPORTABLE_ACCOUNT_KINDS` counterparty) —
+    never for one a `TransferLink` (manual or rule-found) resolved
+    instead, which shows up via `is_linked_transfer`/`linked_transaction_id`/
+    `transfer_link_source` regardless of which account this posting's own
+    placeholder leg still points at.
     """
 
     pending_source: PendingSuggestionSource | None = None
     pending_selected: bool = True
     resolved_by_transfer_rule_id: str | None = None
+    is_linked_transfer: bool = False
+    linked_transaction_id: str | None = None
+    transfer_link_source: TransferLinkSource | None = None
 
 
 class PostingIdResponse(BaseModel):
@@ -469,6 +482,25 @@ class PostingMergeIdResponse(BaseModel):
     """Response body naming one posting merge, for endpoints whose only real effect is removing something."""
 
     merge_id: str
+
+
+class TransferLinkCreate(BaseModel):
+    """Request body for `POST /api/accounting/transfer-links` — confirms two transactions as one transfer's two sides.
+
+    `link_id`/ordering are never taken from the client — derived
+    server-side from the two ids sorted once (see
+    `ledger.transfers.make_transfer_link`), so confirming the same pair
+    from either side is idempotent.
+    """
+
+    transaction_id_a: str = Field(min_length=1)
+    transaction_id_b: str = Field(min_length=1)
+
+
+class TransferLinkIdResponse(BaseModel):
+    """Response body naming one transfer link, for endpoints whose only real effect is removing something."""
+
+    link_id: str
 
 
 class GoalContributionCreate(BaseModel):

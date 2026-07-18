@@ -165,6 +165,25 @@ def test_category_totals_excludes_transfers_between_two_real_accounts() -> None:
     assert totals.is_empty()
 
 
+def test_category_totals_excludes_a_confirmed_transfer_link_between_two_real_accounts() -> None:
+    """`is_linked_transfer` (added by `ledger.transfers.apply_transfer_links`) excludes even a still-unresolved pair.
+
+    `t1`/`t2` are two *separate* transactions here (unlike the placeholder
+    mechanism, a `TransferLink` never merges them into one) — each still
+    carries its own unresolved placeholder leg (an `IMPORTABLE_ACCOUNT_KINDS`
+    counterparty is never repointed by `apply_rules`), yet the link alone
+    is enough to exclude both real legs.
+    """
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -70.0),
+        _posting("p2", "t1", "uncategorized:expense", 70.0),
+        _posting("p3", "t2", "sofi:savings:3680", 70.0),
+        _posting("p4", "t2", "uncategorized:income", -70.0),
+    ).with_columns(is_linked_transfer=pl.lit(value=True))
+    totals = category_totals(postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30))
+    assert totals.is_empty()
+
+
 def test_category_totals_buckets_uncategorized_legs_by_sign() -> None:
     postings = _postings(
         _posting("p1", "t1", "chase:checking:9579", 1500.0),

@@ -12,6 +12,7 @@ function makePosting(postedAt: string): Posting {
     currency: 'USD',
     description: '',
     pending_selected: true,
+    is_linked_transfer: false,
   }
 }
 

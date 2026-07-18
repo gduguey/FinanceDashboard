@@ -40,6 +40,11 @@ export function realIncomeExpensePostingIds(allPostings: Posting[], accounts: Re
   for (const posting of allPostings) {
     if (virtualAccountIds.has(posting.account_id)) continue
     if (!transactionHasVirtualLeg.get(posting.transaction_id)) continue
+    // Excludes a confirmed `TransferLink` the same way the backend's own
+    // chokepoint does — a linked transaction stays excluded from
+    // income/expense regardless of which account either leg's placeholder
+    // still points at (see `ledger.transfers.apply_transfer_links`).
+    if (posting.is_linked_transfer) continue
     ids.add(posting.posting_id)
   }
   return ids

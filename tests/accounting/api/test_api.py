@@ -1328,6 +1328,154 @@ def test_restoring_an_unknown_suggestion_is_a_404(client) -> None:
     assert response.status_code == 404
 
 
+def _real_leg_transaction_id(postings: list[dict], account_id: str) -> str:
+    return next(p for p in postings if p["account_id"] == account_id)["transaction_id"]
+
+
+def test_post_transfer_link_confirms_a_pair_and_excludes_it_from_income_statement(client) -> None:
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    postings = client.get("/api/accounting/postings").json()
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+
+    response = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+    )
+    assert response.status_code == 200
+    link = response.json()
+    assert {link["transaction_id_a"], link["transaction_id_b"]} == {checking_transaction_id, card_transaction_id}
+    assert link["source"] == "manual"
+
+    updated = client.get("/api/accounting/postings").json()
+    checking_row = next(p for p in updated if p["account_id"] == checking_id)
+    card_row = next(p for p in updated if p["account_id"] == card_id)
+    assert checking_row["is_linked_transfer"] is True
+    assert checking_row["linked_transaction_id"] == card_transaction_id
+    assert card_row["is_linked_transfer"] is True
+    assert card_row["linked_transaction_id"] == checking_transaction_id
+
+    totals = client.get(
+        "/api/accounting/income-statement/category-totals", params={"start": "2026-06-01", "end": "2026-06-30"}
+    ).json()
+    uncategorized_expense = [row for row in totals if row["category_id"] == "uncategorized:expense-category"]
+    assert uncategorized_expense == [] or uncategorized_expense[0]["amount"] == pytest.approx(0.0)
+
+
+def test_post_transfer_link_rejects_a_transaction_already_in_another_link(client) -> None:
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    other_card_id = _create_account(client, name="Other Card", kind="credit_card", institution="Chase")["account_id"]
+    client.post(
+        "/api/accounting/import",
+        files={
+            "file": (
+                "other.csv",
+                "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Also Payment Thank You,,Payment,70.00,\n",
+                "text/csv",
+            )
+        },
+        data={
+            "institution": "Chase",
+            "account_kind": "credit_card",
+            "account_id": other_card_id,
+            "account_name": "Other Card",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+    other_card_transaction_id = _real_leg_transaction_id(postings, other_card_id)
+    client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+    )
+
+    response = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": other_card_transaction_id},
+    )
+    assert response.status_code == 409
+
+
+def test_post_transfer_link_is_idempotent_for_the_same_pair(client) -> None:
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    postings = client.get("/api/accounting/postings").json()
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+    first = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+    )
+    second = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": card_transaction_id, "transaction_id_b": checking_transaction_id},
+    )
+    assert second.status_code == 200
+    assert second.json()["link_id"] == first.json()["link_id"]
+    assert len(client.get("/api/accounting/store").json()["transfer_links"]) == 1
+
+
+def test_delete_transfer_link_unlinks_it(client) -> None:
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    postings = client.get("/api/accounting/postings").json()
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+    link = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+    ).json()
+
+    response = client.delete(f"/api/accounting/transfer-links/{link['link_id']}")
+
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["transfer_links"] == []
+    updated = client.get("/api/accounting/postings").json()
+    assert next(p for p in updated if p["account_id"] == checking_id)["is_linked_transfer"] is False
+
+
+def test_delete_transfer_link_404s_for_an_unknown_id(client) -> None:
+    response = client.delete("/api/accounting/transfer-links/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_post_transfer_link_rejects_an_already_split_transaction(client) -> None:
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    postings = client.get("/api/accounting/postings").json()
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+    checking_posting_id = next(p for p in postings if p["account_id"] == checking_id)["posting_id"]
+    client.put(
+        f"/api/accounting/postings/{checking_posting_id}/split",
+        json=[{"amount": -50.0}, {"amount": -20.0}],
+    )
+
+    response = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+    )
+    assert response.status_code == 400
+
+
 def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(client) -> None:
     account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic")
     client.post(

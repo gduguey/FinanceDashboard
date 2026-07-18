@@ -62,6 +62,7 @@ export function TransactionsPage() {
               categories={store.categories}
               tags={store.tags}
               rules={store.transfer_rules}
+              transferLinks={store.transfer_links}
             />
           </>
         )}

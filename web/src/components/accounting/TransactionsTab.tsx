@@ -24,23 +24,26 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   useAiSuggestCategory,
+  useCreateTransferLink,
   useDeletePostingSplit,
   useLlmUsage,
   usePatternSuggestCategory,
   usePatternSuggestCategoryBulk,
+  useRemoveTransferLink,
   useSetPostingOverride,
   useSetTransferRules,
+  useTransferSuggestions,
   useValidatePending,
 } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { counterpartyOptions } from '@/lib/counterpartyAccounts'
+import { safeDirectRepointOptions } from '@/lib/counterpartyAccounts'
 import { FILTER_ALL as ALL, matchesFilter, matchesMultiFilter } from '@/lib/filters'
 import { formatCurrency, formatDate, formatMonthLong } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { availableMonths } from '@/lib/months'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
-import type { Account, Category, ManualOverride, Posting, Tag, TransferRule } from '@/types/accounting'
+import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
 // real one — a table row with `p-2 text-sm` cells lands around here.
@@ -67,6 +70,23 @@ const DATE_MODE_RANGE = 'range'
 const ALL_MONTHS = '__all_months__'
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
+
+// Same persisted key `TransferSuggestionsPanel.tsx` uses — so the "flag as
+// transfer" candidate picker here searches the same window the user already
+// tuned there, rather than silently defaulting differently.
+const TRANSFER_SUGGESTIONS_WINDOW_DAYS_KEY = 'accounting.transfer-suggestions.window-days'
+const DEFAULT_TRANSFER_SUGGESTIONS_WINDOW_DAYS = 3
+
+// One candidate transaction "flag as transfer" could link the current
+// transaction to — derived from `useTransferSuggestions` (the same
+// heuristic `TransferSuggestionsPanel` surfaces), scoped down to just the
+// transactions involving one specific posting.
+interface TransferCandidate {
+  otherTransactionId: string
+  otherAccountName: string
+  otherDescription: string
+  otherPostedAt: string
+}
 
 interface FilterState {
   search: string
@@ -140,7 +160,10 @@ interface TransactionRowProps {
   aiMessage: string | undefined
   aiPending: boolean
   aiAvailable: boolean
-  counterpartyAccounts: Account[]
+  safeCounterpartyAccounts: Account[]
+  transferCandidates: TransferCandidate[]
+  linkedAccountName: string | null
+  linkId: string | null
   onOverride: (postingId: string, override: Partial<ManualOverride>) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
@@ -148,6 +171,8 @@ interface TransactionRowProps {
   onToggleSelected: (postingId: string, selected: boolean) => void
   onMarkAsTransfer: (transactionId: string, counterpartyAccountId: string) => void
   onExcludeFromRule: (transactionId: string, ruleId: string) => void
+  onLinkTransfer: (transactionIdA: string, transactionIdB: string) => void
+  onUnlinkTransfer: (linkId: string) => void
 }
 
 // Extracted and memoized so that state changes scoped to one row (an AI
@@ -169,7 +194,10 @@ const TransactionRow = memo(function TransactionRow({
   aiMessage,
   aiPending,
   aiAvailable,
-  counterpartyAccounts,
+  safeCounterpartyAccounts,
+  transferCandidates,
+  linkedAccountName,
+  linkId,
   onOverride,
   onAiSuggest,
   onSplit,
@@ -177,10 +205,19 @@ const TransactionRow = memo(function TransactionRow({
   onToggleSelected,
   onMarkAsTransfer,
   onExcludeFromRule,
+  onLinkTransfer,
+  onUnlinkTransfer,
 }: TransactionRowProps) {
   const originalId = splitOriginalId(posting.posting_id)
   const pendingClass = posting.pending_source ? PENDING_ROW_CLASS[posting.pending_source] : undefined
   const [pickingTransfer, setPickingTransfer] = useState(false)
+  const [showAccountFallback, setShowAccountFallback] = useState(false)
+  const candidates = showAccountFallback ? [] : transferCandidates
+  // A transaction already split into categorized legs must never be
+  // silently excluded from income/expense by a link formed afterward (see
+  // `ledger.transfers.reconcile_rule_links`'s own guard, mirrored here) —
+  // the split-leg row itself is what `originalId` names.
+  const alreadySplit = originalId !== null
   return (
     <TableRow ref={ref} data-index={dataIndex} className={pendingClass}>
       <TableCell>
@@ -219,24 +256,76 @@ const TransactionRow = memo(function TransactionRow({
             )}
           </span>
         )}
+        {posting.is_linked_transfer && (
+          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+            <span
+              title={`Linked ${posting.transfer_link_source === 'rule' ? 'via a rule' : 'manually'} to ${linkedAccountName ?? 'another transaction'} — its own posting was never changed`}
+            >
+              linked
+            </span>
+            {linkId && (
+              <button
+                type="button"
+                className="hover:text-foreground"
+                title="Unlink this transfer"
+                onClick={() => onUnlinkTransfer(linkId)}
+              >
+                ×
+              </button>
+            )}
+          </span>
+        )}
         {isRealIncomeExpense &&
           (pickingTransfer ? (
-            <span className="ml-1 inline-block" onClick={(event) => event.stopPropagation()}>
-              <CounterpartySelect
-                accounts={counterpartyAccounts}
-                value={null}
-                onChange={(accountId) => {
-                  if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
-                  setPickingTransfer(false)
-                }}
-              />
+            <span className="ml-1 inline-flex flex-col gap-1" onClick={(event) => event.stopPropagation()}>
+              {alreadySplit ? (
+                <p className="max-w-40 text-[10px] text-muted-foreground">
+                  Already split into categorized legs — can't be linked as a transfer.
+                </p>
+              ) : candidates.length > 0 ? (
+                <span className="flex flex-col gap-0.5 rounded-sm border bg-popover p-1 shadow-sm">
+                  {candidates.map((candidate) => (
+                    <button
+                      key={candidate.otherTransactionId}
+                      type="button"
+                      className="rounded-sm px-1 py-0.5 text-left text-[10px] hover:bg-muted"
+                      title={candidate.otherDescription}
+                      onClick={() => {
+                        onLinkTransfer(posting.transaction_id, candidate.otherTransactionId)
+                        setPickingTransfer(false)
+                      }}
+                    >
+                      Link to {candidate.otherAccountName} ({formatDate(candidate.otherPostedAt.slice(0, 10))})
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
+                    onClick={() => setShowAccountFallback(true)}
+                  >
+                    No match — point at an account instead
+                  </button>
+                </span>
+              ) : (
+                <CounterpartySelect
+                  accounts={safeCounterpartyAccounts}
+                  value={null}
+                  onChange={(accountId) => {
+                    if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
+                    setPickingTransfer(false)
+                  }}
+                />
+              )}
             </span>
           ) : (
             <button
               type="button"
               className="ml-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
               title="Flag this transaction as a transfer to one of your other accounts"
-              onClick={() => setPickingTransfer(true)}
+              onClick={() => {
+                setShowAccountFallback(false)
+                setPickingTransfer(true)
+              }}
             >
               flag as transfer
             </button>
@@ -325,6 +414,7 @@ function TransactionsTable({
   categories,
   tags,
   rules,
+  transferLinks,
   onlyUncategorized,
 }: {
   storageKey: string
@@ -333,6 +423,7 @@ function TransactionsTable({
   categories: Record<string, Category>
   tags: Record<string, Tag>
   rules: TransferRule[]
+  transferLinks: TransferLink[]
   onlyUncategorized: boolean
 }) {
   const [filters, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
@@ -358,9 +449,20 @@ function TransactionsTable({
   const patternSuggestBulk = usePatternSuggestCategoryBulk()
   const validatePending = useValidatePending()
   const setTransferRules = useSetTransferRules()
+  const createTransferLink = useCreateTransferLink()
+  const removeTransferLink = useRemoveTransferLink()
   const { data: llmUsage } = useLlmUsage()
   const aiAvailable = anyLlmProviderAvailable(llmUsage)
-  const counterpartyAccounts = useMemo(() => counterpartyOptions(accounts), [accounts])
+  // Only ever a fallback now — the primary "flag as transfer" path links to
+  // a specific other transaction instead (see `transferCandidates` below).
+  // Repointing straight onto an `IMPORTABLE_ACCOUNT_KINDS` account (the
+  // ones this list used to include) risks double-counting against that
+  // account's own independently-imported statement.
+  const safeCounterpartyAccounts = useMemo(() => safeDirectRepointOptions(accounts), [accounts])
+  // The persisted window `TransferSuggestionsPanel` uses — shared so
+  // "flag as transfer" here searches the exact same window.
+  const [windowDays] = usePersistedState(TRANSFER_SUGGESTIONS_WINDOW_DAYS_KEY, DEFAULT_TRANSFER_SUGGESTIONS_WINDOW_DAYS)
+  const { data: transferSuggestions } = useTransferSuggestions(windowDays)
   // The placeholder leg of each transaction — never rendered as its own
   // row (see `filtered` below) but needed here to know *which* posting a
   // "mark as transfer" override actually has to target: the visible row is
@@ -373,6 +475,65 @@ function TransactionsTable({
     }
     return lookup
   }, [postings])
+  const transactionIdByPostingId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const posting of postings) lookup.set(posting.posting_id, posting.transaction_id)
+    return lookup
+  }, [postings])
+  // Each transaction's own real leg (account + description) — used to
+  // label a "linked" badge's counterpart, and a candidate pick's own label,
+  // by something a person recognizes rather than a raw transaction id.
+  const realLegByTransactionId = useMemo(() => {
+    const lookup = new Map<string, { accountName: string; description: string }>()
+    for (const posting of postings) {
+      if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
+      lookup.set(posting.transaction_id, {
+        accountName: accounts[posting.account_id]?.name ?? posting.account_id,
+        description: posting.description,
+      })
+    }
+    return lookup
+  }, [postings, accounts])
+  const linkIdByTransactionId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const link of transferLinks) {
+      lookup.set(link.transaction_id_a, link.link_id)
+      lookup.set(link.transaction_id_b, link.link_id)
+    }
+    return lookup
+  }, [transferLinks])
+  // One candidate transaction per suggestion this posting is a side of —
+  // see `TransferCandidate`'s own comment. A suggestion pairs two postings
+  // (never transactions directly), so the other side's transaction id is
+  // resolved via `transactionIdByPostingId`.
+  const candidatesByPostingId = useMemo(() => {
+    const lookup = new Map<string, TransferCandidate[]>()
+    for (const suggestion of transferSuggestions ?? []) {
+      const otherOfPosting = transactionIdByPostingId.get(suggestion.other_posting_id)
+      const otherOfOtherPosting = transactionIdByPostingId.get(suggestion.posting_id)
+      if (otherOfPosting) {
+        const existing = lookup.get(suggestion.posting_id) ?? []
+        existing.push({
+          otherTransactionId: otherOfPosting,
+          otherAccountName: accounts[suggestion.other_account_id]?.name ?? suggestion.other_account_id,
+          otherDescription: suggestion.other_description,
+          otherPostedAt: suggestion.other_posted_at,
+        })
+        lookup.set(suggestion.posting_id, existing)
+      }
+      if (otherOfOtherPosting) {
+        const existing = lookup.get(suggestion.other_posting_id) ?? []
+        existing.push({
+          otherTransactionId: otherOfOtherPosting,
+          otherAccountName: accounts[suggestion.account_id]?.name ?? suggestion.account_id,
+          otherDescription: suggestion.description,
+          otherPostedAt: suggestion.posted_at,
+        })
+        lookup.set(suggestion.other_posting_id, existing)
+      }
+    }
+    return lookup
+  }, [transferSuggestions, transactionIdByPostingId, accounts])
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
@@ -448,6 +609,13 @@ function TransactionsTable({
     },
     [rules, setTransferRules],
   )
+  const handleLinkTransfer = useCallback(
+    (transactionIdA: string, transactionIdB: string) => {
+      createTransferLink.mutate({ transaction_id_a: transactionIdA, transaction_id_b: transactionIdB })
+    },
+    [createTransferLink],
+  )
+  const handleUnlinkTransfer = useCallback((linkId: string) => removeTransferLink.mutate(linkId), [removeTransferLink])
   const handleUndoSplit = useCallback(
     (originalPostingId: string) => deleteSplit.mutate(originalPostingId),
     [deleteSplit],
@@ -949,7 +1117,14 @@ function TransactionsTable({
                         aiSuggest.isPending || bulkSuggesting || patternSuggest.isPending || bulkPatternSuggesting
                       }
                       aiAvailable={aiAvailable}
-                      counterpartyAccounts={counterpartyAccounts}
+                      safeCounterpartyAccounts={safeCounterpartyAccounts}
+                      transferCandidates={candidatesByPostingId.get(posting.posting_id) ?? []}
+                      linkedAccountName={
+                        posting.linked_transaction_id
+                          ? (realLegByTransactionId.get(posting.linked_transaction_id)?.accountName ?? null)
+                          : null
+                      }
+                      linkId={linkIdByTransactionId.get(posting.transaction_id) ?? null}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
                       onSplit={setSplitting}
@@ -957,6 +1132,8 @@ function TransactionsTable({
                       onToggleSelected={handleToggleSelected}
                       onMarkAsTransfer={handleMarkAsTransfer}
                       onExcludeFromRule={handleExcludeFromRule}
+                      onLinkTransfer={handleLinkTransfer}
+                      onUnlinkTransfer={handleUnlinkTransfer}
                     />
                   )
                 })}
@@ -983,12 +1160,14 @@ export function TransactionsTab({
   categories,
   tags,
   rules,
+  transferLinks,
 }: {
   postings: Posting[]
   accounts: Record<string, Account>
   categories: Record<string, Category>
   tags: Record<string, Tag>
   rules: TransferRule[]
+  transferLinks: TransferLink[]
 }) {
   const withSubcategories = useMemo(() => categoriesWithSubcategories(categories), [categories])
   const realIds = useMemo(() => realIncomeExpensePostingIds(postings, accounts), [postings, accounts])
@@ -1012,6 +1191,7 @@ export function TransactionsTab({
           categories={categories}
           tags={tags}
           rules={rules}
+          transferLinks={transferLinks}
           onlyUncategorized={false}
         />
       </TabsContent>
@@ -1023,6 +1203,7 @@ export function TransactionsTab({
           categories={categories}
           tags={tags}
           rules={rules}
+          transferLinks={transferLinks}
           onlyUncategorized
         />
       </TabsContent>

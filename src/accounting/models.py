@@ -44,6 +44,20 @@ balance is deliberately never computed here — see `dashboard.net_worth`.
 transaction history at all.
 """
 
+IMPORTABLE_ACCOUNT_KINDS: frozenset[AccountKind] = frozenset({"checking", "savings", "credit_card", "vault"})
+"""Every `AccountKind` with a registered CSV standardizer (see `importers.ingest.supported_import_kinds`).
+
+An account of one of these kinds might already have its own,
+independently-imported transaction for the same real-world event as some
+other posting's placeholder counterparty — so a `TransferRule` may never
+repoint a placeholder directly onto one of these (see
+`ledger.categorization.apply_rules`); doing so risks the same posting being
+counted twice, once from each side's own import. Repointing straight onto
+any other kind (a virtual `income_source`/`expense_payee`, or a real
+account nothing is ever independently imported for) stays safe, since
+nothing else will ever independently post to it.
+"""
+
 CategoryClassification = Literal["income", "expense"]
 """Whether a category is money coming in or money going out. Both share one
 tree (a category can have subcategories regardless of which side it's on),
@@ -202,6 +216,36 @@ class TransferRule(BaseModel):
     description: str = ""
     active: bool = True
     excluded_transaction_ids: list[str] = Field(default_factory=list)
+
+
+TransferLinkSource = Literal["manual", "rule"]
+"""Which mechanism confirmed a `TransferLink` — display-only, never read by resolution itself."""
+
+
+class TransferLink(BaseModel):
+    """A confirmed pairing of two transactions as the two sides of one real-world transfer.
+
+    Neither transaction's own postings are ever changed to create this —
+    each side's real leg (already on its own real account from import)
+    stays exactly as it was; the link only changes classification, via
+    `ledger.transfers.apply_transfer_links`: both transactions are excluded
+    from income/expense regardless of what account either placeholder leg
+    still points at. `link_id` is always derived from the two transaction
+    ids sorted once (see `ledger.transfers.make_transfer_link`) — the same
+    real-world pair links (and unlinks) under the same id no matter which
+    side a caller names first. `source` is `"manual"` for a user's own
+    "flag as transfer"/suggestion-panel pick, `"rule"` for one a
+    `TransferRule` found a safe, unique match for at write time (see
+    `ledger.transfers.reconcile_rule_links`) — display-only, never read by
+    resolution itself.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    link_id: str = Field(min_length=1)
+    transaction_id_a: str = Field(min_length=1)
+    transaction_id_b: str = Field(min_length=1)
+    source: TransferLinkSource = "manual"
 
 
 class CategoryPattern(BaseModel):

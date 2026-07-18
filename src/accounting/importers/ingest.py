@@ -26,6 +26,7 @@ from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
 from accounting.ledger.replay import validate_balanced
+from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.statement_archive import StatementArchive
@@ -587,6 +588,7 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     merged = _merge_ledger(existing, new_postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
+    reconcile_and_persist_rule_links(merged, session, user_id=user_id)
 
     return IngestResult(
         account_id=account_id,
@@ -731,6 +733,7 @@ def _apply_canonical_outcome(
     merged = _merge_ledger(existing, outcome.postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
+    reconcile_and_persist_rule_links(merged, session, user_id=user_id)
 
     return CanonicalIngestResult(
         account_id=account_id,
@@ -837,4 +840,5 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
     validate_balanced(ledger)
     _write_ledger(ledger, session, user_id=user_id)
+    reconcile_and_persist_rule_links(ledger, session, user_id=user_id)
     return ledger
