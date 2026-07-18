@@ -3,6 +3,7 @@ import { Archive, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { FilterSelect } from '@/components/shared/FilterSelect'
+import { IncludeExcludeToggle } from '@/components/shared/IncludeExcludeToggle'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
@@ -423,15 +424,10 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
               className="w-36"
             />
             {filters.dateFilter && (
-              <Button
-                type="button"
-                variant={filters.dateExclude ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setFilters({ ...filters, dateExclude: !filters.dateExclude })}
-              >
-                {filters.dateExclude ? 'Not' : 'Is'}
-              </Button>
+              <IncludeExcludeToggle
+                exclude={filters.dateExclude}
+                onChange={(dateExclude) => setFilters({ ...filters, dateExclude })}
+              />
             )}
           </div>
           <FilterSelect
