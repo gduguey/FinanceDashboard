@@ -10,6 +10,7 @@ import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -173,11 +174,10 @@ function GoalListSection({
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                               Target amount
-                              <Input
-                                type="number"
+                              <NumberInput
                                 className="h-7 w-28 text-xs"
-                                defaultValue={goal.target_amount}
-                                onBlur={(event) => update(goal.goal_id, { target_amount: Number(event.target.value) })}
+                                value={goal.target_amount}
+                                onCommit={(value) => update(goal.goal_id, { target_amount: value ?? 0 })}
                               />
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">

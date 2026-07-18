@@ -4,6 +4,7 @@ import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useSetRecurringAdditions, useSetWithdrawalPriorities } from '@/hooks/useAccountingData'
 import type {
@@ -183,11 +184,10 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
                 </SelectContent>
               </Select>
               {addition.mode !== 'remainder' && (
-                <Input
-                  type="number"
+                <NumberInput
                   className="w-24"
                   value={addition.value}
-                  onChange={(event) => update(addition.addition_id, { value: Number(event.target.value) })}
+                  onCommit={(value) => update(addition.addition_id, { value: value ?? 0 })}
                 />
               )}
               <Button variant="ghost" size="icon" onClick={() => remove(addition.addition_id)}>

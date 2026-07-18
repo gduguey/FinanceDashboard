@@ -1,6 +1,6 @@
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useAccountingStore, useInterestSummary, useUpdateAccount } from '@/hooks/useAccountingData'
@@ -110,12 +110,11 @@ export function InterestTrackingPanel() {
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     <div className="flex items-center justify-end gap-1">
-                      <Input
-                        type="number"
-                        step="0.01"
+                      <NumberInput
+                        step={0.01}
                         className="h-7 w-20 text-right text-xs"
-                        defaultValue={row.apy_pct}
-                        onBlur={(event) => commitApy(row.account_id, event.target.value)}
+                        value={row.apy_pct}
+                        onCommit={(pct) => commitApy(row.account_id, String(pct ?? ''))}
                       />
                       <span className="text-muted-foreground">%</span>
                     </div>
