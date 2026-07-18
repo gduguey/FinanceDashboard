@@ -128,22 +128,34 @@ def test_parse_account_name_returns_none_without_trailing_digits() -> None:
     assert parse_account_name("Some free text") is None
 
 
-def test_standardize_sofi_wide_csv_tags_interest_rows_with_the_interest_earned_category() -> None:
+def test_standardize_sofi_wide_csv_leaves_interest_rows_uncategorized() -> None:
+    # SoFi's own "Detailed Category" column says "Interest" here, but this
+    # importer no longer trusts it to bypass categorization — a category
+    # pattern (or manual edit) has to assign one, same as any other row.
     result = standardize_sofi_savings(SOFI_VAULT_CSV, "sofi:savings:3680:vault:emergency-fund")
     interest_leg = result.filter(pl.col("description") == "Interest").row(0, named=True)
-    assert interest_leg["category_id"] == "income:interest-earned"
+    assert interest_leg["category_id"] is None
     assert interest_leg["amount"] == pytest.approx(77.97)
 
 
-def test_standardize_sofi_wide_csv_points_a_savings_transfer_straight_at_the_parent_account() -> None:
-    # An opaque, non-colon-shaped id — proves the parent is read from the
-    # explicit `parent_account_id` argument, never parsed out of `account_id`.
+def test_standardize_sofi_wide_csv_leaves_a_savings_transfer_as_a_generic_placeholder_too() -> None:
+    # A vault's own "Transfer From/To Savings" row used to be pointed
+    # straight at `parent_account_id`, bypassing rules entirely — but the
+    # parent (savings) account's own export independently records the same
+    # transfer too, so this double-booked it. Left as a placeholder now,
+    # same as every other transfer, so a `TransferRule` resolves it exactly
+    # once.
     vault_id = "a1b2c3d4"
     result = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
     counterparties = set(result["account_id"].unique().to_list()) - {vault_id}
-    assert "sofi:savings:3680" in counterparties
-    transfer_leg = result.filter(pl.col("account_id") == "sofi:savings:3680").row(0, named=True)
-    assert transfer_leg["amount"] == pytest.approx(-10000.0)
+    assert "sofi:savings:3680" not in counterparties
+    # Both of SOFI_VAULT_CSV's rows are positive (interest earned, money
+    # arriving from savings), so both land on the income placeholder.
+    assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
+    transfer_leg = result.filter(
+        (pl.col("account_id") == vault_id) & (pl.col("description") == "Transfer From Savings")
+    ).row(0, named=True)
+    assert transfer_leg["amount"] == pytest.approx(10000.0)
 
 
 def test_standardize_sofi_wide_csv_used_via_the_checking_and_savings_dispatchers() -> None:
