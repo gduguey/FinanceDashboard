@@ -212,7 +212,7 @@ def get_version(session: Session, table: str, user_id: uuid.UUID) -> int:
     return row.version if row is not None else 0
 
 
-def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, expected_version: int | None) -> None:
+def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, expected_version: int | None) -> int:
     """Atomically verify no other save has landed since `expected_version`, then bump `table`'s counter by one.
 
     The check-and-bump happens as one atomic SQL statement (an upsert
@@ -223,6 +223,12 @@ def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, exp
     checked, e.g. an older client) skips the check but still bumps: a
     real change always has to be visible to a version-aware caller later,
     even if this particular caller didn't opt into checking itself.
+
+    Returns the newly-bumped version so a caller that saves more than once
+    per request (e.g. `accounting.store._check_and_bump_store_version`) can
+    re-stash it as the expected version for its own next call, rather than
+    that next call re-checking against the same now-stale value the first
+    call already consumed.
 
     Parameters
     ----------
@@ -235,6 +241,11 @@ def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, exp
         Whose store this is.
     expected_version
         The version the caller last saw, or `None` to skip the check.
+
+    Returns
+    -------
+    int
+        The version `table` was just bumped to.
 
     Raises
     ------
@@ -256,10 +267,12 @@ def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, exp
         ),
         {"user_id": str(user_id), "expected_version": expected_version},
     )
-    if result.first() is None:
+    row = result.first()
+    if row is None:
         current = get_version(session, table, user_id)
         message = (
             f"This data changed elsewhere since version {expected_version} was loaded (now at version {current}) "
             "— reload before saving again."
         )
         raise VersionConflictError(message)
+    return row.version

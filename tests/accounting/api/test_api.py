@@ -1605,6 +1605,39 @@ def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:
     assert response.status_code == 500
 
 
+def test_put_transfer_rules_with_a_newly_resolvable_link_does_not_409(client) -> None:
+    """A rule save that also makes `reconcile_and_persist_rule_links` find a new link calls `save_store`
+    twice in the same request — once for the rule, once for the link. Both used to check the client's
+    `X-Expected-Store-Version` header against the same stale value, so the second call always
+    spuriously conflicted with the first one's own bump. See `db.base.check_and_bump_version` and
+    `accounting.store._check_and_bump_store_version` for the fix (re-stashing the freshly-bumped
+    version so a second save in the same request checks against it, not the original client header).
+    """
+    checking_id = _import_chase_checking(client)
+    credit_card_csv = (
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+        "06/29/2026,06/29/2026,Automatic Payment - Thank You,Payment,Payment,70.00,\n"
+    )
+    credit_card_id = _import_chase_credit_card(client, credit_card_csv)
+
+    version = client.get("/api/accounting/store").json()["version"]
+    response = client.put(
+        "/api/accounting/transfer-rules",
+        json=[
+            {
+                "rule_id": "chase-card-payoff",
+                "description_contains": "Payment to Chase card",
+                "account_id": checking_id,
+                "counterparty_account_id": credit_card_id,
+                "priority": 0,
+            }
+        ],
+        headers={"X-Expected-Store-Version": str(version)},
+    )
+    assert response.status_code == 200
+    assert len(client.get("/api/accounting/store").json()["transfer_links"]) == 1
+
+
 def test_post_transfer_rule_mints_a_content_derived_id(client) -> None:
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
     response = client.post(
