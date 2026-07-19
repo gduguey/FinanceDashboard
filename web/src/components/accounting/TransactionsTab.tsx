@@ -32,7 +32,6 @@ import {
   useRemoveTransferLink,
   useSetPostingOverride,
   useSetTransferRules,
-  useTransferSuggestions,
   useValidatePending,
 } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
@@ -71,22 +70,23 @@ const ALL_MONTHS = '__all_months__'
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
-// Same persisted key `TransferSuggestionsPanel.tsx` uses — so the "flag as
-// transfer" candidate picker here searches the same window the user already
-// tuned there, rather than silently defaulting differently.
-const TRANSFER_SUGGESTIONS_WINDOW_DAYS_KEY = 'accounting.transfer-suggestions.window-days'
-const DEFAULT_TRANSFER_SUGGESTIONS_WINDOW_DAYS = 3
+// The manual "flag as transfer" flow never auto-matches a counterparty —
+// that's what `TransferSuggestionsPanel`'s own heuristic is for. Picking a
+// target transaction here is instead an explicit, table-wide mode: clicking
+// "Link to another transaction…" on one row turns every other row into a
+// pick target, scored against that one row's own criteria (see
+// `pickHintByPostingId` in `TransactionsTable`).
+type PickEligibility = 'source' | 'eligible' | 'already-linked' | 'already-split' | 'amount-mismatch'
 
-// One candidate transaction "flag as transfer" could link the current
-// transaction to — derived from `useTransferSuggestions` (the same
-// heuristic `TransferSuggestionsPanel` surfaces), scoped down to just the
-// transactions involving one specific posting.
-interface TransferCandidate {
-  otherTransactionId: string
-  otherAccountName: string
-  otherDescription: string
-  otherPostedAt: string
+interface PickHint {
+  eligibility: PickEligibility
+  tooltip?: string
 }
+
+// How close two amounts have to be to count as "the same transfer, opposite
+// sides" — a cent of float/rounding slack, never a real discrepancy (an
+// actually mismatched-fee pair should show as a mismatch, not silently link).
+const AMOUNT_TOLERANCE = 0.01
 
 interface FilterState {
   search: string
@@ -161,7 +161,7 @@ interface TransactionRowProps {
   aiPending: boolean
   aiAvailable: boolean
   safeCounterpartyAccounts: Account[]
-  transferCandidates: TransferCandidate[]
+  pickHint: PickHint | null
   linkedAccountName: string | null
   linkId: string | null
   onOverride: (postingId: string, override: Partial<ManualOverride>) => void
@@ -171,7 +171,8 @@ interface TransactionRowProps {
   onToggleSelected: (postingId: string, selected: boolean) => void
   onMarkAsTransfer: (transactionId: string, counterpartyAccountId: string) => void
   onExcludeFromRule: (transactionId: string, ruleId: string) => void
-  onLinkTransfer: (transactionIdA: string, transactionIdB: string) => void
+  onStartPicking: (posting: Posting) => void
+  onPickTarget: (posting: Posting) => void
   onUnlinkTransfer: (linkId: string) => void
 }
 
@@ -195,7 +196,7 @@ const TransactionRow = memo(function TransactionRow({
   aiPending,
   aiAvailable,
   safeCounterpartyAccounts,
-  transferCandidates,
+  pickHint,
   linkedAccountName,
   linkId,
   onOverride,
@@ -205,21 +206,42 @@ const TransactionRow = memo(function TransactionRow({
   onToggleSelected,
   onMarkAsTransfer,
   onExcludeFromRule,
-  onLinkTransfer,
+  onStartPicking,
+  onPickTarget,
   onUnlinkTransfer,
 }: TransactionRowProps) {
   const originalId = splitOriginalId(posting.posting_id)
   const pendingClass = posting.pending_source ? PENDING_ROW_CLASS[posting.pending_source] : undefined
   const [pickingTransfer, setPickingTransfer] = useState(false)
   const [showAccountFallback, setShowAccountFallback] = useState(false)
-  const candidates = showAccountFallback ? [] : transferCandidates
   // A transaction already split into categorized legs must never be
   // silently excluded from income/expense by a link formed afterward (see
   // `ledger.transfers.reconcile_rule_links`'s own guard, mirrored here) —
   // the split-leg row itself is what `originalId` names.
   const alreadySplit = originalId !== null
+  // While a table-wide pick is active, every row that isn't the source
+  // itself gets styled/gated by its own eligibility (see `pickHintByPostingId`
+  // in `TransactionsTable`) — an amount mismatch stays visible and hoverable
+  // (never hidden/greyed) so a user can see *why* it's not pickable, while
+  // an already-linked/already-split row is greyed out since no amount would
+  // ever make it valid.
+  const pickRowClass =
+    pickHint?.eligibility === 'source'
+      ? 'ring-1 ring-inset ring-primary/40 bg-primary/5'
+      : pickHint?.eligibility === 'eligible'
+        ? 'cursor-pointer hover:bg-muted/70'
+        : pickHint?.eligibility === 'already-linked' || pickHint?.eligibility === 'already-split'
+          ? 'opacity-50'
+          : undefined
+  const rowClassName = [pendingClass, pickRowClass].filter(Boolean).join(' ') || undefined
   return (
-    <TableRow ref={ref} data-index={dataIndex} className={pendingClass}>
+    <TableRow
+      ref={ref}
+      data-index={dataIndex}
+      className={rowClassName}
+      title={pickHint?.tooltip}
+      onClick={pickHint?.eligibility === 'eligible' ? () => onPickTarget(posting) : undefined}
+    >
       <TableCell>
         {posting.pending_source && (
           <input
@@ -276,37 +298,15 @@ const TransactionRow = memo(function TransactionRow({
           </span>
         )}
         {isRealIncomeExpense &&
-          (pickingTransfer ? (
+          (pickHint?.eligibility === 'source' ? (
+            <span className="ml-1 text-[10px] text-muted-foreground">picking a match…</span>
+          ) : pickHint !== null ? null : pickingTransfer ? (
             <span className="ml-1 inline-flex flex-col gap-1" onClick={(event) => event.stopPropagation()}>
               {alreadySplit ? (
                 <p className="max-w-40 text-[10px] text-muted-foreground">
                   Already split into categorized legs — can't be linked as a transfer.
                 </p>
-              ) : candidates.length > 0 ? (
-                <span className="flex flex-col gap-0.5 rounded-sm border bg-popover p-1 shadow-sm">
-                  {candidates.map((candidate) => (
-                    <button
-                      key={candidate.otherTransactionId}
-                      type="button"
-                      className="rounded-sm px-1 py-0.5 text-left text-[10px] hover:bg-muted"
-                      title={candidate.otherDescription}
-                      onClick={() => {
-                        onLinkTransfer(posting.transaction_id, candidate.otherTransactionId)
-                        setPickingTransfer(false)
-                      }}
-                    >
-                      Link to {candidate.otherAccountName} ({formatDate(candidate.otherPostedAt.slice(0, 10))})
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    className="rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
-                    onClick={() => setShowAccountFallback(true)}
-                  >
-                    No match — point at an account instead
-                  </button>
-                </span>
-              ) : (
+              ) : showAccountFallback ? (
                 <CounterpartySelect
                   accounts={safeCounterpartyAccounts}
                   value={null}
@@ -315,6 +315,28 @@ const TransactionRow = memo(function TransactionRow({
                     setPickingTransfer(false)
                   }}
                 />
+              ) : (
+                <span className="flex flex-col gap-0.5 rounded-sm border bg-popover p-1 shadow-sm">
+                  <button
+                    type="button"
+                    className="rounded-sm px-1 py-0.5 text-left text-[10px] hover:bg-muted"
+                    onClick={() => {
+                      onStartPicking(posting)
+                      setPickingTransfer(false)
+                    }}
+                  >
+                    Link to another transaction…
+                  </button>
+                  {safeCounterpartyAccounts.length > 0 && (
+                    <button
+                      type="button"
+                      className="rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
+                      onClick={() => setShowAccountFallback(true)}
+                    >
+                      Point at an account instead
+                    </button>
+                  )}
+                </span>
               )}
             </span>
           ) : (
@@ -454,15 +476,17 @@ function TransactionsTable({
   const { data: llmUsage } = useLlmUsage()
   const aiAvailable = anyLlmProviderAvailable(llmUsage)
   // Only ever a fallback now — the primary "flag as transfer" path links to
-  // a specific other transaction instead (see `transferCandidates` below).
+  // a specific other transaction instead (see `pickHintByPostingId` below).
   // Repointing straight onto an `IMPORTABLE_ACCOUNT_KINDS` account (the
   // ones this list used to include) risks double-counting against that
   // account's own independently-imported statement.
   const safeCounterpartyAccounts = useMemo(() => safeDirectRepointOptions(accounts), [accounts])
-  // The persisted window `TransferSuggestionsPanel` uses — shared so
-  // "flag as transfer" here searches the exact same window.
-  const [windowDays] = usePersistedState(TRANSFER_SUGGESTIONS_WINDOW_DAYS_KEY, DEFAULT_TRANSFER_SUGGESTIONS_WINDOW_DAYS)
-  const { data: transferSuggestions } = useTransferSuggestions(windowDays)
+  // The transaction currently being matched against, or `null` when no pick
+  // is in progress — set by clicking "Link to another transaction…" on a
+  // row, cleared by picking a target (or Cancel). Table-wide, not per-row
+  // local state, since every OTHER row's own styling/clickability depends
+  // on it (see `pickHintByPostingId`).
+  const [pickingSource, setPickingSource] = useState<Posting | null>(null)
   // The placeholder leg of each transaction — never rendered as its own
   // row (see `filtered` below) but needed here to know *which* posting a
   // "mark as transfer" override actually has to target: the visible row is
@@ -475,14 +499,9 @@ function TransactionsTable({
     }
     return lookup
   }, [postings])
-  const transactionIdByPostingId = useMemo(() => {
-    const lookup = new Map<string, string>()
-    for (const posting of postings) lookup.set(posting.posting_id, posting.transaction_id)
-    return lookup
-  }, [postings])
   // Each transaction's own real leg (account + description) — used to
-  // label a "linked" badge's counterpart, and a candidate pick's own label,
-  // by something a person recognizes rather than a raw transaction id.
+  // label a "linked" badge's counterpart by something a person recognizes
+  // rather than a raw transaction id.
   const realLegByTransactionId = useMemo(() => {
     const lookup = new Map<string, { accountName: string; description: string }>()
     for (const posting of postings) {
@@ -502,38 +521,6 @@ function TransactionsTable({
     }
     return lookup
   }, [transferLinks])
-  // One candidate transaction per suggestion this posting is a side of —
-  // see `TransferCandidate`'s own comment. A suggestion pairs two postings
-  // (never transactions directly), so the other side's transaction id is
-  // resolved via `transactionIdByPostingId`.
-  const candidatesByPostingId = useMemo(() => {
-    const lookup = new Map<string, TransferCandidate[]>()
-    for (const suggestion of transferSuggestions ?? []) {
-      const otherOfPosting = transactionIdByPostingId.get(suggestion.other_posting_id)
-      const otherOfOtherPosting = transactionIdByPostingId.get(suggestion.posting_id)
-      if (otherOfPosting) {
-        const existing = lookup.get(suggestion.posting_id) ?? []
-        existing.push({
-          otherTransactionId: otherOfPosting,
-          otherAccountName: accounts[suggestion.other_account_id]?.name ?? suggestion.other_account_id,
-          otherDescription: suggestion.other_description,
-          otherPostedAt: suggestion.other_posted_at,
-        })
-        lookup.set(suggestion.posting_id, existing)
-      }
-      if (otherOfOtherPosting) {
-        const existing = lookup.get(suggestion.other_posting_id) ?? []
-        existing.push({
-          otherTransactionId: otherOfOtherPosting,
-          otherAccountName: accounts[suggestion.account_id]?.name ?? suggestion.account_id,
-          otherDescription: suggestion.description,
-          otherPostedAt: suggestion.posted_at,
-        })
-        lookup.set(suggestion.other_posting_id, existing)
-      }
-    }
-    return lookup
-  }, [transferSuggestions, transactionIdByPostingId, accounts])
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
@@ -616,6 +603,16 @@ function TransactionsTable({
     [createTransferLink],
   )
   const handleUnlinkTransfer = useCallback((linkId: string) => removeTransferLink.mutate(linkId), [removeTransferLink])
+  const handleStartPicking = useCallback((posting: Posting) => setPickingSource(posting), [])
+  const handleCancelPicking = useCallback(() => setPickingSource(null), [])
+  const handlePickTarget = useCallback(
+    (target: Posting) => {
+      if (!pickingSource) return
+      handleLinkTransfer(pickingSource.transaction_id, target.transaction_id)
+      setPickingSource(null)
+    },
+    [pickingSource, handleLinkTransfer],
+  )
   const handleUndoSplit = useCallback(
     (originalPostingId: string) => deleteSplit.mutate(originalPostingId),
     [deleteSplit],
@@ -750,6 +747,48 @@ function TransactionsTable({
   ])
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'posted_at')
+  // Scores every currently-visible row against `pickingSource`'s own amount
+  // while a table-wide pick is in progress — `null` entirely when it isn't,
+  // so `TransactionRow` can tell "not picking" apart from "picking, but this
+  // row didn't get scored" (it never should, since every row in `sorted`
+  // gets an entry here). Scoped to `sorted` rather than the full `postings`
+  // list — a transfer's counterpart is almost always on a different account,
+  // so an active account filter can hide it; "Reset filters" is the way out
+  // of that, same as it would be for finding any other hidden transaction.
+  const pickHintByPostingId = useMemo(() => {
+    if (!pickingSource) return null
+    const neededAmount = -pickingSource.amount
+    const lookup = new Map<string, PickHint>()
+    for (const posting of sorted) {
+      if (posting.transaction_id === pickingSource.transaction_id) {
+        lookup.set(posting.posting_id, { eligibility: 'source' })
+        continue
+      }
+      if (posting.is_linked_transfer) {
+        lookup.set(posting.posting_id, {
+          eligibility: 'already-linked',
+          tooltip: 'Already linked to another transaction',
+        })
+        continue
+      }
+      if (splitOriginalId(posting.posting_id) !== null) {
+        lookup.set(posting.posting_id, {
+          eligibility: 'already-split',
+          tooltip: "Already split into categorized legs — can't be linked",
+        })
+        continue
+      }
+      const matches =
+        posting.currency === pickingSource.currency && Math.abs(posting.amount - neededAmount) < AMOUNT_TOLERANCE
+      lookup.set(posting.posting_id, {
+        eligibility: matches ? 'eligible' : 'amount-mismatch',
+        tooltip: matches
+          ? undefined
+          : `Amounts don't match — needs ${formatCurrency(neededAmount, pickingSource.currency)}`,
+      })
+    }
+    return lookup
+  }, [pickingSource, sorted])
   const bulkTargets = useMemo(
     () => filtered.filter((posting) => needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id))),
     [filtered, withSubcategories, realIds],
@@ -1013,6 +1052,20 @@ function TransactionsTable({
         </div>
       </CardHeader>
       <CardContent>
+        {pickingSource && (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
+            <span>
+              Pick the transaction that matches{' '}
+              <span className="font-medium tabular-nums">
+                {formatCurrency(-pickingSource.amount, pickingSource.currency)}
+              </span>{' '}
+              for this transfer.
+            </span>
+            <Button variant="outline" size="sm" onClick={handleCancelPicking}>
+              Cancel
+            </Button>
+          </div>
+        )}
         {sorted.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
             {onlyUncategorized ? 'Nothing left to categorize.' : 'No transactions match — import a statement to start.'}
@@ -1118,7 +1171,7 @@ function TransactionsTable({
                       }
                       aiAvailable={aiAvailable}
                       safeCounterpartyAccounts={safeCounterpartyAccounts}
-                      transferCandidates={candidatesByPostingId.get(posting.posting_id) ?? []}
+                      pickHint={pickHintByPostingId?.get(posting.posting_id) ?? null}
                       linkedAccountName={
                         posting.linked_transaction_id
                           ? (realLegByTransactionId.get(posting.linked_transaction_id)?.accountName ?? null)
@@ -1132,7 +1185,8 @@ function TransactionsTable({
                       onToggleSelected={handleToggleSelected}
                       onMarkAsTransfer={handleMarkAsTransfer}
                       onExcludeFromRule={handleExcludeFromRule}
-                      onLinkTransfer={handleLinkTransfer}
+                      onStartPicking={handleStartPicking}
+                      onPickTarget={handlePickTarget}
                       onUnlinkTransfer={handleUnlinkTransfer}
                     />
                   )
