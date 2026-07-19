@@ -333,6 +333,56 @@ def test_apply_rules_still_matches_other_transactions_when_one_is_excluded() -> 
     assert resolved_transaction_ids == {other_transaction_id}
 
 
+def test_apply_rules_prefers_the_lower_priority_number_when_two_rules_both_match() -> None:
+    high_priority = TransferRule(
+        rule_id="specific-eqore",
+        description_contains="EQORE Inc.",
+        counterparty_account_id="employer:eqore",
+        priority=0,
+    )
+    low_priority_account = Account(
+        account_id="income_source:generic",
+        name="Generic Income",
+        kind="income_source",
+        institution="external",
+        currency="USD",
+    )
+    low_priority = TransferRule(
+        rule_id="generic-catch-all",
+        description_contains="EQORE",
+        counterparty_account_id="income_source:generic",
+        priority=100,
+    )
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    resolved = apply_rules(
+        postings,
+        [low_priority, high_priority],
+        {
+            "sofi:savings:3680": SOFI_SAVINGS,
+            "employer:eqore": EQORE_ACCOUNT,
+            "income_source:generic": low_priority_account,
+        },
+    )
+    counterparty_leg = resolved.filter(pl.col("account_id") == "employer:eqore")
+    assert counterparty_leg.height == 1
+    assert "income_source:generic" not in resolved["account_id"].unique().to_list()
+
+
+def test_resolved_transfer_rule_ids_by_transaction_prefers_the_lower_priority_number() -> None:
+    high_priority = EQORE_RULE.model_copy(update={"rule_id": "specific-eqore", "priority": 0})
+    low_priority = EQORE_RULE.model_copy(update={"rule_id": "generic-catch-all", "priority": 100})
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    resolved_by = resolved_transfer_rule_ids_by_transaction(
+        postings, [low_priority, high_priority], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+    transaction_id = postings.row(0, named=True)["transaction_id"]
+    assert resolved_by == {transaction_id: "specific-eqore"}
+
+
 def test_resolved_transfer_rule_ids_by_transaction_omits_an_excluded_transaction() -> None:
     postings = postings_to_frame(
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
