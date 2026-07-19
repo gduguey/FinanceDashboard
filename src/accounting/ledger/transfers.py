@@ -34,12 +34,11 @@ controlled write points only (import, ledger rebuild, rule save; see
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.ledger.categorization import matching_rule
+from accounting.ledger.categorization import real_legs_of_two_leg_transactions, rule_matches_by_transaction
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS, TransferLink
 from accounting.store import load_store, save_store
 from db.session import set_rls_user
@@ -53,7 +52,6 @@ if TYPE_CHECKING:
 
 _PLACEHOLDER_ACCOUNT_IDS = ["uncategorized:expense", "uncategorized:income"]
 _AMOUNT_TOLERANCE = 1e-6
-_TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per transaction
 _CANDIDATE_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     "account_id": pl.Utf8,
     "posting_id": pl.Utf8,
@@ -164,7 +162,7 @@ def find_unmatched_transfer_candidates(
 
 
 def reconcile_rule_links(
-    postings: pl.DataFrame,
+    postings: pl.DataFrame | pl.LazyFrame,
     rules: list[TransferRule],
     accounts: dict[str, Account],
     posting_splits: dict[str, PostingSplit],
@@ -173,9 +171,9 @@ def reconcile_rule_links(
 ) -> list[TransferLink]:
     """Propose a `TransferLink` for every rule match that safely resolves to exactly one candidate transaction.
 
-    Mirrors `apply_rules`'s own matching (`matching_rule`) to find which
-    transaction a rule would resolve, then — only for a rule whose
-    counterparty is an `IMPORTABLE_ACCOUNT_KINDS` account, the case
+    Mirrors `apply_rules`'s own matching (`ledger.categorization.rule_matches_by_transaction`)
+    to find which transaction a rule would resolve, then — only for a rule
+    whose counterparty is an `IMPORTABLE_ACCOUNT_KINDS` account, the case
     `apply_rules` itself refuses to repoint directly — looks for a unique,
     still-unresolved posting on that counterparty account with an opposite
     amount inside `window_days`. Proposes nothing (leaving the transaction
@@ -184,6 +182,15 @@ def reconcile_rule_links(
     `models.PostingSplit` — a split real leg must never be silently
     excluded from income/expense by a link formed afterward) or is already
     part of a `TransferLink`.
+
+    Finding candidates is one vectorized pass over the ledger (a cross-join,
+    the same shape `find_unmatched_transfer_candidates` already uses); only
+    the final tie-break — a transaction can't claim a candidate another,
+    earlier-processed transaction already claimed — stays a plain Python
+    loop, deliberately: it runs over the already-small set of transactions
+    a rule actually matches, never the full ledger, and that exclusivity
+    is inherently sequential (which pairing "wins" when two matches are
+    both only unique before either has claimed anything).
 
     Parameters
     ----------
@@ -208,107 +215,59 @@ def reconcile_rule_links(
         themselves. Not persisted here; the caller (see this module's own
         docstring) is responsible for that.
     """
-    linked_transaction_ids = {
+    linked_transaction_ids = [
         transaction_id for link in existing_links for transaction_id in (link.transaction_id_a, link.transaction_id_b)
-    }
-    split_posting_ids = set(posting_splits.keys())
+    ]
+    split_posting_ids = list(posting_splits.keys())
 
-    by_transaction: dict[str, list[dict[str, object]]] = {}
-    for row in postings.to_dicts():
-        by_transaction.setdefault(row["transaction_id"], []).append(row)
+    unresolved_real_legs = real_legs_of_two_leg_transactions(postings).filter(
+        ~pl.col("transaction_id").is_in(linked_transaction_ids) & ~pl.col("posting_id").is_in(split_posting_ids)
+    )
 
-    unresolved_real_legs = {
-        transaction_id: real_leg
-        for transaction_id, legs in by_transaction.items()
-        if (real_leg := _unresolved_real_leg(legs, transaction_id, linked_transaction_ids, split_posting_ids))
-        is not None
-    }
-    unresolved_by_account: dict[str, list[dict[str, object]]] = {}
-    for real_leg in unresolved_real_legs.values():
-        unresolved_by_account.setdefault(str(real_leg["account_id"]), []).append(real_leg)
+    importable_account_ids = [
+        account_id for account_id, account in accounts.items() if account.kind in IMPORTABLE_ACCOUNT_KINDS
+    ]
+    importable_matches = rule_matches_by_transaction(postings, rules).filter(
+        pl.col("counterparty_account_id").is_in(importable_account_ids)
+    )
+    matched_real_legs = unresolved_real_legs.join(importable_matches, on="transaction_id", how="inner")
 
-    window = timedelta(days=window_days)
+    window = pl.duration(days=window_days)
+    candidate_lists = (
+        matched_real_legs
+        .join(unresolved_real_legs, how="cross", suffix="_candidate")
+        .filter(
+            (pl.col("account_id_candidate") == pl.col("counterparty_account_id"))
+            & (pl.col("transaction_id_candidate") != pl.col("transaction_id"))
+            & ((pl.col("amount") + pl.col("amount_candidate")).abs() < _AMOUNT_TOLERANCE)
+            & ((pl.col("posted_at") - pl.col("posted_at_candidate")).abs() <= window)
+        )
+        .group_by("transaction_id")
+        .agg(pl.col("transaction_id_candidate").unique().alias("_candidates"))
+        .collect()
+    )
+    candidates_by_transaction: dict[str, list[str]] = dict(
+        zip(candidate_lists["transaction_id"].to_list(), candidate_lists["_candidates"].to_list(), strict=True)
+    )
+
     proposed: list[TransferLink] = []
     already_used: set[str] = set()
-    for transaction_id in sorted(unresolved_real_legs):
+    for transaction_id in sorted(candidates_by_transaction):
         if transaction_id in already_used:
             continue
-        real_leg = unresolved_real_legs[transaction_id]
-        counterparty_account_id = _importable_counterparty_account_id(rules, accounts, real_leg, transaction_id)
-        if counterparty_account_id is None:
+        remaining = [
+            candidate_id
+            for candidate_id in candidates_by_transaction[transaction_id]
+            if candidate_id not in already_used
+        ]
+        if len(remaining) != 1:
             continue
-
-        other_transaction_id = _unique_candidate_transaction_id(
-            real_leg, unresolved_by_account.get(counterparty_account_id, []), already_used, window
-        )
-        if other_transaction_id is None:
-            continue
-
+        other_transaction_id = remaining[0]
         proposed.append(make_transfer_link(transaction_id, other_transaction_id, source="rule"))
         already_used.add(transaction_id)
         already_used.add(other_transaction_id)
 
     return proposed
-
-
-def _unresolved_real_leg(
-    legs: list[dict[str, object]],
-    transaction_id: str,
-    linked_transaction_ids: set[str],
-    split_posting_ids: set[str],
-) -> dict[str, object] | None:
-    """Return the transaction's real leg, if it's still a plain unresolved two-leg transaction, else `None`.
-
-    Returns
-    -------
-    dict or None
-    """
-    if transaction_id in linked_transaction_ids or len(legs) != _TWO_LEG_TRANSACTION:
-        return None
-    placeholder_legs = [leg for leg in legs if leg["account_id"] in _PLACEHOLDER_ACCOUNT_IDS]
-    real_legs = [leg for leg in legs if leg["account_id"] not in _PLACEHOLDER_ACCOUNT_IDS]
-    if len(placeholder_legs) != 1 or len(real_legs) != 1:
-        return None
-    real_leg = real_legs[0]
-    return None if real_leg["posting_id"] in split_posting_ids else real_leg
-
-
-def _importable_counterparty_account_id(
-    rules: list[TransferRule], accounts: dict[str, Account], real_leg: dict[str, object], transaction_id: str
-) -> str | None:
-    """Return the matching rule's counterparty account id, if it's an `IMPORTABLE_ACCOUNT_KINDS` kind, else `None`.
-
-    Returns
-    -------
-    str or None
-    """
-    rule = matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]), transaction_id)
-    if rule is None or rule.counterparty_account_id is None:
-        return None
-    counterparty_account = accounts.get(rule.counterparty_account_id)
-    if counterparty_account is None or counterparty_account.kind not in IMPORTABLE_ACCOUNT_KINDS:
-        return None
-    return rule.counterparty_account_id
-
-
-def _unique_candidate_transaction_id(
-    real_leg: dict[str, object], candidates: list[dict[str, object]], already_used: set[str], window: timedelta
-) -> str | None:
-    """Return the one candidate matching `real_leg` (opposite amount, within `window`), or `None` if not unique.
-
-    Returns
-    -------
-    str or None
-    """
-    matches = [
-        candidate
-        for candidate in candidates
-        if candidate["transaction_id"] != real_leg["transaction_id"]
-        and candidate["transaction_id"] not in already_used
-        and abs(float(candidate["amount"]) + float(real_leg["amount"])) < _AMOUNT_TOLERANCE  # type: ignore[arg-type]
-        and abs(candidate["posted_at"] - real_leg["posted_at"]) <= window  # type: ignore[operator]
-    ]
-    return str(matches[0]["transaction_id"]) if len(matches) == 1 else None
 
 
 def apply_transfer_links(postings: pl.DataFrame, links: list[TransferLink]) -> pl.DataFrame:
