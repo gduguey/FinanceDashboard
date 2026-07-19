@@ -551,12 +551,23 @@ class PostingRow(Posting):
     never for one a `TransferLink` (manual or rule-found) resolved
     instead, which shows up via `is_linked_transfer`/`linked_transaction_id`/
     `transfer_link_source` regardless of which account this posting's own
-    placeholder leg still points at.
+    placeholder leg still points at. `manual_transfer_override_posting_id`
+    is set (to the posting actually carrying the override) on both legs of
+    a transaction whose placeholder was directly repointed via a manual
+    `ManualOverride.account_id`, the same way `resolved_by_transfer_rule_id`
+    is set on both legs of a rule-repointed one — and since a manual
+    override is applied *after* rules in the resolution pipeline (see
+    `api.dependencies._resolved_postings_and_store`) and so always wins if
+    both somehow apply to the same transaction, `get_postings` never sets
+    `resolved_by_transfer_rule_id` on a transaction that also has one of
+    these, so the two are mutually exclusive here — never "via rule" when
+    a manual override is what actually decided the account shown.
     """
 
     pending_source: PendingSuggestionSource | None = None
     pending_selected: bool = True
     resolved_by_transfer_rule_id: str | None = None
+    manual_transfer_override_posting_id: str | None = None
     is_linked_transfer: bool = False
     linked_transaction_id: str | None = None
     transfer_link_source: TransferLinkSource | None = None
