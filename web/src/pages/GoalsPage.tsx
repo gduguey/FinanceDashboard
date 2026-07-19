@@ -242,10 +242,19 @@ export function GoalsPage() {
   // No background scheduler exists in this app — recurring additions and
   // the withdrawal automation are instead "caught up" every time this
   // page loads, which is the natural moment a user would notice a change
-  // anyway (see api.post_run_recurring_additions's own docstring).
+  // anyway (see api.post_run_recurring_additions's own docstring). Run in
+  // sequence, not fired together: each request snapshots the last-known
+  // store version, which only advances once its own mutation's `onSuccess`
+  // invalidation has refetched the store — firing both at once would have
+  // the second spuriously 409 against the version the first just bumped.
+  // Sequencing also means the withdrawal check sees whatever the recurring
+  // addition just contributed, not a stale pre-addition balance.
   useEffect(() => {
-    runRecurringAdditions.mutate(undefined)
-    runWithdrawalAutomation.mutate(undefined)
+    async function catchUpAutomations() {
+      await runRecurringAdditions.mutateAsync(undefined)
+      await runWithdrawalAutomation.mutateAsync(undefined)
+    }
+    catchUpAutomations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
