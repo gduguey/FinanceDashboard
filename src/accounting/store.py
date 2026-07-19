@@ -1299,6 +1299,15 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
     atomic check-and-bump mechanics and the `None`-skips-the-check
     behavior, shared verbatim with `trades.dashboard.settings.save_settings`.
 
+    Re-stashes the freshly-bumped version back into `session.info` after a
+    successful check — some requests call `save_store` more than once (e.g.
+    `POST`/`PUT /transfer-rules` calling it once for the rule itself, then
+    again inside `ledger.transfers.reconcile_and_persist_rule_links` if a
+    new link was found); without this, that second call would re-check
+    against the same now-stale client-submitted version and spuriously
+    raise `StoreVersionConflictError` even though nothing external
+    conflicted — the first call already consumed that version.
+
     Parameters
     ----------
     session
@@ -1307,7 +1316,9 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
         Whose store this is.
     """
     expected_version = session.info.get("expected_store_version")
-    check_and_bump_version(session, _STORE_VERSION_TABLE, user_id, expected_version)
+    session.info["expected_store_version"] = check_and_bump_version(
+        session, _STORE_VERSION_TABLE, user_id, expected_version
+    )
 
 
 def _add_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: list[TransferLink]) -> None:

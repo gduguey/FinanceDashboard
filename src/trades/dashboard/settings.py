@@ -124,6 +124,12 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     concurrency mechanism `accounting.store.save_store` uses (see
     `db.base.check_and_bump_version`), since every one of this module's
     five settings endpoints reads-modifies-writes the same one shared row.
+    Re-stashes the freshly-bumped version back into `session.info` after a
+    successful check, the same defensive reason
+    `accounting.store._check_and_bump_store_version` does — so that if any
+    endpoint here ever calls `save_settings` more than once in one request,
+    a later call checks against the version this call just bumped to,
+    not the stale one the client originally submitted.
 
     Parameters
     ----------
@@ -135,7 +141,9 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
         Whose settings this is.
     """
     expected_version = session.info.get("expected_dashboard_settings_version")
-    check_and_bump_version(session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id, expected_version)
+    session.info["expected_dashboard_settings_version"] = check_and_bump_version(
+        session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id, expected_version
+    )
 
     row = session.get(DashboardSettingsRow, user_id)
     if row is None:
