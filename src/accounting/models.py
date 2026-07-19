@@ -15,7 +15,7 @@ reimbursement legs).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, assert_never, get_args
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -44,7 +44,32 @@ balance is deliberately never computed here — see `dashboard.net_worth`.
 transaction history at all.
 """
 
-IMPORTABLE_ACCOUNT_KINDS: frozenset[AccountKind] = frozenset({"checking", "savings", "credit_card", "vault"})
+
+def _is_importable_account_kind(kind: AccountKind) -> bool:
+    """Classify one `AccountKind` as importable (has its own CSV standardizer) or not.
+
+    Deliberately exhaustive rather than a bare frozenset literal: every
+    branch below names every `AccountKind` value explicitly, so adding a
+    new one to that `Literal` without updating this function fails the
+    `assert_never` type check at build time — a bare `frozenset` would
+    have silently classified an unhandled new kind as "not importable"
+    forever, with nothing ever flagging that no one actually decided that.
+
+    Returns
+    -------
+    bool
+    """
+    match kind:
+        case "checking" | "savings" | "credit_card" | "vault":
+            return True
+        case "cash" | "loan" | "income_source" | "expense_payee" | "external_investment" | "other_asset":
+            return False
+    assert_never(kind)
+
+
+IMPORTABLE_ACCOUNT_KINDS: frozenset[AccountKind] = frozenset(
+    kind for kind in get_args(AccountKind) if _is_importable_account_kind(kind)
+)
 """Every `AccountKind` with a registered CSV standardizer (see `importers.ingest.supported_import_kinds`).
 
 An account of one of these kinds might already have its own,
