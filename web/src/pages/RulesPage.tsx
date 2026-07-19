@@ -31,7 +31,7 @@ export function RulesPage() {
               <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
             </TabsList>
             <TabsContent value="rules">
-              <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} />
+              <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} postings={postings ?? []} />
             </TabsContent>
             <TabsContent value="suggestions">
               <TransferSuggestionsPanel

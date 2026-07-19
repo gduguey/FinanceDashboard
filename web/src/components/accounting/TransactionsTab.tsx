@@ -1,6 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
 import { memo, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
@@ -164,6 +165,7 @@ interface TransactionRowProps {
   pickHint: PickHint | null
   linkedAccountName: string | null
   linkId: string | null
+  manualOverrideAccountName: string | null
   onOverride: (postingId: string, override: Partial<ManualOverride>) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
@@ -174,6 +176,7 @@ interface TransactionRowProps {
   onStartPicking: (posting: Posting) => void
   onPickTarget: (posting: Posting) => void
   onUnlinkTransfer: (linkId: string) => void
+  onUndoManualOverride: (postingId: string) => void
 }
 
 // Extracted and memoized so that state changes scoped to one row (an AI
@@ -199,6 +202,7 @@ const TransactionRow = memo(function TransactionRow({
   pickHint,
   linkedAccountName,
   linkId,
+  manualOverrideAccountName,
   onOverride,
   onAiSuggest,
   onSplit,
@@ -209,6 +213,7 @@ const TransactionRow = memo(function TransactionRow({
   onStartPicking,
   onPickTarget,
   onUnlinkTransfer,
+  onUndoManualOverride,
 }: TransactionRowProps) {
   const originalId = splitOriginalId(posting.posting_id)
   const pendingClass = posting.pending_source ? PENDING_ROW_CLASS[posting.pending_source] : undefined
@@ -259,15 +264,15 @@ const TransactionRow = memo(function TransactionRow({
       <TableCell className="whitespace-nowrap text-muted-foreground">
         {accountName}
         {resolvedByRuleLabel && (
-          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             <span title={`Resolved by rule: ${resolvedByRuleLabel} — deleting that rule reverts this posting`}>
               via rule
             </span>
             {posting.resolved_by_transfer_rule_id && (
               <button
                 type="button"
-                className="hover:text-foreground"
-                title={`Exclude this one transaction from "${resolvedByRuleLabel}" — everything else it matches keeps working`}
+                className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-sm hover:bg-background hover:text-foreground"
+                title={`Exclude this one transaction from "${resolvedByRuleLabel}" — it'll fall back to the next-matching rule, or stay uncategorized if none matches`}
                 onClick={() =>
                   posting.resolved_by_transfer_rule_id &&
                   onExcludeFromRule(posting.transaction_id, posting.resolved_by_transfer_rule_id)
@@ -278,8 +283,25 @@ const TransactionRow = memo(function TransactionRow({
             )}
           </span>
         )}
+        {posting.manual_transfer_override_posting_id && (
+          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+            <span
+              title={`Manually flagged as a transfer to ${manualOverrideAccountName ?? 'another account'} — its own posting was never otherwise changed`}
+            >
+              manual
+            </span>
+            <button
+              type="button"
+              className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-sm hover:bg-background hover:text-foreground"
+              title="Undo — restore this to a normal, uncategorized transaction"
+              onClick={() => onUndoManualOverride(posting.manual_transfer_override_posting_id ?? '')}
+            >
+              ×
+            </button>
+          </span>
+        )}
         {posting.is_linked_transfer && (
-          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             <span
               title={`Linked ${posting.transfer_link_source === 'rule' ? 'via a rule' : 'manually'} to ${linkedAccountName ?? 'another transaction'} — its own posting was never changed`}
             >
@@ -288,7 +310,7 @@ const TransactionRow = memo(function TransactionRow({
             {linkId && (
               <button
                 type="button"
-                className="hover:text-foreground"
+                className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-sm hover:bg-background hover:text-foreground"
                 title="Unlink this transfer"
                 onClick={() => onUnlinkTransfer(linkId)}
               >
@@ -307,16 +329,29 @@ const TransactionRow = memo(function TransactionRow({
                   Already split into categorized legs — can't be linked as a transfer.
                 </p>
               ) : showAccountFallback ? (
-                <CounterpartySelect
-                  accounts={safeCounterpartyAccounts}
-                  value={null}
-                  onChange={(accountId) => {
-                    if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
-                    setPickingTransfer(false)
-                  }}
-                />
+                <span className="flex flex-col gap-1 rounded-sm border bg-popover p-1.5 shadow-sm">
+                  <CounterpartySelect
+                    accounts={safeCounterpartyAccounts}
+                    value={null}
+                    onChange={(accountId) => {
+                      if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
+                      setPickingTransfer(false)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="self-start rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
+                    onClick={() => setPickingTransfer(false)}
+                  >
+                    Cancel
+                  </button>
+                </span>
               ) : (
-                <span className="flex flex-col gap-0.5 rounded-sm border bg-popover p-1 shadow-sm">
+                <span className="flex max-w-52 flex-col gap-1 rounded-sm border bg-popover p-1.5 shadow-sm">
+                  <p className="px-1 text-[10px] text-muted-foreground">
+                    Link this to another transaction you've already imported, or point it at one of your own non-bank
+                    accounts (cash, a loan, a payee).
+                  </p>
                   <button
                     type="button"
                     className="rounded-sm px-1 py-0.5 text-left text-[10px] hover:bg-muted"
@@ -336,6 +371,13 @@ const TransactionRow = memo(function TransactionRow({
                       Point at an account instead
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="self-start rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
+                    onClick={() => setPickingTransfer(false)}
+                  >
+                    Cancel
+                  </button>
                 </span>
               )}
             </span>
@@ -521,6 +563,17 @@ function TransactionsTable({
     }
     return lookup
   }, [transferLinks])
+  // Whatever account a manually-overridden placeholder currently sits on —
+  // looked up by the posting_id `manual_transfer_override_posting_id` names,
+  // so the "manual" badge can name the account by something a person
+  // recognizes instead of a raw posting id.
+  const accountNameByPostingId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const posting of postings) {
+      lookup.set(posting.posting_id, accounts[posting.account_id]?.name ?? posting.account_id)
+    }
+    return lookup
+  }, [postings, accounts])
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
@@ -585,6 +638,14 @@ function TransactionsTable({
     },
     [setOverride, placeholderPostingIdByTransactionId],
   )
+  // Clears just the manual account override, restoring this posting to
+  // whatever it would resolve to without it (a rule, a link, or plain
+  // uncategorized) — the same "explicit null clears just this one field"
+  // merge semantics `put_posting_override` already has for every other field.
+  const handleUndoManualOverride = useCallback(
+    (postingId: string) => setOverride.mutate({ postingId, override: { account_id: null } }),
+    [setOverride],
+  )
   const handleExcludeFromRule = useCallback(
     (transactionId: string, ruleId: string) => {
       const updated = rules.map((rule) =>
@@ -592,7 +653,14 @@ function TransactionsTable({
           ? { ...rule, excluded_transaction_ids: [...(rule.excluded_transaction_ids ?? []), transactionId] }
           : rule,
       )
-      setTransferRules.mutate(updated)
+      const rule = rules.find((r) => r.rule_id === ruleId)
+      const ruleLabel = rule?.description || rule?.description_contains || ruleId
+      setTransferRules.mutate(updated, {
+        onSuccess: () =>
+          toast.success(
+            `Excluded from "${ruleLabel}" — this transaction now falls back to the next-matching rule, or stays uncategorized. Manage exclusions from the Rules page.`,
+          ),
+      })
     },
     [rules, setTransferRules],
   )
@@ -1178,6 +1246,11 @@ function TransactionsTable({
                           : null
                       }
                       linkId={linkIdByTransactionId.get(posting.transaction_id) ?? null}
+                      manualOverrideAccountName={
+                        posting.manual_transfer_override_posting_id
+                          ? (accountNameByPostingId.get(posting.manual_transfer_override_posting_id) ?? null)
+                          : null
+                      }
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
                       onSplit={setSplitting}
@@ -1188,6 +1261,7 @@ function TransactionsTable({
                       onStartPicking={handleStartPicking}
                       onPickTarget={handlePickTarget}
                       onUnlinkTransfer={handleUnlinkTransfer}
+                      onUndoManualOverride={handleUndoManualOverride}
                     />
                   )
                 })}
