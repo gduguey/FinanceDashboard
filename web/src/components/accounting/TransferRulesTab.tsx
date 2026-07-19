@@ -11,7 +11,7 @@ import { NumberInput } from '@/components/ui/number-input'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { useSetTransferRules } from '@/hooks/useAccountingData'
+import { useCreateTransferRule, useSetTransferRules } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
 import type { Account, TransferRule } from '@/types/accounting'
@@ -103,6 +103,7 @@ function TransferRuleEditDialog({
 
 export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; accounts: Record<string, Account> }) {
   const setRules = useSetTransferRules()
+  const createRule = useCreateTransferRule()
   const [editing, setEditing] = useState<TransferRule | null>(null)
   const [draft, setDraft] = useState<{ descriptionContains: string; counterpartyAccountId: string | null }>({
     descriptionContains: '',
@@ -115,16 +116,13 @@ export function TransferRulesTab({ rules, accounts }: { rules: TransferRule[]; a
 
   function addRule() {
     if (!draft.descriptionContains || !draft.counterpartyAccountId) return
-    const rule: TransferRule = {
-      rule_id: `manual:${Date.now()}`,
+    createRule.mutate({
       description_contains: draft.descriptionContains,
       account_id: null,
       counterparty_account_id: draft.counterpartyAccountId,
       priority: 100,
       description: '',
-      active: true,
-    }
-    setRules.mutate([...rules, rule])
+    })
     setDraft({ descriptionContains: '', counterpartyAccountId: null })
   }
 

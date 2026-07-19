@@ -21,18 +21,23 @@ from accounting.api.api_models import (
     CategoryCreate,
     CategoryDeletePreviewResponse,
     CategoryDeleteResponse,
+    CategoryPatternCreate,
     CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
     GeneralBudgetKeyResponse,
     GeneralBudgetUpsert,
+    OtherAssetCreate,
+    SimulatorScenarioCreate,
     SubcategoryCreate,
     TagCreate,
     TagRenamePreviewResponse,
     TagRenameRequest,
     TagRenameResponse,
+    TransferRuleCreate,
 )
 from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
+from accounting.importers.common import row_hash
 from accounting.importers.ingest import load_ledger, remap_ledger_category_ids, uncategorize_ledger_postings
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import (
@@ -614,6 +619,52 @@ def post_tag_rename(
     return TagRenameResponse(tags=store.tags, merged=bool(id_remap))
 
 
+def _transfer_rule_id(description_contains: str, account_id: str | None, counterparty_account_id: str | None) -> str:
+    """Derive a transfer rule's natural key from its own matching criteria.
+
+    Returns
+    -------
+    str
+    """
+    return f"rule:{row_hash(description_contains, account_id or '', counterparty_account_id or '')}"
+
+
+@router.post("/transfer-rules")
+def post_transfer_rule(
+    request: TransferRuleCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferRule:
+    """Create one new transfer rule, without touching any other rule already saved.
+
+    Unlike `PUT /transfer-rules`, only the one rule in the request body is
+    sent — every other existing rule is left alone. Posting this again
+    for the same `(description_contains, account_id, counterparty_account_id)`
+    replaces that rule (its `priority`/`description` update in place)
+    rather than creating a duplicate.
+
+    Returns
+    -------
+    TransferRule
+        The rule just persisted.
+    """
+    rule = TransferRule(
+        rule_id=_transfer_rule_id(request.description_contains, request.account_id, request.counterparty_account_id),
+        description_contains=request.description_contains,
+        account_id=request.account_id,
+        counterparty_account_id=request.counterparty_account_id,
+        priority=request.priority,
+        description=request.description,
+    )
+    store = load_store(session, user_id)
+    remaining = [r for r in store.rules if r.rule_id != rule.rule_id]
+    store = store.model_copy(update={"rules": [*remaining, rule]})
+    raw_ledger = load_ledger(session, user_id)
+    save_store(store, session, user_id)
+    reconcile_and_persist_rule_links(raw_ledger, session, user_id)
+    return rule
+
+
 @router.put("/transfer-rules")
 def put_transfer_rules(
     rules: list[TransferRule],
@@ -647,6 +698,45 @@ def put_transfer_rules(
     return store.rules
 
 
+def _category_pattern_id(description_contains: str, category_id: str, subcategory_id: str | None) -> str:
+    """Derive a category pattern's natural key from its own matching criteria.
+
+    Returns
+    -------
+    str
+    """
+    return f"pattern:{row_hash(description_contains, category_id, subcategory_id or '')}"
+
+
+@router.post("/category-patterns")
+def post_category_pattern(
+    request: CategoryPatternCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryPattern:
+    """Create one new category pattern, without touching any other pattern already saved.
+
+    Posting this again for the same `(description_contains, category_id,
+    subcategory_id)` replaces that pattern rather than creating a duplicate.
+
+    Returns
+    -------
+    CategoryPattern
+        The pattern just persisted.
+    """
+    pattern = CategoryPattern(
+        pattern_id=_category_pattern_id(request.description_contains, request.category_id, request.subcategory_id),
+        description_contains=request.description_contains,
+        category_id=request.category_id,
+        subcategory_id=request.subcategory_id,
+        priority=request.priority,
+    )
+    store = load_store(session, user_id)
+    store = store.model_copy(update={"category_patterns": {**store.category_patterns, pattern.pattern_id: pattern}})
+    save_store(store, session, user_id)
+    return pattern
+
+
 @router.put("/category-patterns")
 def put_category_patterns(
     category_patterns: dict[str, CategoryPattern],
@@ -664,6 +754,36 @@ def put_category_patterns(
     store = store.model_copy(update={"category_patterns": category_patterns})
     save_store(store, session, user_id)
     return store.category_patterns
+
+
+@router.post("/other-assets")
+def post_other_asset(
+    request: OtherAssetCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> OtherAsset:
+    """Create one new manually-entered asset, without touching any other asset already saved.
+
+    `asset_id` is server-minted — two assets can validly share every
+    other field (e.g. two rental properties both named "Rental"), so
+    there's no natural key two "the same" asset would collide on.
+
+    Returns
+    -------
+    OtherAsset
+        The asset just persisted.
+    """
+    asset = OtherAsset(
+        asset_id=f"asset:{uuid.uuid4().hex}",
+        name=request.name,
+        value=request.value,
+        currency=request.currency,
+        note=request.note,
+    )
+    store = load_store(session, user_id)
+    store = store.model_copy(update={"other_assets": [*store.other_assets, asset]})
+    save_store(store, session, user_id)
+    return asset
 
 
 @router.put("/other-assets")
@@ -861,6 +981,39 @@ def delete_general_budget(
     store = store.model_copy(update={"general_budgets": remaining})
     save_store(store, session, user_id)
     return GeneralBudgetKeyResponse(key=key)
+
+
+@router.post("/simulator/scenarios")
+def post_simulator_scenario(
+    request: SimulatorScenarioCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> SimulatorScenario:
+    """Create one new saved scenario, without touching any other scenario already saved.
+
+    `scenario_id` is server-minted — two scenarios can validly share
+    every input field (comparing "what if I ran this exact case twice"),
+    so there's no natural key two "the same" scenario would collide on.
+
+    Returns
+    -------
+    SimulatorScenario
+        The scenario just persisted.
+    """
+    scenario = SimulatorScenario(
+        scenario_id=f"scenario:{uuid.uuid4().hex}",
+        name=request.name,
+        initial_capital=request.initial_capital,
+        monthly_contribution=request.monthly_contribution,
+        horizon_years=request.horizon_years,
+        annual_rate_pct=request.annual_rate_pct,
+        compounding_frequency=request.compounding_frequency,
+        currency=request.currency,
+    )
+    store = load_store(session, user_id)
+    store = store.model_copy(update={"simulator_scenarios": [*store.simulator_scenarios, scenario]})
+    save_store(store, session, user_id)
+    return scenario
 
 
 @router.put("/simulator/scenarios")

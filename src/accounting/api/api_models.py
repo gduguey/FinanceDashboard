@@ -20,6 +20,7 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CategoryPattern,
+    CompoundingFrequency,
     CurrencyCode,
     EarningsStatement,
     GeneralBudget,
@@ -35,6 +36,8 @@ from accounting.models import (
     PostingSplit,
     PostingSplitLeg,
     RecurringAddition,
+    RecurringAdditionFrequency,
+    RecurringAdditionMode,
     SimulatorScenario,
     Tag,
     TransferLink,
@@ -153,6 +156,107 @@ class GeneralBudgetUpsert(BaseModel):
     subcategory_id: str | None = None
     amount: float
     currency: CurrencyCode = "USD"
+
+
+class TransferRuleCreate(BaseModel):
+    """Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+
+    `rule_id` is never taken from the client — derived server-side from
+    `(description_contains, account_id, counterparty_account_id)`, the
+    rule's own matching criteria, the same way `BudgetUpsert`'s id comes
+    from a budget's own `(month, category_id, subcategory_id)`. Posting
+    this twice for the same criteria replaces the existing rule rather
+    than duplicating it.
+    """
+
+    description_contains: str = Field(min_length=1)
+    account_id: str | None = None
+    counterparty_account_id: str | None = None
+    priority: int = 100
+    description: str = ""
+
+
+class CategoryPatternCreate(BaseModel):
+    """Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+
+    `pattern_id` is derived server-side the same way `TransferRuleCreate`
+    derives `rule_id` — from `(description_contains, category_id,
+    subcategory_id)`, this pattern's own matching criteria.
+    """
+
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int = 100
+
+
+class GoalCreate(BaseModel):
+    """Request body for `POST /api/accounting/goals` — creates one new goal.
+
+    `goal_id`, `color`, and `created_at` are never taken from the client —
+    a goal is an arbitrary user record with no natural key two "the same"
+    goal would collide on (two goals can validly share a name), so the
+    server mints an opaque id, the same way `GoalContributionCreate`
+    already does for a contribution; `color` is picked to be distinct
+    from every color already in use, the same way
+    `store.next_available_color` already works for categories.
+    """
+
+    name: str = Field(min_length=1)
+    target_amount: float
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+
+
+class SimulatorScenarioCreate(BaseModel):
+    """Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+
+    `scenario_id` is never taken from the client — two scenarios can
+    validly share every input field (a user comparing "what if I ran this
+    twice"), so there's no meaningful content to derive an id from; the
+    server mints an opaque one instead, the same reasoning as `GoalCreate`.
+    """
+
+    name: str = Field(min_length=1)
+    initial_capital: float
+    monthly_contribution: float
+    horizon_years: float
+    annual_rate_pct: float
+    compounding_frequency: CompoundingFrequency = "monthly"
+    currency: CurrencyCode = "USD"
+
+
+class RecurringAdditionCreate(BaseModel):
+    """Request body for `POST /api/accounting/recurring-additions` — creates one new automation rule.
+
+    `addition_id` is server-minted, same reasoning as `GoalCreate`.
+    `priority` is never taken from the client either — a newly created
+    rule always goes last (one past the current lowest-priority row),
+    matching the Goals page's own "append at the end of the ordered list"
+    behavior; drag-and-drop reordering still goes through the existing
+    `PUT /recurring-additions`, unaffected by this.
+    """
+
+    goal_id: str = Field(min_length=1)
+    start_date: date
+    frequency: RecurringAdditionFrequency
+    end_date: date | None = None
+    mode: RecurringAdditionMode
+    value: float = 0.0
+    currency: CurrencyCode = "USD"
+
+
+class OtherAssetCreate(BaseModel):
+    """Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+
+    `asset_id` is server-minted, same reasoning as `GoalCreate` — two
+    assets can validly share a name (e.g. two rental properties).
+    """
+
+    name: str = Field(min_length=1)
+    value: float
+    currency: CurrencyCode = "USD"
+    note: str = ""
 
 
 class BudgetIdResponse(BaseModel):

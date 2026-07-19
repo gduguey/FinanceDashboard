@@ -15,7 +15,13 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { useCurrencies, useNetWorth, useRatesToBase, useSetOtherAssets } from '@/hooks/useAccountingData'
+import {
+  useCreateOtherAsset,
+  useCurrencies,
+  useNetWorth,
+  useRatesToBase,
+  useSetOtherAssets,
+} from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
@@ -196,8 +202,8 @@ function AccountsTable({
   )
 }
 
-function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
-  const setOtherAssets = useSetOtherAssets()
+function AddOtherAssetForm() {
+  const createOtherAsset = useCreateOtherAsset()
   const [draft, setDraft] = useState<{ name: string; value: string; currency: CurrencyCode; note: string }>({
     name: '',
     value: '',
@@ -207,14 +213,12 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
 
   function addAsset() {
     if (!draft.name || !draft.value) return
-    const asset: OtherAsset = {
-      asset_id: `manual:${draft.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
+    createOtherAsset.mutate({
       name: draft.name,
       value: Number(draft.value),
       currency: draft.currency,
       note: draft.note,
-    }
-    setOtherAssets.mutate([...otherAssets, asset])
+    })
     setDraft({ name: '', value: '', currency: draft.currency, note: '' })
   }
 
@@ -390,7 +394,7 @@ export function NetWorthPage() {
             </section>
 
             <section id="other-assets" className="scroll-section">
-              <AddOtherAssetForm otherAssets={data.other_assets} />
+              <AddOtherAssetForm />
             </section>
 
             <section id="interest" className="scroll-section">

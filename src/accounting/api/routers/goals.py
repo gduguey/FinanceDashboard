@@ -13,7 +13,9 @@ from accounting.api.api_models import (
     GoalContributionCreate,
     GoalContributionIdResponse,
     GoalContributionUpdate,
+    GoalCreate,
     GoalsSummary,
+    RecurringAdditionCreate,
     SimulateContributionRequest,
     SimulateContributionResult,
     WithdrawalAutomationResult,
@@ -26,11 +28,45 @@ from accounting.ledger.goal_automations import (
     run_withdrawal_automation,
 )
 from accounting.models import CurrencyCode, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
-from accounting.store import load_store, save_store
+from accounting.store import load_store, next_available_color, save_store
 from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
+
+
+@router.post("/goals")
+def post_goal(
+    request: GoalCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Goal:
+    """Create one new goal, without touching any other goal already saved.
+
+    `goal_id` is server-minted — two goals can validly share a name, so
+    there's no natural key two "the same" goal would collide on. `color`
+    is picked to be distinct from every color already assigned to an
+    existing goal, the same `store.next_available_color` helper
+    categories already use for the same purpose.
+
+    Returns
+    -------
+    Goal
+        The goal just persisted.
+    """
+    store = load_store(session, user_id)
+    goal = Goal(
+        goal_id=f"goal:{uuid.uuid4().hex}",
+        name=request.name,
+        target_amount=request.target_amount,
+        target_currency=request.target_currency,
+        target_date=request.target_date,
+        color=next_available_color(goal.color for goal in store.goals.values()),
+        created_at=datetime.now(tz=UTC),
+    )
+    store = store.model_copy(update={"goals": {**store.goals, goal.goal_id: goal}})
+    save_store(store, session, user_id)
+    return goal
 
 
 @router.put("/goals")
@@ -176,6 +212,42 @@ def delete_goal_contribution(
     store = store.model_copy(update={"goal_contributions": remaining})
     save_store(store, session, user_id)
     return GoalContributionIdResponse(contribution_id=contribution_id)
+
+
+@router.post("/recurring-additions")
+def post_recurring_addition(
+    request: RecurringAdditionCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> RecurringAddition:
+    """Create one new recurring-addition rule, appended after every rule already saved.
+
+    `addition_id` is server-minted — two rules can validly share every
+    other field. `priority` is never taken from the client: this always
+    goes after the current lowest-priority rule, matching the Goals
+    page's own "append at the end of the ordered list" behavior.
+    Drag-and-drop reordering still goes through `PUT /recurring-additions`.
+
+    Returns
+    -------
+    RecurringAddition
+        The addition just persisted.
+    """
+    store = load_store(session, user_id)
+    addition = RecurringAddition(
+        addition_id=f"addition:{uuid.uuid4().hex}",
+        goal_id=request.goal_id,
+        start_date=request.start_date,
+        frequency=request.frequency,
+        end_date=request.end_date,
+        mode=request.mode,
+        value=request.value,
+        currency=request.currency,
+        priority=len(store.recurring_additions),
+    )
+    store = store.model_copy(update={"recurring_additions": [*store.recurring_additions, addition]})
+    save_store(store, session, user_id)
+    return addition
 
 
 @router.put("/recurring-additions")

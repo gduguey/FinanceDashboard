@@ -440,7 +440,22 @@ export interface paths {
      *         The transfer rules just persisted.
      */
     put: operations['put_transfer_rules_api_accounting_transfer_rules_put']
-    post?: never
+    /**
+     * Post Transfer Rule
+     * @description Create one new transfer rule, without touching any other rule already saved.
+     *
+     *     Unlike `PUT /transfer-rules`, only the one rule in the request body is
+     *     sent — every other existing rule is left alone. Posting this again
+     *     for the same `(description_contains, account_id, counterparty_account_id)`
+     *     replaces that rule (its `priority`/`description` update in place)
+     *     rather than creating a duplicate.
+     *
+     *     Returns
+     *     -------
+     *     TransferRule
+     *         The rule just persisted.
+     */
+    post: operations['post_transfer_rule_api_accounting_transfer_rules_post']
     delete?: never
     options?: never
     head?: never
@@ -465,7 +480,19 @@ export interface paths {
      *         The patterns just persisted, keyed by `pattern_id`.
      */
     put: operations['put_category_patterns_api_accounting_category_patterns_put']
-    post?: never
+    /**
+     * Post Category Pattern
+     * @description Create one new category pattern, without touching any other pattern already saved.
+     *
+     *     Posting this again for the same `(description_contains, category_id,
+     *     subcategory_id)` replaces that pattern rather than creating a duplicate.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPattern
+     *         The pattern just persisted.
+     */
+    post: operations['post_category_pattern_api_accounting_category_patterns_post']
     delete?: never
     options?: never
     head?: never
@@ -490,7 +517,20 @@ export interface paths {
      *         The assets just persisted.
      */
     put: operations['put_other_assets_api_accounting_other_assets_put']
-    post?: never
+    /**
+     * Post Other Asset
+     * @description Create one new manually-entered asset, without touching any other asset already saved.
+     *
+     *     `asset_id` is server-minted — two assets can validly share every
+     *     other field (e.g. two rental properties both named "Rental"), so
+     *     there's no natural key two "the same" asset would collide on.
+     *
+     *     Returns
+     *     -------
+     *     OtherAsset
+     *         The asset just persisted.
+     */
+    post: operations['post_other_asset_api_accounting_other_assets_post']
     delete?: never
     options?: never
     head?: never
@@ -655,7 +695,20 @@ export interface paths {
      *         The scenarios just persisted.
      */
     put: operations['put_simulator_scenarios_api_accounting_simulator_scenarios_put']
-    post?: never
+    /**
+     * Post Simulator Scenario
+     * @description Create one new saved scenario, without touching any other scenario already saved.
+     *
+     *     `scenario_id` is server-minted — two scenarios can validly share
+     *     every input field (comparing "what if I ran this exact case twice"),
+     *     so there's no natural key two "the same" scenario would collide on.
+     *
+     *     Returns
+     *     -------
+     *     SimulatorScenario
+     *         The scenario just persisted.
+     */
+    post: operations['post_simulator_scenario_api_accounting_simulator_scenarios_post']
     delete?: never
     options?: never
     head?: never
@@ -2248,7 +2301,22 @@ export interface paths {
      *         The goals just persisted, keyed by `goal_id`.
      */
     put: operations['put_goals_api_accounting_goals_put']
-    post?: never
+    /**
+     * Post Goal
+     * @description Create one new goal, without touching any other goal already saved.
+     *
+     *     `goal_id` is server-minted — two goals can validly share a name, so
+     *     there's no natural key two "the same" goal would collide on. `color`
+     *     is picked to be distinct from every color already assigned to an
+     *     existing goal, the same `store.next_available_color` helper
+     *     categories already use for the same purpose.
+     *
+     *     Returns
+     *     -------
+     *     Goal
+     *         The goal just persisted.
+     */
+    post: operations['post_goal_api_accounting_goals_post']
     delete?: never
     options?: never
     head?: never
@@ -2366,7 +2434,22 @@ export interface paths {
      *         400 if more than one addition uses `mode="remainder"`, or one does but isn't the lowest-priority row.
      */
     put: operations['put_recurring_additions_api_accounting_recurring_additions_put']
-    post?: never
+    /**
+     * Post Recurring Addition
+     * @description Create one new recurring-addition rule, appended after every rule already saved.
+     *
+     *     `addition_id` is server-minted — two rules can validly share every
+     *     other field. `priority` is never taken from the client: this always
+     *     goes after the current lowest-priority rule, matching the Goals
+     *     page's own "append at the end of the ordered list" behavior.
+     *     Drag-and-drop reordering still goes through `PUT /recurring-additions`.
+     *
+     *     Returns
+     *     -------
+     *     RecurringAddition
+     *         The addition just persisted.
+     */
+    post: operations['post_recurring_addition_api_accounting_recurring_additions_post']
     delete?: never
     options?: never
     head?: never
@@ -4220,6 +4303,27 @@ export interface components {
       active: boolean
     }
     /**
+     * CategoryPatternCreate
+     * @description Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+     *
+     *     `pattern_id` is derived server-side the same way `TransferRuleCreate`
+     *     derives `rule_id` — from `(description_contains, category_id,
+     *     subcategory_id)`, this pattern's own matching criteria.
+     */
+    CategoryPatternCreate: {
+      /** Description Contains */
+      description_contains: string
+      /** Category Id */
+      category_id: string
+      /** Subcategory Id */
+      subcategory_id?: string | null
+      /**
+       * Priority
+       * @default 100
+       */
+      priority: number
+    }
+    /**
      * CategoryRenamePreviewResponse
      * @description Response body for `GET /categories/{category_id}/rename-preview`.
      */
@@ -4869,6 +4973,35 @@ export interface components {
       edited: boolean
     }
     /**
+     * GoalCreate
+     * @description Request body for `POST /api/accounting/goals` — creates one new goal.
+     *
+     *     `goal_id`, `color`, and `created_at` are never taken from the client —
+     *     a goal is an arbitrary user record with no natural key two "the same"
+     *     goal would collide on (two goals can validly share a name), so the
+     *     server mints an opaque id, the same way `GoalContributionCreate`
+     *     already does for a contribution; `color` is picked to be distinct
+     *     from every color already in use, the same way
+     *     `store.next_available_color` already works for categories.
+     */
+    GoalCreate: {
+      /** Name */
+      name: string
+      /** Target Amount */
+      target_amount: number
+      /**
+       * Target Currency
+       * @default USD
+       * @enum {string}
+       */
+      target_currency: 'USD' | 'EUR'
+      /**
+       * Target Date
+       * Format: date-time
+       */
+      target_date: string
+    }
+    /**
      * GoalsSummary
      * @description Response body for `GET /goals/summary`.
      */
@@ -5421,6 +5554,30 @@ export interface components {
       note: string
     }
     /**
+     * OtherAssetCreate
+     * @description Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+     *
+     *     `asset_id` is server-minted, same reasoning as `GoalCreate` — two
+     *     assets can validly share a name (e.g. two rental properties).
+     */
+    OtherAssetCreate: {
+      /** Name */
+      name: string
+      /** Value */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+      /**
+       * Note
+       * @default
+       */
+      note: string
+    }
+    /**
      * Overview
      * @description The overview card row: value, gain split, XIRR, dollar alpha, TWR.
      */
@@ -5808,6 +5965,49 @@ export interface components {
       priority: number
     }
     /**
+     * RecurringAdditionCreate
+     * @description Request body for `POST /api/accounting/recurring-additions` — creates one new automation rule.
+     *
+     *     `addition_id` is server-minted, same reasoning as `GoalCreate`.
+     *     `priority` is never taken from the client either — a newly created
+     *     rule always goes last (one past the current lowest-priority row),
+     *     matching the Goals page's own "append at the end of the ordered list"
+     *     behavior; drag-and-drop reordering still goes through the existing
+     *     `PUT /recurring-additions`, unaffected by this.
+     */
+    RecurringAdditionCreate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+    }
+    /**
      * RiskStat
      * @description The largest peak-to-trough NAV decline over a window.
      */
@@ -5878,6 +6078,39 @@ export interface components {
     SimulatorScenario: {
       /** Scenario Id */
       scenario_id: string
+      /** Name */
+      name: string
+      /** Initial Capital */
+      initial_capital: number
+      /** Monthly Contribution */
+      monthly_contribution: number
+      /** Horizon Years */
+      horizon_years: number
+      /** Annual Rate Pct */
+      annual_rate_pct: number
+      /**
+       * Compounding Frequency
+       * @default monthly
+       * @enum {string}
+       */
+      compounding_frequency: 'annually' | 'monthly' | 'daily'
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+    }
+    /**
+     * SimulatorScenarioCreate
+     * @description Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+     *
+     *     `scenario_id` is never taken from the client — two scenarios can
+     *     validly share every input field (a user comparing "what if I ran this
+     *     twice"), so there's no meaningful content to derive an id from; the
+     *     server mints an opaque one instead, the same reasoning as `GoalCreate`.
+     */
+    SimulatorScenarioCreate: {
       /** Name */
       name: string
       /** Initial Capital */
@@ -6368,6 +6601,35 @@ export interface components {
       active: boolean
       /** Excluded Transaction Ids */
       excluded_transaction_ids?: string[]
+    }
+    /**
+     * TransferRuleCreate
+     * @description Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+     *
+     *     `rule_id` is never taken from the client — derived server-side from
+     *     `(description_contains, account_id, counterparty_account_id)`, the
+     *     rule's own matching criteria, the same way `BudgetUpsert`'s id comes
+     *     from a budget's own `(month, category_id, subcategory_id)`. Posting
+     *     this twice for the same criteria replaces the existing rule rather
+     *     than duplicating it.
+     */
+    TransferRuleCreate: {
+      /** Description Contains */
+      description_contains: string
+      /** Account Id */
+      account_id?: string | null
+      /** Counterparty Account Id */
+      counterparty_account_id?: string | null
+      /**
+       * Priority
+       * @default 100
+       */
+      priority: number
+      /**
+       * Description
+       * @default
+       */
+      description: string
     }
     /**
      * TransferSuggestion
@@ -7029,6 +7291,41 @@ export interface operations {
       }
     }
   }
+  post_transfer_rule_api_accounting_transfer_rules_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TransferRuleCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferRule']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_category_patterns_api_accounting_category_patterns_put: {
     parameters: {
       query?: never
@@ -7068,6 +7365,41 @@ export interface operations {
       }
     }
   }
+  post_category_pattern_api_accounting_category_patterns_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CategoryPatternCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPattern']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_other_assets_api_accounting_other_assets_put: {
     parameters: {
       query?: never
@@ -7090,6 +7422,41 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['OtherAsset'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_other_asset_api_accounting_other_assets_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['OtherAssetCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OtherAsset']
         }
       }
       /** @description Validation Error */
@@ -7335,6 +7702,41 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['SimulatorScenario'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_simulator_scenario_api_accounting_simulator_scenarios_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SimulatorScenarioCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SimulatorScenario']
         }
       }
       /** @description Validation Error */
@@ -9233,6 +9635,41 @@ export interface operations {
       }
     }
   }
+  post_goal_api_accounting_goals_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GoalCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Goal']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_goal_contributions_api_accounting_goal_contributions_put: {
     parameters: {
       query?: never
@@ -9399,6 +9836,41 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['RecurringAddition'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_recurring_addition_api_accounting_recurring_additions_post: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RecurringAdditionCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecurringAddition']
         }
       }
       /** @description Validation Error */

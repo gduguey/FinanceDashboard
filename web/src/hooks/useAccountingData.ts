@@ -14,24 +14,30 @@ import type {
   CanonicalCategoryOverrides,
   Category,
   CategoryPattern,
+  CategoryPatternCreate,
   CurrencyCode,
   DismissSuggestionRequest,
   GeneralBudgetUpsert,
   Goal,
   GoalContributionCreate,
   GoalContributionUpdate,
+  GoalCreate,
   LlmSettingsUpdate,
   ManualOverride,
   ManualTransfer,
   OpeningBalance,
   OtherAsset,
+  OtherAssetCreate,
   PostingMergeUpsert,
   PostingSplitLeg,
   RecurringAddition,
+  RecurringAdditionCreate,
   SimulatorScenario,
+  SimulatorScenarioCreate,
   Tag,
   TransferLinkCreate,
   TransferRule,
+  TransferRuleCreate,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
@@ -401,6 +407,14 @@ export function useSetSimulatorScenarios() {
   })
 }
 
+export function useCreateSimulatorScenario() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (scenario: SimulatorScenarioCreate) => accountingApi.createSimulatorScenario(scenario),
+    onSuccess: invalidate,
+  })
+}
+
 export function useSetCategories() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -517,10 +531,26 @@ export function useSetTransferRules() {
   })
 }
 
+export function useCreateTransferRule() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (rule: TransferRuleCreate) => accountingApi.createTransferRule(rule),
+    onSuccess: invalidate,
+  })
+}
+
 export function useSetOtherAssets() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (otherAssets: OtherAsset[]) => accountingApi.putOtherAssets(otherAssets),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateOtherAsset() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (asset: OtherAssetCreate) => accountingApi.createOtherAsset(asset),
     onSuccess: invalidate,
   })
 }
@@ -770,10 +800,26 @@ export function useSetCategoryPatterns() {
   })
 }
 
+export function useCreateCategoryPattern() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (pattern: CategoryPatternCreate) => accountingApi.createCategoryPattern(pattern),
+    onSuccess: invalidate,
+  })
+}
+
 export function useSetGoals() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (goals: Record<string, Goal>) => accountingApi.putGoals(goals),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateGoal() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (goal: GoalCreate) => accountingApi.createGoal(goal),
     onSuccess: invalidate,
   })
 }
@@ -807,6 +853,14 @@ export function useSetRecurringAdditions() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (additions: RecurringAddition[]) => accountingApi.putRecurringAdditions(additions),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateRecurringAddition() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (addition: RecurringAdditionCreate) => accountingApi.createRecurringAddition(addition),
     onSuccess: invalidate,
   })
 }

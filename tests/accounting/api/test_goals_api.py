@@ -100,6 +100,39 @@ def test_put_goals_persists_and_is_returned_by_store(client) -> None:
     assert store["goals"]["emergency-fund"]["name"] == "Emergency Fund"
 
 
+def test_post_goal_creates_one_with_a_server_generated_id(client) -> None:
+    response = client.post(
+        "/api/accounting/goals",
+        json={"name": "Emergency fund", "target_amount": 10000.0, "target_date": "2027-01-01T00:00:00"},
+    )
+    assert response.status_code == 200
+    goal = response.json()
+    assert goal["goal_id"]
+    assert goal["name"] == "Emergency fund"
+    assert goal["color"]
+    assert goal["created_at"]
+
+
+def test_post_goal_twice_with_the_same_name_creates_two_distinct_goals(client) -> None:
+    payload = {"name": "Emergency fund", "target_amount": 10000.0, "target_date": "2027-01-01T00:00:00"}
+    first = client.post("/api/accounting/goals", json=payload).json()
+    second = client.post("/api/accounting/goals", json=payload).json()
+    assert first["goal_id"] != second["goal_id"]
+    assert len(client.get("/api/accounting/store").json()["goals"]) == 2
+
+
+def test_post_goal_picks_a_color_distinct_from_existing_goals(client) -> None:
+    first = client.post(
+        "/api/accounting/goals",
+        json={"name": "Goal A", "target_amount": 100.0, "target_date": "2027-01-01T00:00:00"},
+    ).json()
+    second = client.post(
+        "/api/accounting/goals",
+        json={"name": "Goal B", "target_amount": 100.0, "target_date": "2027-01-01T00:00:00"},
+    ).json()
+    assert first["color"] != second["color"]
+
+
 def test_goals_summary_reports_balance_and_unallocated(client) -> None:
     _import_checking(client)
     _create_goal(client)
@@ -394,6 +427,43 @@ def test_put_recurring_additions_still_accepts_the_legacy_schedule_day_of_month(
     saved = response.json()[0]
     assert saved["frequency"] == "monthly"
     assert saved["start_date"] == "2000-01-05"
+
+
+def test_post_recurring_addition_creates_one_with_a_server_generated_id(client) -> None:
+    _create_goal(client)
+    response = client.post(
+        "/api/accounting/recurring-additions",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-06-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 500.0,
+            "currency": "USD",
+        },
+    )
+    assert response.status_code == 200
+    addition = response.json()
+    assert addition["addition_id"]
+    assert addition["goal_id"] == "emergency-fund"
+    assert addition["priority"] == 0
+
+
+def test_post_recurring_addition_appends_after_existing_ones_by_priority(client) -> None:
+    _create_goal(client)
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-06-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "USD",
+    }
+    first = client.post("/api/accounting/recurring-additions", json=payload).json()
+    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+    assert first["addition_id"] != second["addition_id"]
+    assert first["priority"] == 0
+    assert second["priority"] == 1
 
 
 _BIG_EXPENSE_CSV = (
