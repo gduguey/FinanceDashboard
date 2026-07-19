@@ -260,9 +260,15 @@ export function TransferSuggestionsPanel({
     }
   }
 
-  function addRules(newDrafts: RuleDraft[]) {
+  // Sequential, not fired in parallel — each request carries a snapshot of
+  // the last-known store version (see `accountingApi.ts`'s `request`), which
+  // only advances once this mutation's own `onSuccess` invalidation has
+  // refetched the store. Firing both at once would have them race on that
+  // same stale version, so the second create would spuriously 409 even
+  // though nothing external actually conflicted.
+  async function addRules(newDrafts: RuleDraft[]) {
     for (const draft of newDrafts) {
-      createRule.mutate({
+      await createRule.mutateAsync({
         description_contains: draft.description_contains,
         account_id: draft.account_id,
         counterparty_account_id: draft.counterparty_account_id,
