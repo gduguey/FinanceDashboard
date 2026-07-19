@@ -154,6 +154,22 @@ def test_canonical_import_against_an_unknown_account_id_is_a_422(client) -> None
     assert response.status_code == 422
 
 
+def test_canonical_import_rejects_a_non_importable_account_kind(client) -> None:
+    account = _create_account(client, name="Car Loan", kind="loan", institution="Generic Bank")
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Payment,-42.50,\n"
+    response = client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "loan",
+            "account_id": account["account_id"],
+            "account_name": "Car Loan",
+        },
+    )
+    assert response.status_code == 400
+
+
 def test_canonical_import_registers_a_new_account_and_creates_a_category(client) -> None:
     account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = (

@@ -27,7 +27,7 @@ from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
 from accounting.ledger.replay import validate_balanced
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
-from accounting.models import Posting
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.statement_archive import StatementArchive
 from db.base import derive_id, natural_keys_by_id
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
-    from accounting.models import Category
+    from accounting.models import Account, Category
     from accounting.store import AccountingStore
 
 _Fingerprint = tuple[str, datetime, float, str]
@@ -598,6 +598,30 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     )
 
 
+def _reject_non_importable_kind(account: Account, account_id: str) -> None:
+    """Refuse to canonically import into an account kind nothing should ever independently import into.
+
+    Unlike `ingest_csv`, this path takes an arbitrary already-registered
+    `account_id` rather than being restricted by `_STANDARDIZERS` to a
+    fixed set of (institution, kind) pairs — so it needs its own gate to
+    keep the same guarantee `IMPORTABLE_ACCOUNT_KINDS` exists for: a
+    `TransferRule` counterparty outside that set is trusted to never have
+    its own independently-imported statement, and direct-repoint safety
+    (see `ledger.categorization.apply_rules`) depends on that staying true.
+
+    Raises
+    ------
+    UnsupportedImportError
+        If `account.kind` isn't one of `IMPORTABLE_ACCOUNT_KINDS`.
+    """
+    if account.kind not in IMPORTABLE_ACCOUNT_KINDS:
+        message = (
+            f"Cannot import a statement into {account_id!r} — {account.kind!r} accounts have no independent "
+            "importer; only checking, savings, credit_card, and vault accounts can be canonically imported."
+        )
+        raise UnsupportedImportError(message)
+
+
 @dataclass(frozen=True)
 class CanonicalIngestResult:
     """What happened when one CSV was ingested through the canonical fallback importer."""
@@ -626,7 +650,9 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     for how it guesses column names and formats instead. Any category or
     subcategory named in the file that doesn't already exist is created and
     persisted here, the same way a rule creates a new counterparty account
-    the first time it matches.
+    the first time it matches. Still refuses to import into a non-`IMPORTABLE_ACCOUNT_KINDS`
+    account (see `_reject_non_importable_kind`) — this path takes an
+    arbitrary registered account, so it needs that same gate explicitly.
 
     Parameters
     ----------
@@ -656,6 +682,7 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     """
     store = load_store(session, user_id=user_id)
     account = store.accounts[account_id]
+    _reject_non_importable_kind(account, account_id)
 
     _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config, user_id)
     outcome = standardize_canonical_csv(
@@ -704,6 +731,7 @@ def ingest_canonical_excel(
     """
     store = load_store(session, user_id=user_id)
     account = store.accounts[account_id]
+    _reject_non_importable_kind(account, account_id)
 
     _archive_raw_statement(account.institution, account_id, file_bytes, config, user_id, suffix="xlsx")
     outcome = standardize_canonical_excel(
