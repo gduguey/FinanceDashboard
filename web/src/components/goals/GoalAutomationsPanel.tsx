@@ -6,7 +6,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useSetRecurringAdditions, useSetWithdrawalPriorities } from '@/hooks/useAccountingData'
+import {
+  useCreateRecurringAddition,
+  useSetRecurringAdditions,
+  useSetWithdrawalPriorities,
+} from '@/hooks/useAccountingData'
 import type {
   Goal,
   RecurringAddition,
@@ -61,6 +65,7 @@ function goalName(goals: Record<string, Goal>, goalId: string): string {
 
 function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddition[]; goals: Record<string, Goal> }) {
   const setAdditions = useSetRecurringAdditions()
+  const createAddition = useCreateRecurringAddition()
   const ordered = [...additions].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
   const drag = useRowDrag(ordered, (next) => persist(next))
@@ -79,20 +84,15 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
 
   function add() {
     if (goalList.length === 0) return
-    persist([
-      ...ordered,
-      {
-        addition_id: `addition:${Date.now()}`,
-        goal_id: goalList[0].goal_id,
-        start_date: today(),
-        frequency: 'monthly',
-        end_date: null,
-        mode: 'fixed_amount',
-        value: 0,
-        currency: 'USD',
-        priority: ordered.length,
-      },
-    ])
+    createAddition.mutate({
+      goal_id: goalList[0].goal_id,
+      start_date: today(),
+      frequency: 'monthly',
+      end_date: null,
+      mode: 'fixed_amount',
+      value: 0,
+      currency: 'USD',
+    })
   }
 
   return (

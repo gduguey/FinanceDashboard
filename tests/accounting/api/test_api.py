@@ -890,6 +890,35 @@ def test_put_category_patterns_persists_and_is_returned_by_store(client) -> None
     assert store["category_patterns"]["p1"]["category_id"] == "income:salary"
 
 
+def test_post_category_pattern_mints_a_content_derived_id(client) -> None:
+    response = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    )
+    assert response.status_code == 200
+    pattern = response.json()
+    assert pattern["pattern_id"]
+    assert pattern["description_contains"] == "NETFLIX"
+    assert pattern["priority"] == 100
+    assert pattern["active"] is True
+
+
+def test_post_category_pattern_twice_with_the_same_criteria_replaces_rather_than_duplicates(client) -> None:
+    first = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    second = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions", "priority": 5},
+    ).json()
+
+    assert second["pattern_id"] == first["pattern_id"]
+    patterns = client.get("/api/accounting/store").json()["category_patterns"]
+    assert list(patterns.keys()) == [first["pattern_id"]]
+    assert patterns[first["pattern_id"]]["priority"] == 5
+
+
 def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
     class _NoCredentials:
         gemini_api_key = None
@@ -1560,6 +1589,57 @@ def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:
     assert response.status_code == 500
 
 
+def test_post_transfer_rule_mints_a_content_derived_id(client) -> None:
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    response = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    )
+    assert response.status_code == 200
+    rule = response.json()
+    assert rule["rule_id"]
+    assert rule["description_contains"] == "PAYROLL"
+    assert rule["active"] is True
+    assert rule["priority"] == 100
+
+
+def test_post_transfer_rule_twice_with_the_same_criteria_replaces_rather_than_duplicates(client) -> None:
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    first = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+    second = client.post(
+        "/api/accounting/transfer-rules",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 5,
+        },
+    ).json()
+
+    assert second["rule_id"] == first["rule_id"]
+    rules = client.get("/api/accounting/store").json()["transfer_rules"]
+    matching = [r for r in rules if r["rule_id"] == first["rule_id"]]
+    assert len(matching) == 1
+    assert matching[0]["priority"] == 5
+
+
+def test_post_transfer_rule_with_different_criteria_gets_a_different_id(client) -> None:
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    other_employer = _create_account(client, name="Other Co", kind="income_source", institution="internal")
+    first = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+    second = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": other_employer["account_id"]},
+    ).json()
+    assert first["rule_id"] != second["rule_id"]
+    assert len(client.get("/api/accounting/store").json()["transfer_rules"]) == 2
+
+
 def test_put_categories_replaces_the_whole_tree(client) -> None:
     response = client.put(
         "/api/accounting/categories",
@@ -2127,6 +2207,23 @@ def test_put_other_assets_persists(client) -> None:
     assert response.status_code == 200
     body = client.get("/api/accounting/net-worth").json()
     assert body["other_assets_total"] == pytest.approx(15000.0)
+
+
+def test_post_other_asset_creates_one_with_a_server_generated_id(client) -> None:
+    response = client.post("/api/accounting/other-assets", json={"name": "Car", "value": 15000.0})
+    assert response.status_code == 200
+    asset = response.json()
+    assert asset["asset_id"]
+    assert asset["name"] == "Car"
+    body = client.get("/api/accounting/net-worth").json()
+    assert body["other_assets_total"] == pytest.approx(15000.0)
+
+
+def test_post_other_asset_twice_with_identical_fields_creates_two_distinct_rows(client) -> None:
+    first = client.post("/api/accounting/other-assets", json={"name": "Car", "value": 15000.0}).json()
+    second = client.post("/api/accounting/other-assets", json={"name": "Car", "value": 15000.0}).json()
+    assert first["asset_id"] != second["asset_id"]
+    assert len(client.get("/api/accounting/store").json()["other_assets"]) == 2
 
 
 def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> None:
@@ -2763,6 +2860,37 @@ def test_put_simulator_scenarios_persists(client) -> None:
     assert response.status_code == 200
     store = client.get("/api/accounting/store").json()
     assert store["simulator_scenarios"][0]["name"] == "Base case"
+
+
+def test_post_simulator_scenario_creates_one_with_a_server_generated_id(client) -> None:
+    response = client.post(
+        "/api/accounting/simulator/scenarios",
+        json={
+            "name": "Base case",
+            "initial_capital": 1000.0,
+            "monthly_contribution": 100.0,
+            "horizon_years": 10,
+            "annual_rate_pct": 6.0,
+        },
+    )
+    assert response.status_code == 200
+    scenario = response.json()
+    assert scenario["scenario_id"]
+    assert scenario["name"] == "Base case"
+
+
+def test_post_simulator_scenario_twice_with_identical_fields_creates_two_distinct_rows(client) -> None:
+    payload = {
+        "name": "Base case",
+        "initial_capital": 1000.0,
+        "monthly_contribution": 100.0,
+        "horizon_years": 10,
+        "annual_rate_pct": 6.0,
+    }
+    first = client.post("/api/accounting/simulator/scenarios", json=payload).json()
+    second = client.post("/api/accounting/simulator/scenarios", json=payload).json()
+    assert first["scenario_id"] != second["scenario_id"]
+    assert len(client.get("/api/accounting/store").json()["simulator_scenarios"]) == 2
 
 
 def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:

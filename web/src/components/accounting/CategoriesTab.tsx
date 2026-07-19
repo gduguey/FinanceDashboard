@@ -24,6 +24,7 @@ import {
   useCategoryDeletePreview,
   useCategoryRenamePreview,
   useCreateCategory,
+  useCreateCategoryPattern,
   useCreateSubcategory,
   useDeleteCategory,
   useRenameCategory,
@@ -614,6 +615,7 @@ function CategoryPatternsSection({
   categories: Record<string, Category>
 }) {
   const setPatterns = useSetCategoryPatterns()
+  const createPattern = useCreateCategoryPattern()
   const [editing, setEditing] = useState<CategoryPattern | null>(null)
   const [draft, setDraft] = useState<{
     descriptionContains: string
@@ -635,16 +637,12 @@ function CategoryPatternsSection({
 
   function addPattern() {
     if (!canAdd || !draft.categoryId) return
-    const patternId = `pattern:${Date.now()}`
-    const pattern: CategoryPattern = {
-      pattern_id: patternId,
+    createPattern.mutate({
       description_contains: draft.descriptionContains,
       category_id: draft.categoryId,
       subcategory_id: draft.subcategoryId,
       priority: 100,
-      active: true,
-    }
-    setPatterns.mutate({ ...patterns, [patternId]: pattern })
+    })
     setDraft({ descriptionContains: '', categoryId: null, subcategoryId: null })
   }
 

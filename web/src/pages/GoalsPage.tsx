@@ -17,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   useAccountingStore,
+  useCreateGoal,
   useCurrencies,
   useGoalsSummary,
   useRunRecurringAdditions,
@@ -25,7 +26,6 @@ import {
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { usePersistedState } from '@/hooks/usePersistedState'
-import { colorForIndex } from '@/lib/colors'
 import { formatCurrency, formatDate } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
@@ -61,6 +61,7 @@ function GoalListSection({
   onSelectGoal: (goalId: string | null) => void
 }) {
   const setGoals = useSetGoals()
+  const createGoal = useCreateGoal()
   const { data: currencies } = useCurrencies()
   const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
   const goalList = Object.values(goals).sort((a, b) => a.created_at.localeCompare(b.created_at))
@@ -73,23 +74,16 @@ function GoalListSection({
     setGoals.mutate(rest)
     if (selectedGoalId === goalId) onSelectGoal(null)
   }
-  function add() {
-    const goalId = `goal:${Date.now()}`
+  async function add() {
     const targetDate = new Date()
     targetDate.setFullYear(targetDate.getFullYear() + 1)
-    setGoals.mutate({
-      ...goals,
-      [goalId]: {
-        goal_id: goalId,
-        name: 'New goal',
-        target_amount: 1000,
-        target_currency: defaultCurrency,
-        target_date: targetDate.toISOString(),
-        color: colorForIndex(goalList.length),
-        created_at: new Date().toISOString(),
-      },
+    const goal = await createGoal.mutateAsync({
+      name: 'New goal',
+      target_amount: 1000,
+      target_currency: defaultCurrency,
+      target_date: targetDate.toISOString(),
     })
-    onSelectGoal(goalId)
+    onSelectGoal(goal.goal_id)
   }
 
   return (

@@ -13,6 +13,7 @@ import type {
   Category,
   CategoryClassification,
   CategoryPattern,
+  CategoryPatternCreate,
   CategoryTotalRow,
   Currency,
   CurrencyCode,
@@ -28,6 +29,7 @@ import type {
   GoalContribution,
   GoalContributionCreate,
   GoalContributionUpdate,
+  GoalCreate,
   GoalsSummary,
   ImportResult,
   InterestAccountRow,
@@ -42,6 +44,7 @@ import type {
   NetWorthSummary,
   OpeningBalance,
   OtherAsset,
+  OtherAssetCreate,
   PaystubReconciliationResult,
   Posting,
   PostingMerge,
@@ -49,13 +52,16 @@ import type {
   PostingSplitLeg,
   ProjectionPoint,
   RecurringAddition,
+  RecurringAdditionCreate,
   SimulatorScenario,
+  SimulatorScenarioCreate,
   SpendCurvePoint,
   SyncStatus,
   Tag,
   TransferLink,
   TransferLinkCreate,
   TransferRule,
+  TransferRuleCreate,
   TransferSuggestion,
   VerifyResult,
   WithdrawalPriorityEntry,
@@ -229,8 +235,12 @@ export const accountingApi = {
     ),
   putTransferRules: (rules: TransferRule[]) =>
     request<TransferRule[]>('/api/accounting/transfer-rules', jsonInit('PUT', rules)),
+  createTransferRule: (rule: TransferRuleCreate) =>
+    request<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
   putOtherAssets: (otherAssets: OtherAsset[]) =>
     request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
+  createOtherAsset: (asset: OtherAssetCreate) =>
+    request<OtherAsset>('/api/accounting/other-assets', jsonInit('POST', asset)),
   postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
     request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
@@ -377,6 +387,8 @@ export const accountingApi = {
     ),
   putCategoryPatterns: (patterns: Record<string, CategoryPattern>) =>
     request<Record<string, CategoryPattern>>('/api/accounting/category-patterns', jsonInit('PUT', patterns)),
+  createCategoryPattern: (pattern: CategoryPatternCreate) =>
+    request<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
   transferSuggestions: (windowDays?: number) =>
     request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
   duplicateSuggestions: (windowDays?: number) =>
@@ -449,6 +461,8 @@ export const accountingApi = {
     request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),
   putSimulatorScenarios: (scenarios: SimulatorScenario[]) =>
     request<SimulatorScenario[]>('/api/accounting/simulator/scenarios', jsonInit('PUT', scenarios)),
+  createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
+    request<SimulatorScenario>('/api/accounting/simulator/scenarios', jsonInit('POST', scenario)),
   simulatorProject: (
     initialCapital: number,
     monthlyContribution: number,
@@ -467,6 +481,7 @@ export const accountingApi = {
     ),
   putGoals: (goals: Record<string, Goal>) =>
     request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
+  createGoal: (goal: GoalCreate) => request<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
   createGoalContribution: (contribution: GoalContributionCreate) =>
     request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
@@ -480,6 +495,8 @@ export const accountingApi = {
     }),
   putRecurringAdditions: (additions: RecurringAddition[]) =>
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
+  createRecurringAddition: (addition: RecurringAdditionCreate) =>
+    request<RecurringAddition>('/api/accounting/recurring-additions', jsonInit('POST', addition)),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),

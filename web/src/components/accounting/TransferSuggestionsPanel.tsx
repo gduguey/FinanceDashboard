@@ -9,8 +9,8 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import {
   useCreateTransferLink,
+  useCreateTransferRule,
   useDismissSuggestion,
-  useSetTransferRules,
   useTransferSuggestions,
 } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
@@ -45,27 +45,38 @@ type VirtualEntry =
 // contains X, repoint to B" and the mirror for B. Adding only one leaves
 // the other transaction exactly as it was, so both are always added
 // together as one action.
-function suggestedRuleDrafts(suggestion: TransferSuggestion): TransferRule[] {
+interface RuleDraft {
+  description_contains: string
+  account_id: string | null
+  counterparty_account_id: string | null
+}
+
+function suggestedRuleDrafts(suggestion: TransferSuggestion): RuleDraft[] {
   return [
     {
-      rule_id: `transfer:${suggestion.posting_id}`,
       description_contains: suggestion.description,
       account_id: suggestion.account_id,
       counterparty_account_id: suggestion.other_account_id,
-      priority: 100,
-      description: '',
-      active: true,
     },
     {
-      rule_id: `transfer:${suggestion.other_posting_id}`,
       description_contains: suggestion.other_description,
       account_id: suggestion.other_account_id,
       counterparty_account_id: suggestion.account_id,
-      priority: 100,
-      description: '',
-      active: true,
     },
   ]
+}
+
+// A rule's identity is its matching criteria (see `post_transfer_rule`'s
+// content-derived id), so "already added" means an existing rule with the
+// same criteria — never an id comparison, since the draft has no id of its
+// own until the server mints one.
+function draftAlreadyAdded(rules: TransferRule[], draft: RuleDraft): boolean {
+  return rules.some(
+    (rule) =>
+      rule.description_contains === draft.description_contains &&
+      (rule.account_id ?? null) === draft.account_id &&
+      (rule.counterparty_account_id ?? null) === draft.counterparty_account_id,
+  )
 }
 
 function accountName(accounts: Record<string, Account>, accountId: string | null): string {
@@ -78,10 +89,10 @@ function DraftRuleCard({
   alreadyAdded,
   onChange,
 }: {
-  draft: TransferRule
+  draft: RuleDraft
   accounts: Record<string, Account>
   alreadyAdded: boolean
-  onChange: (draft: TransferRule) => void
+  onChange: (draft: RuleDraft) => void
 }) {
   return (
     <div className="space-y-2 rounded-md border p-3">
@@ -119,23 +130,21 @@ function SuggestedRulePair({
   accounts: Record<string, Account>
   existingRules: TransferRule[]
   transactionIds: { transactionId: string; otherTransactionId: string } | null
-  onAdd: (rules: TransferRule[]) => void
+  onAdd: (drafts: RuleDraft[]) => void
   onLink: (transactionId: string, otherTransactionId: string) => void
   onDismiss: () => void
   linkPending: boolean
 }) {
   const [drafts, setDrafts] = useState(() => suggestedRuleDrafts(suggestion))
-  const existingRuleIds = new Set(existingRules.map((rule) => rule.rule_id))
-  const alreadyAdded = drafts.map((draft) => existingRuleIds.has(draft.rule_id))
+  const alreadyAdded = drafts.map((draft) => draftAlreadyAdded(existingRules, draft))
   const allAdded = alreadyAdded.every(Boolean)
 
-  function updateDraft(index: number, next: TransferRule) {
+  function updateDraft(index: number, next: RuleDraft) {
     setDrafts((prev) => prev.map((draft, draftIndex) => (draftIndex === index ? next : draft)))
   }
 
   function handleAddBoth() {
-    const toAdd = drafts.filter((_, index) => !alreadyAdded[index])
-    onAdd(toAdd)
+    onAdd(drafts.filter((_, index) => !alreadyAdded[index]))
   }
 
   return (
@@ -147,7 +156,7 @@ function SuggestedRulePair({
       <div className="grid gap-3 sm:grid-cols-2">
         {drafts.map((draft, index) => (
           <DraftRuleCard
-            key={draft.rule_id}
+            key={`${draft.account_id ?? 'none'}:${draft.counterparty_account_id ?? 'none'}`}
             draft={draft}
             accounts={accounts}
             alreadyAdded={alreadyAdded[index]}
@@ -199,7 +208,7 @@ export function TransferSuggestionsPanel({
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
   const { data, isLoading, isError, error } = useTransferSuggestions(windowDays)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
-  const setRules = useSetTransferRules()
+  const createRule = useCreateTransferRule()
   const dismissSuggestion = useDismissSuggestion()
   const createTransferLink = useCreateTransferLink()
   const { sorted, sort, toggleSort } = useSortableRows(data ?? [], 'posted_at')
@@ -251,9 +260,16 @@ export function TransferSuggestionsPanel({
     }
   }
 
-  function addRules(newRules: TransferRule[]) {
-    if (newRules.length === 0) return
-    setRules.mutate([...rules, ...newRules])
+  function addRules(newDrafts: RuleDraft[]) {
+    for (const draft of newDrafts) {
+      createRule.mutate({
+        description_contains: draft.description_contains,
+        account_id: draft.account_id,
+        counterparty_account_id: draft.counterparty_account_id,
+        priority: 100,
+        description: '',
+      })
+    }
   }
 
   const virtualEntries = useMemo(
