@@ -1138,7 +1138,11 @@ export interface paths {
      *         422 if `account_id` doesn't already exist, or if the file couldn't
      *         be parsed — the message explains what columns are supported, and
      *         (when the column separator couldn't be guessed) asks the user to
-     *         pick one and retry with `separator` set.
+     *         pick one and retry with `separator` set. 400 if `account_id`'s kind
+     *         has no independent importer (see `IMPORTABLE_ACCOUNT_KINDS`) — a
+     *         `cash`/`loan`/`other_asset`/`income_source`/`expense_payee` account
+     *         can never be canonically imported into, the same guarantee the
+     *         bank-specific `/import` route already has by construction.
      */
     post: operations['post_canonical_import_api_accounting_import_canonical_post']
     delete?: never
@@ -1332,10 +1336,18 @@ export interface paths {
      *     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
      *     `None`) and `pending_selected` — an automated categorizer's
      *     not-yet-confirmed suggestion, and whether it's currently checked for
-     *     the next "validate selection" action (see `ledger.pending`) — and
-     *     `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any) resolved this
-     *     posting's transaction, purely for display (see
-     *     `ledger.categorization.resolved_transfer_rule_ids_by_transaction`).
+     *     the next "validate selection" action (see `ledger.pending`) —
+     *     `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any)
+     *     resolved this posting's transaction, purely for display (see
+     *     `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) —
+     *     and `manual_transfer_override_posting_id`, the same thing for a manual
+     *     "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
+     *     manual override always wins if both somehow apply to the same
+     *     transaction (it's applied after rules — see
+     *     `api.dependencies._resolved_postings_and_store`), so
+     *     `resolved_by_transfer_rule_id` is suppressed whenever
+     *     `manual_transfer_override_posting_id` is set for that transaction —
+     *     see `PostingRow`'s own docstring.
      *
      *     Returns
      *     -------
@@ -5763,7 +5775,17 @@ export interface components {
      *     never for one a `TransferLink` (manual or rule-found) resolved
      *     instead, which shows up via `is_linked_transfer`/`linked_transaction_id`/
      *     `transfer_link_source` regardless of which account this posting's own
-     *     placeholder leg still points at.
+     *     placeholder leg still points at. `manual_transfer_override_posting_id`
+     *     is set (to the posting actually carrying the override) on both legs of
+     *     a transaction whose placeholder was directly repointed via a manual
+     *     `ManualOverride.account_id`, the same way `resolved_by_transfer_rule_id`
+     *     is set on both legs of a rule-repointed one — and since a manual
+     *     override is applied *after* rules in the resolution pipeline (see
+     *     `api.dependencies._resolved_postings_and_store`) and so always wins if
+     *     both somehow apply to the same transaction, `get_postings` never sets
+     *     `resolved_by_transfer_rule_id` on a transaction that also has one of
+     *     these, so the two are mutually exclusive here — never "via rule" when
+     *     a manual override is what actually decided the account shown.
      */
     PostingRow: {
       /** Posting Id */
@@ -5810,6 +5832,8 @@ export interface components {
       pending_selected: boolean
       /** Resolved By Transfer Rule Id */
       resolved_by_transfer_rule_id?: string | null
+      /** Manual Transfer Override Posting Id */
+      manual_transfer_override_posting_id?: string | null
       /**
        * Is Linked Transfer
        * @default false

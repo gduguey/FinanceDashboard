@@ -69,10 +69,18 @@ def get_postings(
     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
     `None`) and `pending_selected` — an automated categorizer's
     not-yet-confirmed suggestion, and whether it's currently checked for
-    the next "validate selection" action (see `ledger.pending`) — and
-    `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any) resolved this
-    posting's transaction, purely for display (see
-    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`).
+    the next "validate selection" action (see `ledger.pending`) —
+    `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any)
+    resolved this posting's transaction, purely for display (see
+    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) —
+    and `manual_transfer_override_posting_id`, the same thing for a manual
+    "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
+    manual override always wins if both somehow apply to the same
+    transaction (it's applied after rules — see
+    `api.dependencies._resolved_postings_and_store`), so
+    `resolved_by_transfer_rule_id` is suppressed whenever
+    `manual_transfer_override_posting_id` is set for that transaction —
+    see `PostingRow`'s own docstring.
 
     Returns
     -------
@@ -88,11 +96,25 @@ def get_postings(
     raw = load_ledger(session, user_id)
     resolved_by_rule = resolved_transfer_rule_ids_by_transaction(raw, store.rules, store.accounts)
     rows = postings.to_dicts()
+
+    posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
+    manual_override_posting_by_transaction: dict[str, str] = {}
+    for posting_id, posting_override in overrides.items():
+        if posting_override.account_id is None:
+            continue
+        transaction_id = posting_id_to_transaction_id.get(posting_id)
+        if transaction_id is not None:
+            manual_override_posting_by_transaction[transaction_id] = posting_id
+
     for row in rows:
         override = overrides.get(row["posting_id"])
         row["pending_source"] = override.pending_source if override is not None else None
         row["pending_selected"] = override.pending_selected if override is not None else True
-        row["resolved_by_transfer_rule_id"] = resolved_by_rule.get(row["transaction_id"])
+        manual_override_posting_id = manual_override_posting_by_transaction.get(row["transaction_id"])
+        row["manual_transfer_override_posting_id"] = manual_override_posting_id
+        row["resolved_by_transfer_rule_id"] = (
+            None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
+        )
     return [PostingRow(**row) for row in rows]
 
 

@@ -1583,6 +1583,63 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
     assert updated_payroll["resolved_by_transfer_rule_id"] == "payroll-rule"
 
 
+def test_postings_report_a_manual_transfer_override(client) -> None:
+    account_id = _import_chase_checking(client)
+    postings = client.get("/api/accounting/postings").json()
+    payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
+    assert payroll["manual_transfer_override_posting_id"] is None
+    placeholder = next(p for p in postings if p["account_id"] == "uncategorized:income")
+
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    response = client.put(
+        f"/api/accounting/postings/{placeholder['posting_id']}/override", json={"account_id": employer["account_id"]}
+    )
+    assert response.status_code == 200
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
+    updated_counterparty = next(p for p in updated if p["account_id"] == employer["account_id"])
+    assert updated_payroll["manual_transfer_override_posting_id"] == placeholder["posting_id"]
+    assert updated_counterparty["manual_transfer_override_posting_id"] == placeholder["posting_id"]
+
+
+def test_postings_suppress_via_rule_badge_when_a_manual_override_also_applies(client) -> None:
+    """A manual override is applied after rules (see `_resolved_postings_and_store`), so it always wins if both
+
+    somehow apply to the same transaction — `resolved_by_transfer_rule_id` must not claim "via rule" when a
+    manual override is what actually decided the account shown.
+    """
+    account_id = _import_chase_checking(client)
+    postings = client.get("/api/accounting/postings").json()
+    placeholder = next(p for p in postings if p["account_id"] == "uncategorized:income")
+
+    manual_employer = _create_account(client, name="Manual Employer", kind="income_source", institution="internal")
+    client.put(
+        f"/api/accounting/postings/{placeholder['posting_id']}/override",
+        json={"account_id": manual_employer["account_id"]},
+    )
+
+    rule_employer = _create_account(client, name="Rule Employer", kind="income_source", institution="internal")
+    client.put(
+        "/api/accounting/transfer-rules",
+        json=[
+            {
+                "rule_id": "payroll-rule",
+                "description_contains": "PAYROLL",
+                "counterparty_account_id": rule_employer["account_id"],
+                "priority": 0,
+            }
+        ],
+    )
+
+    updated = client.get("/api/accounting/postings").json()
+    updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
+    assert updated_payroll["resolved_by_transfer_rule_id"] is None
+    assert updated_payroll["manual_transfer_override_posting_id"] == placeholder["posting_id"]
+    assert any(p["account_id"] == manual_employer["account_id"] for p in updated)
+    assert not any(p["account_id"] == rule_employer["account_id"] for p in updated)
+
+
 def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:
     """`counterparty_account_id` is a real foreign key now (see `accounting.db.automation.TransferRule`) —
     a rule naming an account that doesn't exist can no longer be silently accepted. No new API-level
