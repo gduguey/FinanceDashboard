@@ -2,12 +2,14 @@ import { Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ExcludedTransactionsTable } from '@/components/accounting/ExcludedTransactionsTable'
+import { LinkedTransactionsTable } from '@/components/accounting/LinkedTransactionsTable'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useSetTransferRules } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { realLegByTransactionId, type TransferRowInfo } from '@/lib/transferRowInfo'
+import { pairTransferRows, realLegByTransactionId, type TransferRowInfo } from '@/lib/transferRowInfo'
 import type { Account, Posting, TransferRule } from '@/types/accounting'
 
 // A rule's `excluded_transaction_ids` names transactions, never postings —
@@ -57,21 +59,27 @@ export function ExcludedFromRulesTab({
   const [searchParams] = useSearchParams()
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(searchParams.get('ruleId'))
 
-  // Restores a rule's effect for one specific transaction — it either falls
-  // back to the next-matching rule, or stays uncategorized if none matches,
-  // the same choice excluding it made in the first place.
-  function removeExclusion(ruleId: string, transactionId: string) {
+  // Restores a rule's effect for one or both specific transactions — each
+  // falls back to the next-matching rule, or stays uncategorized if none
+  // matches, the same choice excluding it made in the first place. Takes
+  // every id to restore in one call (both sides of a reconstructed pair)
+  // so two synchronous calls never race each other off the same stale
+  // `rules` closure.
+  function removeExclusion(ruleId: string, transactionIds: string[]) {
+    const toRemove = new Set(transactionIds)
     const updated = rules.map((rule) =>
       rule.rule_id === ruleId
         ? {
             ...rule,
-            excluded_transaction_ids: (rule.excluded_transaction_ids ?? []).filter((id) => id !== transactionId),
+            excluded_transaction_ids: (rule.excluded_transaction_ids ?? []).filter((id) => !toRemove.has(id)),
           }
         : rule,
     )
     setRules.mutate(updated, {
       onSuccess: () =>
-        toast.success('Exclusion removed — this rule will resolve that transaction again, if it still matches.'),
+        toast.success(
+          `Exclusion removed — ${transactionIds.length > 1 ? 'both transactions' : 'this transaction'} will resolve again, if the rule still matches.`,
+        ),
     })
   }
 
@@ -119,18 +127,51 @@ export function ExcludedFromRulesTab({
                     </TableCell>
                     <TableCell className="text-muted-foreground">{excludedIds.length}</TableCell>
                   </TableRow>
-                  {expanded && (
-                    <TableRow className="bg-muted/30 hover:bg-muted/30">
-                      <TableCell colSpan={3} onClick={(event) => event.stopPropagation()}>
-                        <div className="py-1">
-                          <ExcludedTransactionsTable
-                            rows={excludedRowsForRule(legByTransactionId, excludedIds)}
-                            onRemoveExclusion={(transactionId) => removeExclusion(rule.rule_id, transactionId)}
-                          />
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
+                  {expanded &&
+                    (() => {
+                      // Excluding a rule-found link always excludes both its
+                      // transactions together (see `TransactionsTab.tsx`'s
+                      // `TransferDetailDialog`) — reconstructing those pairs
+                      // here (no `TransferLink` survives to look them up
+                      // directly) is what actually shows "both ends of the
+                      // transfer" instead of two unrelated single rows. A
+                      // rule whose counterparty is a single non-importable
+                      // account only ever excludes one transaction at a
+                      // time, so those fall through to `singles` untouched.
+                      const { pairs, singles } = pairTransferRows(excludedRowsForRule(legByTransactionId, excludedIds))
+                      return (
+                        <TableRow className="bg-muted/30 hover:bg-muted/30">
+                          <TableCell colSpan={3} onClick={(event) => event.stopPropagation()}>
+                            <div className="flex flex-col gap-4 py-1">
+                              {pairs.length > 0 && (
+                                <LinkedTransactionsTable
+                                  rows={pairs}
+                                  emptyMessage="No excluded transfer pairs for this rule."
+                                  renderRowAction={(row) => (
+                                    <Button
+                                      variant="destructive"
+                                      size="sm"
+                                      title="Remove this exclusion — the rule will try to re-link these transactions again, if it still matches"
+                                      onClick={() =>
+                                        removeExclusion(rule.rule_id, [row.fromTransactionId, row.toTransactionId])
+                                      }
+                                    >
+                                      Remove exclusion
+                                    </Button>
+                                  )}
+                                />
+                              )}
+                              {singles.length > 0 && (
+                                <ExcludedTransactionsTable
+                                  rows={singles}
+                                  onRemoveExclusion={(transactionId) => removeExclusion(rule.rule_id, [transactionId])}
+                                />
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })()}
                 </Fragment>
               )
             })}

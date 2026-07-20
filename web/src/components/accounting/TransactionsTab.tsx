@@ -1,5 +1,5 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowRight, ArrowRightLeft, Pencil, RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
+import { ArrowDown, ArrowRightLeft, Pencil, RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
 import { memo, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
@@ -62,7 +62,40 @@ const PENDING_OPTIONS = [
   { id: 'pattern', name: 'Pattern pending' },
   { id: CONFIRMED, name: 'Confirmed' },
 ]
-const RULE_FLAGGED_ITEMS: Record<string, string> = { [ALL]: 'All', yes: 'Rule-flagged', no: 'Not rule-flagged' }
+// The four ways a transaction's transfer status can currently read, spanning
+// every mechanism this file's own badges/columns already show — never
+// mutually exclusive with each other except pairwise (a posting is either
+// mid-transfer via a rule/manually, or a plain non-transfer; "excluded" is
+// a separate historical fact that can be true alongside either).
+const TRANSFER_FLAG_OPTIONS = [
+  { id: 'rule', name: 'Transfer flagged by rule' },
+  { id: 'excluded', name: 'Excluded from transfer rule' },
+  { id: 'manual', name: 'Transfer manually added' },
+  { id: 'none', name: 'Non transfer' },
+]
+
+// Every `TRANSFER_FLAG_OPTIONS` id that applies to this posting right now —
+// a plain array rather than one classification, since "excluded from a
+// rule" is a historical fact that can be true alongside either "non
+// transfer" (nothing else currently flags it) or another rule flagging it.
+function transferFlagsForPosting(posting: Posting, excludedTransactionIds: Set<string>): string[] {
+  const flags: string[] = []
+  if (
+    posting.resolved_by_transfer_rule_id != null ||
+    (posting.is_linked_transfer && posting.transfer_link_source === 'rule')
+  ) {
+    flags.push('rule')
+  }
+  if (
+    posting.manual_transfer_override_posting_id != null ||
+    (posting.is_linked_transfer && posting.transfer_link_source === 'manual')
+  ) {
+    flags.push('manual')
+  }
+  if (excludedTransactionIds.has(posting.transaction_id)) flags.push('excluded')
+  if (flags.length === 0) flags.push('none')
+  return flags
+}
 const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
 const CATEGORIZED_ITEMS: Record<string, string> = {
   [ALL]: 'All',
@@ -123,10 +156,10 @@ interface FilterState {
   search: string
   accountFilter: string
   accountExclude: boolean
-  // Multi-select, unlike accountFilter/ruleFlaggedFilter/incomeExpenseFilter/
-  // categorizedFilter (each still single-value, an "all-or-one" choice that
-  // doesn't benefit from picking several) — an empty array means "no
-  // restriction", the same meaning `ALL` carries for those.
+  // Multi-select, unlike accountFilter/incomeExpenseFilter/categorizedFilter
+  // (each still single-value, an "all-or-one" choice that doesn't benefit
+  // from picking several) — an empty array means "no restriction", the
+  // same meaning `ALL` carries for those.
   categoryFilter: string[]
   categoryExclude: boolean
   subcategoryFilter: string[]
@@ -139,7 +172,8 @@ interface FilterState {
   endDate: string
   pendingFilter: string[]
   pendingExclude: boolean
-  ruleFlaggedFilter: string
+  transferFlagFilter: string[]
+  transferFlagExclude: boolean
   incomeExpenseFilter: string
   categorizedFilter: string
 }
@@ -163,7 +197,8 @@ function defaultFilterState(): FilterState {
     endDate: '',
     pendingFilter: [],
     pendingExclude: false,
-    ruleFlaggedFilter: ALL,
+    transferFlagFilter: [],
+    transferFlagExclude: false,
     incomeExpenseFilter: ALL,
     categorizedFilter: ALL,
   }
@@ -200,7 +235,7 @@ interface TransactionRowProps {
   onUndoSplit: (originalPostingId: string) => void
   onToggleSelected: (postingId: string, selected: boolean) => void
   onMarkAsTransfer: (transactionId: string, counterpartyAccountId: string) => void
-  onExcludeFromRule: (transactionId: string, ruleId: string) => void
+  onExcludeFromRule: (transactionIds: string[], ruleId: string) => void
   onStartPicking: (posting: Posting) => void
   onPickTarget: (posting: Posting) => void
   onOpenTransferDetail: (postingId: string) => void
@@ -311,7 +346,7 @@ const TransactionRow = memo(function TransactionRow({
                 title={`Exclude this one transaction from "${resolvedByRuleLabel}" — it'll fall back to the next-matching rule, or stay uncategorized if none matches`}
                 onClick={() =>
                   posting.resolved_by_transfer_rule_id &&
-                  onExcludeFromRule(posting.transaction_id, posting.resolved_by_transfer_rule_id)
+                  onExcludeFromRule([posting.transaction_id], posting.resolved_by_transfer_rule_id)
                 }
               >
                 ×
@@ -467,6 +502,14 @@ const TransactionRow = memo(function TransactionRow({
 // plain local consts once, instead of repeating `badge.popup.foo` property
 // access inside click handlers (which TypeScript can't narrow the same way
 // a local const's own type gets narrowed).
+// Reads clearly above the button it warns about, rather than as a vague
+// aside below it — spelled out concretely (re-linking is a manual redo,
+// not a click away) instead of the ambiguous "there is no going back".
+const UNMARK_WARNING_PAIR =
+  "This can't be undone automatically — you'd have to manually re-link these two transactions if you change your mind."
+const UNMARK_WARNING_SINGLE =
+  "This can't be undone automatically — you'd have to manually flag this transaction again if you change your mind."
+
 function TransferDetailDialog({
   badge,
   ruleLabelById,
@@ -480,12 +523,12 @@ function TransferDetailDialog({
   onClose: () => void
   onUnlinkTransfer: (linkId: string) => void
   onUndoManualOverride: (postingId: string) => void
-  onExcludeFromRule: (transactionId: string, ruleId: string) => void
+  onExcludeFromRule: (transactionIds: string[], ruleId: string) => void
 }) {
   const { popup } = badge
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Transfer</DialogTitle>
         </DialogHeader>
@@ -495,6 +538,7 @@ function TransferDetailDialog({
               This transfer goes into the external account <span className="font-medium">{popup.otherAccountName}</span>
               .
             </p>
+            <p className="text-xs text-muted-foreground">{UNMARK_WARNING_SINGLE}</p>
             <Button
               variant="destructive"
               onClick={() => {
@@ -504,7 +548,6 @@ function TransferDetailDialog({
             >
               Unmark as transfer
             </Button>
-            <p className="text-xs text-muted-foreground">There is no going back.</p>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -527,28 +570,30 @@ function TransferDetailDialog({
                 : null}
               .
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-col items-stretch gap-1">
               <TransferRowCard row={popup.from} />
-              <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+              <ArrowDown className="mx-auto size-4 shrink-0 text-muted-foreground" />
               <TransferRowCard row={popup.to} />
             </div>
             {popup.source === 'rule' && popup.ruleId ? (
               (() => {
                 const ruleId = popup.ruleId
-                const transactionId = popup.transactionId
+                const fromTransactionId = popup.from.transactionId
+                const toTransactionId = popup.to.transactionId
                 return (
                   <>
                     <Button
                       variant="outline"
                       onClick={() => {
-                        onExcludeFromRule(transactionId, ruleId)
+                        onExcludeFromRule([fromTransactionId, toTransactionId], ruleId)
+                        onUnlinkTransfer(popup.linkId)
                         onClose()
                       }}
                     >
                       Exclude this specific transfer from rule {ruleLabelById.get(ruleId) ?? ruleId}
                     </Button>
                     <p className="text-xs text-muted-foreground">
-                      The excluded transfers can be found{' '}
+                      Both transactions go back to being normal transactions. The excluded transfers can be found{' '}
                       <Link className="underline hover:text-foreground" to={`/rules?tab=excluded&ruleId=${ruleId}`}>
                         here
                       </Link>
@@ -559,6 +604,7 @@ function TransferDetailDialog({
               })()
             ) : (
               <>
+                <p className="text-xs text-muted-foreground">{UNMARK_WARNING_PAIR}</p>
                 <Button
                   variant="destructive"
                   onClick={() => {
@@ -568,7 +614,6 @@ function TransferDetailDialog({
                 >
                   Unmark as transfer
                 </Button>
-                <p className="text-xs text-muted-foreground">There is no going back.</p>
               </>
             )}
           </div>
@@ -608,6 +653,11 @@ function TransactionsTable({
   const subcategoryFilter = Array.isArray(filters.subcategoryFilter) ? filters.subcategoryFilter : []
   const tagFilter = Array.isArray(filters.tagFilter) ? filters.tagFilter : []
   const pendingFilter = Array.isArray(filters.pendingFilter) ? filters.pendingFilter : []
+  // Coerces both a pre-existing installation's stale single-value
+  // `ruleFlaggedFilter` string and a missing key (an older persisted state
+  // has neither) back to "no restriction", the same guard the other
+  // once-single-select filters above already needed when they went multi.
+  const transferFlagFilter = Array.isArray(filters.transferFlagFilter) ? filters.transferFlagFilter : []
   const [splitting, setSplitting] = useState<Posting | null>(null)
   const [suggestMessages, setSuggestMessages] = useState<Record<string, string>>({})
   const [bulkSuggesting, setBulkSuggesting] = useState(false)
@@ -791,11 +841,20 @@ function TransactionsTable({
     (postingId: string) => setOverride.mutate({ postingId, override: { account_id: null } }),
     [setOverride],
   )
+  // Takes every transaction id to exclude in one call (both sides of a
+  // rule-found transfer link, or just the one transaction for a direct
+  // single-account repoint) — never called twice in a row for the same
+  // rule, since two synchronous calls would each build `updated` from the
+  // same stale `rules` closure and the second would silently drop the
+  // first's change.
   const handleExcludeFromRule = useCallback(
-    (transactionId: string, ruleId: string) => {
+    (transactionIds: string[], ruleId: string) => {
       const updated = rules.map((rule) =>
         rule.rule_id === ruleId
-          ? { ...rule, excluded_transaction_ids: [...(rule.excluded_transaction_ids ?? []), transactionId] }
+          ? {
+              ...rule,
+              excluded_transaction_ids: [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])],
+            }
           : rule,
       )
       const rule = rules.find((r) => r.rule_id === ruleId)
@@ -803,7 +862,9 @@ function TransactionsTable({
       setTransferRules.mutate(updated, {
         onSuccess: () =>
           toast.success(
-            `Excluded from "${ruleLabel}" — this transaction now falls back to the next-matching rule, or stays uncategorized. Manage exclusions from the Rules page.`,
+            transactionIds.length > 1
+              ? `Excluded from "${ruleLabel}" — both transactions fall back to the next-matching rule, or stay uncategorized. Manage exclusions from the Rules page.`
+              : `Excluded from "${ruleLabel}" — this transaction falls back to the next-matching rule, or stays uncategorized. Manage exclusions from the Rules page.`,
           ),
       })
     },
@@ -892,6 +953,15 @@ function TransactionsTable({
     () => new Map(rules.map((rule) => [rule.rule_id, rule.description || rule.description_contains])),
     [rules],
   )
+  // Every transaction id excluded from at least one rule — a fact
+  // independent of the transaction's *current* transfer status (it can be
+  // excluded from a rule and also currently a plain non-transfer, or
+  // excluded from one rule while a different rule still flags it), so it's
+  // its own filter option rather than folded into "non transfer".
+  const excludedTransactionIds = useMemo(
+    () => new Set(rules.flatMap((rule) => rule.excluded_transaction_ids ?? [])),
+    [rules],
+  )
   // Computed from the full, unscoped `postings` prop (not `filtered`/`sorted`)
   // — an account filter could otherwise split a transfer pair apart and make
   // sibling-detection wrong. See `postingClassification.ts`.
@@ -933,9 +1003,9 @@ function TransactionsTable({
         return matchesMultiFilter(actual, pendingFilter.length, filters.pendingExclude)
       })
       .filter((posting) => {
-        if (filters.ruleFlaggedFilter === 'yes') return posting.resolved_by_transfer_rule_id != null
-        if (filters.ruleFlaggedFilter === 'no') return posting.resolved_by_transfer_rule_id == null
-        return true
+        const flags = transferFlagsForPosting(posting, excludedTransactionIds)
+        const actual = transferFlagFilter.some((flag) => flags.includes(flag))
+        return matchesMultiFilter(actual, transferFlagFilter.length, filters.transferFlagExclude)
       })
       .filter((posting) => {
         if (filters.incomeExpenseFilter === ALL) return true
@@ -954,6 +1024,8 @@ function TransactionsTable({
     subcategoryFilter,
     tagFilter,
     pendingFilter,
+    transferFlagFilter,
+    excludedTransactionIds,
     onlyUncategorized,
     withSubcategories,
     realIds,
@@ -1048,15 +1120,19 @@ function TransactionsTable({
   const activeFilterCount = useMemo(() => {
     let count = 0
     if (filters.accountFilter !== ALL) count++
-    count += categoryFilter.length + subcategoryFilter.length + tagFilter.length + pendingFilter.length
+    count +=
+      categoryFilter.length +
+      subcategoryFilter.length +
+      tagFilter.length +
+      pendingFilter.length +
+      transferFlagFilter.length
     if (filters.dateMode === DATE_MODE_MONTH ? filters.month !== ALL_MONTHS : filters.startDate || filters.endDate) {
       count++
     }
-    if (filters.ruleFlaggedFilter !== ALL) count++
     if (filters.incomeExpenseFilter !== ALL) count++
     if (filters.categorizedFilter !== ALL) count++
     return count
-  }, [filters, categoryFilter, subcategoryFilter, tagFilter, pendingFilter])
+  }, [filters, categoryFilter, subcategoryFilter, tagFilter, pendingFilter, transferFlagFilter])
 
   return (
     <Card>
@@ -1204,22 +1280,15 @@ function TransactionsTable({
                 onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
               />
             </FilterRow>
-            <FilterRow label="Rule-flagged">
-              <Select
-                value={filters.ruleFlaggedFilter ?? ALL}
-                onValueChange={(value) => value && setFilters({ ...filters, ruleFlaggedFilter: value })}
-              >
-                <SelectTrigger size="sm" className="w-full">
-                  <SelectValue items={RULE_FLAGGED_ITEMS} />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(RULE_FLAGGED_ITEMS).map(([id, name]) => (
-                    <SelectItem key={id} value={id}>
-                      {name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <FilterRow label="Filter transfers">
+              <MultiSelectFilter
+                label="Filter transfers"
+                options={TRANSFER_FLAG_OPTIONS}
+                selected={transferFlagFilter}
+                exclude={filters.transferFlagExclude}
+                onSelectedChange={(next) => setFilters({ ...filters, transferFlagFilter: next })}
+                onExcludeChange={(exclude) => setFilters({ ...filters, transferFlagExclude: exclude })}
+              />
             </FilterRow>
             <FilterRow label="Income / expense">
               <Select
