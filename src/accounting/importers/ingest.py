@@ -175,12 +175,17 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
 
     `transactions`/`postings` are upserted and pruned rather than deleted
     wholesale and reinserted — `manual_overrides`, `posting_splits`,
-    `posting_merges`, and `goal_contributions.source_posting_id` all
-    foreign-key into them (see `accounting.store.save_store`'s own
-    `_upsert_and_prune` for the same reasoning applied to accounts,
-    categories, and tags). `posting_tags` has nothing foreign-keying into
-    it, so it's safe to delete in full and rebuild from `ledger`'s own
-    `tag_ids` column every time.
+    `posting_merges`, `transfer_links`, `transfer_rule_exclusions`, and
+    `goal_contributions.source_posting_id` all foreign-key into them (see
+    `accounting.store.save_store`'s own `_upsert_and_prune` for the same
+    reasoning applied to accounts, categories, and tags). Pruning a
+    transaction still referenced by one of these needs `transfer_links`
+    handled explicitly (see below); `posting_merges`/`transfer_rule_exclusions`
+    lean on `ondelete="CASCADE"` instead, since each references its
+    transaction directly rather than through a separate join table.
+    `posting_tags` has nothing foreign-keying into it, so it's safe to
+    delete in full and rebuild from `ledger`'s own `tag_ids` column every
+    time.
 
     Parameters
     ----------
@@ -240,6 +245,25 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     existing_transaction_ids = {row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id)}
     removed_transaction_ids = existing_transaction_ids - transaction_ids
     if removed_transaction_ids:
+        # A `TransferLink` has no FK of its own into `transactions` — only
+        # its `TransferLinkedTransaction` children do — so cascading that
+        # child row alone would leave the link's other side referencing a
+        # link with only one member. Deleting the whole link here instead
+        # (its children cascade off `link_id`) removes both sides together.
+        # `PostingMerge`/`PostingMergeDuplicate`/`TransferRuleExclusion`
+        # don't need the same handling: each references its transaction
+        # directly, so `ondelete="CASCADE"` on those columns is enough.
+        stale_link_ids = {
+            row.link_id
+            for row in session
+            .query(adb.TransferLinkedTransaction.link_id)
+            .filter_by(user_id=user_id)
+            .filter(adb.TransferLinkedTransaction.transaction_id.in_(removed_transaction_ids))
+        }
+        if stale_link_ids:
+            session.query(adb.TransferLink).filter_by(user_id=user_id).filter(
+                adb.TransferLink.id.in_(stale_link_ids)
+            ).delete(synchronize_session=False)
         session.query(adb.Transaction).filter_by(user_id=user_id).filter(
             adb.Transaction.id.in_(removed_transaction_ids)
         ).delete(synchronize_session=False)

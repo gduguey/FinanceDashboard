@@ -65,7 +65,14 @@ class TransferRuleExclusion(Base):
     rule_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transfer_rules.id", ondelete="CASCADE")
     )
-    transaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id"))
+    # CASCADE here is safe (unlike TransferLinkedTransaction/PostingMerge's
+    # kept_transaction_id): this row is a single, standalone exclusion, not
+    # one half of a pair — nothing else needs to go with it when its
+    # transaction is pruned by a ledger rebuild (see
+    # `importers.ingest._write_ledger`).
+    transaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
+    )
 
 
 class CategoryPattern(Base):
