@@ -66,7 +66,7 @@ _CANDIDATE_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
 
 
 def make_transfer_link(
-    transaction_id_a: str, transaction_id_b: str, source: TransferLinkSource = "manual"
+    transaction_id_a: str, transaction_id_b: str, source: TransferLinkSource = "manual", rule_id: str | None = None
 ) -> TransferLink:
     """Build a `TransferLink` with a canonical (sorted) id and column order.
 
@@ -86,6 +86,9 @@ def make_transfer_link(
     source
         `"manual"` for a user's own pick, `"rule"` for one
         `reconcile_rule_links` found — display-only.
+    rule_id
+        Which `TransferRule` found this link, when `source == "rule"` —
+        display-only, see `models.TransferLink`'s own docstring.
 
     Returns
     -------
@@ -93,7 +96,11 @@ def make_transfer_link(
     """
     first, second = sorted((transaction_id_a, transaction_id_b))
     return TransferLink(
-        link_id=f"transfer-link:{first}:{second}", transaction_id_a=first, transaction_id_b=second, source=source
+        link_id=f"transfer-link:{first}:{second}",
+        transaction_id_a=first,
+        transaction_id_b=second,
+        source=source,
+        rule_id=rule_id,
     )
 
 
@@ -243,11 +250,14 @@ def reconcile_rule_links(
             & ((pl.col("posted_at") - pl.col("posted_at_candidate")).abs() <= window)
         )
         .group_by("transaction_id")
-        .agg(pl.col("transaction_id_candidate").unique().alias("_candidates"))
+        .agg(pl.col("transaction_id_candidate").unique().alias("_candidates"), pl.col("rule_id").first())
         .collect()
     )
     candidates_by_transaction: dict[str, list[str]] = dict(
         zip(candidate_lists["transaction_id"].to_list(), candidate_lists["_candidates"].to_list(), strict=True)
+    )
+    rule_id_by_transaction: dict[str, str] = dict(
+        zip(candidate_lists["transaction_id"].to_list(), candidate_lists["rule_id"].to_list(), strict=True)
     )
 
     proposed: list[TransferLink] = []
@@ -263,7 +273,11 @@ def reconcile_rule_links(
         if len(remaining) != 1:
             continue
         other_transaction_id = remaining[0]
-        proposed.append(make_transfer_link(transaction_id, other_transaction_id, source="rule"))
+        proposed.append(
+            make_transfer_link(
+                transaction_id, other_transaction_id, source="rule", rule_id=rule_id_by_transaction[transaction_id]
+            )
+        )
         already_used.add(transaction_id)
         already_used.add(other_transaction_id)
 

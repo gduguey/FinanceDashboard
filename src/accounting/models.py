@@ -262,7 +262,12 @@ class TransferLink(BaseModel):
     "flag as transfer"/suggestion-panel pick, `"rule"` for one a
     `TransferRule` found a safe, unique match for at write time (see
     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
-    resolution itself.
+    resolution itself. `rule_id`, set only when `source == "rule"`, names
+    *which* rule found it — a plain historical label, not a foreign key
+    enforced anywhere: if that rule is later deleted, this link keeps
+    remembering which one originally created it rather than the id turning
+    meaningless, the same way a bank statement keeps a routing number that
+    later stops being valid.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -271,6 +276,7 @@ class TransferLink(BaseModel):
     transaction_id_a: str = Field(min_length=1)
     transaction_id_b: str = Field(min_length=1)
     source: TransferLinkSource = "manual"
+    rule_id: str | None = None
 
 
 class CategoryPattern(BaseModel):

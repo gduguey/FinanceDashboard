@@ -494,12 +494,19 @@ def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID)
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
     store = load_store(db_session, user_id=test_user_id)
-    link = TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2", source="rule")
+    link = TransferLink(
+        link_id="transfer-link:t1:t2",
+        transaction_id_a="t1",
+        transaction_id_b="t2",
+        source="rule",
+        rule_id="chase-card-payoff",
+    )
     store = store.model_copy(update={"transfer_links": [link]})
     save_store(store, db_session, user_id=test_user_id)
     reloaded = load_store(db_session, user_id=test_user_id)
 
     assert reloaded.transfer_links == [link]
+    assert reloaded.transfer_links[0].rule_id == "chase-card-payoff"
 
 
 def test_transfer_link_naming_an_already_linked_transaction_raises(

@@ -955,6 +955,7 @@ def _transfer_link_from_row(
         transaction_id_a=first,
         transaction_id_b=second,
         source=row.source,  # type: ignore[arg-type]
+        rule_id=row.rule_id,
     )
 
 
@@ -1336,6 +1337,7 @@ def _add_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: li
             user_id=user_id,
             natural_key=link.link_id,
             source=link.source,
+            rule_id=link.rule_id,
         )
         for link in transfer_links
     )

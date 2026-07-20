@@ -109,6 +109,7 @@ def test_reconcile_rule_links_proposes_a_link_when_both_sides_have_a_unique_matc
 
     assert len(links) == 1
     assert links[0].source == "rule"
+    assert links[0].rule_id == CHASE_CARD_PAYOFF_RULE.rule_id
     assert {links[0].transaction_id_a, links[0].transaction_id_b} == {
         checking_pair[0].transaction_id,
         card_pair[0].transaction_id,
