@@ -146,7 +146,9 @@ export function LinkedTransactionsTable({
             return (
               <TableBody key={row.linkId} ref={rowVirtualizer.measureElement} data-index={virtualRow.index}>
                 <TableRow className="cursor-pointer" onClick={() => toggle(row.linkId)}>
-                  <TableCell className="text-muted-foreground">{formatDate(row.fromPostedAt.slice(0, 10))}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <Truncate text={formatDate(row.fromPostedAt.slice(0, 10))} />
+                  </TableCell>
                   <TableCell>
                     <Truncate text={row.fromAccountName} />
                   </TableCell>
@@ -154,9 +156,11 @@ export function LinkedTransactionsTable({
                     <Truncate text={row.fromDescription} />
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(row.fromAmount, row.fromCurrency)}
+                    <Truncate text={formatCurrency(row.fromAmount, row.fromCurrency)} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{formatDate(row.toPostedAt.slice(0, 10))}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <Truncate text={formatDate(row.toPostedAt.slice(0, 10))} />
+                  </TableCell>
                   <TableCell>
                     <Truncate text={row.toAccountName} />
                   </TableCell>
@@ -164,7 +168,7 @@ export function LinkedTransactionsTable({
                     <Truncate text={row.toDescription} />
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(row.toAmount, row.toCurrency)}
+                    <Truncate text={formatCurrency(row.toAmount, row.toCurrency)} />
                   </TableCell>
                 </TableRow>
                 {isExpanded && (

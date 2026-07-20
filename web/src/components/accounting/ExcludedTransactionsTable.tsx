@@ -114,14 +114,18 @@ export function ExcludedTransactionsTable({
             return (
               <TableBody key={row.transactionId} ref={rowVirtualizer.measureElement} data-index={virtualRow.index}>
                 <TableRow className="cursor-pointer" onClick={() => toggle(row.transactionId)}>
-                  <TableCell className="text-muted-foreground">{formatDate(row.postedAt.slice(0, 10))}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <Truncate text={formatDate(row.postedAt.slice(0, 10))} />
+                  </TableCell>
                   <TableCell>
                     <Truncate text={row.accountName} />
                   </TableCell>
                   <TableCell>
                     <Truncate text={row.description} />
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatCurrency(row.amount, row.currency)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <Truncate text={formatCurrency(row.amount, row.currency)} />
+                  </TableCell>
                 </TableRow>
                 {isExpanded && (
                   <TableRow className="bg-muted/30 hover:bg-muted/30">
