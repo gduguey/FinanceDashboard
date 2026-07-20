@@ -1,8 +1,7 @@
-import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 import { Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { toast } from 'sonner'
-import { type LinkedPairRow, LinkedTransactionsTable } from '@/components/accounting/LinkedTransactionsTable'
+import { LinkedTransactionsTable } from '@/components/accounting/LinkedTransactionsTable'
 import { CounterpartySelect } from '@/components/shared/CounterpartySelect'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Truncate } from '@/components/shared/Truncate'
@@ -17,43 +16,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { useCreateTransferRule, useSetTransferRules } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
-import { formatCurrency, formatDate } from '@/lib/format'
-import { realLegByTransactionId } from '@/lib/transferRowInfo'
+import { type LinkedPairRow, realLegByTransactionId } from '@/lib/transferRowInfo'
 import type { Account, Posting, TransferLink, TransferRule } from '@/types/accounting'
-
-const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
-
-interface ExcludedTransactionInfo {
-  transactionId: string
-  description: string
-  postedAt: string | null
-  amount: number | null
-  currency: string
-}
-
-// A rule's `excluded_transaction_ids` names transactions, never postings —
-// this looks up each one's own real (non-placeholder) leg purely to show a
-// person something recognizable (date/description/amount) instead of a raw
-// id. A transaction id with no matching posting anymore (its statement was
-// re-imported away, or the ledger was rebuilt) still gets a row, just with
-// blanks instead of a crash.
-function excludedTransactionInfos(postings: Posting[], transactionIds: string[]): ExcludedTransactionInfo[] {
-  const realLegByTransactionId = new Map<string, Posting>()
-  for (const posting of postings) {
-    if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
-    if (!realLegByTransactionId.has(posting.transaction_id)) realLegByTransactionId.set(posting.transaction_id, posting)
-  }
-  return transactionIds.map((transactionId) => {
-    const posting = realLegByTransactionId.get(transactionId)
-    return {
-      transactionId,
-      description: posting?.description ?? transactionId,
-      postedAt: posting?.posted_at ?? null,
-      amount: posting?.amount ?? null,
-      currency: posting?.currency ?? 'USD',
-    }
-  })
-}
 
 // Shown under the counterparty picker whenever the chosen account is one a
 // rule can't safely repoint straight onto (see
@@ -154,12 +118,11 @@ export function TransferRulesTab({
   const setRules = useSetTransferRules()
   const createRule = useCreateTransferRule()
   const [editing, setEditing] = useState<TransferRule | null>(null)
-  const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
-  // Which rule's "linked by this rule" table is open — a separate toggle
-  // from `expandedRuleId` (that one's for the exclusions list) so both can
-  // be open for the same, or different, rules at once. Seeded from
-  // `?ruleId=` so the transfer-detail popup's "part of rule…" link can jump
-  // straight to it (see `TransactionsTab.tsx`'s `TransferDetailDialog`).
+  // Which rule's "linked by this rule" table is open. Seeded from `?ruleId=`
+  // so the transfer-detail popup's "part of rule…" link can jump straight
+  // to it (see `TransactionsTab.tsx`'s `TransferDetailDialog`). Excluded
+  // transactions have their own dedicated "Excluded from rules" tab
+  // (`ExcludedFromRulesTab.tsx`) rather than a second expandable section here.
   const [searchParams] = useSearchParams()
   const [linkedExpandedRuleId, setLinkedExpandedRuleId] = useState<string | null>(searchParams.get('ruleId'))
   const [draft, setDraft] = useState<{ descriptionContains: string; counterpartyAccountId: string | null }>({
@@ -229,25 +192,6 @@ export function TransferRulesTab({
     setRules.mutate(rules.map((rule) => (rule.rule_id === ruleId ? { ...rule, active } : rule)))
   }
 
-  // Restores a rule's effect for one specific transaction — it either falls
-  // back to the next-matching rule, or stays uncategorized if none matches,
-  // the same choice excluding it made in the first place (see
-  // TransactionsTab.tsx's own onExcludeFromRule).
-  function removeExclusion(ruleId: string, transactionId: string) {
-    const updated = rules.map((rule) =>
-      rule.rule_id === ruleId
-        ? {
-            ...rule,
-            excluded_transaction_ids: (rule.excluded_transaction_ids ?? []).filter((id) => id !== transactionId),
-          }
-        : rule,
-    )
-    setRules.mutate(updated, {
-      onSuccess: () =>
-        toast.success('Exclusion removed — this rule will resolve that transaction again, if it still matches.'),
-    })
-  }
-
   return (
     <Card>
       <CardHeader>
@@ -275,22 +219,19 @@ export function TransferRulesTab({
               </SortableTableHead>
               <TableHead>Active</TableHead>
               <TableHead>Linked</TableHead>
-              <TableHead>Exclusions</TableHead>
               <TableHead className="w-16" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {sorted.length === 0 && (
               <TableRow>
-                <TableCell colSpan={8} className="py-6 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
                   No rules yet — add one below to automatically categorize recurring transfers.
                 </TableCell>
               </TableRow>
             )}
             {sorted.map((rule) => {
-              const excludedIds = rule.excluded_transaction_ids ?? []
               const linkedRows = linkedPairsByRuleId.get(rule.rule_id) ?? []
-              const expanded = expandedRuleId === rule.rule_id
               const linkedExpanded = linkedExpandedRuleId === rule.rule_id
               return (
                 <Fragment key={rule.rule_id}>
@@ -315,21 +256,6 @@ export function TransferRulesTab({
                     <TableCell className="text-xs text-muted-foreground">
                       {linkedRows.length > 0 ? `${linkedRows.length} linked` : '—'}
                     </TableCell>
-                    <TableCell onClick={(event) => event.stopPropagation()}>
-                      {excludedIds.length > 0 ? (
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-0.5 rounded-sm px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title="Show which transactions this rule is excluded from"
-                          onClick={() => setExpandedRuleId(expanded ? null : rule.rule_id)}
-                        >
-                          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                          {excludedIds.length} excluded
-                        </button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
                     <TableCell className="flex gap-1" onClick={(event) => event.stopPropagation()}>
                       <Button variant="ghost" size="icon" onClick={() => setEditing(rule)}>
                         <Pencil className="size-3.5 text-muted-foreground" />
@@ -341,50 +267,9 @@ export function TransferRulesTab({
                   </TableRow>
                   {linkedExpanded && (
                     <TableRow className="bg-muted/30 hover:bg-muted/30">
-                      <TableCell colSpan={8} onClick={(event) => event.stopPropagation()}>
+                      <TableCell colSpan={7} onClick={(event) => event.stopPropagation()}>
                         <div className="py-1">
                           <LinkedTransactionsTable rows={linkedRows} />
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {expanded && (
-                    <TableRow className="bg-muted/30 hover:bg-muted/30">
-                      <TableCell colSpan={8} onClick={(event) => event.stopPropagation()}>
-                        <div className="flex flex-col gap-1 py-1">
-                          <p className="text-xs text-muted-foreground">
-                            These transactions are excluded from this rule specifically — each falls back to the
-                            next-matching rule, or stays uncategorized if none matches. Everything else this rule
-                            matches is unaffected.
-                          </p>
-                          {excludedTransactionInfos(postings, excludedIds).map((info) => (
-                            <div
-                              key={info.transactionId}
-                              className="flex items-center justify-between gap-2 rounded-sm border bg-background px-2 py-1 text-xs"
-                            >
-                              <span className="flex min-w-0 items-center gap-2">
-                                <span className="truncate">{info.description}</span>
-                                {info.postedAt && (
-                                  <span className="shrink-0 text-muted-foreground">
-                                    {formatDate(info.postedAt.slice(0, 10))}
-                                  </span>
-                                )}
-                                {info.amount !== null && (
-                                  <span className="shrink-0 tabular-nums text-muted-foreground">
-                                    {formatCurrency(info.amount, info.currency)}
-                                  </span>
-                                )}
-                              </span>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                title="Remove this exclusion — the rule will resolve this transaction again, if it still matches"
-                                onClick={() => removeExclusion(rule.rule_id, info.transactionId)}
-                              >
-                                <Trash2 className="size-3.5 text-muted-foreground" />
-                              </Button>
-                            </div>
-                          ))}
                         </div>
                       </TableCell>
                     </TableRow>

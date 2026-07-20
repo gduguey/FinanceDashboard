@@ -13,6 +13,10 @@ import type { TransferRowInfo } from '@/lib/transferRowInfo'
 
 const ESTIMATED_ROW_HEIGHT = 45
 const COLUMN_COUNT = 4
+// Always summing to 100 so the table (rendered `table-fixed`) never needs a
+// horizontal scrollbar to show every column — see `LinkedTransactionsTable`'s
+// own `COLUMN_WIDTHS` for the same convention.
+const COLUMN_WIDTHS = ['15%', '25%', '40%', '20%']
 
 // A rule's excluded transactions, one per row (unlike `LinkedTransactionsTable`,
 // there's no "other side" — exclusion means this rule specifically never
@@ -57,8 +61,13 @@ export function ExcludedTransactionsTable({
           Unfold all
         </Button>
       </div>
-      <div ref={scrollParentRef} className="max-h-[50vh] overflow-x-auto overflow-y-auto rounded-md border">
-        <Table>
+      <div ref={scrollParentRef} className="max-h-[50vh] overflow-y-auto rounded-md border">
+        <Table className="table-fixed">
+          <colgroup>
+            {COLUMN_WIDTHS.map((width, index) => (
+              <col key={index} style={{ width }} />
+            ))}
+          </colgroup>
           <TableHeader>
             <TableRow>
               <SortableTableHead
@@ -105,11 +114,11 @@ export function ExcludedTransactionsTable({
             return (
               <TableBody key={row.transactionId} ref={rowVirtualizer.measureElement} data-index={virtualRow.index}>
                 <TableRow className="cursor-pointer" onClick={() => toggle(row.transactionId)}>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">
-                    {formatDate(row.postedAt.slice(0, 10))}
+                  <TableCell className="text-muted-foreground">{formatDate(row.postedAt.slice(0, 10))}</TableCell>
+                  <TableCell>
+                    <Truncate text={row.accountName} />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap">{row.accountName}</TableCell>
-                  <TableCell className="max-w-[240px]">
+                  <TableCell>
                     <Truncate text={row.description} />
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{formatCurrency(row.amount, row.currency)}</TableCell>
@@ -117,7 +126,7 @@ export function ExcludedTransactionsTable({
                 {isExpanded && (
                   <TableRow className="bg-muted/30 hover:bg-muted/30">
                     <TableCell colSpan={COLUMN_COUNT}>
-                      <div className="flex items-center justify-between gap-3 py-1">
+                      <div className="flex flex-wrap items-center justify-between gap-3 py-1">
                         <TransferRowCard row={row} />
                         <Button
                           variant="destructive"
