@@ -1,4 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
+import { ExcludedFromRulesTab } from '@/components/accounting/ExcludedFromRulesTab'
 import { TransferRulesTab } from '@/components/accounting/TransferRulesTab'
 import { TransferSuggestionsPanel } from '@/components/accounting/TransferSuggestionsPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -29,9 +30,15 @@ export function RulesPage() {
             <TabsList>
               <TabsTrigger value="rules">Rules</TabsTrigger>
               <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
+              <TabsTrigger value="excluded">Excluded from rules</TabsTrigger>
             </TabsList>
             <TabsContent value="rules">
-              <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} postings={postings ?? []} />
+              <TransferRulesTab
+                rules={store.transfer_rules}
+                accounts={store.accounts}
+                postings={postings ?? []}
+                transferLinks={store.transfer_links}
+              />
             </TabsContent>
             <TabsContent value="suggestions">
               <TransferSuggestionsPanel
@@ -39,6 +46,9 @@ export function RulesPage() {
                 rules={store.transfer_rules}
                 postings={postings ?? []}
               />
+            </TabsContent>
+            <TabsContent value="excluded">
+              <ExcludedFromRulesTab rules={store.transfer_rules} accounts={store.accounts} postings={postings ?? []} />
             </TabsContent>
           </Tabs>
         )}
