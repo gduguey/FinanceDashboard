@@ -151,10 +151,6 @@ interface TransferBadgeInfo {
         source: 'manual' | 'rule'
         ruleId: string | null
         linkId: string
-        // The transaction whose row this badge is rendered on — needed for
-        // the "exclude this specific transfer from rule…" action, which
-        // only ever excludes this one side, not both.
-        transactionId: string
         from: TransferRowInfo
         to: TransferRowInfo
       }
@@ -758,7 +754,6 @@ function TransactionsTable({
             source: posting.transfer_link_source === 'rule' ? 'rule' : 'manual',
             ruleId: link.rule_id ?? null,
             linkId: link.link_id,
-            transactionId: posting.transaction_id,
             from,
             to,
           },

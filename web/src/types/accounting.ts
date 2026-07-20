@@ -95,7 +95,6 @@ export type DismissSuggestionRequest = components['schemas']['DismissSuggestionR
 export type PostingMerge = components['schemas']['PostingMerge']
 export type PostingMergeUpsert = components['schemas']['PostingMergeUpsert']
 export type TransferLink = components['schemas']['TransferLink']
-export type TransferLinkSource = TransferLink['source']
 export type TransferLinkCreate = components['schemas']['TransferLinkCreate']
 export type LlmProviderUsage = components['schemas']['LlmProviderUsage']
 

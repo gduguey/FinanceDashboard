@@ -32,12 +32,6 @@ export function safeDirectRepointOptions(accounts: Record<string, Account>): Acc
   return counterpartyOptions(accounts).filter((account) => !IMPORTABLE_ACCOUNT_KINDS.has(account.kind))
 }
 
-// The subset of `counterpartyOptions` that needs safe linking rather than a
-// direct repoint — see `safeDirectRepointOptions`'s own comment.
-export function needsLinkingOptions(accounts: Record<string, Account>): Account[] {
-  return counterpartyOptions(accounts).filter((account) => IMPORTABLE_ACCOUNT_KINDS.has(account.kind))
-}
-
 export function needsLinkingAccount(account: Account | undefined): boolean {
   return account !== undefined && IMPORTABLE_ACCOUNT_KINDS.has(account.kind)
 }
