@@ -1,10 +1,12 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
+import { ArrowRight, ArrowRightLeft, Pencil, RotateCcw, Scissors, Sparkles, Undo2 } from 'lucide-react'
 import { memo, type Ref, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { PostingSplitDialog } from '@/components/accounting/PostingSplitDialog'
 import { TagsCell } from '@/components/accounting/TagsCell'
+import { TransferRowCard } from '@/components/accounting/TransferRowCard'
 import {
   categoriesWithSubcategories,
   needsCategorizing,
@@ -19,6 +21,7 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -43,6 +46,7 @@ import { formatCurrency, formatDate, formatMonthLong } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { availableMonths } from '@/lib/months'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
+import { realLegByTransactionId as buildRealLegByTransactionId, type TransferRowInfo } from '@/lib/transferRowInfo'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
@@ -82,6 +86,32 @@ type PickEligibility = 'source' | 'eligible' | 'already-linked' | 'already-split
 interface PickHint {
   eligibility: PickEligibility
   tooltip?: string
+}
+
+// Everything the category-column "Transfer …" badge and its detail popup
+// need — computed once per posting in `TransactionsTable` (see
+// `transferBadgeByPostingId`), covering exactly the two mechanisms that
+// move there: a `TransferLink` (manual or rule-found) and a manual
+// "point at an account" `ManualOverride.account_id`. The older `apply_rules`
+// direct-repoint-to-a-safe-account mechanism (the "via rule" badge) is
+// deliberately untouched and stays in the account column — it predates
+// both of these and isn't part of this redesign.
+interface TransferBadgeInfo {
+  label: string
+  popup:
+    | {
+        kind: 'link'
+        source: 'manual' | 'rule'
+        ruleId: string | null
+        linkId: string
+        // The transaction whose row this badge is rendered on — needed for
+        // the "exclude this specific transfer from rule…" action, which
+        // only ever excludes this one side, not both.
+        transactionId: string
+        from: TransferRowInfo
+        to: TransferRowInfo
+      }
+    | { kind: 'override'; postingId: string; otherAccountName: string }
 }
 
 // How close two amounts have to be to count as "the same transfer, opposite
@@ -163,9 +193,7 @@ interface TransactionRowProps {
   aiAvailable: boolean
   safeCounterpartyAccounts: Account[]
   pickHint: PickHint | null
-  linkedAccountName: string | null
-  linkId: string | null
-  manualOverrideAccountName: string | null
+  transferBadge: TransferBadgeInfo | null
   onOverride: (postingId: string, override: Partial<ManualOverride>) => void
   onAiSuggest: (posting: Posting) => void
   onSplit: (posting: Posting) => void
@@ -175,8 +203,7 @@ interface TransactionRowProps {
   onExcludeFromRule: (transactionId: string, ruleId: string) => void
   onStartPicking: (posting: Posting) => void
   onPickTarget: (posting: Posting) => void
-  onUnlinkTransfer: (linkId: string) => void
-  onUndoManualOverride: (postingId: string) => void
+  onOpenTransferDetail: (postingId: string) => void
 }
 
 // Extracted and memoized so that state changes scoped to one row (an AI
@@ -200,9 +227,7 @@ const TransactionRow = memo(function TransactionRow({
   aiAvailable,
   safeCounterpartyAccounts,
   pickHint,
-  linkedAccountName,
-  linkId,
-  manualOverrideAccountName,
+  transferBadge,
   onOverride,
   onAiSuggest,
   onSplit,
@@ -212,30 +237,41 @@ const TransactionRow = memo(function TransactionRow({
   onExcludeFromRule,
   onStartPicking,
   onPickTarget,
-  onUnlinkTransfer,
-  onUndoManualOverride,
+  onOpenTransferDetail,
 }: TransactionRowProps) {
   const originalId = splitOriginalId(posting.posting_id)
   const pendingClass = posting.pending_source ? PENDING_ROW_CLASS[posting.pending_source] : undefined
-  const [pickingTransfer, setPickingTransfer] = useState(false)
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [showAccountFallback, setShowAccountFallback] = useState(false)
   // A transaction already split into categorized legs must never be
   // silently excluded from income/expense by a link formed afterward (see
   // `ledger.transfers.reconcile_rule_links`'s own guard, mirrored here) —
   // the split-leg row itself is what `originalId` names.
   const alreadySplit = originalId !== null
+  // Skipping straight into picking mode when there's no external/safe
+  // account to offer as the other option — a 2-choice popup with only one
+  // real choice is a pointless extra click.
+  function openFlagAsTransfer() {
+    if (safeCounterpartyAccounts.length === 0) {
+      onStartPicking(posting)
+      return
+    }
+    setShowAccountFallback(false)
+    setTransferDialogOpen(true)
+  }
   // While a table-wide pick is active, every row that isn't the source
   // itself gets styled/gated by its own eligibility (see `pickHintByPostingId`
-  // in `TransactionsTable`) — an amount mismatch stays visible and hoverable
-  // (never hidden/greyed) so a user can see *why* it's not pickable, while
-  // an already-linked/already-split row is greyed out since no amount would
-  // ever make it valid.
+  // in `TransactionsTable`) — the source row and an eligible target both
+  // stay visually distinct from a row that can never be picked (already
+  // linked/split, or an amount that can't match), which is greyed out.
   const pickRowClass =
     pickHint?.eligibility === 'source'
-      ? 'ring-1 ring-inset ring-primary/40 bg-primary/5'
+      ? 'ring-1 ring-inset ring-green-500/50 bg-green-100 dark:bg-green-950/40'
       : pickHint?.eligibility === 'eligible'
         ? 'cursor-pointer hover:bg-muted/70'
-        : pickHint?.eligibility === 'already-linked' || pickHint?.eligibility === 'already-split'
+        : pickHint?.eligibility === 'already-linked' ||
+            pickHint?.eligibility === 'already-split' ||
+            pickHint?.eligibility === 'amount-mismatch'
           ? 'opacity-50'
           : undefined
   const rowClassName = [pendingClass, pickRowClass].filter(Boolean).join(' ') || undefined
@@ -283,117 +319,9 @@ const TransactionRow = memo(function TransactionRow({
             )}
           </span>
         )}
-        {posting.manual_transfer_override_posting_id && (
-          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-            <span
-              title={`Manually flagged as a transfer to ${manualOverrideAccountName ?? 'another account'} — its own posting was never otherwise changed`}
-            >
-              manual
-            </span>
-            <button
-              type="button"
-              className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-sm hover:bg-background hover:text-foreground"
-              title="Undo — restore this to a normal, uncategorized transaction"
-              onClick={() => onUndoManualOverride(posting.manual_transfer_override_posting_id ?? '')}
-            >
-              ×
-            </button>
-          </span>
+        {pickHint?.eligibility === 'source' && (
+          <span className="ml-1 text-[10px] text-muted-foreground">picking a match…</span>
         )}
-        {posting.is_linked_transfer && (
-          <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-            <span
-              title={`Linked ${posting.transfer_link_source === 'rule' ? 'via a rule' : 'manually'} to ${linkedAccountName ?? 'another transaction'} — its own posting was never changed`}
-            >
-              linked
-            </span>
-            {linkId && (
-              <button
-                type="button"
-                className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-sm hover:bg-background hover:text-foreground"
-                title="Unlink this transfer"
-                onClick={() => onUnlinkTransfer(linkId)}
-              >
-                ×
-              </button>
-            )}
-          </span>
-        )}
-        {isRealIncomeExpense &&
-          (pickHint?.eligibility === 'source' ? (
-            <span className="ml-1 text-[10px] text-muted-foreground">picking a match…</span>
-          ) : pickHint !== null ? null : pickingTransfer ? (
-            <span className="ml-1 inline-flex flex-col gap-1" onClick={(event) => event.stopPropagation()}>
-              {alreadySplit ? (
-                <p className="max-w-40 text-[10px] text-muted-foreground">
-                  Already split into categorized legs — can't be linked as a transfer.
-                </p>
-              ) : showAccountFallback ? (
-                <span className="flex flex-col gap-1 rounded-sm border bg-popover p-1.5 shadow-sm">
-                  <CounterpartySelect
-                    accounts={safeCounterpartyAccounts}
-                    value={null}
-                    onChange={(accountId) => {
-                      if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
-                      setPickingTransfer(false)
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="self-start rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
-                    onClick={() => setPickingTransfer(false)}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              ) : (
-                <span className="flex max-w-52 flex-col gap-1 rounded-sm border bg-popover p-1.5 shadow-sm">
-                  <p className="px-1 text-[10px] text-muted-foreground">
-                    Link this to another transaction you've already imported, or point it at one of your own non-bank
-                    accounts (cash, a loan, a payee).
-                  </p>
-                  <button
-                    type="button"
-                    className="rounded-sm px-1 py-0.5 text-left text-[10px] hover:bg-muted"
-                    onClick={() => {
-                      onStartPicking(posting)
-                      setPickingTransfer(false)
-                    }}
-                  >
-                    Link to another transaction…
-                  </button>
-                  {safeCounterpartyAccounts.length > 0 && (
-                    <button
-                      type="button"
-                      className="rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
-                      onClick={() => setShowAccountFallback(true)}
-                    >
-                      Point at an account instead
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="self-start rounded-sm px-1 py-0.5 text-left text-[10px] text-muted-foreground underline hover:text-foreground"
-                    onClick={() => setPickingTransfer(false)}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              )}
-            </span>
-          ) : (
-            <button
-              type="button"
-              className="ml-1 rounded-sm bg-muted px-1 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-              title="Flag this transaction as a transfer to one of your other accounts"
-              onClick={() => {
-                setShowAccountFallback(false)
-                setPickingTransfer(true)
-              }}
-            >
-              flag as transfer
-            </button>
-          ))}
       </TableCell>
       <TableCell className="max-w-[200px]">
         <Truncate text={posting.description} />
@@ -414,13 +342,18 @@ const TransactionRow = memo(function TransactionRow({
               onOverride(posting.posting_id, { category_id: categoryId, subcategory_id: null })
             }
           />
-        ) : (
-          <span
-            className="text-xs text-muted-foreground"
-            title="A transfer between two of your own accounts is never categorized"
+        ) : transferBadge ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+            title="View this transfer"
+            onClick={() => onOpenTransferDetail(posting.posting_id)}
           >
-            Transfer
-          </span>
+            {transferBadge.label}
+            <Pencil className="size-3" />
+          </button>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
         )}
       </TableCell>
       <TableCell>
@@ -444,6 +377,11 @@ const TransactionRow = memo(function TransactionRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-0.5">
+          {isRealIncomeExpense && (
+            <Button variant="ghost" size="icon" title="Mark as transfer" onClick={openFlagAsTransfer}>
+              <ArrowRightLeft className="size-3.5 text-muted-foreground" />
+            </Button>
+          )}
           {needsCategorizing(posting, withSubcategories, isRealIncomeExpense) && (
             <Button
               variant="ghost"
@@ -467,9 +405,178 @@ const TransactionRow = memo(function TransactionRow({
         </div>
         {aiMessage && <p className="max-w-32 text-[10px] text-muted-foreground">{aiMessage}</p>}
       </TableCell>
+      {isRealIncomeExpense && (
+        <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Flag as transfer</DialogTitle>
+            </DialogHeader>
+            {alreadySplit ? (
+              <p className="text-sm text-muted-foreground">
+                Already split into categorized legs — can't be linked as a transfer.
+              </p>
+            ) : showAccountFallback ? (
+              <div className="flex flex-col gap-2">
+                <CounterpartySelect
+                  accounts={safeCounterpartyAccounts}
+                  value={null}
+                  onChange={(accountId) => {
+                    if (accountId) onMarkAsTransfer(posting.transaction_id, accountId)
+                    setTransferDialogOpen(false)
+                  }}
+                />
+                <Button variant="ghost" size="sm" className="self-start" onClick={() => setShowAccountFallback(false)}>
+                  Back
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <p className="text-sm text-muted-foreground">
+                  Link this to another transaction you've already imported, or point it at one of your own non-bank
+                  accounts (cash, a loan, a payee).
+                </p>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    onStartPicking(posting)
+                    setTransferDialogOpen(false)
+                  }}
+                >
+                  Link to another transaction…
+                </Button>
+                <Button variant="outline" onClick={() => setShowAccountFallback(true)}>
+                  Point at an account instead
+                </Button>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setTransferDialogOpen(false)}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </TableRow>
   )
 })
+
+// The popup a category-column transfer badge opens on click — exactly one
+// of the three shapes `TransferBadgeInfo.popup` can hold. Its own component
+// (rather than inline JSX) so each branch can pull the fields it needs into
+// plain local consts once, instead of repeating `badge.popup.foo` property
+// access inside click handlers (which TypeScript can't narrow the same way
+// a local const's own type gets narrowed).
+function TransferDetailDialog({
+  badge,
+  ruleLabelById,
+  onClose,
+  onUnlinkTransfer,
+  onUndoManualOverride,
+  onExcludeFromRule,
+}: {
+  badge: TransferBadgeInfo
+  ruleLabelById: Map<string, string | undefined>
+  onClose: () => void
+  onUnlinkTransfer: (linkId: string) => void
+  onUndoManualOverride: (postingId: string) => void
+  onExcludeFromRule: (transactionId: string, ruleId: string) => void
+}) {
+  const { popup } = badge
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Transfer</DialogTitle>
+        </DialogHeader>
+        {popup.kind === 'override' ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">
+              This transfer goes into the external account <span className="font-medium">{popup.otherAccountName}</span>
+              .
+            </p>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                onUndoManualOverride(popup.postingId)
+                onClose()
+              }}
+            >
+              Unmark as transfer
+            </Button>
+            <p className="text-xs text-muted-foreground">There is no going back.</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">
+              This transfer goes from <span className="font-medium">{popup.from.accountName}</span> to{' '}
+              <span className="font-medium">{popup.to.accountName}</span>
+              {popup.source === 'rule' && popup.ruleId
+                ? (() => {
+                    const ruleId = popup.ruleId
+                    return (
+                      <>
+                        {' '}
+                        and is part of rule{' '}
+                        <Link className="underline hover:text-foreground" to={`/rules?tab=rules&ruleId=${ruleId}`}>
+                          {ruleLabelById.get(ruleId) ?? ruleId}
+                        </Link>
+                      </>
+                    )
+                  })()
+                : null}
+              .
+            </p>
+            <div className="flex items-center gap-2">
+              <TransferRowCard row={popup.from} />
+              <ArrowRight className="size-4 shrink-0 text-muted-foreground" />
+              <TransferRowCard row={popup.to} />
+            </div>
+            {popup.source === 'rule' && popup.ruleId ? (
+              (() => {
+                const ruleId = popup.ruleId
+                const transactionId = popup.transactionId
+                return (
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        onExcludeFromRule(transactionId, ruleId)
+                        onClose()
+                      }}
+                    >
+                      Exclude this specific transfer from rule {ruleLabelById.get(ruleId) ?? ruleId}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      The excluded transfers can be found{' '}
+                      <Link className="underline hover:text-foreground" to={`/rules?tab=excluded&ruleId=${ruleId}`}>
+                        here
+                      </Link>
+                      .
+                    </p>
+                  </>
+                )
+              })()
+            ) : (
+              <>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    onUnlinkTransfer(popup.linkId)
+                    onClose()
+                  }}
+                >
+                  Unmark as transfer
+                </Button>
+                <p className="text-xs text-muted-foreground">There is no going back.</p>
+              </>
+            )}
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 function TransactionsTable({
   storageKey,
@@ -541,25 +648,16 @@ function TransactionsTable({
     }
     return lookup
   }, [postings])
-  // Each transaction's own real leg (account + description) — used to
-  // label a "linked" badge's counterpart by something a person recognizes
-  // rather than a raw transaction id.
-  const realLegByTransactionId = useMemo(() => {
-    const lookup = new Map<string, { accountName: string; description: string }>()
-    for (const posting of postings) {
-      if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
-      lookup.set(posting.transaction_id, {
-        accountName: accounts[posting.account_id]?.name ?? posting.account_id,
-        description: posting.description,
-      })
-    }
-    return lookup
-  }, [postings, accounts])
-  const linkIdByTransactionId = useMemo(() => {
-    const lookup = new Map<string, string>()
+  // Each transaction's own real leg, in full — used both to label a
+  // "linked" badge's counterpart by something a person recognizes rather
+  // than a raw transaction id, and to render its row in the transfer-detail
+  // popup.
+  const realLegByTransactionId = useMemo(() => buildRealLegByTransactionId(postings, accounts), [postings, accounts])
+  const linkByTransactionId = useMemo(() => {
+    const lookup = new Map<string, TransferLink>()
     for (const link of transferLinks) {
-      lookup.set(link.transaction_id_a, link.link_id)
-      lookup.set(link.transaction_id_b, link.link_id)
+      lookup.set(link.transaction_id_a, link)
+      lookup.set(link.transaction_id_b, link)
     }
     return lookup
   }, [transferLinks])
@@ -574,6 +672,53 @@ function TransactionsTable({
     }
     return lookup
   }, [postings, accounts])
+  // Everything the category-column badge and its detail popup need for a
+  // linked or manually-overridden transaction — keyed by posting id (the
+  // real-leg row that's actually rendered; placeholders never are). "to"
+  // when this posting's own amount is negative (money leaving), "from"
+  // when positive (money arriving) — one rule, both mechanisms.
+  const transferBadgeByPostingId = useMemo(() => {
+    const lookup = new Map<string, TransferBadgeInfo>()
+    for (const posting of postings) {
+      if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
+      const direction = posting.amount < 0 ? 'to' : 'from'
+      if (posting.is_linked_transfer && posting.linked_transaction_id) {
+        const link = linkByTransactionId.get(posting.transaction_id)
+        const other = realLegByTransactionId.get(posting.linked_transaction_id)
+        const mine = realLegByTransactionId.get(posting.transaction_id)
+        if (!link || !other || !mine) continue
+        const [from, to] = posting.amount < 0 ? [mine, other] : [other, mine]
+        lookup.set(posting.posting_id, {
+          label: `Transfer ${direction} ${other.accountName}`,
+          popup: {
+            kind: 'link',
+            source: posting.transfer_link_source === 'rule' ? 'rule' : 'manual',
+            ruleId: link.rule_id ?? null,
+            linkId: link.link_id,
+            transactionId: posting.transaction_id,
+            from,
+            to,
+          },
+        })
+      } else if (posting.manual_transfer_override_posting_id) {
+        const otherAccountName =
+          accountNameByPostingId.get(posting.manual_transfer_override_posting_id) ?? 'another account'
+        lookup.set(posting.posting_id, {
+          label: `Transfer ${direction} ${otherAccountName}`,
+          popup: { kind: 'override', postingId: posting.manual_transfer_override_posting_id, otherAccountName },
+        })
+      }
+    }
+    return lookup
+  }, [postings, linkByTransactionId, realLegByTransactionId, accountNameByPostingId])
+  // The posting whose transfer-detail popup is open, or `null` — looked up
+  // against `transferBadgeByPostingId` at render time rather than storing
+  // the resolved info itself, so the popup always reflects the latest data.
+  const [transferDetailPostingId, setTransferDetailPostingId] = useState<string | null>(null)
+  const handleOpenTransferDetail = useCallback((postingId: string) => setTransferDetailPostingId(postingId), [])
+  const transferDetail = transferDetailPostingId
+    ? (transferBadgeByPostingId.get(transferDetailPostingId) ?? null)
+    : null
 
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
@@ -1121,7 +1266,7 @@ function TransactionsTable({
       </CardHeader>
       <CardContent>
         {pickingSource && (
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-green-500/40 bg-green-100 px-3 py-2 text-sm dark:bg-green-950/40">
             <span>
               Pick the transaction that matches{' '}
               <span className="font-medium tabular-nums">
@@ -1240,17 +1385,7 @@ function TransactionsTable({
                       aiAvailable={aiAvailable}
                       safeCounterpartyAccounts={safeCounterpartyAccounts}
                       pickHint={pickHintByPostingId?.get(posting.posting_id) ?? null}
-                      linkedAccountName={
-                        posting.linked_transaction_id
-                          ? (realLegByTransactionId.get(posting.linked_transaction_id)?.accountName ?? null)
-                          : null
-                      }
-                      linkId={linkIdByTransactionId.get(posting.transaction_id) ?? null}
-                      manualOverrideAccountName={
-                        posting.manual_transfer_override_posting_id
-                          ? (accountNameByPostingId.get(posting.manual_transfer_override_posting_id) ?? null)
-                          : null
-                      }
+                      transferBadge={transferBadgeByPostingId.get(posting.posting_id) ?? null}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
                       onSplit={setSplitting}
@@ -1260,8 +1395,7 @@ function TransactionsTable({
                       onExcludeFromRule={handleExcludeFromRule}
                       onStartPicking={handleStartPicking}
                       onPickTarget={handlePickTarget}
-                      onUnlinkTransfer={handleUnlinkTransfer}
-                      onUndoManualOverride={handleUndoManualOverride}
+                      onOpenTransferDetail={handleOpenTransferDetail}
                     />
                   )
                 })}
@@ -1277,6 +1411,16 @@ function TransactionsTable({
       </CardContent>
       {splitting && (
         <PostingSplitDialog posting={splitting} categories={categories} onClose={() => setSplitting(null)} />
+      )}
+      {transferDetail && (
+        <TransferDetailDialog
+          badge={transferDetail}
+          ruleLabelById={ruleLabelById}
+          onClose={() => setTransferDetailPostingId(null)}
+          onUnlinkTransfer={handleUnlinkTransfer}
+          onUndoManualOverride={handleUndoManualOverride}
+          onExcludeFromRule={handleExcludeFromRule}
+        />
       )}
     </Card>
   )

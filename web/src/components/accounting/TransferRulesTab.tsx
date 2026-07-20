@@ -1,6 +1,8 @@
 import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
-import { Fragment, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
+import { type LinkedPairRow, LinkedTransactionsTable } from '@/components/accounting/LinkedTransactionsTable'
 import { CounterpartySelect } from '@/components/shared/CounterpartySelect'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Truncate } from '@/components/shared/Truncate'
@@ -16,7 +18,8 @@ import { useCreateTransferRule, useSetTransferRules } from '@/hooks/useAccountin
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
 import { formatCurrency, formatDate } from '@/lib/format'
-import type { Account, Posting, TransferRule } from '@/types/accounting'
+import { realLegByTransactionId } from '@/lib/transferRowInfo'
+import type { Account, Posting, TransferLink, TransferRule } from '@/types/accounting'
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
@@ -141,15 +144,24 @@ export function TransferRulesTab({
   rules,
   accounts,
   postings,
+  transferLinks,
 }: {
   rules: TransferRule[]
   accounts: Record<string, Account>
   postings: Posting[]
+  transferLinks: TransferLink[]
 }) {
   const setRules = useSetTransferRules()
   const createRule = useCreateTransferRule()
   const [editing, setEditing] = useState<TransferRule | null>(null)
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null)
+  // Which rule's "linked by this rule" table is open — a separate toggle
+  // from `expandedRuleId` (that one's for the exclusions list) so both can
+  // be open for the same, or different, rules at once. Seeded from
+  // `?ruleId=` so the transfer-detail popup's "part of rule…" link can jump
+  // straight to it (see `TransactionsTab.tsx`'s `TransferDetailDialog`).
+  const [searchParams] = useSearchParams()
+  const [linkedExpandedRuleId, setLinkedExpandedRuleId] = useState<string | null>(searchParams.get('ruleId'))
   const [draft, setDraft] = useState<{ descriptionContains: string; counterpartyAccountId: string | null }>({
     descriptionContains: '',
     counterpartyAccountId: null,
@@ -158,6 +170,40 @@ export function TransferRulesTab({
   const options = counterpartyOptions(accounts)
   const counterpartyName = (rule: TransferRule) =>
     (rule.counterparty_account_id && accounts[rule.counterparty_account_id]?.name) || '—'
+  const legByTransactionId = useMemo(() => realLegByTransactionId(postings, accounts), [postings, accounts])
+  // Every confirmed transfer link, grouped by the rule that created it —
+  // links a user made manually (`rule_id === null`) never show up here.
+  const linkedPairsByRuleId = useMemo(() => {
+    const map = new Map<string, LinkedPairRow[]>()
+    for (const link of transferLinks) {
+      if (!link.rule_id) continue
+      const legA = legByTransactionId.get(link.transaction_id_a)
+      const legB = legByTransactionId.get(link.transaction_id_b)
+      if (!legA || !legB) continue
+      // Negative amount = money leaving that account = the "from" side,
+      // same convention `TransactionsTab`'s "Transfer to/from…" badge uses.
+      const [from, to] = legA.amount < 0 ? [legA, legB] : [legB, legA]
+      const row: LinkedPairRow = {
+        linkId: link.link_id,
+        fromTransactionId: from.transactionId,
+        fromAccountName: from.accountName,
+        fromDescription: from.description,
+        fromPostedAt: from.postedAt,
+        fromAmount: from.amount,
+        fromCurrency: from.currency,
+        toTransactionId: to.transactionId,
+        toAccountName: to.accountName,
+        toDescription: to.description,
+        toPostedAt: to.postedAt,
+        toAmount: to.amount,
+        toCurrency: to.currency,
+      }
+      const existing = map.get(link.rule_id)
+      if (existing) existing.push(row)
+      else map.set(link.rule_id, [row])
+    }
+    return map
+  }, [transferLinks, legByTransactionId])
 
   function addRule() {
     if (!draft.descriptionContains || !draft.counterpartyAccountId) return
@@ -228,6 +274,7 @@ export function TransferRulesTab({
                 Priority
               </SortableTableHead>
               <TableHead>Active</TableHead>
+              <TableHead>Linked</TableHead>
               <TableHead>Exclusions</TableHead>
               <TableHead className="w-16" />
             </TableRow>
@@ -235,31 +282,40 @@ export function TransferRulesTab({
           <TableBody>
             {sorted.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={8} className="py-6 text-center text-sm text-muted-foreground">
                   No rules yet — add one below to automatically categorize recurring transfers.
                 </TableCell>
               </TableRow>
             )}
             {sorted.map((rule) => {
               const excludedIds = rule.excluded_transaction_ids ?? []
+              const linkedRows = linkedPairsByRuleId.get(rule.rule_id) ?? []
               const expanded = expandedRuleId === rule.rule_id
+              const linkedExpanded = linkedExpandedRuleId === rule.rule_id
               return (
                 <Fragment key={rule.rule_id}>
-                  <TableRow className={rule.active ? '' : 'opacity-50'}>
+                  <TableRow
+                    className={`cursor-pointer ${rule.active ? '' : 'opacity-50'}`}
+                    aria-expanded={linkedExpanded}
+                    onClick={() => setLinkedExpandedRuleId(linkedExpanded ? null : rule.rule_id)}
+                  >
                     <TableCell className="font-medium">{rule.description_contains}</TableCell>
                     <TableCell className="text-muted-foreground">{counterpartyName(rule)}</TableCell>
                     <TableCell className="max-w-xs text-muted-foreground">
                       {rule.description ? <Truncate text={rule.description} /> : '—'}
                     </TableCell>
                     <TableCell className="text-muted-foreground">{rule.priority}</TableCell>
-                    <TableCell>
+                    <TableCell onClick={(event) => event.stopPropagation()}>
                       <Switch
                         size="sm"
                         checked={rule.active}
                         onCheckedChange={(checked) => toggleActive(rule.rule_id, checked)}
                       />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {linkedRows.length > 0 ? `${linkedRows.length} linked` : '—'}
+                    </TableCell>
+                    <TableCell onClick={(event) => event.stopPropagation()}>
                       {excludedIds.length > 0 ? (
                         <button
                           type="button"
@@ -274,7 +330,7 @@ export function TransferRulesTab({
                         <span className="text-xs text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="flex gap-1">
+                    <TableCell className="flex gap-1" onClick={(event) => event.stopPropagation()}>
                       <Button variant="ghost" size="icon" onClick={() => setEditing(rule)}>
                         <Pencil className="size-3.5 text-muted-foreground" />
                       </Button>
@@ -283,9 +339,18 @@ export function TransferRulesTab({
                       </Button>
                     </TableCell>
                   </TableRow>
+                  {linkedExpanded && (
+                    <TableRow className="bg-muted/30 hover:bg-muted/30">
+                      <TableCell colSpan={8} onClick={(event) => event.stopPropagation()}>
+                        <div className="py-1">
+                          <LinkedTransactionsTable rows={linkedRows} />
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {expanded && (
                     <TableRow className="bg-muted/30 hover:bg-muted/30">
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={8} onClick={(event) => event.stopPropagation()}>
                         <div className="flex flex-col gap-1 py-1">
                           <p className="text-xs text-muted-foreground">
                             These transactions are excluded from this rule specifically — each falls back to the

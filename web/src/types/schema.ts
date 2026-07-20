@@ -6526,7 +6526,12 @@ export interface components {
      *     "flag as transfer"/suggestion-panel pick, `"rule"` for one a
      *     `TransferRule` found a safe, unique match for at write time (see
      *     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
-     *     resolution itself.
+     *     resolution itself. `rule_id`, set only when `source == "rule"`, names
+     *     *which* rule found it — a plain historical label, not a foreign key
+     *     enforced anywhere: if that rule is later deleted, this link keeps
+     *     remembering which one originally created it rather than the id turning
+     *     meaningless, the same way a bank statement keeps a routing number that
+     *     later stops being valid.
      */
     TransferLink: {
       /** Link Id */
@@ -6541,6 +6546,8 @@ export interface components {
        * @enum {string}
        */
       source: 'manual' | 'rule'
+      /** Rule Id */
+      rule_id?: string | null
     }
     /**
      * TransferLinkCreate
