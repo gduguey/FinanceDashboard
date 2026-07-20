@@ -18,6 +18,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import (
@@ -44,7 +45,14 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
-from db.base import VersionConflictError, check_and_bump_version, derive_id, get_version, natural_keys_by_id
+from db.base import (
+    VersionConflictError,
+    check_and_bump_row_version,
+    check_and_bump_version,
+    derive_id,
+    get_version,
+    natural_keys_by_id,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -875,7 +883,100 @@ def _rule_from_row(
         description=row.description,
         active=row.active,
         excluded_transaction_ids=excluded_transaction_ids,
+        version=row.version,
     )
+
+
+_TRANSFER_RULES_TABLE = "accounting.transfer_rules"
+
+
+def update_transfer_rule(
+    session: Session, user_id: uuid.UUID, rule: TransferRule, expected_version: int
+) -> TransferRule | None:
+    """Update one transfer rule's fields in place, touching no other persisted entity.
+
+    `rule.rule_id` identifies which row to update; every other field on
+    `rule` (including `rule.version`, which is never read here — only
+    `expected_version` is) becomes that row's new state. Unlike
+    `save_store`, this never deletes and reinserts the whole
+    `transfer_rules` table — it's a single row, guarded by
+    `db.base.check_and_bump_row_version` so a stale client can't silently
+    clobber a concurrent edit to the same rule. Caller is responsible for
+    running `ledger.transfers.reconcile_and_persist_rule_links` afterward,
+    same as `POST /transfer-rules` already does.
+
+    Returns
+    -------
+    TransferRule | None
+        The rule as persisted after the update, or `None` if no rule with
+        `rule.rule_id` exists for this user. Raises `db.base.VersionConflictError`
+        (propagated straight from `check_and_bump_row_version`) if the rule
+        exists but `expected_version` no longer matches what's stored.
+
+    Raises
+    ------
+    RuntimeError
+        If the row vanishes between the version check just above and this
+        function's own read of it — the version check already proved the
+        row exists inside this same transaction, so this is only a
+        defensive invariant, never expected to actually happen.
+    """
+    row_id = derive_id(user_id, "transfer_rules", rule.rule_id)
+    new_version = check_and_bump_row_version(session, _TRANSFER_RULES_TABLE, row_id, user_id, expected_version)
+    if new_version is None:
+        return None
+    row = session.get(adb.TransferRule, row_id)
+    if row is None:
+        message = f"transfer_rules row {row_id} vanished between its version check and this read"
+        raise RuntimeError(message)
+    row.description_contains = rule.description_contains
+    row.account_id = _account_id(user_id, rule.account_id) if rule.account_id is not None else None
+    row.counterparty_account_id = (
+        _account_id(user_id, rule.counterparty_account_id) if rule.counterparty_account_id is not None else None
+    )
+    row.priority = rule.priority
+    row.description = rule.description
+    row.active = rule.active
+    session.flush()
+
+    existing_exclusions = list(session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id, rule_id=row.id))
+    existing_transaction_ids = {exclusion.transaction_id for exclusion in existing_exclusions}
+    desired_transaction_ids = {_transaction_id(user_id, tid) for tid in rule.excluded_transaction_ids}
+    to_remove = existing_transaction_ids - desired_transaction_ids
+    if to_remove:
+        session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id, rule_id=row.id).filter(
+            adb.TransferRuleExclusion.transaction_id.in_(to_remove)
+        ).delete(synchronize_session=False)
+    session.add_all(
+        adb.TransferRuleExclusion(user_id=user_id, rule_id=row.id, transaction_id=transaction_id)
+        for transaction_id in desired_transaction_ids - existing_transaction_ids
+    )
+    session.flush()
+
+    account_natural_key_by_id = natural_keys_by_id(
+        session, adb.Account, user_id, [row.account_id, row.counterparty_account_id]
+    )
+    return _rule_from_row(row, account_natural_key_by_id, list(dict.fromkeys(rule.excluded_transaction_ids)))
+
+
+def delete_transfer_rule(session: Session, user_id: uuid.UUID, rule_id: str) -> bool:
+    """Delete one transfer rule, without touching any other persisted entity.
+
+    Idempotent by design: deleting a rule that's already gone isn't an
+    error at this layer (the caller — `DELETE /transfer-rules/{rule_id}`
+    — turns "gone" into a 404 either way, but never checks a version
+    first, since there's nothing left to conflict with once a row doesn't
+    exist).
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "transfer_rules", rule_id)
+    deleted = session.query(adb.TransferRule).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
 
 
 def _pattern_from_row(row: adb.CategoryPattern, category_natural_key_by_id: dict[uuid.UUID, str]) -> CategoryPattern:
@@ -1258,6 +1359,65 @@ def _upsert_and_prune(
         ).delete(synchronize_session=False)
 
 
+def _upsert_transfer_rules_and_prune(session: Session, user_id: uuid.UUID, rules: list[TransferRule]) -> None:
+    """Insert-or-update every one of `rules`, then delete this user's rows not among them — never touching `version`.
+
+    `TransferRule` can't use `_upsert_and_prune` above: that helper's
+    `session.merge()` overwrites every mapped column on an existing row
+    with the transient instance's own value, including `version` (which
+    the transient instance never sets, so it would silently reset to the
+    column default) — exactly the bug `PATCH /transfer-rules/{rule_id}`'s
+    per-row optimistic concurrency depends on not happening. A raw
+    `INSERT ... ON CONFLICT (id) DO UPDATE` whose `SET` clause simply
+    omits `version` avoids that: an existing row keeps whatever version
+    `check_and_bump_row_version` last left it at, no matter how many times
+    an unrelated `POST /transfer-rules` round-trips through here.
+    """
+    keep_ids: set[uuid.UUID] = set()
+    for rule in rules:
+        row_id = derive_id(user_id, "transfer_rules", rule.rule_id)
+        keep_ids.add(row_id)
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.transfer_rules
+                    (id, user_id, natural_key, description_contains, account_id,
+                     counterparty_account_id, priority, description, active, version)
+                VALUES
+                    (:id, :user_id, :natural_key, :description_contains, :account_id,
+                     :counterparty_account_id, :priority, :description, :active, 1)
+                ON CONFLICT (id) DO UPDATE SET
+                    description_contains = EXCLUDED.description_contains,
+                    account_id = EXCLUDED.account_id,
+                    counterparty_account_id = EXCLUDED.counterparty_account_id,
+                    priority = EXCLUDED.priority,
+                    description = EXCLUDED.description,
+                    active = EXCLUDED.active
+                """
+            ),
+            {
+                "id": str(row_id),
+                "user_id": str(user_id),
+                "natural_key": rule.rule_id,
+                "description_contains": rule.description_contains,
+                "account_id": str(_account_id(user_id, rule.account_id)) if rule.account_id is not None else None,
+                "counterparty_account_id": str(_account_id(user_id, rule.counterparty_account_id))
+                if rule.counterparty_account_id is not None
+                else None,
+                "priority": rule.priority,
+                "description": rule.description,
+                "active": rule.active,
+            },
+        )
+    session.flush()
+    existing_ids = {row.id for row in session.query(adb.TransferRule.id).filter_by(user_id=user_id)}
+    removed_ids = existing_ids - keep_ids
+    if removed_ids:
+        session.query(adb.TransferRule).filter_by(user_id=user_id).filter(adb.TransferRule.id.in_(removed_ids)).delete(
+            synchronize_session=False
+        )
+
+
 # A thin, accounting-flavored name for the shared primitive in `db.base` —
 # every call site here and in `accounting.api` was written against this
 # name before the same mechanism was generalized for `trades.dashboard.
@@ -1302,9 +1462,9 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
 
     Re-stashes the freshly-bumped version back into `session.info` after a
     successful check — some requests call `save_store` more than once (e.g.
-    `POST`/`PUT /transfer-rules` calling it once for the rule itself, then
-    again inside `ledger.transfers.reconcile_and_persist_rule_links` if a
-    new link was found); without this, that second call would re-check
+    `POST /transfer-rules` calling it once for the rule itself, then again
+    inside `ledger.transfers.reconcile_and_persist_rule_links` if a new
+    link was found); without this, that second call would re-check
     against the same now-stale client-submitted version and spuriously
     raise `StoreVersionConflictError` even though nothing external
     conflicted — the first call already consumed that version.
@@ -1396,7 +1556,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
     session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
     session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id).delete()
-    session.query(adb.TransferRule).filter_by(user_id=user_id).delete()
     session.query(adb.CategoryPattern).filter_by(user_id=user_id).delete()
     session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
     session.query(adb.SimulatorScenario).filter_by(user_id=user_id).delete()
@@ -1545,22 +1704,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     )
     session.flush()
 
-    session.add_all(
-        adb.TransferRule(
-            id=derive_id(user_id, "transfer_rules", rule.rule_id),
-            user_id=user_id,
-            natural_key=rule.rule_id,
-            description_contains=rule.description_contains,
-            account_id=_account_id(user_id, rule.account_id) if rule.account_id is not None else None,
-            counterparty_account_id=_account_id(user_id, rule.counterparty_account_id)
-            if rule.counterparty_account_id is not None
-            else None,
-            priority=rule.priority,
-            description=rule.description,
-            active=rule.active,
-        )
-        for rule in store.rules
-    )
+    _upsert_transfer_rules_and_prune(session, user_id, store.rules)
     session.add_all(
         adb.OpeningBalance(
             id=derive_id(user_id, "opening_balances", ob.account_id),

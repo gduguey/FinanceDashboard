@@ -13,10 +13,11 @@ import { NumberInput } from '@/components/ui/number-input'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { useCreateTransferRule, useSetTransferRules } from '@/hooks/useAccountingData'
+import { useCreateTransferRule, useDeleteTransferRule, usePatchTransferRule } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
 import { type LinkedPairRow, realLegByTransactionId } from '@/lib/transferRowInfo'
+import { ruleUpdateFromRule } from '@/lib/transferRules'
 import type { Account, Posting, TransferLink, TransferRule } from '@/types/accounting'
 
 // Shown under the counterparty picker whenever the chosen account is one a
@@ -115,7 +116,8 @@ export function TransferRulesTab({
   postings: Posting[]
   transferLinks: TransferLink[]
 }) {
-  const setRules = useSetTransferRules()
+  const patchRule = usePatchTransferRule()
+  const deleteRule = useDeleteTransferRule()
   const createRule = useCreateTransferRule()
   const [editing, setEditing] = useState<TransferRule | null>(null)
   // Which rule's "linked by this rule" table is open. Seeded from `?ruleId=`
@@ -181,15 +183,17 @@ export function TransferRulesTab({
   }
 
   function removeRule(ruleId: string) {
-    setRules.mutate(rules.filter((rule) => rule.rule_id !== ruleId))
+    deleteRule.mutate(ruleId)
   }
 
   function saveRule(updated: TransferRule) {
-    setRules.mutate(rules.map((rule) => (rule.rule_id === updated.rule_id ? updated : rule)))
+    patchRule.mutate({ ruleId: updated.rule_id, update: ruleUpdateFromRule(updated) })
   }
 
   function toggleActive(ruleId: string, active: boolean) {
-    setRules.mutate(rules.map((rule) => (rule.rule_id === ruleId ? { ...rule, active } : rule)))
+    const rule = rules.find((r) => r.rule_id === ruleId)
+    if (!rule) return
+    patchRule.mutate({ ruleId, update: ruleUpdateFromRule(rule, { active }) })
   }
 
   return (

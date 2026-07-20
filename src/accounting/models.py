@@ -241,6 +241,7 @@ class TransferRule(BaseModel):
     description: str = ""
     active: bool = True
     excluded_transaction_ids: list[str] = Field(default_factory=list)
+    version: int = 1
 
 
 TransferLinkSource = Literal["manual", "rule"]
