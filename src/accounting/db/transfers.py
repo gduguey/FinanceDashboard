@@ -37,6 +37,10 @@ class TransferLink(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     source: Mapped[str]
+    # A plain historical label, not a foreign key — see `models.TransferLink`'s
+    # own docstring for why this deliberately survives the referenced rule
+    # being deleted later, rather than being enforced (and nulled) by the DB.
+    rule_id: Mapped[str | None] = mapped_column(default=None)
 
 
 class TransferLinkedTransaction(Base):
