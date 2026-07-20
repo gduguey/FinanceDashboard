@@ -276,3 +276,74 @@ def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, exp
         )
         raise VersionConflictError(message)
     return row.version
+
+
+def check_and_bump_row_version(
+    session: Session, table: str, row_id: uuid.UUID, user_id: uuid.UUID, expected_version: int
+) -> int | None:
+    """Atomically verify one row's version still matches `expected_version`, then bump it by one.
+
+    The per-row counterpart to `check_and_bump_version`: that one guards a
+    single per-user singleton counter row, this guards one row of an
+    ordinary table that already carries its own `id` and `version` columns
+    (e.g. `accounting.db.automation.TransferRule`). Same atomic
+    check-and-bump-in-one-statement reasoning applies — a read-then-write
+    here would leave the same race window.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    table
+        The fully-qualified `schema.table_name` the row lives in.
+    row_id
+        Which row to update.
+    user_id
+        Whose row this is — scopes the update so one user can never bump
+        another's row by guessing its id.
+    expected_version
+        The version the caller last saw.
+
+    Returns
+    -------
+    int | None
+        The newly-bumped version, or `None` if no row with `row_id` (and
+        `user_id`) exists at all — the caller distinguishes that from a
+        version mismatch (`VersionConflictError`) since they map to
+        different HTTP statuses (404 vs 409).
+
+    Raises
+    ------
+    VersionConflictError
+        If the row exists but its stored version no longer matches
+        `expected_version`.
+    """
+    result = session.execute(
+        text(
+            f"""
+            UPDATE {table}
+            SET version = version + 1
+            WHERE id = :row_id AND user_id = :user_id AND version = :expected_version
+            RETURNING version
+            """  # noqa: S608 (table is a fixed internal constant, never user input)
+        ),
+        {"row_id": str(row_id), "user_id": str(user_id), "expected_version": expected_version},
+    )
+    row = result.first()
+    if row is not None:
+        return row.version
+    exists = session.execute(
+        text(f"SELECT 1 FROM {table} WHERE id = :row_id AND user_id = :user_id"),  # noqa: S608 (see above)
+        {"row_id": str(row_id), "user_id": str(user_id)},
+    ).first()
+    if exists is None:
+        return None
+    current = session.execute(
+        text(f"SELECT version FROM {table} WHERE id = :row_id AND user_id = :user_id"),  # noqa: S608 (see above)
+        {"row_id": str(row_id), "user_id": str(user_id)},
+    ).scalar_one()
+    message = (
+        f"This rule changed elsewhere since version {expected_version} was loaded (now at version {current}) "
+        "— reload before saving again."
+    )
+    raise VersionConflictError(message)

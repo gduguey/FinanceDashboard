@@ -31,11 +31,11 @@ import {
   useCreateTransferLink,
   useDeletePostingSplit,
   useLlmUsage,
+  usePatchTransferRule,
   usePatternSuggestCategory,
   usePatternSuggestCategoryBulk,
   useRemoveTransferLink,
   useSetPostingOverride,
-  useSetTransferRules,
   useValidatePending,
 } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
@@ -51,6 +51,7 @@ import {
   siblingLegByPostingId as buildSiblingLegByPostingId,
   type TransferRowInfo,
 } from '@/lib/transferRowInfo'
+import { ruleUpdateFromRule } from '@/lib/transferRules'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
@@ -103,15 +104,8 @@ function transferFlagsForPosting(posting: Posting, excludedTransactionIds: Set<s
 
 // Shared by the single-transaction and combined exclude+unlink handlers
 // below — a plain, pure array transform, no I/O of its own.
-function withExcludedTransactionIds(rules: TransferRule[], ruleId: string, transactionIds: string[]): TransferRule[] {
-  return rules.map((rule) =>
-    rule.rule_id === ruleId
-      ? {
-          ...rule,
-          excluded_transaction_ids: [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])],
-        }
-      : rule,
-  )
+function addedExcludedTransactionIds(rule: TransferRule, transactionIds: string[]): string[] {
+  return [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])]
 }
 
 const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
@@ -725,7 +719,7 @@ function TransactionsTable({
   const patternSuggest = usePatternSuggestCategory()
   const patternSuggestBulk = usePatternSuggestCategoryBulk()
   const validatePending = useValidatePending()
-  const setTransferRules = useSetTransferRules()
+  const patchTransferRule = usePatchTransferRule()
   const createTransferLink = useCreateTransferLink()
   const removeTransferLink = useRemoveTransferLink()
   const { data: llmUsage } = useLlmUsage()
@@ -942,47 +936,62 @@ function TransactionsTable({
   )
   // Takes every transaction id to exclude in one call (both sides of a
   // rule-found transfer link, or just the one transaction for a direct
-  // single-account repoint) — never called twice in a row for the same
-  // rule, since two synchronous calls would each build `updated` from the
-  // same stale `rules` closure and the second would silently drop the
-  // first's change.
+  // single-account repoint) so this rule only gets patched once — a
+  // second, separate `PATCH` for the same rule fired before this one's
+  // response lands would still be caught (409) by the rule's own
+  // `expected_version`, but there's no reason to invite that race.
   const handleExcludeFromRule = useCallback(
     (transactionIds: string[], ruleId: string) => {
-      const updated = withExcludedTransactionIds(rules, ruleId, transactionIds)
       const rule = rules.find((r) => r.rule_id === ruleId)
-      const ruleLabel = rule?.description || rule?.description_contains || ruleId
-      setTransferRules.mutate(updated, {
-        onSuccess: () =>
-          toast.success(
-            transactionIds.length > 1
-              ? `Excluded from "${ruleLabel}" — both transactions fall back to the next-matching rule, or stay uncategorized. Manage exclusions from the Rules page.`
-              : `Excluded from "${ruleLabel}" — this transaction falls back to the next-matching rule, or stays uncategorized. Manage exclusions from the Rules page.`,
-          ),
-      })
+      if (!rule) return
+      const ruleLabel = rule.description || rule.description_contains || ruleId
+      patchTransferRule.mutate(
+        {
+          ruleId,
+          update: ruleUpdateFromRule(rule, {
+            excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
+          }),
+        },
+        {
+          onSuccess: () =>
+            toast.success(
+              transactionIds.length > 1
+                ? `Excluded from "${ruleLabel}" — both transactions fall back to the next-matching rule, or stay uncategorized. Manage exclusions from the Rules page.`
+                : `Excluded from "${ruleLabel}" — this transaction falls back to the next-matching rule, or stays uncategorized. Manage exclusions from the Rules page.`,
+            ),
+        },
+      )
     },
-    [rules, setTransferRules],
+    [rules, patchTransferRule],
   )
   // Excluding a rule-found link must also delete the `TransferLink` itself
   // so both transactions actually revert to normal (see
   // `TransferDetailDialog`'s "Exclude this specific transfer…" button) —
-  // sequential `await mutateAsync`, never fired as two parallel `.mutate()`
-  // calls. Every non-GET request snapshots the store's last-known version
-  // (see `accountingApi.ts`'s `request`), which only advances once ITS OWN
-  // mutation's `onSuccess` invalidation has refetched the store — firing
-  // both at once would send the unlink with the same stale version the
-  // exclude is about to bump, so it would spuriously 409 against its own
-  // sibling's success (same bug class fixed once already in commit
-  // 704abe9 — see MEMORY.md's `feedback_sequential_store_mutations` note).
+  // sequential `await mutateAsync`, not fired as two parallel `.mutate()`
+  // calls. The rule patch itself is now guarded by its own row-scoped
+  // `expected_version` (see `usePatchTransferRule`), so it can no longer
+  // spuriously 409 against an unrelated save — but `removeTransferLink`
+  // still goes through the whole-store `X-Expected-Store-Version` header
+  // (see `accountingApi.ts`'s `request`), which only advances once ITS
+  // OWN mutation's `onSuccess` invalidation has refetched the store, so
+  // firing both at once would still risk the unlink going out with a
+  // stale version (same bug class fixed once already in commit 704abe9 —
+  // see MEMORY.md's `feedback_sequential_store_mutations` note).
   const handleExcludeAndUnlinkFromRule = useCallback(
     async (transactionIds: string[], ruleId: string, linkId: string) => {
-      const updated = withExcludedTransactionIds(rules, ruleId, transactionIds)
       const rule = rules.find((r) => r.rule_id === ruleId)
-      const ruleLabel = rule?.description || rule?.description_contains || ruleId
-      await setTransferRules.mutateAsync(updated)
+      if (!rule) return
+      const ruleLabel = rule.description || rule.description_contains || ruleId
+      await patchTransferRule.mutateAsync({
+        ruleId,
+        update: ruleUpdateFromRule(rule, {
+          excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
+        }),
+      })
       await removeTransferLink.mutateAsync(linkId)
       toast.success(`Excluded from "${ruleLabel}" — both transactions are back to being normal transactions.`)
     },
-    [rules, setTransferRules, removeTransferLink],
+    [rules, patchTransferRule, removeTransferLink],
   )
   const handleLinkTransfer = useCallback(
     (transactionIdA: string, transactionIdB: string) => {

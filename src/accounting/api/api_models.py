@@ -176,6 +176,28 @@ class TransferRuleCreate(BaseModel):
     description: str = ""
 
 
+class TransferRuleUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+
+    Unlike `TransferRuleCreate`, this never changes which rule is being
+    edited — the rule stays identified by the `rule_id` path param even if
+    `description_contains`/`account_id`/`counterparty_account_id` (its
+    matching criteria) change, so an edit never silently becomes a
+    different rule. `expected_version` is the rule's own `version` field
+    the client last saw — see `db.base.check_and_bump_row_version`, which
+    raises a 409 if it no longer matches what's persisted.
+    """
+
+    description_contains: str = Field(min_length=1)
+    account_id: str | None = None
+    counterparty_account_id: str | None = None
+    priority: int
+    description: str = ""
+    active: bool = True
+    excluded_transaction_ids: list[str] = Field(default_factory=list)
+    expected_version: int
+
+
 class CategoryPatternCreate(BaseModel):
     """Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
 
@@ -263,6 +285,12 @@ class BudgetIdResponse(BaseModel):
     """Response body naming one budget, for endpoints whose only real effect is removing something."""
 
     budget_id: str
+
+
+class TransferRuleIdResponse(BaseModel):
+    """Response body naming one transfer rule, for endpoints whose only real effect is removing something."""
+
+    rule_id: str
 
 
 class GeneralBudgetKeyResponse(BaseModel):

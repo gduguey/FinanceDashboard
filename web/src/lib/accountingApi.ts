@@ -62,6 +62,7 @@ import type {
   TransferLinkCreate,
   TransferRule,
   TransferRuleCreate,
+  TransferRuleUpdate,
   TransferSuggestion,
   VerifyResult,
   WithdrawalPriorityEntry,
@@ -78,25 +79,41 @@ import type {
 // threading it through its own ~30 call sites.
 let lastKnownStoreVersion: number | null = null
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const method = init?.method ?? 'GET'
-  const headers = new Headers(init?.headers)
-  if (method !== 'GET' && lastKnownStoreVersion !== null) {
-    headers.set('X-Expected-Store-Version', String(lastKnownStoreVersion))
-  }
-  const response = await fetch(path, { ...init, headers })
+async function requestRaw<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     const message = body?.detail ?? `${response.status} ${response.statusText}`
     if (response.status === 409) throw new StoreVersionConflictError(message)
     throw new ApiError(message)
   }
-  const data = (await response.json()) as T
+  return (await response.json()) as T
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET'
+  const headers = new Headers(init?.headers)
+  if (method !== 'GET' && lastKnownStoreVersion !== null) {
+    headers.set('X-Expected-Store-Version', String(lastKnownStoreVersion))
+  }
+  const data = await requestRaw<T>(path, { ...init, headers })
   if (data && typeof data === 'object' && 'version' in data && typeof data.version === 'number') {
     lastKnownStoreVersion = data.version
   }
   return data
 }
+
+// For per-resource endpoints that carry their own row-scoped `version`
+// (currently just `PATCH`/`DELETE /transfer-rules/{rule_id}`) — routing
+// these through `request` would both send the unrelated whole-store
+// version as `X-Expected-Store-Version` (harmless; the backend for these
+// two routes never reads it) and, more importantly, overwrite
+// `lastKnownStoreVersion` with the *rule's* version number, corrupting
+// every other resource's own conflict check on its next save. A 409 here
+// still throws the same `StoreVersionConflictError` `App.tsx`'s one
+// global handler already knows how to show — it's a version conflict
+// either way, just scoped to one row instead of the whole store.
+const requestScoped = requestRaw
 
 const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
@@ -233,10 +250,17 @@ export const accountingApi = {
       `/api/accounting/tags/${encodeURIComponent(tagId)}/rename`,
       jsonInit('POST', { name }),
     ),
-  putTransferRules: (rules: TransferRule[]) =>
-    request<TransferRule[]>('/api/accounting/transfer-rules', jsonInit('PUT', rules)),
   createTransferRule: (rule: TransferRuleCreate) =>
     request<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
+  patchTransferRule: (ruleId: string, update: TransferRuleUpdate) =>
+    requestScoped<TransferRule>(
+      `/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteTransferRule: (ruleId: string) =>
+    requestScoped<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
+      method: 'DELETE',
+    }),
   putOtherAssets: (otherAssets: OtherAsset[]) =>
     request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
   createOtherAsset: (asset: OtherAssetCreate) =>

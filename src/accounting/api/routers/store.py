@@ -35,6 +35,8 @@ from accounting.api.api_models import (
     TagRenameRequest,
     TagRenameResponse,
     TransferRuleCreate,
+    TransferRuleIdResponse,
+    TransferRuleUpdate,
 )
 from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
 from accounting.importers.common import row_hash
@@ -56,6 +58,7 @@ from accounting.models import (
 )
 from accounting.store import (
     category_ids_to_delete,
+    delete_transfer_rule,
     get_store_version,
     load_overrides,
     load_store,
@@ -68,6 +71,7 @@ from accounting.store import (
     save_store,
     slugify,
     uncategorize_category_ids,
+    update_transfer_rule,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -637,11 +641,11 @@ def post_transfer_rule(
 ) -> TransferRule:
     """Create one new transfer rule, without touching any other rule already saved.
 
-    Unlike `PUT /transfer-rules`, only the one rule in the request body is
-    sent — every other existing rule is left alone. Posting this again
-    for the same `(description_contains, account_id, counterparty_account_id)`
-    replaces that rule (its `priority`/`description` update in place)
-    rather than creating a duplicate.
+    Posting this again for the same
+    `(description_contains, account_id, counterparty_account_id)` replaces
+    that rule (its `priority`/`description` update in place) rather than
+    creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
+    for editing an existing rule by id, which never risks that ambiguity.
 
     Returns
     -------
@@ -665,37 +669,82 @@ def post_transfer_rule(
     return rule
 
 
-@router.put("/transfer-rules")
-def put_transfer_rules(
-    rules: list[TransferRule],
+@router.patch("/transfer-rules/{rule_id}")
+def patch_transfer_rule(
+    rule_id: str,
+    request: TransferRuleUpdate,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[TransferRule]:
-    """Replace the whole transfer-rule list.
+) -> TransferRule:
+    """Update one existing transfer rule in place, without touching any other rule already saved.
 
-    A newly added or edited rule can make a previously-unresolved
-    transaction newly, safely linkable — see
-    `ledger.transfers.reconcile_and_persist_rule_links`, run here against
-    the full, unscoped ledger so a match isn't missed just because it
-    falls outside some other endpoint's own date window.
+    A true per-resource write — unlike `POST /transfer-rules`, this
+    never round-trips through `load_store`/`save_store` (which deletes and
+    reinserts every persisted entity for the user); see
+    `accounting.store.update_transfer_rule`. Guarded by
+    `request.expected_version` instead of the whole-store
+    `X-Expected-Store-Version` header, so an edit to this one rule can
+    never spuriously conflict with — or be silently overwritten by — an
+    unrelated save elsewhere in the store.
 
     Returns
     -------
-    list[TransferRule]
-        The transfer rules just persisted.
+    TransferRule
+        The rule as persisted after the update.
+
+    Raises
+    ------
+    HTTPException
+        404 if no rule with `rule_id` exists.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"rules": rules})
-    # Read before `save_store`'s own commit, not after — `save_store` ends
-    # this session's transaction, and a further read afterward (on this
-    # same session) needs Row-Level Security re-scoped first (see
-    # `ledger.transfers.reconcile_and_persist_rule_links`'s own docstring);
-    # saving rules never changes the ledger itself, so reading it first
-    # instead is equivalent and avoids that entirely.
     raw_ledger = load_ledger(session, user_id)
-    save_store(store, session, user_id)
+    rule = TransferRule(
+        rule_id=rule_id,
+        description_contains=request.description_contains,
+        account_id=request.account_id,
+        counterparty_account_id=request.counterparty_account_id,
+        priority=request.priority,
+        description=request.description,
+        active=request.active,
+        excluded_transaction_ids=request.excluded_transaction_ids,
+    )
+    updated = update_transfer_rule(session, user_id, rule, request.expected_version)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
+    session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
-    return store.rules
+    return updated
+
+
+@router.delete("/transfer-rules/{rule_id}")
+def delete_transfer_rule_route(
+    rule_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferRuleIdResponse:
+    """Delete one transfer rule, without touching any other rule already saved.
+
+    No version check — see `accounting.store.delete_transfer_rule`'s own
+    docstring for why deleting an already-gone rule is a plain 404, not a
+    409: there's nothing left to conflict with.
+
+    Returns
+    -------
+    RuleIdResponse
+        The rule id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no rule with `rule_id` exists.
+    """
+    raw_ledger = load_ledger(session, user_id)
+    deleted = delete_transfer_rule(session, user_id, rule_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
+    session.commit()
+    reconcile_and_persist_rule_links(raw_ledger, session, user_id)
+    return TransferRuleIdResponse(rule_id=rule_id)
 
 
 def _category_pattern_id(description_contains: str, category_id: str, subcategory_id: str | None) -> str:

@@ -1033,20 +1033,9 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
         external_ref="trades",
         meta={},
     )
-    client.put(
+    client.post(
         "/api/accounting/transfer-rules",
-        json=[
-            {
-                "rule_id": "interactive-brokers-transfer",
-                "description_contains": "INTERACTIVE BROK",
-                "account_id": None,
-                "category_id": None,
-                "subcategory_id": None,
-                "counterparty_account_id": investment["account_id"],
-                "priority": 0,
-                "description": "",
-            }
-        ],
+        json={"description_contains": "INTERACTIVE BROK", "counterparty_account_id": investment["account_id"]},
     )
     sofi_savings = _create_account(client, name="SoFi Savings", kind="savings", institution="SoFi")
     sofi_savings_csv = (
@@ -1566,21 +1555,14 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
     # `accounting.db.automation.TransferRule`) — the account it names must already
     # exist, unlike before when a rule could forward-reference one created later.
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
-    client.put(
+    rule = client.post(
         "/api/accounting/transfer-rules",
-        json=[
-            {
-                "rule_id": "payroll-rule",
-                "description_contains": "PAYROLL",
-                "counterparty_account_id": employer["account_id"],
-                "priority": 0,
-            }
-        ],
-    )
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
 
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
-    assert updated_payroll["resolved_by_transfer_rule_id"] == "payroll-rule"
+    assert updated_payroll["resolved_by_transfer_rule_id"] == rule["rule_id"]
 
 
 def test_postings_report_a_manual_transfer_override(client) -> None:
@@ -1620,16 +1602,9 @@ def test_postings_suppress_via_rule_badge_when_a_manual_override_also_applies(cl
     )
 
     rule_employer = _create_account(client, name="Rule Employer", kind="income_source", institution="internal")
-    client.put(
+    client.post(
         "/api/accounting/transfer-rules",
-        json=[
-            {
-                "rule_id": "payroll-rule",
-                "description_contains": "PAYROLL",
-                "counterparty_account_id": rule_employer["account_id"],
-                "priority": 0,
-            }
-        ],
+        json={"description_contains": "PAYROLL", "counterparty_account_id": rule_employer["account_id"]},
     )
 
     updated = client.get("/api/accounting/postings").json()
@@ -1638,61 +1613,6 @@ def test_postings_suppress_via_rule_badge_when_a_manual_override_also_applies(cl
     assert updated_payroll["manual_transfer_override_posting_id"] == placeholder["posting_id"]
     assert any(p["account_id"] == manual_employer["account_id"] for p in updated)
     assert not any(p["account_id"] == rule_employer["account_id"] for p in updated)
-
-
-def test_put_transfer_rules_referencing_a_nonexistent_account_fails() -> None:
-    """`counterparty_account_id` is a real foreign key now (see `accounting.db.automation.TransferRule`) —
-    a rule naming an account that doesn't exist can no longer be silently accepted. No new API-level
-    validation was added on top of that constraint — the database itself is the source of truth here,
-    so this surfaces exactly like every other foreign-key violation in this app: an unhandled
-    `IntegrityError` propagating out of the route as a 500, not a clean 4xx.
-    """
-    client = TestClient(trades_api.app, raise_server_exceptions=False)
-    response = client.put(
-        "/api/accounting/transfer-rules",
-        json=[
-            {
-                "rule_id": "payroll-rule",
-                "description_contains": "PAYROLL",
-                "counterparty_account_id": "does-not-exist",
-                "priority": 0,
-            }
-        ],
-    )
-    assert response.status_code == 500
-
-
-def test_put_transfer_rules_with_a_newly_resolvable_link_does_not_409(client) -> None:
-    """A rule save that also makes `reconcile_and_persist_rule_links` find a new link calls `save_store`
-    twice in the same request — once for the rule, once for the link. Both used to check the client's
-    `X-Expected-Store-Version` header against the same stale value, so the second call always
-    spuriously conflicted with the first one's own bump. See `db.base.check_and_bump_version` and
-    `accounting.store._check_and_bump_store_version` for the fix (re-stashing the freshly-bumped
-    version so a second save in the same request checks against it, not the original client header).
-    """
-    checking_id = _import_chase_checking(client)
-    credit_card_csv = (
-        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
-        "06/29/2026,06/29/2026,Automatic Payment - Thank You,Payment,Payment,70.00,\n"
-    )
-    credit_card_id = _import_chase_credit_card(client, credit_card_csv)
-
-    version = client.get("/api/accounting/store").json()["version"]
-    response = client.put(
-        "/api/accounting/transfer-rules",
-        json=[
-            {
-                "rule_id": "chase-card-payoff",
-                "description_contains": "Payment to Chase card",
-                "account_id": checking_id,
-                "counterparty_account_id": credit_card_id,
-                "priority": 0,
-            }
-        ],
-        headers={"X-Expected-Store-Version": str(version)},
-    )
-    assert response.status_code == 200
-    assert len(client.get("/api/accounting/store").json()["transfer_links"]) == 1
 
 
 def test_post_transfer_rule_mints_a_content_derived_id(client) -> None:
@@ -1744,6 +1664,277 @@ def test_post_transfer_rule_with_different_criteria_gets_a_different_id(client) 
     ).json()
     assert first["rule_id"] != second["rule_id"]
     assert len(client.get("/api/accounting/store").json()["transfer_rules"]) == 2
+
+
+def test_patch_transfer_rule_updates_fields_and_increments_version(client) -> None:
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+    assert rule["version"] == 1
+
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 7,
+            "description": "my new note",
+            "active": False,
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["priority"] == 7
+    assert updated["description"] == "my new note"
+    assert updated["active"] is False
+    assert updated["version"] == 2
+
+    rules = client.get("/api/accounting/store").json()["transfer_rules"]
+    assert len(rules) == 1
+    assert rules[0]["version"] == 2
+
+
+def test_patch_transfer_rule_with_a_stale_expected_version_gets_409(client) -> None:
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 3,
+            "expected_version": rule["version"] + 1,
+        },
+    )
+    assert response.status_code == 409
+
+    unchanged = client.get("/api/accounting/store").json()["transfer_rules"][0]
+    assert unchanged["priority"] == 100
+    assert unchanged["version"] == 1
+
+
+def test_patch_transfer_rule_that_does_not_exist_gets_404(client) -> None:
+    response = client.patch(
+        "/api/accounting/transfer-rules/does-not-exist",
+        json={"description_contains": "PAYROLL", "priority": 0, "expected_version": 1},
+    )
+    assert response.status_code == 404
+
+
+def test_patch_transfer_rule_referencing_a_nonexistent_account_fails() -> None:
+    """Same 500-not-400 convention as `test_put_transfer_rules_referencing_a_nonexistent_account_fails` —
+    `counterparty_account_id` is a real foreign key, and the database itself is the source of truth,
+    not a duplicated API-level existence check.
+    """
+    client = TestClient(trades_api.app, raise_server_exceptions=False)
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": "does-not-exist",
+            "priority": 0,
+            "expected_version": rule["version"],
+        },
+    )
+    assert response.status_code == 500
+
+
+def test_patch_transfer_rule_with_a_newly_resolvable_link_does_not_409(client) -> None:
+    """Same scenario as `test_put_transfer_rules_with_a_newly_resolvable_link_does_not_409`, but for `PATCH`:
+    editing a rule so it newly matches an existing transaction runs `reconcile_and_persist_rule_links`
+    (a second `save_store`-driven commit in the same request) right after the row-scoped update commit —
+    both must succeed without the row-version check on the first spuriously rejecting the second.
+    """
+    checking_id = _import_chase_checking(client)
+    credit_card_csv = (
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+        "06/29/2026,06/29/2026,Automatic Payment - Thank You,Payment,Payment,70.00,\n"
+    )
+    credit_card_id = _import_chase_credit_card(client, credit_card_csv)
+
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={
+            "description_contains": "not a real match yet",
+            "account_id": checking_id,
+            "counterparty_account_id": credit_card_id,
+        },
+    ).json()
+
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "Payment to Chase card",
+            "account_id": checking_id,
+            "counterparty_account_id": credit_card_id,
+            "priority": 0,
+            "expected_version": rule["version"],
+        },
+    )
+    assert response.status_code == 200
+    assert len(client.get("/api/accounting/store").json()["transfer_links"]) == 1
+
+
+def test_delete_transfer_rule_removes_it(client) -> None:
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+
+    response = client.delete(f"/api/accounting/transfer-rules/{rule['rule_id']}")
+    assert response.status_code == 200
+
+    assert client.get("/api/accounting/store").json()["transfer_rules"] == []
+
+
+def test_delete_transfer_rule_that_is_already_gone_gets_404(client) -> None:
+    response = client.delete("/api/accounting/transfer-rules/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_two_patches_fired_with_the_same_expected_version_the_second_gets_409(client) -> None:
+    """Reproduces the actual bug this feature fixes: two edits fired off the same stale client-side
+    snapshot (e.g. two rapid clicks before the first response lands) must not both silently apply —
+    the second has to see that the row moved out from under it.
+    """
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+
+    first = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 1,
+            "expected_version": rule["version"],
+        },
+    )
+    second = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 2,
+            "expected_version": rule["version"],
+        },
+    )
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+    final = client.get("/api/accounting/store").json()["transfer_rules"][0]
+    assert final["priority"] == 1
+
+
+def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
+    checking_id = _import_chase_checking(client)
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={
+            "description_contains": "PAYROLL",
+            "account_id": checking_id,
+            "counterparty_account_id": employer["account_id"],
+        },
+    ).json()
+    assert rule["excluded_transaction_ids"] == []
+    payroll_posting = next(
+        p for p in client.get("/api/accounting/postings").json() if p["account_id"] == checking_id and p["amount"] > 0
+    )
+
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "account_id": checking_id,
+            "counterparty_account_id": employer["account_id"],
+            "priority": 100,
+            "excluded_transaction_ids": [payroll_posting["transaction_id"]],
+            "expected_version": rule["version"],
+        },
+    )
+    assert response.status_code == 200
+    updated_rule = response.json()
+    assert updated_rule["excluded_transaction_ids"] == [payroll_posting["transaction_id"]]
+
+    persisted = client.get("/api/accounting/store").json()["transfer_rules"][0]
+    assert persisted["excluded_transaction_ids"] == [payroll_posting["transaction_id"]]
+
+    # And removing it again clears the exclusion.
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "account_id": checking_id,
+            "counterparty_account_id": employer["account_id"],
+            "priority": 100,
+            "excluded_transaction_ids": [],
+            "expected_version": updated_rule["version"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["excluded_transaction_ids"] == []
+
+
+def test_creating_an_unrelated_rule_does_not_reset_another_rules_version(client) -> None:
+    """`POST /transfer-rules` still round-trips through `save_store`, which deletes and reinserts every
+    `TransferRule` row for the user (see `save_store`'s own docstring) — if that blanket reinsert ever
+    reset `version` back to its column default, a client holding an already-bumped version for some
+    *other*, untouched rule would get a spurious 409 on its very next `PATCH`. `accounting.store`'s
+    upsert-by-id path for `TransferRule` exists specifically to prevent that.
+    """
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    other_employer = _create_account(client, name="Other Co", kind="income_source", institution="internal")
+    rule_a = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL A", "counterparty_account_id": employer["account_id"]},
+    ).json()
+    rule_a = client.patch(
+        f"/api/accounting/transfer-rules/{rule_a['rule_id']}",
+        json={
+            "description_contains": "PAYROLL A",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 1,
+            "expected_version": rule_a["version"],
+        },
+    ).json()
+    assert rule_a["version"] == 2
+
+    client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL B", "counterparty_account_id": other_employer["account_id"]},
+    )
+
+    rules = client.get("/api/accounting/store").json()["transfer_rules"]
+    persisted_a = next(r for r in rules if r["rule_id"] == rule_a["rule_id"])
+    assert persisted_a["version"] == 2
+
+    response = client.patch(
+        f"/api/accounting/transfer-rules/{rule_a['rule_id']}",
+        json={
+            "description_contains": "PAYROLL A",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 2,
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 200
 
 
 def test_put_categories_replaces_the_whole_tree(client) -> None:
@@ -2717,20 +2908,9 @@ def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> 
     # A rule that would repoint the payroll deposit's placeholder leg to a
     # real account — the raw ledger export must stay unaffected by it,
     # unlike `GET /postings` (the resolved view `TransactionsTab` shows).
-    client.put(
+    client.post(
         "/api/accounting/transfer-rules",
-        json=[
-            {
-                "rule_id": "payroll-rule",
-                "description_contains": "SOME EMPLOYER PAYROLL",
-                "account_id": None,
-                "category_id": None,
-                "subcategory_id": None,
-                "counterparty_account_id": account_id,
-                "priority": 0,
-                "description": "",
-            }
-        ],
+        json={"description_contains": "SOME EMPLOYER PAYROLL", "counterparty_account_id": account_id},
     )
     response = client.get("/api/accounting/ledger/export")
     assert response.status_code == 200

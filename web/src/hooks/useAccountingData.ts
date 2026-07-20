@@ -37,8 +37,8 @@ import type {
   SimulatorScenarioCreate,
   Tag,
   TransferLinkCreate,
-  TransferRule,
   TransferRuleCreate,
+  TransferRuleUpdate,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
@@ -549,24 +549,60 @@ export function useRenameTag() {
   })
 }
 
-export function useSetTransferRules() {
+export function usePatchTransferRule() {
   const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (rules: TransferRule[]) => accountingApi.putTransferRules(rules),
-    // Same optimistic-patch-then-reconcile approach as `useRemoveTransferLink`
-    // — toggling a rule active, excluding/un-excluding a transaction, or
-    // deleting a rule all go through this one call, so patching
-    // `store.transfer_rules` here covers all of them at once. Rolled back
-    // on failure; `onSuccess: invalidate` still refetches regardless (see
-    // that hook's own comment for why).
-    onMutate: async (rules) => {
+    mutationFn: ({ ruleId, update }: { ruleId: string; update: TransferRuleUpdate }) =>
+      accountingApi.patchTransferRule(ruleId, update),
+    // Same optimistic-patch-then-reconcile approach as `useRemoveTransferLink`,
+    // but scoped to the one rule being edited (toggling active, editing
+    // fields, excluding/un-excluding a transaction) rather than the whole
+    // `transfer_rules` array — each call carries and checks its own
+    // `update.expected_version`, not the shared whole-store one, so firing
+    // several of these back-to-back (e.g. rapid clicks) can never silently
+    // clobber a sibling rule's edit or spuriously conflict with an
+    // unrelated save elsewhere in the store. Rolled back on failure;
+    // `onSuccess: invalidate` still refetches regardless, to reconcile
+    // with whatever the server actually persisted (including the bumped
+    // `version` for this rule's next edit).
+    onMutate: async ({ ruleId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
-      if (previous) queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, transfer_rules: rules })
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          transfer_rules: previous.transfer_rules.map((rule) =>
+            rule.rule_id === ruleId ? { ...rule, ...update } : rule,
+          ),
+        })
+      }
       return { previous }
     },
-    onError: (_error, _rules, context) => {
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteTransferRule() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (ruleId: string) => accountingApi.deleteTransferRule(ruleId),
+    onMutate: async (ruleId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          transfer_rules: previous.transfer_rules.filter((rule) => rule.rule_id !== ruleId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _ruleId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
     onSuccess: invalidate,

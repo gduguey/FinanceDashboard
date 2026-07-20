@@ -424,31 +424,16 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Transfer Rules
-     * @description Replace the whole transfer-rule list.
-     *
-     *     A newly added or edited rule can make a previously-unresolved
-     *     transaction newly, safely linkable — see
-     *     `ledger.transfers.reconcile_and_persist_rule_links`, run here against
-     *     the full, unscoped ledger so a match isn't missed just because it
-     *     falls outside some other endpoint's own date window.
-     *
-     *     Returns
-     *     -------
-     *     list[TransferRule]
-     *         The transfer rules just persisted.
-     */
-    put: operations['put_transfer_rules_api_accounting_transfer_rules_put']
+    put?: never
     /**
      * Post Transfer Rule
      * @description Create one new transfer rule, without touching any other rule already saved.
      *
-     *     Unlike `PUT /transfer-rules`, only the one rule in the request body is
-     *     sent — every other existing rule is left alone. Posting this again
-     *     for the same `(description_contains, account_id, counterparty_account_id)`
-     *     replaces that rule (its `priority`/`description` update in place)
-     *     rather than creating a duplicate.
+     *     Posting this again for the same
+     *     `(description_contains, account_id, counterparty_account_id)` replaces
+     *     that rule (its `priority`/`description` update in place) rather than
+     *     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
+     *     for editing an existing rule by id, which never risks that ambiguity.
      *
      *     Returns
      *     -------
@@ -460,6 +445,63 @@ export interface paths {
     options?: never
     head?: never
     patch?: never
+    trace?: never
+  }
+  '/api/accounting/transfer-rules/{rule_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Transfer Rule Route
+     * @description Delete one transfer rule, without touching any other rule already saved.
+     *
+     *     No version check — see `accounting.store.delete_transfer_rule`'s own
+     *     docstring for why deleting an already-gone rule is a plain 404, not a
+     *     409: there's nothing left to conflict with.
+     *
+     *     Returns
+     *     -------
+     *     RuleIdResponse
+     *         The rule id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule with `rule_id` exists.
+     */
+    delete: operations['delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Transfer Rule
+     * @description Update one existing transfer rule in place, without touching any other rule already saved.
+     *
+     *     A true per-resource write — unlike `POST /transfer-rules`, this
+     *     never round-trips through `load_store`/`save_store` (which deletes and
+     *     reinserts every persisted entity for the user); see
+     *     `accounting.store.update_transfer_rule`. Guarded by
+     *     `request.expected_version` instead of the whole-store
+     *     `X-Expected-Store-Version` header, so an edit to this one rule can
+     *     never spuriously conflict with — or be silently overwritten by — an
+     *     unrelated save elsewhere in the store.
+     *
+     *     Returns
+     *     -------
+     *     TransferRule
+     *         The rule as persisted after the update.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule with `rule_id` exists.
+     */
+    patch: operations['patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch']
     trace?: never
   }
   '/api/accounting/category-patterns': {
@@ -6632,6 +6674,11 @@ export interface components {
       active: boolean
       /** Excluded Transaction Ids */
       excluded_transaction_ids?: string[]
+      /**
+       * Version
+       * @default 1
+       */
+      version: number
     }
     /**
      * TransferRuleCreate
@@ -6661,6 +6708,50 @@ export interface components {
        * @default
        */
       description: string
+    }
+    /**
+     * TransferRuleIdResponse
+     * @description Response body naming one transfer rule, for endpoints whose only real effect is removing something.
+     */
+    TransferRuleIdResponse: {
+      /** Rule Id */
+      rule_id: string
+    }
+    /**
+     * TransferRuleUpdate
+     * @description Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+     *
+     *     Unlike `TransferRuleCreate`, this never changes which rule is being
+     *     edited — the rule stays identified by the `rule_id` path param even if
+     *     `description_contains`/`account_id`/`counterparty_account_id` (its
+     *     matching criteria) change, so an edit never silently becomes a
+     *     different rule. `expected_version` is the rule's own `version` field
+     *     the client last saw — see `db.base.check_and_bump_row_version`, which
+     *     raises a 409 if it no longer matches what's persisted.
+     */
+    TransferRuleUpdate: {
+      /** Description Contains */
+      description_contains: string
+      /** Account Id */
+      account_id?: string | null
+      /** Counterparty Account Id */
+      counterparty_account_id?: string | null
+      /** Priority */
+      priority: number
+      /**
+       * Description
+       * @default
+       */
+      description: string
+      /**
+       * Active
+       * @default true
+       */
+      active: boolean
+      /** Excluded Transaction Ids */
+      excluded_transaction_ids?: string[]
+      /** Expected Version */
+      expected_version: number
     }
     /**
      * TransferSuggestion
@@ -7287,7 +7378,7 @@ export interface operations {
       }
     }
   }
-  put_transfer_rules_api_accounting_transfer_rules_put: {
+  post_transfer_rule_api_accounting_transfer_rules_post: {
     parameters: {
       query?: never
       header?: {
@@ -7298,7 +7389,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['TransferRule'][]
+        'application/json': components['schemas']['TransferRuleCreate']
       }
     }
     responses: {
@@ -7308,7 +7399,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TransferRule'][]
+          'application/json': components['schemas']['TransferRule']
         }
       }
       /** @description Validation Error */
@@ -7322,18 +7413,53 @@ export interface operations {
       }
     }
   }
-  post_transfer_rule_api_accounting_transfer_rules_post: {
+  delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete: {
     parameters: {
       query?: never
       header?: {
         'x-expected-store-version'?: number | null
       }
-      path?: never
+      path: {
+        rule_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferRuleIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        rule_id: string
+      }
       cookie?: never
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['TransferRuleCreate']
+        'application/json': components['schemas']['TransferRuleUpdate']
       }
     }
     responses: {
