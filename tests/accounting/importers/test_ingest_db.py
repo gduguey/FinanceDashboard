@@ -23,7 +23,7 @@ from accounting.importers.ingest import (
     uncategorize_ledger_postings,
 )
 from accounting.ledger.transfers import make_transfer_link
-from accounting.models import Account, Posting, PostingMerge, Tag, TransferRule
+from accounting.models import Account, Goal, GoalContribution, Posting, PostingMerge, Tag, TransferRule
 from accounting.store import load_store, save_store
 
 if TYPE_CHECKING:
@@ -313,3 +313,35 @@ def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_rule_exclu
 
     reloaded = load_store(db_session, user_id=test_user_id).rules[0]
     assert reloaded.excluded_transaction_ids == []
+
+
+def test_write_ledger_dropping_a_posting_a_goal_contribution_traces_back_to_keeps_the_contribution(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
+    store = load_store(db_session, user_id=test_user_id)
+    goal = Goal(
+        goal_id="g1",
+        name="Emergency fund",
+        target_amount=1000,
+        target_date=datetime(2027, 1, 1, tzinfo=UTC),
+        color="#abcdef",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    contribution = GoalContribution(
+        contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5, tzinfo=UTC), amount=100, source_posting_id="p1"
+    )
+    store = store.model_copy(update={"goals": {"g1": goal}, "goal_contributions": {"gc1": contribution}})
+    save_store(store, db_session, user_id=test_user_id)
+
+    # Dropping the posting the contribution traces back to must not raise —
+    # and, unlike TransferLink/PostingMerge, must NOT delete the
+    # contribution itself: its amount/date is the real financial record,
+    # source_posting_id is purely a traceability link (see
+    # `models.GoalContribution`'s own docstring). Only the link clears.
+    _write_ledger(_frame(), db_session, user_id=test_user_id)
+
+    reloaded = load_store(db_session, user_id=test_user_id).goal_contributions["gc1"]
+    assert reloaded.amount == 100
+    assert reloaded.source_posting_id is None

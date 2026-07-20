@@ -68,8 +68,13 @@ class GoalContribution(Base):
     amount: Mapped[float] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")
     note: Mapped[str] = mapped_column(default="")
+    # SET NULL, not CASCADE: `amount`/`date` are the real financial record
+    # (see `models.GoalContribution`'s own docstring — "never read by any
+    # balance or unallocated computation"), so a posting pruned by a
+    # ledger rebuild (`importers.ingest._write_ledger`) must never take the
+    # contribution down with it — only its traceability link.
     source_posting_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id"), default=None
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="SET NULL"), default=None
     )
     origin: Mapped[str] = mapped_column(default="manual")
     edited: Mapped[bool] = mapped_column(default=False)
