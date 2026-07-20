@@ -46,7 +46,11 @@ import { formatCurrency, formatDate, formatMonthLong } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { availableMonths } from '@/lib/months'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
-import { realLegByTransactionId as buildRealLegByTransactionId, type TransferRowInfo } from '@/lib/transferRowInfo'
+import {
+  realLegByTransactionId as buildRealLegByTransactionId,
+  siblingLegByPostingId as buildSiblingLegByPostingId,
+  type TransferRowInfo,
+} from '@/lib/transferRowInfo'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
@@ -137,12 +141,14 @@ interface PickHint {
 
 // Everything the category-column "Transfer …" badge and its detail popup
 // need — computed once per posting in `TransactionsTable` (see
-// `transferBadgeByPostingId`), covering exactly the two mechanisms that
-// move there: a `TransferLink` (manual or rule-found) and a manual
-// "point at an account" `ManualOverride.account_id`. The older `apply_rules`
-// direct-repoint-to-a-safe-account mechanism (the "via rule" badge) is
-// deliberately untouched and stays in the account column — it predates
-// both of these and isn't part of this redesign.
+// `transferBadgeByPostingId`), covering all three mechanisms that move
+// there: a `TransferLink` (manual or rule-found), a manual "point at an
+// account" `ManualOverride.account_id`, and `apply_rules`'s own direct
+// repoint onto a safe (non-importable) *real* account — never onto a
+// virtual `income_source`/`expense_payee` counterparty, since that's plain
+// income/expense categorization, not a transfer, and keeps its own
+// "via rule" tag in the account column instead (see `isRealIncomeExpense`
+// at each call site).
 interface TransferBadgeInfo {
   label: string
   popup:
@@ -155,6 +161,7 @@ interface TransferBadgeInfo {
         to: TransferRowInfo
       }
     | { kind: 'override'; postingId: string; otherAccountName: string }
+    | { kind: 'direct-rule'; ruleId: string; transactionId: string; from: TransferRowInfo; to: TransferRowInfo }
 }
 
 // How close two amounts have to be to count as "the same transfer, opposite
@@ -344,6 +351,12 @@ const TransactionRow = memo(function TransactionRow({
       </TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">
         {accountName}
+        {/* Only for a rule whose counterparty is virtual (income_source/
+            expense_payee) — plain categorization provenance, not a
+            transfer. The real-account-counterparty case gets the
+            "Transfer to/from X" badge in the category column instead (see
+            `transferBadgeByPostingId`'s `direct-rule` case) — `resolvedByRuleLabel`
+            is already `null` for that case, so this never double-shows. */}
         {resolvedByRuleLabel && (
           <span className="ml-1 inline-flex items-center gap-1 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             <span title={`Resolved by rule: ${resolvedByRuleLabel} — deleting that rule reverts this posting`}>
@@ -526,6 +539,7 @@ function TransferDetailDialog({
   onClose,
   onUnlinkTransfer,
   onUndoManualOverride,
+  onExcludeFromRule,
   onExcludeAndUnlinkFromRule,
 }: {
   badge: TransferBadgeInfo
@@ -533,6 +547,7 @@ function TransferDetailDialog({
   onClose: () => void
   onUnlinkTransfer: (linkId: string) => void
   onUndoManualOverride: (postingId: string) => void
+  onExcludeFromRule: (transactionIds: string[], ruleId: string) => void
   onExcludeAndUnlinkFromRule: (transactionIds: string[], ruleId: string, linkId: string) => void
 }) {
   const { popup } = badge
@@ -558,6 +573,38 @@ function TransferDetailDialog({
             >
               Unmark as transfer
             </Button>
+          </div>
+        ) : popup.kind === 'direct-rule' ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">
+              This transfer goes from <span className="font-medium">{popup.from.accountName}</span> to{' '}
+              <span className="font-medium">{popup.to.accountName}</span>, and is part of rule{' '}
+              <Link className="underline hover:text-foreground" to={`/rules?tab=rules&ruleId=${popup.ruleId}`}>
+                {ruleLabelById.get(popup.ruleId) ?? popup.ruleId}
+              </Link>
+              .
+            </p>
+            <div className="flex flex-col items-stretch gap-1">
+              <TransferRowCard row={popup.from} />
+              <ArrowDown className="mx-auto size-4 shrink-0 text-muted-foreground" />
+              <TransferRowCard row={popup.to} />
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => {
+                onExcludeFromRule([popup.transactionId], popup.ruleId)
+                onClose()
+              }}
+            >
+              Exclude this specific transfer from rule {ruleLabelById.get(popup.ruleId) ?? popup.ruleId}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              The excluded transfers can be found{' '}
+              <Link className="underline hover:text-foreground" to={`/rules?tab=excluded&ruleId=${popup.ruleId}`}>
+                here
+              </Link>
+              .
+            </p>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -731,11 +778,21 @@ function TransactionsTable({
     }
     return lookup
   }, [postings, accounts])
+  // Computed from the full, unscoped `postings` prop (not `filtered`/`sorted`)
+  // — an account filter could otherwise split a transfer pair apart and make
+  // sibling-detection wrong. See `postingClassification.ts`.
+  const realIds = useMemo(() => realIncomeExpensePostingIds(postings, accounts), [postings, accounts])
+  // Only needed for `apply_rules`'s direct-repoint mechanism below — see
+  // that function's own comment for why `realLegByTransactionId` can't
+  // answer "what's the other side of *this* posting" once neither leg is a
+  // placeholder anymore.
+  const siblingLegByPostingId = useMemo(() => buildSiblingLegByPostingId(postings, accounts), [postings, accounts])
   // Everything the category-column badge and its detail popup need for a
-  // linked or manually-overridden transaction — keyed by posting id (the
-  // real-leg row that's actually rendered; placeholders never are). "to"
-  // when this posting's own amount is negative (money leaving), "from"
-  // when positive (money arriving) — one rule, both mechanisms.
+  // linked, manually-overridden, or rule-direct-repointed transaction —
+  // keyed by posting id (the real-leg row that's actually rendered;
+  // placeholders never are). "to" when this posting's own amount is
+  // negative (money leaving), "from" when positive (money arriving) — one
+  // rule, all three mechanisms.
   const transferBadgeByPostingId = useMemo(() => {
     const lookup = new Map<string, TransferBadgeInfo>()
     for (const posting of postings) {
@@ -765,10 +822,44 @@ function TransactionsTable({
           label: `Transfer ${direction} ${otherAccountName}`,
           popup: { kind: 'override', postingId: posting.manual_transfer_override_posting_id, otherAccountName },
         })
+      } else if (posting.resolved_by_transfer_rule_id && !realIds.has(posting.posting_id)) {
+        // Only when this posting ISN'T real income/expense — a rule whose
+        // counterparty is virtual (income_source/expense_payee) is plain
+        // categorization, not a transfer, and keeps its own "via rule" tag
+        // in the account column instead (see `resolvedByRuleLabel` below).
+        const sibling = siblingLegByPostingId.get(posting.posting_id)
+        if (!sibling) continue
+        const mine: TransferRowInfo = {
+          transactionId: posting.transaction_id,
+          accountName: accounts[posting.account_id]?.name ?? posting.account_id,
+          description: posting.description,
+          postedAt: posting.posted_at,
+          amount: posting.amount,
+          currency: posting.currency,
+        }
+        const [from, to] = posting.amount < 0 ? [mine, sibling] : [sibling, mine]
+        lookup.set(posting.posting_id, {
+          label: `Transfer ${direction} ${sibling.accountName}`,
+          popup: {
+            kind: 'direct-rule',
+            ruleId: posting.resolved_by_transfer_rule_id,
+            transactionId: posting.transaction_id,
+            from,
+            to,
+          },
+        })
       }
     }
     return lookup
-  }, [postings, linkByTransactionId, realLegByTransactionId, accountNameByPostingId])
+  }, [
+    postings,
+    accounts,
+    linkByTransactionId,
+    realLegByTransactionId,
+    accountNameByPostingId,
+    siblingLegByPostingId,
+    realIds,
+  ])
   // The posting whose transfer-detail popup is open, or `null` — looked up
   // against `transferBadgeByPostingId` at render time rather than storing
   // the resolved info itself, so the popup always reflects the latest data.
@@ -985,10 +1076,6 @@ function TransactionsTable({
     () => new Set(rules.flatMap((rule) => rule.excluded_transaction_ids ?? [])),
     [rules],
   )
-  // Computed from the full, unscoped `postings` prop (not `filtered`/`sorted`)
-  // — an account filter could otherwise split a transfer pair apart and make
-  // sibling-detection wrong. See `postingClassification.ts`.
-  const realIds = useMemo(() => realIncomeExpensePostingIds(postings, accounts), [postings, accounts])
 
   const filtered = useMemo(() => {
     return postings
@@ -1461,7 +1548,7 @@ function TransactionsTable({
                       posting={posting}
                       accountName={accounts[posting.account_id]?.name ?? posting.account_id}
                       resolvedByRuleLabel={
-                        posting.resolved_by_transfer_rule_id
+                        posting.resolved_by_transfer_rule_id && realIds.has(posting.posting_id)
                           ? (ruleLabelById.get(posting.resolved_by_transfer_rule_id) ??
                             posting.resolved_by_transfer_rule_id)
                           : null
@@ -1511,6 +1598,7 @@ function TransactionsTable({
           onClose={() => setTransferDetailPostingId(null)}
           onUnlinkTransfer={handleUnlinkTransfer}
           onUndoManualOverride={handleUndoManualOverride}
+          onExcludeFromRule={handleExcludeFromRule}
           onExcludeAndUnlinkFromRule={handleExcludeAndUnlinkFromRule}
         />
       )}

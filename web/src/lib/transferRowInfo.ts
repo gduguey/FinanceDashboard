@@ -86,6 +86,17 @@ export function pairTransferRows(rows: TransferRowInfo[]): { pairs: LinkedPairRo
   return { pairs, singles }
 }
 
+function toRowInfo(posting: Posting, accounts: Record<string, Account>): TransferRowInfo {
+  return {
+    transactionId: posting.transaction_id,
+    accountName: accounts[posting.account_id]?.name ?? posting.account_id,
+    description: posting.description,
+    postedAt: posting.posted_at,
+    amount: posting.amount,
+    currency: posting.currency,
+  }
+}
+
 // Each transaction's own real (non-placeholder) leg — the row actually
 // shown for it everywhere in the UI, since a placeholder never renders as
 // its own row. Built from an unscoped posting list so a filter elsewhere
@@ -97,14 +108,34 @@ export function realLegByTransactionId(
   const lookup = new Map<string, TransferRowInfo>()
   for (const posting of postings) {
     if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
-    lookup.set(posting.transaction_id, {
-      transactionId: posting.transaction_id,
-      accountName: accounts[posting.account_id]?.name ?? posting.account_id,
-      description: posting.description,
-      postedAt: posting.posted_at,
-      amount: posting.amount,
-      currency: posting.currency,
-    })
+    lookup.set(posting.transaction_id, toRowInfo(posting, accounts))
+  }
+  return lookup
+}
+
+// The OTHER posting in the same 2-leg transaction, keyed by each side's own
+// posting id — needed for `apply_rules`'s direct-repoint mechanism (the
+// "via rule" case), where a `TransferRule` has already repointed the
+// placeholder onto a real account by the time postings are read, so
+// *neither* leg is a placeholder anymore and `realLegByTransactionId`'s
+// placeholder-only filter can't tell them apart (it would just keep
+// whichever leg it saw last for that transaction id).
+export function siblingLegByPostingId(
+  postings: Posting[],
+  accounts: Record<string, Account>,
+): Map<string, TransferRowInfo> {
+  const legsByTransactionId = new Map<string, Posting[]>()
+  for (const posting of postings) {
+    const legs = legsByTransactionId.get(posting.transaction_id)
+    if (legs) legs.push(posting)
+    else legsByTransactionId.set(posting.transaction_id, [posting])
+  }
+  const lookup = new Map<string, TransferRowInfo>()
+  for (const legs of legsByTransactionId.values()) {
+    if (legs.length !== 2) continue
+    const [a, b] = legs
+    lookup.set(a.posting_id, toRowInfo(b, accounts))
+    lookup.set(b.posting_id, toRowInfo(a, accounts))
   }
   return lookup
 }
