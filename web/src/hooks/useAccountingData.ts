@@ -10,6 +10,7 @@ import {
 } from '@/lib/accountingApi'
 import { BASE_CURRENCY } from '@/lib/currency'
 import type {
+  AccountingStore,
   BudgetUpsert,
   CanonicalCategoryOverrides,
   Category,
@@ -296,9 +297,34 @@ export function useCreateTransferLink() {
 }
 
 export function useRemoveTransferLink() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (linkId: string) => accountingApi.removeTransferLink(linkId),
+    // Drops the link from the cached store the instant "unmark as
+    // transfer"/"exclude this transfer" fires, instead of waiting on the
+    // round trip — the badge disappears immediately and just reconciles
+    // quietly once the real response (and `onSuccess`'s refetch) lands.
+    // Rolled back on failure; `onSuccess: invalidate` still refetches
+    // regardless, both to reconcile with whatever the server actually
+    // persisted and to advance `lastKnownStoreVersion` for the next
+    // mutation's own version-conflict check (see `accountingApi.ts`'s
+    // `request`) — this optimistic patch only changes how fast the UI
+    // *looks* like it responded, never which version header goes out next.
+    onMutate: async (linkId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          transfer_links: previous.transfer_links.filter((link) => link.link_id !== linkId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _linkId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
@@ -524,9 +550,25 @@ export function useRenameTag() {
 }
 
 export function useSetTransferRules() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (rules: TransferRule[]) => accountingApi.putTransferRules(rules),
+    // Same optimistic-patch-then-reconcile approach as `useRemoveTransferLink`
+    // — toggling a rule active, excluding/un-excluding a transaction, or
+    // deleting a rule all go through this one call, so patching
+    // `store.transfer_rules` here covers all of them at once. Rolled back
+    // on failure; `onSuccess: invalidate` still refetches regardless (see
+    // that hook's own comment for why).
+    onMutate: async (rules) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, transfer_rules: rules })
+      return { previous }
+    },
+    onError: (_error, _rules, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }

@@ -96,6 +96,20 @@ function transferFlagsForPosting(posting: Posting, excludedTransactionIds: Set<s
   if (flags.length === 0) flags.push('none')
   return flags
 }
+
+// Shared by the single-transaction and combined exclude+unlink handlers
+// below — a plain, pure array transform, no I/O of its own.
+function withExcludedTransactionIds(rules: TransferRule[], ruleId: string, transactionIds: string[]): TransferRule[] {
+  return rules.map((rule) =>
+    rule.rule_id === ruleId
+      ? {
+          ...rule,
+          excluded_transaction_ids: [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])],
+        }
+      : rule,
+  )
+}
+
 const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
 const CATEGORIZED_ITEMS: Record<string, string> = {
   [ALL]: 'All',
@@ -516,14 +530,14 @@ function TransferDetailDialog({
   onClose,
   onUnlinkTransfer,
   onUndoManualOverride,
-  onExcludeFromRule,
+  onExcludeAndUnlinkFromRule,
 }: {
   badge: TransferBadgeInfo
   ruleLabelById: Map<string, string | undefined>
   onClose: () => void
   onUnlinkTransfer: (linkId: string) => void
   onUndoManualOverride: (postingId: string) => void
-  onExcludeFromRule: (transactionIds: string[], ruleId: string) => void
+  onExcludeAndUnlinkFromRule: (transactionIds: string[], ruleId: string, linkId: string) => void
 }) {
   const { popup } = badge
   return (
@@ -585,8 +599,7 @@ function TransferDetailDialog({
                     <Button
                       variant="outline"
                       onClick={() => {
-                        onExcludeFromRule([fromTransactionId, toTransactionId], ruleId)
-                        onUnlinkTransfer(popup.linkId)
+                        onExcludeAndUnlinkFromRule([fromTransactionId, toTransactionId], ruleId, popup.linkId)
                         onClose()
                       }}
                     >
@@ -849,14 +862,7 @@ function TransactionsTable({
   // first's change.
   const handleExcludeFromRule = useCallback(
     (transactionIds: string[], ruleId: string) => {
-      const updated = rules.map((rule) =>
-        rule.rule_id === ruleId
-          ? {
-              ...rule,
-              excluded_transaction_ids: [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])],
-            }
-          : rule,
-      )
+      const updated = withExcludedTransactionIds(rules, ruleId, transactionIds)
       const rule = rules.find((r) => r.rule_id === ruleId)
       const ruleLabel = rule?.description || rule?.description_contains || ruleId
       setTransferRules.mutate(updated, {
@@ -869,6 +875,28 @@ function TransactionsTable({
       })
     },
     [rules, setTransferRules],
+  )
+  // Excluding a rule-found link must also delete the `TransferLink` itself
+  // so both transactions actually revert to normal (see
+  // `TransferDetailDialog`'s "Exclude this specific transfer…" button) —
+  // sequential `await mutateAsync`, never fired as two parallel `.mutate()`
+  // calls. Every non-GET request snapshots the store's last-known version
+  // (see `accountingApi.ts`'s `request`), which only advances once ITS OWN
+  // mutation's `onSuccess` invalidation has refetched the store — firing
+  // both at once would send the unlink with the same stale version the
+  // exclude is about to bump, so it would spuriously 409 against its own
+  // sibling's success (same bug class fixed once already in commit
+  // 704abe9 — see MEMORY.md's `feedback_sequential_store_mutations` note).
+  const handleExcludeAndUnlinkFromRule = useCallback(
+    async (transactionIds: string[], ruleId: string, linkId: string) => {
+      const updated = withExcludedTransactionIds(rules, ruleId, transactionIds)
+      const rule = rules.find((r) => r.rule_id === ruleId)
+      const ruleLabel = rule?.description || rule?.description_contains || ruleId
+      await setTransferRules.mutateAsync(updated)
+      await removeTransferLink.mutateAsync(linkId)
+      toast.success(`Excluded from "${ruleLabel}" — both transactions are back to being normal transactions.`)
+    },
+    [rules, setTransferRules, removeTransferLink],
   )
   const handleLinkTransfer = useCallback(
     (transactionIdA: string, transactionIdB: string) => {
@@ -1174,6 +1202,12 @@ function TransactionsTable({
           )}
         </div>
         <div className="flex flex-wrap items-end gap-2">
+          {activeFilterCount > 0 && (
+            <Button variant="ghost" size="sm" onClick={() => setFilters(defaultFilterState())}>
+              <RotateCcw className="size-3.5" />
+              Reset filters
+            </Button>
+          )}
           <Input
             className="w-48"
             placeholder="Search description…"
@@ -1325,12 +1359,6 @@ function TransactionsTable({
               </Select>
             </FilterRow>
           </FilterPanel>
-          {activeFilterCount > 0 && (
-            <Button variant="ghost" size="sm" onClick={() => setFilters(defaultFilterState())}>
-              <RotateCcw className="size-3.5" />
-              Reset filters
-            </Button>
-          )}
         </div>
       </CardHeader>
       <CardContent>
@@ -1488,7 +1516,7 @@ function TransactionsTable({
           onClose={() => setTransferDetailPostingId(null)}
           onUnlinkTransfer={handleUnlinkTransfer}
           onUndoManualOverride={handleUndoManualOverride}
-          onExcludeFromRule={handleExcludeFromRule}
+          onExcludeAndUnlinkFromRule={handleExcludeAndUnlinkFromRule}
         />
       )}
     </Card>
