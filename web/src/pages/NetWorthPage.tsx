@@ -270,7 +270,7 @@ function AddOtherAssetForm() {
               onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
             />
           </label>
-          <Button size="sm" onClick={addAsset}>
+          <Button size="sm" onClick={addAsset} disabled={createOtherAsset.isPending}>
             Add
           </Button>
         </div>

@@ -165,7 +165,7 @@ export function ContributionLedgerTable({
             variant="ghost"
             size="icon"
             onClick={addRow}
-            disabled={goalList.length === 0}
+            disabled={goalList.length === 0 || createContribution.isPending}
             title="Add a contribution"
           >
             <Plus className="size-4" />

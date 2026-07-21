@@ -196,7 +196,7 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
             </div>
           )
         })}
-        <Button variant="outline" size="sm" onClick={add} disabled={goalList.length === 0}>
+        <Button variant="outline" size="sm" onClick={add} disabled={goalList.length === 0 || createAddition.isPending}>
           + Add recurring addition
         </Button>
       </CardContent>
