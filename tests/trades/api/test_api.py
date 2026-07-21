@@ -208,19 +208,39 @@ def test_allocation_reports_voo_and_cash(client) -> None:
 
 
 def test_target_allocation_defaults_to_empty(client) -> None:
-    assert client.get("/api/settings/target-allocation").json() == {}
+    body = client.get("/api/settings/target-allocation").json()
+    assert body["target_allocation_pct"] == {}
+    assert body["version"] == 0
 
 
 def test_target_allocation_put_then_get_round_trips(client) -> None:
     put_response = client.put("/api/settings/target-allocation", json={"VOO": 80.0})
     assert put_response.status_code == 200
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    assert put_response.json()["target_allocation_pct"] == {"VOO": 80.0}
+    assert client.get("/api/settings/target-allocation").json()["target_allocation_pct"] == {"VOO": 80.0}
 
 
 def test_target_allocation_put_preserves_other_settings(client) -> None:
     client.put("/api/settings/hysa", json={"bank_id": "marcus"})
     client.put("/api/settings/target-allocation", json={"VOO": 80.0})
     assert client.get("/api/settings/hysa").json()["bank_id"] == "marcus"
+
+
+def test_target_allocation_put_echoes_the_bumped_version_so_a_sibling_save_does_not_falsely_conflict(client) -> None:
+    """The version-echo bug: a target-allocation save bumped the shared settings row but returned no
+
+    version, leaving the client's cached version stale and 409-ing the next hysa/benchmark/tax save. The
+    response now carries the bumped version, so a follow-up save using it succeeds.
+    """
+    put_response = client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    bumped_version = put_response.json()["version"]
+
+    followup = client.put(
+        "/api/settings/hysa",
+        json={"bank_id": "marcus", "fixed_rate_pct": None},
+        headers={"X-Expected-Dashboard-Settings-Version": str(bumped_version)},
+    )
+    assert followup.status_code == 200
 
 
 def test_hysa_settings_default_to_no_override(client) -> None:
@@ -236,7 +256,7 @@ def test_hysa_settings_put_then_get_round_trips(client) -> None:
 def test_hysa_settings_put_preserves_target_allocation(client) -> None:
     client.put("/api/settings/target-allocation", json={"VOO": 80.0})
     client.put("/api/settings/hysa", json={"fixed_rate_pct": 5.0})
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    assert client.get("/api/settings/target-allocation").json()["target_allocation_pct"] == {"VOO": 80.0}
 
 
 def test_settings_mutation_with_the_current_expected_version_succeeds_and_bumps(client) -> None:
@@ -337,7 +357,7 @@ def test_tax_settings_put_preserves_target_allocation(client) -> None:
             "qualified_ltcg_rate_pct": None,
         },
     )
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    assert client.get("/api/settings/target-allocation").json()["target_allocation_pct"] == {"VOO": 80.0}
 
 
 def test_ibkr_settings_default_to_no_override(client) -> None:

@@ -18,6 +18,7 @@ from trades.api.api_models import (
     HysaSettingsUpdate,
     IbkrCredentialsUpdate,
     IbkrSettings,
+    TargetAllocationSetting,
     TaxSettings,
     TaxSettingsUpdate,
     TimezoneSetting,
@@ -48,15 +49,18 @@ router = APIRouter(dependencies=[Depends(_stash_expected_dashboard_settings_vers
 def get_target_allocation(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, float]:
-    """Return the persisted target allocation.
+) -> TargetAllocationSetting:
+    """Return the persisted target allocation, with the settings-row version.
 
     Returns
     -------
-    dict[str, float]
-        Symbol -> target percentage.
+    TargetAllocationSetting
+        `target_allocation_pct` (symbol -> target percentage) and `version`.
     """
-    return dashboard.load_settings(session, user_id).target_allocation_pct
+    return TargetAllocationSetting(
+        target_allocation_pct=dashboard.load_settings(session, user_id).target_allocation_pct,
+        version=get_dashboard_settings_version(session, user_id),
+    )
 
 
 @router.put("/api/settings/target-allocation")
@@ -64,23 +68,29 @@ def put_target_allocation(
     target_allocation_pct: dict[str, float],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, float]:
+) -> TargetAllocationSetting:
     """Persist a new target allocation, set from the frontend.
 
     Merges into the existing settings — a settings row is one record, so
     writing this field naively from a fresh `DashboardSettings()` would
-    silently wipe out the HYSA/benchmark settings saved separately.
+    silently wipe out the HYSA/benchmark settings saved separately. The
+    response carries `version` (like every other settings endpoint) so the
+    client's cached version stays current and a follow-up save to another
+    settings field doesn't spuriously 409.
 
     Returns
     -------
-    dict[str, float]
-        The persisted target allocation.
+    TargetAllocationSetting
+        The persisted target allocation and the new version.
     """
     updated = dashboard.load_settings(session, user_id).model_copy(
         update={"target_allocation_pct": target_allocation_pct}
     )
     dashboard.save_settings(updated, session, user_id)
-    return updated.target_allocation_pct
+    return TargetAllocationSetting(
+        target_allocation_pct=updated.target_allocation_pct,
+        version=get_dashboard_settings_version(session, user_id),
+    )
 
 
 @router.get("/api/settings/hysa")

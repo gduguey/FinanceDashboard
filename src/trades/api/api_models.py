@@ -138,6 +138,19 @@ class HysaSettingsUpdate(BaseModel):
     fixed_rate_pct: float | None = None
 
 
+class TargetAllocationSetting(BaseModel):
+    """The persisted target allocation, plus the settings-row version so the client can echo it back.
+
+    Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
+    save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
+    back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
+    save. Carrying `version` (like every other settings response) closes that.
+    """
+
+    target_allocation_pct: dict[str, float]
+    version: int
+
+
 class HysaSettings(BaseModel):
     """The persisted HYSA bank selection / fixed-rate override."""
 

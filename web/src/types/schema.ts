@@ -1571,14 +1571,14 @@ export interface paths {
     put: operations['put_posting_split_api_accounting_postings__posting_id__split_put']
     post?: never
     /**
-     * Delete Posting Split
+     * Delete Posting Split Route
      * @description Undo a posting split, restoring the single original posting.
      *
      *     Returns
      *     -------
      *     PostingIdResponse
      */
-    delete: operations['delete_posting_split_api_accounting_postings__posting_id__split_delete']
+    delete: operations['delete_posting_split_route_api_accounting_postings__posting_id__split_delete']
     options?: never
     head?: never
     patch?: never
@@ -3168,12 +3168,12 @@ export interface paths {
     }
     /**
      * Get Target Allocation
-     * @description Return the persisted target allocation.
+     * @description Return the persisted target allocation, with the settings-row version.
      *
      *     Returns
      *     -------
-     *     dict[str, float]
-     *         Symbol -> target percentage.
+     *     TargetAllocationSetting
+     *         `target_allocation_pct` (symbol -> target percentage) and `version`.
      */
     get: operations['get_target_allocation_api_settings_target_allocation_get']
     /**
@@ -3182,12 +3182,15 @@ export interface paths {
      *
      *     Merges into the existing settings — a settings row is one record, so
      *     writing this field naively from a fresh `DashboardSettings()` would
-     *     silently wipe out the HYSA/benchmark settings saved separately.
+     *     silently wipe out the HYSA/benchmark settings saved separately. The
+     *     response carries `version` (like every other settings endpoint) so the
+     *     client's cached version stays current and a follow-up save to another
+     *     settings field doesn't spuriously 409.
      *
      *     Returns
      *     -------
-     *     dict[str, float]
-     *         The persisted target allocation.
+     *     TargetAllocationSetting
+     *         The persisted target allocation and the new version.
      */
     put: operations['put_target_allocation_api_settings_target_allocation_put']
     post?: never
@@ -6607,6 +6610,23 @@ export interface components {
       merged: boolean
     }
     /**
+     * TargetAllocationSetting
+     * @description The persisted target allocation, plus the settings-row version so the client can echo it back.
+     *
+     *     Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
+     *     save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
+     *     back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
+     *     save. Carrying `version` (like every other settings response) closes that.
+     */
+    TargetAllocationSetting: {
+      /** Target Allocation Pct */
+      target_allocation_pct: {
+        [key: string]: number
+      }
+      /** Version */
+      version: number
+    }
+    /**
      * TaxOwedRow
      * @description One (year, regime) pair's estimated tax bill, netted against withholding already paid.
      */
@@ -8982,7 +9002,7 @@ export interface operations {
       }
     }
   }
-  delete_posting_split_api_accounting_postings__posting_id__split_delete: {
+  delete_posting_split_route_api_accounting_postings__posting_id__split_delete: {
     parameters: {
       query?: never
       header?: {
@@ -10933,9 +10953,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: number
-          }
+          'application/json': components['schemas']['TargetAllocationSetting']
         }
       }
       /** @description Validation Error */
@@ -10972,9 +10990,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: number
-          }
+          'application/json': components['schemas']['TargetAllocationSetting']
         }
       }
       /** @description Validation Error */
