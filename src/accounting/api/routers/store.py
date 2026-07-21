@@ -379,6 +379,14 @@ def delete_category(
     }
     save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
+    # Deliberately kept on the whole-store version check (not scoped, not opted out), for the same
+    # reason category/tag *rename* is: deleting a category is a category-graph-wide cascade — it drops
+    # every dependent Budget/GeneralBudget/CategoryPattern, clears TransferRule/PostingSplitLeg refs,
+    # and uncategorizes every posting that used it. The operation genuinely relates to much of the
+    # store, so whole-store optimistic concurrency is the correct granularity here (see the versioning
+    # doc on matching granularity to the operation's true scope), and opting out would remove the only
+    # thing stopping a concurrent delete of a *different* category from resurrecting it via the
+    # category re-merge in `save_store`.
     save_store(store, session, user_id)
     return CategoryDeleteResponse(categories=store.categories, uncategorized_posting_count=posting_count)
 
