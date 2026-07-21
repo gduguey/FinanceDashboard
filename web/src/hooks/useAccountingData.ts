@@ -19,10 +19,10 @@ import type {
   CurrencyCode,
   DismissSuggestionRequest,
   GeneralBudgetUpsert,
-  Goal,
   GoalContributionCreate,
   GoalContributionUpdate,
   GoalCreate,
+  GoalUpdate,
   LlmSettingsUpdate,
   ManualOverride,
   ManualTransfer,
@@ -886,10 +886,51 @@ export function useCreateCategoryPattern() {
   })
 }
 
-export function useSetGoals() {
+export function usePatchGoal() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (goals: Record<string, Goal>) => accountingApi.putGoals(goals),
+    mutationFn: ({ goalId, update }: { goalId: string; update: GoalUpdate }) => accountingApi.patchGoal(goalId, update),
+    // Same per-row optimistic-patch approach as `usePatchTransferRule` —
+    // each call carries and checks its own `update.expected_version`, not
+    // a shared whole-store one, so editing two different goals can never
+    // clobber each other regardless of how the requests interleave.
+    onMutate: async ({ goalId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          goals: { ...previous.goals, [goalId]: { ...previous.goals[goalId], ...update } },
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteGoal() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (goalId: string) => accountingApi.deleteGoal(goalId),
+    onMutate: async (goalId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        const remaining = { ...previous.goals }
+        delete remaining[goalId]
+        queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, goals: remaining })
+      }
+      return { previous }
+    },
+    onError: (_error, _goalId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }

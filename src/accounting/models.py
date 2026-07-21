@@ -457,6 +457,7 @@ class Goal(BaseModel):
     target_date: datetime
     color: str = Field(min_length=1)
     created_at: datetime
+    version: int = 1
 
 
 GoalContributionOrigin = Literal["manual", "automation"]

@@ -19,10 +19,11 @@ import {
   useAccountingStore,
   useCreateGoal,
   useCurrencies,
+  useDeleteGoal,
   useGoalsSummary,
+  usePatchGoal,
   useRunRecurringAdditions,
   useRunWithdrawalAutomation,
-  useSetGoals,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { usePersistedState } from '@/hooks/usePersistedState'
@@ -60,18 +61,30 @@ function GoalListSection({
   selectedGoalId: string | null
   onSelectGoal: (goalId: string | null) => void
 }) {
-  const setGoals = useSetGoals()
+  const patchGoal = usePatchGoal()
+  const deleteGoal = useDeleteGoal()
   const createGoal = useCreateGoal()
   const { data: currencies } = useCurrencies()
   const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
   const goalList = Object.values(goals).sort((a, b) => a.created_at.localeCompare(b.created_at))
 
   function update(goalId: string, patch: Partial<import('@/types/accounting').Goal>) {
-    setGoals.mutate({ ...goals, [goalId]: { ...goals[goalId], ...patch } })
+    const goal = goals[goalId]
+    const merged = { ...goal, ...patch }
+    patchGoal.mutate({
+      goalId,
+      update: {
+        name: merged.name,
+        target_amount: merged.target_amount,
+        target_currency: merged.target_currency,
+        target_date: merged.target_date,
+        color: merged.color,
+        expected_version: goal.version,
+      },
+    })
   }
   function remove(goalId: string) {
-    const { [goalId]: _removed, ...rest } = goals
-    setGoals.mutate(rest)
+    deleteGoal.mutate(goalId)
     if (selectedGoalId === goalId) onSelectGoal(null)
   }
   async function add() {

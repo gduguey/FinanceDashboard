@@ -2377,6 +2377,62 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/goals/{goal_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Goal Route
+     * @description Delete one goal, without touching any other goal already saved.
+     *
+     *     No version check — see `accounting.store.delete_goal`'s own
+     *     docstring for why deleting an already-gone goal is a plain 404, not a
+     *     409: there's nothing left to conflict with.
+     *
+     *     Returns
+     *     -------
+     *     GoalIdResponse
+     *         The goal id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no goal with `goal_id` exists.
+     */
+    delete: operations['delete_goal_route_api_accounting_goals__goal_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Goal
+     * @description Update one existing goal in place, without touching any other goal already saved.
+     *
+     *     A true per-resource write — unlike `PUT /goals`, this never
+     *     round-trips through `load_store`/`save_store` (which deletes and
+     *     reinserts every persisted entity for the user); see
+     *     `accounting.store.update_goal`. Guarded by `request.expected_version`
+     *     instead of the whole-store `X-Expected-Store-Version` header, so an
+     *     edit to this one goal can never spuriously conflict with — or be
+     *     silently overwritten by — an unrelated save elsewhere in the store.
+     *
+     *     Returns
+     *     -------
+     *     Goal
+     *         The goal as persisted after the update.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no goal with `goal_id` exists.
+     */
+    patch: operations['patch_goal_api_accounting_goals__goal_id__patch']
+    trace?: never
+  }
   '/api/accounting/goal-contributions': {
     parameters: {
       query?: never
@@ -4877,6 +4933,11 @@ export interface components {
        * Format: date-time
        */
       created_at: string
+      /**
+       * Version
+       * @default 1
+       */
+      version: number
     }
     /**
      * GoalContribution
@@ -5054,6 +5115,47 @@ export interface components {
        * Format: date-time
        */
       target_date: string
+    }
+    /**
+     * GoalIdResponse
+     * @description Response body naming one goal, for endpoints whose only real effect is removing something.
+     */
+    GoalIdResponse: {
+      /** Goal Id */
+      goal_id: string
+    }
+    /**
+     * GoalUpdate
+     * @description Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+     *
+     *     Unlike `GoalCreate`, this never mints a new id or color — the goal
+     *     stays identified by the `goal_id` path param, and `color` is an
+     *     explicit field here (never re-picked) since editing one goal should
+     *     never shuffle the color already showing everywhere else it's used.
+     *     `expected_version` is the goal's own `version` field the client last
+     *     saw — see `db.base.check_and_bump_row_version`, which raises a 409 if
+     *     it no longer matches what's persisted.
+     */
+    GoalUpdate: {
+      /** Name */
+      name: string
+      /** Target Amount */
+      target_amount: number
+      /**
+       * Target Currency
+       * @default USD
+       * @enum {string}
+       */
+      target_currency: 'USD' | 'EUR'
+      /**
+       * Target Date
+       * Format: date-time
+       */
+      target_date: string
+      /** Color */
+      color: string
+      /** Expected Version */
+      expected_version: number
     }
     /**
      * GoalsSummary
@@ -9804,6 +9906,76 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['GoalCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Goal']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_goal_route_api_accounting_goals__goal_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        goal_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_goal_api_accounting_goals__goal_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        goal_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GoalUpdate']
       }
     }
     responses: {

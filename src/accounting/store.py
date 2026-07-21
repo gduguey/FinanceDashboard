@@ -1251,6 +1251,7 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
             target_date=row.target_date,
             color=row.color,
             created_at=row.created_at,
+            version=row.version,
         )
         for row in goal_rows
     }
@@ -1418,6 +1419,133 @@ def _upsert_transfer_rules_and_prune(session: Session, user_id: uuid.UUID, rules
         )
 
 
+def _upsert_goals_and_prune(session: Session, user_id: uuid.UUID, goals: list[Goal]) -> None:
+    """Insert-or-update every one of `goals`, then delete this user's rows not among them — never touching `version`.
+
+    Same reasoning as `_upsert_transfer_rules_and_prune`: `Goal` carries a
+    `version` column `PATCH /goals/{goal_id}` depends on for its own
+    per-row optimistic concurrency, so `save_store`'s usual delete-all/
+    reinsert-all treatment (which would silently reset it) can't be used
+    here either.
+    """
+    keep_ids: set[uuid.UUID] = set()
+    for goal in goals:
+        row_id = derive_id(user_id, "goals", goal.goal_id)
+        keep_ids.add(row_id)
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.goals
+                    (id, user_id, natural_key, name, target_amount, target_currency, target_date,
+                     color, created_at, version)
+                VALUES
+                    (:id, :user_id, :natural_key, :name, :target_amount, :target_currency, :target_date,
+                     :color, :created_at, 1)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    target_amount = EXCLUDED.target_amount,
+                    target_currency = EXCLUDED.target_currency,
+                    target_date = EXCLUDED.target_date,
+                    color = EXCLUDED.color
+                """
+            ),
+            {
+                "id": str(row_id),
+                "user_id": str(user_id),
+                "natural_key": goal.goal_id,
+                "name": goal.name,
+                "target_amount": goal.target_amount,
+                "target_currency": goal.target_currency,
+                "target_date": goal.target_date,
+                "color": goal.color,
+                "created_at": goal.created_at,
+            },
+        )
+    session.flush()
+    existing_ids = {row.id for row in session.query(adb.Goal.id).filter_by(user_id=user_id)}
+    removed_ids = existing_ids - keep_ids
+    if removed_ids:
+        session.query(adb.Goal).filter_by(user_id=user_id).filter(adb.Goal.id.in_(removed_ids)).delete(
+            synchronize_session=False
+        )
+
+
+_GOALS_TABLE = "accounting.goals"
+
+
+def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_version: int) -> Goal | None:
+    """Update one goal's fields in place, touching no other persisted entity.
+
+    `goal.goal_id` identifies which row to update; every other field on
+    `goal` (`goal.version` is never read here — only `expected_version`
+    is) becomes that row's new state. Unlike `save_store`, this never
+    deletes and reinserts the whole `goals` table — it's a single row,
+    guarded by `db.base.check_and_bump_row_version` so a stale client
+    can't silently clobber a concurrent edit to the same goal.
+
+    Returns
+    -------
+    Goal | None
+        The goal as persisted after the update, or `None` if no goal with
+        `goal.goal_id` exists for this user. Raises `db.base.VersionConflictError`
+        (propagated straight from `check_and_bump_row_version`) if the goal
+        exists but `expected_version` no longer matches what's stored.
+
+    Raises
+    ------
+    RuntimeError
+        If the row vanishes between the version check just above and this
+        function's own read of it — the version check already proved the
+        row exists inside this same transaction, so this is only a
+        defensive invariant, never expected to actually happen.
+    """
+    row_id = derive_id(user_id, "goals", goal.goal_id)
+    new_version = check_and_bump_row_version(session, _GOALS_TABLE, row_id, user_id, expected_version)
+    if new_version is None:
+        return None
+    row = session.get(adb.Goal, row_id)
+    if row is None:
+        message = f"goals row {row_id} vanished between its version check and this read"
+        raise RuntimeError(message)
+    row.name = goal.name
+    row.target_amount = goal.target_amount
+    row.target_currency = goal.target_currency
+    row.target_date = goal.target_date
+    row.color = goal.color
+    session.flush()
+    return Goal(
+        goal_id=goal.goal_id,
+        name=row.name,
+        target_amount=row.target_amount,
+        target_currency=row.target_currency,
+        target_date=row.target_date,
+        color=row.color,
+        created_at=row.created_at,
+        version=new_version,
+    )
+
+
+def delete_goal(session: Session, user_id: uuid.UUID, goal_id: str) -> bool:
+    """Delete one goal, without touching any other persisted entity.
+
+    Idempotent by design, same reasoning as `delete_transfer_rule`: no
+    version check, since a goal that's already gone has nothing left to
+    conflict with. Fails loudly (an `IntegrityError`, uncaught) if the
+    goal still has real `GoalContribution`/`RecurringAddition`/
+    `WithdrawalPriorityEntry` rows referencing it — same as it already
+    would deleting through the whole-store path.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "goals", goal_id)
+    deleted = session.query(adb.Goal).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 # A thin, accounting-flavored name for the shared primitive in `db.base` —
 # every call site here and in `accounting.api` was written against this
 # name before the same mechanism was generalized for `trades.dashboard.
@@ -1550,7 +1678,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.GoalContribution).filter_by(user_id=user_id).delete()
     session.query(adb.RecurringAddition).filter_by(user_id=user_id).delete()
     session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id).delete()
-    session.query(adb.Goal).filter_by(user_id=user_id).delete()
     session.query(adb.Budget).filter_by(user_id=user_id).delete()
     session.query(adb.GeneralBudget).filter_by(user_id=user_id).delete()
     session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
@@ -1765,20 +1892,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for budget in store.budgets
     )
-    session.add_all(
-        adb.Goal(
-            id=derive_id(user_id, "goals", goal.goal_id),
-            user_id=user_id,
-            natural_key=goal.goal_id,
-            name=goal.name,
-            target_amount=goal.target_amount,
-            target_currency=goal.target_currency,
-            target_date=goal.target_date,
-            color=goal.color,
-            created_at=goal.created_at,
-        )
-        for goal in store.goals.values()
-    )
+    _upsert_goals_and_prune(session, user_id, list(store.goals.values()))
     session.flush()
 
     session.add_all(
