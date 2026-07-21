@@ -25,3 +25,10 @@ export function ruleUpdateFromRule(
     expected_version: rule.version,
   }
 }
+
+// Shared by every "exclude from rule" action (`TransactionsTab`'s
+// transfer-detail popup, `TransferRulesTab`'s "linked by this rule" table) —
+// a plain, pure array transform, no I/O of its own.
+export function addedExcludedTransactionIds(rule: TransferRule, transactionIds: string[]): string[] {
+  return [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])]
+}
