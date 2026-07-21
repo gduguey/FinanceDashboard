@@ -1048,18 +1048,55 @@ export function useSetRecurringAdditions() {
 }
 
 export function usePatchRecurringAddition() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: ({ additionId, update }: { additionId: string; update: RecurringAdditionUpdate }) =>
       accountingApi.patchRecurringAddition(additionId, update),
+    // Optimistically patch the one addition in the cached list so a field edit
+    // reflects immediately instead of lagging until the refetch — same
+    // onMutate/onError shape as `usePatchGoal`, over a list rather than a map.
+    onMutate: async ({ additionId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          recurring_additions: previous.recurring_additions.map((addition) =>
+            addition.addition_id === additionId ? { ...addition, ...update } : addition,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
 
 export function useDeleteRecurringAddition() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (additionId: string) => accountingApi.deleteRecurringAddition(additionId),
+    onMutate: async (additionId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          recurring_additions: previous.recurring_additions.filter(
+            (addition) => addition.addition_id !== additionId,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _additionId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }

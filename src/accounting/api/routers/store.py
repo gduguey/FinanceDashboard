@@ -81,6 +81,7 @@ from accounting.store import (
     remove_budget,
     remove_general_budget,
     remove_opening_balance,
+    remove_rule_transfer_links,
     save_overrides_for_postings,
     save_store,
     set_account_closed,
@@ -786,7 +787,14 @@ def delete_transfer_rule_route(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> TransferRuleIdResponse:
-    """Delete one transfer rule, without touching any other rule already saved.
+    """Delete one transfer rule and every transfer link it created, touching no other rule.
+
+    Deleting a rule cascades to the links it produced: a rule-created link
+    (`source == "rule"`) is a consequence of the rule, so it must not outlive
+    it. Manually-confirmed links are never swept up (see
+    `accounting.store.remove_rule_transfer_links`). The follow-up
+    `reconcile_and_persist_rule_links` re-proposes only from the *remaining*
+    rules, so the deleted rule's links stay gone rather than being re-derived.
 
     No version check — see `accounting.store.delete_transfer_rule`'s own
     docstring for why deleting an already-gone rule is a plain 404, not a
@@ -806,6 +814,7 @@ def delete_transfer_rule_route(
     deleted = delete_transfer_rule(session, user_id, rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
+    remove_rule_transfer_links(session, user_id, rule_id)
     session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
     return TransferRuleIdResponse(rule_id=rule_id)

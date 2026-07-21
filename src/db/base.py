@@ -350,7 +350,7 @@ def check_and_bump_row_version(
         {"row_id": str(row_id), "user_id": str(user_id)},
     ).scalar_one()
     message = (
-        f"This rule changed elsewhere since version {expected_version} was loaded (now at version {current}) "
+        f"This record changed elsewhere since version {expected_version} was loaded (now at version {current}) "
         "— reload before saving again."
     )
     raise VersionConflictError(message)
