@@ -14,6 +14,7 @@ import type {
   CategoryClassification,
   CategoryPattern,
   CategoryPatternCreate,
+  CategoryPatternUpdate,
   CategoryTotalRow,
   Currency,
   CurrencyCode,
@@ -410,10 +411,17 @@ export const accountingApi = {
       '/api/accounting/postings/validate-pending',
       jsonInit('POST', { posting_ids: postingIds }),
     ),
-  putCategoryPatterns: (patterns: Record<string, CategoryPattern>) =>
-    request<Record<string, CategoryPattern>>('/api/accounting/category-patterns', jsonInit('PUT', patterns)),
   createCategoryPattern: (pattern: CategoryPatternCreate) =>
     request<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
+  patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
+    requestScoped<CategoryPattern>(
+      `/api/accounting/category-patterns/${encodeURIComponent(patternId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteCategoryPattern: (patternId: string) =>
+    requestScoped<{ pattern_id: string }>(`/api/accounting/category-patterns/${encodeURIComponent(patternId)}`, {
+      method: 'DELETE',
+    }),
   transferSuggestions: (windowDays?: number) =>
     request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
   duplicateSuggestions: (windowDays?: number) =>

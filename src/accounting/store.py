@@ -993,6 +993,7 @@ def _pattern_from_row(row: adb.CategoryPattern, category_natural_key_by_id: dict
         subcategory_id=category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None,
         priority=row.priority,
         active=row.active,
+        version=row.version,
     )
 
 
@@ -1546,6 +1547,114 @@ def delete_goal(session: Session, user_id: uuid.UUID, goal_id: str) -> bool:
     return deleted > 0
 
 
+def _upsert_category_patterns_and_prune(session: Session, user_id: uuid.UUID, patterns: list[CategoryPattern]) -> None:
+    """Insert-or-update every one of `patterns`, then delete this user's rows not among them — never touching `version`.
+
+    Same reasoning as `_upsert_transfer_rules_and_prune`/`_upsert_goals_and_prune`: `CategoryPattern`
+    carries a `version` column `PATCH /category-patterns/{pattern_id}` depends on, so it can't use
+    `save_store`'s usual delete-all/reinsert-all treatment.
+    """
+    keep_ids: set[uuid.UUID] = set()
+    for pattern in patterns:
+        row_id = derive_id(user_id, "category_patterns", pattern.pattern_id)
+        keep_ids.add(row_id)
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.category_patterns
+                    (id, user_id, natural_key, description_contains, category_id, subcategory_id,
+                     priority, active, version)
+                VALUES
+                    (:id, :user_id, :natural_key, :description_contains, :category_id, :subcategory_id,
+                     :priority, :active, 1)
+                ON CONFLICT (id) DO UPDATE SET
+                    description_contains = EXCLUDED.description_contains,
+                    category_id = EXCLUDED.category_id,
+                    subcategory_id = EXCLUDED.subcategory_id,
+                    priority = EXCLUDED.priority,
+                    active = EXCLUDED.active
+                """
+            ),
+            {
+                "id": str(row_id),
+                "user_id": str(user_id),
+                "natural_key": pattern.pattern_id,
+                "description_contains": pattern.description_contains,
+                "category_id": str(derive_id(user_id, "categories", pattern.category_id)),
+                "subcategory_id": str(sub)
+                if (sub := _category_id(user_id, pattern.subcategory_id)) is not None
+                else None,
+                "priority": pattern.priority,
+                "active": pattern.active,
+            },
+        )
+    session.flush()
+    existing_ids = {row.id for row in session.query(adb.CategoryPattern.id).filter_by(user_id=user_id)}
+    removed_ids = existing_ids - keep_ids
+    if removed_ids:
+        session.query(adb.CategoryPattern).filter_by(user_id=user_id).filter(
+            adb.CategoryPattern.id.in_(removed_ids)
+        ).delete(synchronize_session=False)
+
+
+_CATEGORY_PATTERNS_TABLE = "accounting.category_patterns"
+
+
+def update_category_pattern(
+    session: Session, user_id: uuid.UUID, pattern: CategoryPattern, expected_version: int
+) -> CategoryPattern | None:
+    """Update one category pattern's fields in place, touching no other persisted entity.
+
+    `pattern.pattern_id` identifies which row to update; every other field on `pattern`
+    (`pattern.version` is never read here — only `expected_version` is) becomes that row's new state.
+    Guarded by `db.base.check_and_bump_row_version`, same shape as `update_transfer_rule`.
+
+    Returns
+    -------
+    CategoryPattern | None
+        The pattern as persisted, or `None` if no pattern with `pattern.pattern_id` exists for this
+        user. Raises `db.base.VersionConflictError` (propagated from `check_and_bump_row_version`) if
+        the pattern exists but `expected_version` no longer matches what's stored.
+
+    Raises
+    ------
+    RuntimeError
+        If the row vanishes between the version check and this function's own read of it — a
+        defensive invariant, never expected to actually happen.
+    """
+    row_id = derive_id(user_id, "category_patterns", pattern.pattern_id)
+    new_version = check_and_bump_row_version(session, _CATEGORY_PATTERNS_TABLE, row_id, user_id, expected_version)
+    if new_version is None:
+        return None
+    row = session.get(adb.CategoryPattern, row_id)
+    if row is None:
+        message = f"category_patterns row {row_id} vanished between its version check and this read"
+        raise RuntimeError(message)
+    row.description_contains = pattern.description_contains
+    row.category_id = derive_id(user_id, "categories", pattern.category_id)
+    row.subcategory_id = _category_id(user_id, pattern.subcategory_id)
+    row.priority = pattern.priority
+    row.active = pattern.active
+    session.flush()
+    return pattern.model_copy(update={"version": new_version})
+
+
+def delete_category_pattern(session: Session, user_id: uuid.UUID, pattern_id: str) -> bool:
+    """Delete one category pattern, without touching any other persisted entity.
+
+    Idempotent, no version check — same reasoning as `delete_transfer_rule`.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "category_patterns", pattern_id)
+    deleted = session.query(adb.CategoryPattern).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 # A thin, accounting-flavored name for the shared primitive in `db.base` —
 # every call site here and in `accounting.api` was written against this
 # name before the same mechanism was generalized for `trades.dashboard.
@@ -1683,7 +1792,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
     session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
     session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id).delete()
-    session.query(adb.CategoryPattern).filter_by(user_id=user_id).delete()
     session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
     session.query(adb.SimulatorScenario).filter_by(user_id=user_id).delete()
     session.flush()
@@ -1816,19 +1924,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for scenario in store.simulator_scenarios
     )
-    session.add_all(
-        adb.CategoryPattern(
-            id=derive_id(user_id, "category_patterns", pattern.pattern_id),
-            user_id=user_id,
-            natural_key=pattern.pattern_id,
-            description_contains=pattern.description_contains,
-            category_id=_category_id(user_id, pattern.category_id),
-            subcategory_id=_category_id(user_id, pattern.subcategory_id),
-            priority=pattern.priority,
-            active=pattern.active,
-        )
-        for pattern in store.category_patterns.values()
-    )
+    _upsert_category_patterns_and_prune(session, user_id, list(store.category_patterns.values()))
     session.flush()
 
     _upsert_transfer_rules_and_prune(session, user_id, store.rules)

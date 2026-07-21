@@ -22,6 +22,8 @@ from accounting.api.api_models import (
     CategoryDeletePreviewResponse,
     CategoryDeleteResponse,
     CategoryPatternCreate,
+    CategoryPatternIdResponse,
+    CategoryPatternUpdate,
     CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
@@ -58,6 +60,7 @@ from accounting.models import (
 )
 from accounting.store import (
     category_ids_to_delete,
+    delete_category_pattern,
     delete_transfer_rule,
     get_store_version,
     load_overrides,
@@ -71,6 +74,7 @@ from accounting.store import (
     save_store,
     slugify,
     uncategorize_category_ids,
+    update_category_pattern,
     update_transfer_rule,
 )
 from db.current_user import get_current_user_id
@@ -810,6 +814,70 @@ def put_category_patterns(
     store = store.model_copy(update={"category_patterns": category_patterns})
     save_store(store, session, user_id)
     return store.category_patterns
+
+
+@router.patch("/category-patterns/{pattern_id}")
+def patch_category_pattern(
+    pattern_id: str,
+    request: CategoryPatternUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryPattern:
+    """Update one existing category pattern in place, without touching any other pattern already saved.
+
+    A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
+    `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+
+    Returns
+    -------
+    CategoryPattern
+        The pattern as persisted after the update.
+
+    Raises
+    ------
+    HTTPException
+        404 if no pattern with `pattern_id` exists.
+    """
+    pattern = CategoryPattern(
+        pattern_id=pattern_id,
+        description_contains=request.description_contains,
+        category_id=request.category_id,
+        subcategory_id=request.subcategory_id,
+        priority=request.priority,
+        active=request.active,
+    )
+    updated = update_category_pattern(session, user_id, pattern, request.expected_version)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Category pattern {pattern_id!r} not found")
+    session.commit()
+    return updated
+
+
+@router.delete("/category-patterns/{pattern_id}")
+def delete_category_pattern_route(
+    pattern_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryPatternIdResponse:
+    """Delete one category pattern, without touching any other pattern already saved.
+
+    No version check — see `accounting.store.delete_category_pattern`.
+
+    Returns
+    -------
+    CategoryPatternIdResponse
+        The pattern id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no pattern with `pattern_id` exists.
+    """
+    deleted = delete_category_pattern(session, user_id, pattern_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Category pattern {pattern_id!r} not found")
+    session.commit()
+    return CategoryPatternIdResponse(pattern_id=pattern_id)
 
 
 @router.post("/other-assets")
