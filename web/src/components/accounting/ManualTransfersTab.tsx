@@ -1,8 +1,10 @@
+import { TriangleAlert } from 'lucide-react'
 import { useMemo } from 'react'
 import { toast } from 'sonner'
 import { LinkedTransactionsTable } from '@/components/accounting/LinkedTransactionsTable'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useRemoveTransferLink } from '@/hooks/useAccountingData'
 import {
   type LinkedPairRow,
@@ -49,14 +51,24 @@ export function ManualTransfersTab({
     <Card>
       <CardHeader>
         <CardTitle>Manually added transfers</CardTitle>
+        <CardDescription>
+          {rows.length} manually added {rows.length === 1 ? 'transfer' : 'transfers'}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <LinkedTransactionsTable
           rows={rows}
           emptyMessage="No transfers have been manually added."
           renderRowAction={(row) => (
-            <div className="flex max-w-xs flex-col items-end gap-1">
-              <p className="text-right text-xs text-muted-foreground">{TRANSFER_UNLINK_WARNING_PAIR}</p>
+            <div className="flex items-center gap-2">
+              <Tooltip>
+                <TooltipTrigger className="inline-flex text-muted-foreground/70 hover:text-foreground">
+                  <TriangleAlert className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-64 text-pretty">
+                  <p>{TRANSFER_UNLINK_WARNING_PAIR}</p>
+                </TooltipContent>
+              </Tooltip>
               <Button variant="destructive" size="sm" onClick={() => deleteTransfer(row.linkId)}>
                 Delete transfer
               </Button>
