@@ -13,7 +13,6 @@ import type {
   AccountingStore,
   BudgetUpsert,
   CanonicalCategoryOverrides,
-  Category,
   CategoryPatternCreate,
   CategoryPatternUpdate,
   CurrencyCode,
@@ -455,15 +454,7 @@ export function useCreateSimulatorScenario() {
   })
 }
 
-export function useSetCategories() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (categories: Record<string, Category>) => accountingApi.putCategories(categories),
-    onSuccess: invalidate,
-  })
-}
-
-// Unlike `useSetCategories` (a whole-tree replace), this refuses a
+// Unlike a whole-tree replace, this refuses a
 // same-classification, same-name duplicate server-side (409) instead of
 // silently overwriting whatever already had that computed id.
 export function useCreateCategory() {
@@ -741,14 +732,6 @@ export function useSetOpeningBalance() {
   return useMutation({
     mutationFn: ({ accountId, openingBalance }: { accountId: string; openingBalance: OpeningBalance }) =>
       accountingApi.putOpeningBalance(accountId, openingBalance),
-    onSuccess: invalidate,
-  })
-}
-
-export function useDeleteOpeningBalance() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (accountId: string) => accountingApi.deleteOpeningBalance(accountId),
     onSuccess: invalidate,
   })
 }
