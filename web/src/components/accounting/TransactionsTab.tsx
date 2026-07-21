@@ -959,17 +959,13 @@ function TransactionsTable({
   )
   // Excluding a rule-found link must also delete the `TransferLink` itself
   // so both transactions actually revert to normal (see
-  // `TransferDetailDialog`'s "Exclude this specific transfer…" button) —
-  // sequential `await mutateAsync`, not fired as two parallel `.mutate()`
-  // calls. The rule patch itself is now guarded by its own row-scoped
-  // `expected_version` (see `usePatchTransferRule`), so it can no longer
-  // spuriously 409 against an unrelated save — but `removeTransferLink`
-  // still goes through the whole-store `X-Expected-Store-Version` header
-  // (see `accountingApi.ts`'s `request`), which only advances once ITS
-  // OWN mutation's `onSuccess` invalidation has refetched the store, so
-  // firing both at once would still risk the unlink going out with a
-  // stale version (same bug class fixed once already in commit 704abe9 —
-  // see MEMORY.md's `feedback_sequential_store_mutations` note).
+  // `TransferDetailDialog`'s "Exclude this specific transfer…" button).
+  // Both calls are now per-resource and scoped — the rule patch by its own
+  // row `expected_version` (see `usePatchTransferRule`), the unlink by a
+  // scoped `DELETE /transfer-links/{id}` that no longer touches the
+  // whole-store version at all — so they can't spuriously conflict with
+  // each other or with an unrelated save. Kept sequential (`await`) purely
+  // so the success toast only fires once both have actually landed.
   const handleExcludeAndUnlinkFromRule = useCallback(
     async (transactionIds: string[], ruleId: string, linkId: string) => {
       const rule = rules.find((r) => r.rule_id === ruleId)
