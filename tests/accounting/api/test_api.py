@@ -1949,6 +1949,40 @@ def test_two_patches_fired_with_the_same_expected_version_the_second_gets_409(cl
     assert final["priority"] == 1
 
 
+def test_patch_transfer_rule_without_expected_version_is_last_write_wins(client) -> None:
+    """The `active`-toggle path omits `expected_version` (sends null) so fast on/off/on flipping settles
+
+    on the last click instead of 409-ing against its own in-flight earlier click — two PATCHes off the
+    same stale snapshot both succeed, and the last one's value wins.
+    """
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+
+    def toggle(active: bool) -> int:
+        return client.patch(
+            f"/api/accounting/transfer-rules/{rule['rule_id']}",
+            json={
+                "description_contains": "PAYROLL",
+                "counterparty_account_id": employer["account_id"],
+                "priority": rule["priority"],
+                "active": active,
+                "expected_version": None,  # opt out of the check — last-write-wins
+            },
+        ).status_code
+
+    # Both fired from the same original snapshot (version 1); neither 409s.
+    assert toggle(active=False) == 200
+    assert toggle(active=True) == 200
+    assert toggle(active=False) == 200
+
+    final = client.get("/api/accounting/store").json()["transfer_rules"][0]
+    assert final["active"] is False  # the last write won
+    assert final["version"] == 4  # still bumped on every write, just never checked
+
+
 def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
     checking_id = _import_chase_checking(client)
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")

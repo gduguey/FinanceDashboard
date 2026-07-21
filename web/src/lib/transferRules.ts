@@ -5,10 +5,12 @@ import type { TransferRule, TransferRuleUpdate } from '@/types/accounting'
 // (`TransferRulesTab`, `ExcludedFromRulesTab`, `TransactionsTab`) edits
 // exactly one field of a rule at a time but the endpoint takes the whole
 // mutable field set per request, matching `AccountUpdate`'s convention.
-// `expected_version` always comes from `rule` itself, never from an
-// override, since a caller extending its own optimistic patch's `active`/
-// `priority` guess in `overrides` should never also get to guess the
-// version it's checked against.
+// `expected_version` defaults to the rule's own `version` (a real
+// optimistic-concurrency check for destructive field edits), but a caller
+// may override it — the `active`-toggle path passes `expected_version:
+// null` to opt into last-write-wins, since fast-flipping a switch should
+// never 409 against its own earlier click (see
+// `docs/app-stack/optimistic-concurrency-versioning.md`).
 export function ruleUpdateFromRule(
   rule: TransferRule,
   overrides: Partial<TransferRuleUpdate> = {},
@@ -21,8 +23,8 @@ export function ruleUpdateFromRule(
     description: rule.description,
     active: rule.active,
     excluded_transaction_ids: rule.excluded_transaction_ids ?? [],
-    ...overrides,
     expected_version: rule.version,
+    ...overrides,
   }
 }
 

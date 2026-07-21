@@ -4606,6 +4606,8 @@ export interface components {
      *     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
      *     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
      *     the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+     *     It's `None` (skip the check, last-write-wins) only for an idempotent toggle of the `active` flag,
+     *     the same exemption `TransferRuleUpdate.expected_version` documents.
      */
     CategoryPatternUpdate: {
       /** Description Contains */
@@ -4622,7 +4624,7 @@ export interface components {
        */
       active: boolean
       /** Expected Version */
-      expected_version: number
+      expected_version?: number | null
     }
     /**
      * CategoryRenamePreviewResponse
@@ -7061,7 +7063,11 @@ export interface components {
      *     matching criteria) change, so an edit never silently becomes a
      *     different rule. `expected_version` is the rule's own `version` field
      *     the client last saw — see `db.base.check_and_bump_row_version`, which
-     *     raises a 409 if it no longer matches what's persisted.
+     *     raises a 409 if it no longer matches what's persisted. It's `None`
+     *     (skip the check, last-write-wins) only for an idempotent toggle of the
+     *     `active` flag, where losing the race against a newer flip of the same
+     *     switch is the wanted outcome, not a conflict — see
+     *     `docs/app-stack/optimistic-concurrency-versioning.md`.
      */
     TransferRuleUpdate: {
       /** Description Contains */
@@ -7085,7 +7091,7 @@ export interface components {
       /** Excluded Transaction Ids */
       excluded_transaction_ids?: string[]
       /** Expected Version */
-      expected_version: number
+      expected_version?: number | null
     }
     /**
      * TransferSuggestion

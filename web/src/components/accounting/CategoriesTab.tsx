@@ -677,7 +677,9 @@ function CategoryPatternsSection({
         subcategory_id: existing.subcategory_id,
         priority: existing.priority,
         active,
-        expected_version: existing.version,
+        // Last-write-wins on a fast on/off/on toggle (see the versioning doc); `savePattern` above
+        // keeps the real version check for destructive field edits.
+        expected_version: null,
       },
     })
   }

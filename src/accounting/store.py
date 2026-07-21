@@ -891,7 +891,7 @@ _TRANSFER_RULES_TABLE = "accounting.transfer_rules"
 
 
 def update_transfer_rule(
-    session: Session, user_id: uuid.UUID, rule: TransferRule, expected_version: int
+    session: Session, user_id: uuid.UUID, rule: TransferRule, expected_version: int | None
 ) -> TransferRule | None:
     """Update one transfer rule's fields in place, touching no other persisted entity.
 
@@ -1474,7 +1474,7 @@ def _upsert_goals_and_prune(session: Session, user_id: uuid.UUID, goals: list[Go
 _GOALS_TABLE = "accounting.goals"
 
 
-def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_version: int) -> Goal | None:
+def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_version: int | None) -> Goal | None:
     """Update one goal's fields in place, touching no other persisted entity.
 
     `goal.goal_id` identifies which row to update; every other field on
@@ -1601,7 +1601,7 @@ _CATEGORY_PATTERNS_TABLE = "accounting.category_patterns"
 
 
 def update_category_pattern(
-    session: Session, user_id: uuid.UUID, pattern: CategoryPattern, expected_version: int
+    session: Session, user_id: uuid.UUID, pattern: CategoryPattern, expected_version: int | None
 ) -> CategoryPattern | None:
     """Update one category pattern's fields in place, touching no other persisted entity.
 
