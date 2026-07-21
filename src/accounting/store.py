@@ -2798,6 +2798,40 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
     session.flush()
 
 
+def remove_posting_merge(session: Session, user_id: uuid.UUID, merge_id: str) -> bool:
+    """Delete one duplicate-resolution merge, touching no other. Idempotent, no version check.
+
+    Its `PostingMergeDuplicate` membership rows go automatically via their
+    `ON DELETE CASCADE` FK into `posting_merges`.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "posting_merges", merge_id)
+    deleted = session.query(adb.PostingMerge).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def remove_transfer_link(session: Session, user_id: uuid.UUID, link_id: str) -> bool:
+    """Delete one confirmed transfer link, touching no other. Idempotent, no version check.
+
+    Its `TransferLinkedTransaction` membership rows go automatically via
+    their `ON DELETE CASCADE` FK into `transfer_links`.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "transfer_links", link_id)
+    deleted = session.query(adb.TransferLink).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
     """Delete one tag, touching no other. Idempotent, no version check.
 

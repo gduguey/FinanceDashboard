@@ -51,6 +51,8 @@ from accounting.store import (
     load_overrides,
     load_overrides_for_postings,
     load_store,
+    remove_posting_merge,
+    remove_transfer_link,
     save_overrides_for_postings,
     save_posting_split,
     save_store,
@@ -338,12 +340,9 @@ def delete_posting_merge(
     HTTPException
         404 if no merge with this id exists.
     """
-    store = load_store(session, user_id)
-    if merge_id not in store.posting_merges:
+    if not remove_posting_merge(session, user_id, merge_id):
         raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
-    remaining = {mid: merge for mid, merge in store.posting_merges.items() if mid != merge_id}
-    store = store.model_copy(update={"posting_merges": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return PostingMergeIdResponse(merge_id=merge_id)
 
 
@@ -430,12 +429,9 @@ def delete_transfer_link(
     HTTPException
         404 if no link with this id exists.
     """
-    store = load_store(session, user_id)
-    if not any(existing.link_id == link_id for existing in store.transfer_links):
+    if not remove_transfer_link(session, user_id, link_id):
         raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
-    remaining = [existing for existing in store.transfer_links if existing.link_id != link_id]
-    store = store.model_copy(update={"transfer_links": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return TransferLinkIdResponse(link_id=link_id)
 
 
