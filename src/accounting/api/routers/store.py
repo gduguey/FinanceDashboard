@@ -70,12 +70,16 @@ from accounting.store import (
     plan_tag_rename,
     remap_category_ids,
     remap_tag_ids,
+    remove_budget,
+    remove_general_budget,
     save_overrides_for_postings,
     save_store,
     slugify,
     uncategorize_category_ids,
     update_category_pattern,
     update_transfer_rule,
+    upsert_budget,
+    upsert_general_budget,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -976,6 +980,10 @@ def post_budget(
     Budget
         The budget just persisted.
     """
+    # Ensures the default category tree this budget's `category_id` foreign-keys into has been seeded
+    # for a brand-new user (see `load_store` — it persists defaults on first access); a no-op read for
+    # everyone else. The actual write below is scoped to this one budget row, not a whole-store save.
+    load_store(session, user_id)
     budget = Budget(
         budget_id=_budget_id(request.month, request.category_id, request.subcategory_id),
         month=request.month,
@@ -984,10 +992,7 @@ def post_budget(
         amount=request.amount,
         currency=request.currency,
     )
-    store = load_store(session, user_id)
-    remaining = [b for b in store.budgets if b.budget_id != budget.budget_id]
-    store = store.model_copy(update={"budgets": [*remaining, budget]})
-    save_store(store, session, user_id)
+    upsert_budget(budget, session, user_id)
     return budget
 
 
@@ -1009,12 +1014,9 @@ def delete_budget(
     HTTPException
         404 if no budget has this id.
     """
-    store = load_store(session, user_id)
-    if not any(b.budget_id == budget_id for b in store.budgets):
+    if not remove_budget(session, user_id, budget_id):
         raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
-    remaining = [b for b in store.budgets if b.budget_id != budget_id]
-    store = store.model_copy(update={"budgets": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return BudgetIdResponse(budget_id=budget_id)
 
 
@@ -1067,16 +1069,14 @@ def post_general_budget(
     GeneralBudget
         The general budget just persisted.
     """
-    key = _general_budget_key(request.category_id, request.subcategory_id)
+    load_store(session, user_id)  # seed defaults for a new user (see the equivalent note in `post_budget`)
     general_budget = GeneralBudget(
         category_id=request.category_id,
         subcategory_id=request.subcategory_id,
         amount=request.amount,
         currency=request.currency,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"general_budgets": {**store.general_budgets, key: general_budget}})
-    save_store(store, session, user_id)
+    upsert_general_budget(general_budget, session, user_id)
     return general_budget
 
 
@@ -1098,12 +1098,15 @@ def delete_general_budget(
     HTTPException
         404 if no general budget has this key.
     """
+    # Read (not a whole-store save) to resolve `key` back to its full category/subcategory pair, since
+    # the row id derives from both and `key` alone (subcategory-or-category) can't reconstruct it. The
+    # actual delete is scoped to the one row, so it never blanket-rewrites the general-budget table.
     store = load_store(session, user_id)
-    if key not in store.general_budgets:
+    entry = store.general_budgets.get(key)
+    if entry is None:
         raise HTTPException(status_code=404, detail=f"General budget {key!r} not found")
-    remaining = {k: v for k, v in store.general_budgets.items() if k != key}
-    store = store.model_copy(update={"general_budgets": remaining})
-    save_store(store, session, user_id)
+    remove_general_budget(session, user_id, entry.category_id, entry.subcategory_id)
+    session.commit()
     return GeneralBudgetKeyResponse(key=key)
 
 

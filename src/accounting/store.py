@@ -2442,6 +2442,127 @@ def delete_posting_split(session: Session, user_id: uuid.UUID, posting_id: str) 
     return deleted > 0
 
 
+def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one per-month budget, touching no other budget cell.
+
+    Scoped counterpart to routing a budget through `save_store` (which
+    blanket-deletes and reinserts every budget for the user): two callers
+    editing *different* month/category cells at once can't clobber each
+    other. Keyed by `budget.budget_id` (derived from month+category+
+    subcategory), so re-setting the same cell is last-write-wins, the
+    intended semantics for a single amount.
+
+    Parameters
+    ----------
+    budget
+        The budget to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose budget this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.budgets
+                (id, user_id, natural_key, month, category_id, subcategory_id, amount, currency)
+            VALUES
+                (:id, :user_id, :natural_key, :month, :category_id, :subcategory_id, :amount, :currency)
+            ON CONFLICT (id) DO UPDATE SET
+                month = EXCLUDED.month,
+                category_id = EXCLUDED.category_id,
+                subcategory_id = EXCLUDED.subcategory_id,
+                amount = EXCLUDED.amount,
+                currency = EXCLUDED.currency
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "budgets", budget.budget_id)),
+            "user_id": str(user_id),
+            "natural_key": budget.budget_id,
+            "month": budget.month,
+            "category_id": str(derive_id(user_id, "categories", budget.category_id)),
+            "subcategory_id": str(sub) if (sub := _category_id(user_id, budget.subcategory_id)) is not None else None,
+            "amount": budget.amount,
+            "currency": budget.currency,
+        },
+    )
+    session.commit()
+
+
+def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:
+    """Delete one per-month budget, touching no other budget cell. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "budgets", budget_id)
+    deleted = session.query(adb.Budget).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def upsert_general_budget(general_budget: GeneralBudget, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one standing (all-month) budget, touching no other entry. Scoped like `upsert_budget`.
+
+    Keyed (like `save_store`'s own general-budget rows) by the
+    category/subcategory pair, so re-setting the same category's standing
+    target is last-write-wins.
+
+    Parameters
+    ----------
+    general_budget
+        The standing budget to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose general budget this is.
+    """
+    row_key = f"{general_budget.category_id}:{general_budget.subcategory_id or ''}"
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.general_budgets
+                (id, user_id, category_id, subcategory_id, amount, currency)
+            VALUES
+                (:id, :user_id, :category_id, :subcategory_id, :amount, :currency)
+            ON CONFLICT (id) DO UPDATE SET
+                category_id = EXCLUDED.category_id,
+                subcategory_id = EXCLUDED.subcategory_id,
+                amount = EXCLUDED.amount,
+                currency = EXCLUDED.currency
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "general_budgets", row_key)),
+            "user_id": str(user_id),
+            "category_id": str(derive_id(user_id, "categories", general_budget.category_id)),
+            "subcategory_id": str(sub)
+            if (sub := _category_id(user_id, general_budget.subcategory_id)) is not None
+            else None,
+            "amount": general_budget.amount,
+            "currency": general_budget.currency,
+        },
+    )
+    session.commit()
+
+
+def remove_general_budget(session: Session, user_id: uuid.UUID, category_id: str, subcategory_id: str | None) -> bool:
+    """Delete one standing budget by its category/subcategory, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "general_budgets", f"{category_id}:{subcategory_id or ''}")
+    deleted = session.query(adb.GeneralBudget).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
     """Which of `suggestion_ids` have already been dismissed, without loading anything else.
 
