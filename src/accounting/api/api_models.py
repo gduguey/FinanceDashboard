@@ -341,6 +341,24 @@ class CategoryPatternIdResponse(BaseModel):
     pattern_id: str
 
 
+class TagIdResponse(BaseModel):
+    """Response body naming one tag, for endpoints whose only real effect is removing something."""
+
+    tag_id: str
+
+
+class OtherAssetIdResponse(BaseModel):
+    """Response body naming one manually-entered asset, for endpoints whose only real effect is removing something."""
+
+    asset_id: str
+
+
+class SimulatorScenarioIdResponse(BaseModel):
+    """Response body naming one simulator scenario, for endpoints whose only real effect is removing something."""
+
+    scenario_id: str
+
+
 class GeneralBudgetKeyResponse(BaseModel):
     """Response body naming one general budget's key, for endpoints whose only real effect is removing something."""
 

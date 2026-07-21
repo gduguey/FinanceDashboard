@@ -2798,6 +2798,51 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
     session.flush()
 
 
+def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
+    """Delete one tag, touching no other. Idempotent, no version check.
+
+    A tag still applied to postings is removed from them too — `posting_tags`
+    and `posting_override_tags` both foreign-key `tags.id` with `ON DELETE
+    CASCADE`, the same cascade the old whole-list `PUT /tags` prune relied on.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    deleted = session.query(adb.Tag).filter_by(id=_tag_id(user_id, tag_id), user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def delete_other_asset(session: Session, user_id: uuid.UUID, asset_id: str) -> bool:
+    """Delete one manually-entered asset, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "other_assets", asset_id)
+    deleted = session.query(adb.OtherAsset).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def delete_simulator_scenario(session: Session, user_id: uuid.UUID, scenario_id: str) -> bool:
+    """Delete one saved simulator scenario, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "simulator_scenarios", scenario_id)
+    deleted = session.query(adb.SimulatorScenario).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
     """Which of `suggestion_ids` have already been dismissed, without loading anything else.
 

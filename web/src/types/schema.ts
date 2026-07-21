@@ -341,6 +341,41 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/tags/{tag_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Tag Route
+     * @description Delete one tag, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting a tag by re-sending the whole tag list minus one
+     *     (which risked a stale second delete resurrecting a just-removed tag);
+     *     see `accounting.store.delete_tag`. A tag still applied to postings is
+     *     removed from them too, via the `posting_tags` FK cascade.
+     *
+     *     Returns
+     *     -------
+     *     TagIdResponse
+     *         The tag id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no tag with `tag_id` exists.
+     */
+    delete: operations['delete_tag_route_api_accounting_tags__tag_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/accounting/tags/{tag_id}/rename-preview': {
     parameters: {
       query?: never
@@ -628,6 +663,39 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/other-assets/{asset_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Other Asset Route
+     * @description Delete one manually-entered asset, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting an asset by re-sending the whole list minus one; see
+     *     `accounting.store.delete_other_asset`.
+     *
+     *     Returns
+     *     -------
+     *     OtherAssetIdResponse
+     *         The asset id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no asset with `asset_id` exists.
+     */
+    delete: operations['delete_other_asset_route_api_accounting_other_assets__asset_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/accounting/budgets': {
     parameters: {
       query?: never
@@ -801,6 +869,39 @@ export interface paths {
      */
     post: operations['post_simulator_scenario_api_accounting_simulator_scenarios_post']
     delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/simulator/scenarios/{scenario_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Simulator Scenario Route
+     * @description Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting a scenario by re-sending the whole list minus one;
+     *     see `accounting.store.delete_simulator_scenario`.
+     *
+     *     Returns
+     *     -------
+     *     SimulatorScenarioIdResponse
+     *         The scenario id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no scenario with `scenario_id` exists.
+     */
+    delete: operations['delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -5824,6 +5925,14 @@ export interface components {
       note: string
     }
     /**
+     * OtherAssetIdResponse
+     * @description Response body naming one manually-entered asset, for endpoints whose only real effect is removing something.
+     */
+    OtherAssetIdResponse: {
+      /** Asset Id */
+      asset_id: string
+    }
+    /**
      * Overview
      * @description The overview card row: value, gain split, XIRR, dollar alpha, TWR.
      */
@@ -6393,6 +6502,14 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
+     * SimulatorScenarioIdResponse
+     * @description Response body naming one simulator scenario, for endpoints whose only real effect is removing something.
+     */
+    SimulatorScenarioIdResponse: {
+      /** Scenario Id */
+      scenario_id: string
+    }
+    /**
      * SkippedRowsInfo
      * @description Rows an import couldn't parse — see `importers.canonical.csv.SkippedRowsInfo`.
      */
@@ -6578,6 +6695,14 @@ export interface components {
     TagCreate: {
       /** Name */
       name: string
+    }
+    /**
+     * TagIdResponse
+     * @description Response body naming one tag, for endpoints whose only real effect is removing something.
+     */
+    TagIdResponse: {
+      /** Tag Id */
+      tag_id: string
     }
     /**
      * TagRenamePreviewResponse
@@ -7515,6 +7640,39 @@ export interface operations {
       }
     }
   }
+  delete_tag_route_api_accounting_tags__tag_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        tag_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TagIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get: {
     parameters: {
       query: {
@@ -7906,6 +8064,39 @@ export interface operations {
       }
     }
   }
+  delete_other_asset_route_api_accounting_other_assets__asset_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        asset_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OtherAssetIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_budgets_api_accounting_budgets_put: {
     parameters: {
       query?: never
@@ -8173,6 +8364,39 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['SimulatorScenario']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        scenario_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SimulatorScenarioIdResponse']
         }
       }
       /** @description Validation Error */

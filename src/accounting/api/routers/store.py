@@ -30,9 +30,12 @@ from accounting.api.api_models import (
     GeneralBudgetKeyResponse,
     GeneralBudgetUpsert,
     OtherAssetCreate,
+    OtherAssetIdResponse,
     SimulatorScenarioCreate,
+    SimulatorScenarioIdResponse,
     SubcategoryCreate,
     TagCreate,
+    TagIdResponse,
     TagRenamePreviewResponse,
     TagRenameRequest,
     TagRenameResponse,
@@ -61,6 +64,9 @@ from accounting.models import (
 from accounting.store import (
     category_ids_to_delete,
     delete_category_pattern,
+    delete_other_asset,
+    delete_simulator_scenario,
+    delete_tag,
     delete_transfer_rule,
     get_store_version,
     insert_manual_transfers,
@@ -565,6 +571,35 @@ def post_tag(
     return new_tag
 
 
+@router.delete("/tags/{tag_id}")
+def delete_tag_route(
+    tag_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TagIdResponse:
+    """Delete one tag, without touching any other. Idempotent, no version check.
+
+    Replaces deleting a tag by re-sending the whole tag list minus one
+    (which risked a stale second delete resurrecting a just-removed tag);
+    see `accounting.store.delete_tag`. A tag still applied to postings is
+    removed from them too, via the `posting_tags` FK cascade.
+
+    Returns
+    -------
+    TagIdResponse
+        The tag id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no tag with `tag_id` exists.
+    """
+    if not delete_tag(session, user_id, tag_id):
+        raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
+    session.commit()
+    return TagIdResponse(tag_id=tag_id)
+
+
 @router.get("/tags/{tag_id}/rename-preview")
 def get_tag_rename_preview(
     tag_id: str,
@@ -939,6 +974,33 @@ def put_other_assets(
     return store.other_assets
 
 
+@router.delete("/other-assets/{asset_id}")
+def delete_other_asset_route(
+    asset_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> OtherAssetIdResponse:
+    """Delete one manually-entered asset, without touching any other. Idempotent, no version check.
+
+    Replaces deleting an asset by re-sending the whole list minus one; see
+    `accounting.store.delete_other_asset`.
+
+    Returns
+    -------
+    OtherAssetIdResponse
+        The asset id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no asset with `asset_id` exists.
+    """
+    if not delete_other_asset(session, user_id, asset_id):
+        raise HTTPException(status_code=404, detail=f"Other asset {asset_id!r} not found")
+    session.commit()
+    return OtherAssetIdResponse(asset_id=asset_id)
+
+
 @router.put("/budgets")
 def put_budgets(
     budgets: list[Budget],
@@ -1166,6 +1228,33 @@ def put_simulator_scenarios(
     store = store.model_copy(update={"simulator_scenarios": scenarios})
     save_store(store, session, user_id)
     return store.simulator_scenarios
+
+
+@router.delete("/simulator/scenarios/{scenario_id}")
+def delete_simulator_scenario_route(
+    scenario_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> SimulatorScenarioIdResponse:
+    """Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
+
+    Replaces deleting a scenario by re-sending the whole list minus one;
+    see `accounting.store.delete_simulator_scenario`.
+
+    Returns
+    -------
+    SimulatorScenarioIdResponse
+        The scenario id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no scenario with `scenario_id` exists.
+    """
+    if not delete_simulator_scenario(session, user_id, scenario_id):
+        raise HTTPException(status_code=404, detail=f"Simulator scenario {scenario_id!r} not found")
+    session.commit()
+    return SimulatorScenarioIdResponse(scenario_id=scenario_id)
 
 
 @router.post("/accounts")
