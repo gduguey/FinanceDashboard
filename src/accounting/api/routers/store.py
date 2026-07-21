@@ -63,6 +63,7 @@ from accounting.store import (
     delete_category_pattern,
     delete_transfer_rule,
     get_store_version,
+    insert_manual_transfers,
     load_overrides,
     load_store,
     normalize_categories,
@@ -70,16 +71,21 @@ from accounting.store import (
     plan_tag_rename,
     remap_category_ids,
     remap_tag_ids,
+    remove_account,
     remove_budget,
     remove_general_budget,
+    remove_opening_balance,
     save_overrides_for_postings,
     save_store,
+    set_account_closed,
     slugify,
     uncategorize_category_ids,
+    update_account_fields,
     update_category_pattern,
     update_transfer_rule,
     upsert_budget,
     upsert_general_budget,
+    upsert_opening_balance,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -1239,8 +1245,8 @@ def put_account(
             "meta": update.meta,
         }
     )
-    store = store.model_copy(update={"accounts": {**store.accounts, account_id: updated}})
-    save_store(store, session, user_id)
+    update_account_fields(session, user_id, updated)
+    session.commit()
     return updated
 
 
@@ -1267,9 +1273,8 @@ def delete_account(
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     if _account_has_postings(account_id, state.config, session, user_id):
         raise HTTPException(status_code=400, detail="This account already has transactions and can't be deleted")
-    remaining = {aid: account for aid, account in store.accounts.items() if aid != account_id}
-    store = store.model_copy(update={"accounts": remaining})
-    save_store(store, session, user_id)
+    remove_account(session, user_id, account_id)
+    session.commit()
     return AccountIdResponse(account_id=account_id)
 
 
@@ -1311,14 +1316,10 @@ def close_account(
             raise HTTPException(status_code=400, detail=f"Account {transfer.to_account_id!r} not found")
 
     updated_account = account.model_copy(update={"closed": True})
-    store = store.model_copy(
-        update={
-            "accounts": {**store.accounts, account_id: updated_account},
-            "manual_transfers": [*store.manual_transfers, *request.transfers],
-        }
-    )
-    save_store(store, session, user_id)
-    return AccountCloseResponse(account=updated_account, manual_transfers=store.manual_transfers)
+    set_account_closed(session, user_id, account_id, closed=True)
+    insert_manual_transfers(request.transfers, session, user_id)
+    session.commit()
+    return AccountCloseResponse(account=updated_account, manual_transfers=[*store.manual_transfers, *request.transfers])
 
 
 @router.post("/accounts/{account_id}/reopen")
@@ -1344,8 +1345,8 @@ def reopen_account(
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     updated_account = account.model_copy(update={"closed": False})
-    store = store.model_copy(update={"accounts": {**store.accounts, account_id: updated_account}})
-    save_store(store, session, user_id)
+    set_account_closed(session, user_id, account_id, closed=False)
+    session.commit()
     return updated_account
 
 
@@ -1373,8 +1374,7 @@ def put_opening_balance(
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     if opening_balance.account_id != account_id:
         raise HTTPException(status_code=400, detail="account_id in the body must match the URL")
-    store = store.model_copy(update={"opening_balances": {**store.opening_balances, account_id: opening_balance}})
-    save_store(store, session, user_id)
+    upsert_opening_balance(opening_balance, session, user_id)
     return opening_balance
 
 
@@ -1391,8 +1391,6 @@ def delete_opening_balance(
     AccountIdResponse
         The account whose opening balance was cleared.
     """
-    store = load_store(session, user_id)
-    remaining = {aid: value for aid, value in store.opening_balances.items() if aid != account_id}
-    store = store.model_copy(update={"opening_balances": remaining})
-    save_store(store, session, user_id)
+    remove_opening_balance(session, user_id, account_id)
+    session.commit()
     return AccountIdResponse(account_id=account_id)
