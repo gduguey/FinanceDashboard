@@ -2634,6 +2634,170 @@ def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_
     return deleted > 0
 
 
+def update_account_fields(session: Session, user_id: uuid.UUID, account: Account) -> bool:
+    """Update one account's editable columns in place, touching no other account.
+
+    Scoped counterpart to routing an account edit through `save_store`,
+    whose `_upsert_and_prune` re-merges *every* account from the caller's
+    (possibly stale) snapshot — so editing account A could silently revert
+    a concurrent edit to account B. This fetches only `account.account_id`'s
+    row and mutates its columns, so an UPDATE is issued for that one row
+    alone. `parent_account_id` is intentionally not touched (it isn't part
+    of the edit surface).
+
+    Returns
+    -------
+    bool
+        `True` if the account existed and was updated, `False` otherwise.
+    """
+    row = session.get(adb.Account, _account_id(user_id, account.account_id))
+    if row is None or row.user_id != user_id:
+        return False
+    row.name = account.name
+    row.kind = account.kind
+    row.institution = account.institution
+    row.currency = account.currency
+    row.last_four = account.last_four
+    row.external_ref = account.external_ref
+    row.meta = account.meta
+    row.closed = account.closed
+    session.flush()
+    return True
+
+
+def set_account_closed(session: Session, user_id: uuid.UUID, account_id: str, *, closed: bool) -> bool:
+    """Flip one account's `closed` flag in place, touching no other account.
+
+    Returns
+    -------
+    bool
+        `True` if the account existed, `False` otherwise.
+    """
+    row = session.get(adb.Account, _account_id(user_id, account_id))
+    if row is None or row.user_id != user_id:
+        return False
+    row.closed = closed
+    session.flush()
+    return True
+
+
+def remove_account(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
+    """Delete one account, touching no other. Idempotent, no version check.
+
+    The caller checks the no-postings precondition first; a delete that
+    still violates a foreign key (a posting somehow references it) fails
+    loudly, same as through the whole-store path.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    deleted = session.query(adb.Account).filter_by(id=_account_id(user_id, account_id), user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def upsert_opening_balance(opening_balance: OpeningBalance, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one account's opening balance, touching no other. Scoped like `upsert_budget`.
+
+    Parameters
+    ----------
+    opening_balance
+        The opening balance to persist; its `account_id` names the account.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose opening balance this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.opening_balances (id, user_id, account_id, amount, as_of_date)
+            VALUES (:id, :user_id, :account_id, :amount, :as_of_date)
+            ON CONFLICT (id) DO UPDATE SET
+                amount = EXCLUDED.amount,
+                as_of_date = EXCLUDED.as_of_date
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "opening_balances", opening_balance.account_id)),
+            "user_id": str(user_id),
+            "account_id": str(_account_id(user_id, opening_balance.account_id)),
+            "amount": opening_balance.amount,
+            "as_of_date": opening_balance.as_of_date,
+        },
+    )
+    session.commit()
+
+
+def remove_opening_balance(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
+    """Delete one account's opening balance, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "opening_balances", account_id)
+    deleted = session.query(adb.OpeningBalance).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Session, user_id: uuid.UUID) -> None:
+    """Insert manual-transfer rows additively, touching no existing transfer.
+
+    Scoped counterpart to routing these through `save_store` (which
+    blanket-deletes and reinserts every manual transfer from the caller's
+    snapshot — so recording a transfer from a stale snapshot could drop a
+    concurrently-added one). Each row is keyed by its own derived id, so
+    re-recording the same transfer is a harmless upsert rather than a
+    duplicate.
+
+    Parameters
+    ----------
+    transfers
+        The transfers to record.
+    session
+        An open database session; the caller commits.
+    user_id
+        Whose transfers these are.
+    """
+    for transfer in transfers:
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.manual_transfers
+                    (id, user_id, natural_key, date, from_account_id, to_account_id,
+                     from_amount, to_amount, description)
+                VALUES
+                    (:id, :user_id, :natural_key, :date, :from_account_id, :to_account_id,
+                     :from_amount, :to_amount, :description)
+                ON CONFLICT (id) DO UPDATE SET
+                    date = EXCLUDED.date,
+                    from_account_id = EXCLUDED.from_account_id,
+                    to_account_id = EXCLUDED.to_account_id,
+                    from_amount = EXCLUDED.from_amount,
+                    to_amount = EXCLUDED.to_amount,
+                    description = EXCLUDED.description
+                """
+            ),
+            {
+                "id": str(derive_id(user_id, "manual_transfers", transfer.transfer_id)),
+                "user_id": str(user_id),
+                "natural_key": transfer.transfer_id,
+                "date": transfer.date,
+                "from_account_id": str(_account_id(user_id, transfer.from_account_id)),
+                "to_account_id": str(_account_id(user_id, transfer.to_account_id)),
+                "from_amount": transfer.from_amount,
+                "to_amount": transfer.to_amount,
+                "description": transfer.description,
+            },
+        )
+    session.flush()
+
+
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
     """Which of `suggestion_ids` have already been dismissed, without loading anything else.
 
