@@ -2375,6 +2375,73 @@ def save_overrides_for_postings(
     session.commit()
 
 
+def save_posting_split(split: PostingSplit, session: Session, user_id: uuid.UUID) -> None:
+    """Persist one posting's split (and its legs), replacing only that posting's prior split.
+
+    Scoped counterpart to routing a split through `save_store` (which
+    blanket-deletes and reinserts every posting's split for the user):
+    two callers splitting *different* postings at once can't clobber each
+    other, since this only ever touches the one `posting_id`'s rows. A
+    split is one coherent replace-in-full unit keyed by `posting_id` (not
+    a set of independently-editable fields), so last-write-wins on the
+    same posting is the intended semantics — see
+    `docs/app-stack/optimistic-concurrency-versioning.md` on why a
+    whole-unit replace scoped to its own key needs no version column.
+
+    Parameters
+    ----------
+    split
+        The split to persist; `split.posting_id` names the posting.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose split this is.
+    """
+    split_row_id = derive_id(user_id, "posting_splits", split.posting_id)
+    session.query(adb.PostingSplitLeg).filter_by(user_id=user_id, posting_split_id=split_row_id).delete(
+        synchronize_session=False
+    )
+    session.query(adb.PostingSplit).filter_by(id=split_row_id, user_id=user_id).delete(synchronize_session=False)
+    session.flush()
+    session.add(adb.PostingSplit(id=split_row_id, user_id=user_id, posting_id=_posting_id(user_id, split.posting_id)))
+    session.flush()
+    session.add_all(
+        adb.PostingSplitLeg(
+            user_id=user_id,
+            posting_split_id=split_row_id,
+            ordinal=ordinal,
+            amount=leg.amount,
+            category_id=_category_id(user_id, leg.category_id),
+            subcategory_id=_category_id(user_id, leg.subcategory_id),
+            description=leg.description,
+        )
+        for ordinal, leg in enumerate(split.legs)
+    )
+    session.commit()
+
+
+def delete_posting_split(session: Session, user_id: uuid.UUID, posting_id: str) -> bool:
+    """Delete one posting's split (and its legs), touching no other posting's split.
+
+    Idempotent, no version check — same reasoning as `delete_transfer_rule`.
+    The legs go first because they foreign-key into the split row.
+
+    Returns
+    -------
+    bool
+        `True` if a split row was actually deleted, `False` if none existed.
+    """
+    split_row_id = derive_id(user_id, "posting_splits", posting_id)
+    session.query(adb.PostingSplitLeg).filter_by(user_id=user_id, posting_split_id=split_row_id).delete(
+        synchronize_session=False
+    )
+    deleted = (
+        session.query(adb.PostingSplit).filter_by(id=split_row_id, user_id=user_id).delete(synchronize_session=False)
+    )
+    session.flush()
+    return deleted > 0
+
+
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
     """Which of `suggestion_ids` have already been dismissed, without loading anything else.
 

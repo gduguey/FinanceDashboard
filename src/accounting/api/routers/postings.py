@@ -44,6 +44,7 @@ from accounting.models import (
     TransferLink,
 )
 from accounting.store import (
+    delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     list_dismissed_suggestions,
@@ -51,6 +52,7 @@ from accounting.store import (
     load_overrides_for_postings,
     load_store,
     save_overrides_for_postings,
+    save_posting_split,
     save_store,
     undismiss_suggestion,
 )
@@ -234,7 +236,7 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -244,13 +246,12 @@ def put_posting_split(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )
     split = PostingSplit(posting_id=posting_id, legs=legs)
-    store = store.model_copy(update={"posting_splits": {**store.posting_splits, posting_id: split}})
-    save_store(store, session, user_id)
+    save_posting_split(split, session, user_id)
     return split
 
 
 @router.delete("/postings/{posting_id}/split")
-def delete_posting_split(
+def delete_posting_split_route(
     posting_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -261,10 +262,8 @@ def delete_posting_split(
     -------
     PostingIdResponse
     """
-    store = load_store(session, user_id)
-    remaining = {pid: split for pid, split in store.posting_splits.items() if pid != posting_id}
-    store = store.model_copy(update={"posting_splits": remaining})
-    save_store(store, session, user_id)
+    delete_posting_split(session, user_id, posting_id)
+    session.commit()
     return PostingIdResponse(posting_id=posting_id)
 
 

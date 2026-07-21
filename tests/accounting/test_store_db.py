@@ -45,6 +45,7 @@ from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     StoreVersionConflictError,
+    delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     get_store_version,
@@ -55,6 +56,7 @@ from accounting.store import (
     remap_tag_ids,
     save_overrides,
     save_overrides_for_postings,
+    save_posting_split,
     save_store,
     undismiss_suggestion,
 )
@@ -330,6 +332,46 @@ def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_diffe
     final = load_overrides(db_session, user_id=test_user_id)
     assert final["p1"].category_id == "expense:food-drink"  # would be silently wiped by the old save_overrides
     assert final["p2"].category_id == "expense:travel"
+
+
+def test_save_posting_split_does_not_clobber_a_concurrently_saved_different_postings_split(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Same scoping guarantee as the overrides test above, for `save_posting_split`: splitting one posting
+
+    must never touch another posting's already-saved split (the old whole-store path blanket-reinserted
+    the entire `posting_splits`/`posting_split_leg` tables on every save).
+    """
+    load_store(db_session, user_id=test_user_id)
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    save_posting_split(
+        PostingSplit(
+            posting_id="p1",
+            legs=[PostingSplitLeg(amount=6.0, category_id="expense:food-drink"), PostingSplitLeg(amount=4.0)],
+        ),
+        db_session,
+        test_user_id,
+    )
+    save_posting_split(
+        PostingSplit(
+            posting_id="p2",
+            legs=[PostingSplitLeg(amount=7.0, category_id="expense:travel"), PostingSplitLeg(amount=3.0)],
+        ),
+        db_session,
+        test_user_id,
+    )
+
+    store = load_store(db_session, user_id=test_user_id)
+    assert set(store.posting_splits.keys()) == {"p1", "p2"}
+    assert store.posting_splits["p1"].legs[0].amount == pytest.approx(6.0)
+    assert store.posting_splits["p2"].legs[0].amount == pytest.approx(7.0)
+
+    assert delete_posting_split(db_session, test_user_id, "p1") is True
+    assert delete_posting_split(db_session, test_user_id, "p1") is False  # idempotent
+    store = load_store(db_session, user_id=test_user_id)
+    assert set(store.posting_splits.keys()) == {"p2"}  # p2 untouched by p1's delete
 
 
 def test_save_then_load_store_round_trips_every_entity_type(db_session: Session, test_user_id: uuid.UUID) -> None:
