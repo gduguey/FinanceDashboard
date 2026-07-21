@@ -49,9 +49,10 @@ import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import {
   realLegByTransactionId as buildRealLegByTransactionId,
   siblingLegByPostingId as buildSiblingLegByPostingId,
+  TRANSFER_UNLINK_WARNING_PAIR,
   type TransferRowInfo,
 } from '@/lib/transferRowInfo'
-import { ruleUpdateFromRule } from '@/lib/transferRules'
+import { addedExcludedTransactionIds, ruleUpdateFromRule } from '@/lib/transferRules'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
 
 // Approximate row height (px) the virtualizer reserves before measuring the
@@ -100,12 +101,6 @@ function transferFlagsForPosting(posting: Posting, excludedTransactionIds: Set<s
   if (excludedTransactionIds.has(posting.transaction_id)) flags.push('excluded')
   if (flags.length === 0) flags.push('none')
   return flags
-}
-
-// Shared by the single-transaction and combined exclude+unlink handlers
-// below — a plain, pure array transform, no I/O of its own.
-function addedExcludedTransactionIds(rule: TransferRule, transactionIds: string[]): string[] {
-  return [...new Set([...(rule.excluded_transaction_ids ?? []), ...transactionIds])]
 }
 
 const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
@@ -522,8 +517,6 @@ const TransactionRow = memo(function TransactionRow({
 // Reads clearly above the button it warns about, rather than as a vague
 // aside below it — spelled out concretely (re-linking is a manual redo,
 // not a click away) instead of the ambiguous "there is no going back".
-const UNMARK_WARNING_PAIR =
-  "This can't be undone automatically — you'd have to manually re-link these two transactions if you change your mind."
 const UNMARK_WARNING_SINGLE =
   "This can't be undone automatically — you'd have to manually flag this transaction again if you change your mind."
 
@@ -654,7 +647,7 @@ function TransferDetailDialog({
               })()
             ) : (
               <>
-                <p className="text-xs text-muted-foreground">{UNMARK_WARNING_PAIR}</p>
+                <p className="text-xs text-muted-foreground">{TRANSFER_UNLINK_WARNING_PAIR}</p>
                 <Button
                   variant="destructive"
                   onClick={() => {

@@ -1,10 +1,17 @@
-import type { Account, Posting } from '@/types/accounting'
+import type { Account, Posting, TransferLink } from '@/types/accounting'
 
 const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
 
 // A cent of float/rounding slack, never a real discrepancy — an actually
 // mismatched-fee pair should never silently count as a match.
 const AMOUNT_TOLERANCE = 0.01
+
+// Shown above the destructive button wherever a confirmed (non-rule)
+// transfer link can be deleted — the Transactions page's transfer-detail
+// popup and the Rules page's "Manually added transfers" tab both delete the
+// same kind of thing (a `TransferLink`), so they share the exact wording.
+export const TRANSFER_UNLINK_WARNING_PAIR =
+  "This can't be undone automatically — you'd have to manually re-link these two transactions if you change your mind."
 
 // One side of a transfer, reduced to only what a recognizable summary needs
 // (date/account/description/amount) — shared by the Transactions page's
@@ -56,6 +63,26 @@ function toLinkedPairRow(linkId: string, from: TransferRowInfo, to: TransferRowI
     toAmount: to.amount,
     toCurrency: to.currency,
   }
+}
+
+// A confirmed `TransferLink`'s row, for whichever side of it a caller wants
+// grouped — `TransferRulesTab` groups these by `rule_id`, the "Manually
+// added transfers" tab just lists every one with no `rule_id` at all. Null
+// when either transaction's own leg can't be found (its statement was
+// re-imported away, or the ledger was rebuilt), same as `excludedRowsForRule`'s
+// placeholder fallback but here there's nothing sensible to show instead —
+// a link naming a since-vanished transaction shouldn't render as a row.
+export function linkedPairRowFromLink(
+  link: TransferLink,
+  legByTransactionId: Map<string, TransferRowInfo>,
+): LinkedPairRow | null {
+  const legA = legByTransactionId.get(link.transaction_id_a)
+  const legB = legByTransactionId.get(link.transaction_id_b)
+  if (!legA || !legB) return null
+  // Negative amount = money leaving that account = the "from" side, same
+  // convention `TransactionsTab`'s "Transfer to/from…" badge uses.
+  const [from, to] = legA.amount < 0 ? [legA, legB] : [legB, legA]
+  return toLinkedPairRow(link.link_id, from, to)
 }
 
 // Reconstructs from/to pairs out of a flat list of rows with no persisted
