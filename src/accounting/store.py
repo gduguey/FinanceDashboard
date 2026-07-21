@@ -1893,7 +1893,63 @@ def load_overrides(session: Session, user_id: uuid.UUID) -> dict[str, ManualOver
     """
     override_rows = list(session.query(adb.PostingOverride).filter_by(user_id=user_id))
     pending_rows = list(session.query(adb.PostingPendingSuggestion).filter_by(user_id=user_id))
+    return _overrides_from_rows(override_rows, pending_rows, session, user_id)
 
+
+def load_overrides_for_postings(
+    session: Session, user_id: uuid.UUID, posting_ids: Iterable[str]
+) -> dict[str, ManualOverride]:
+    """Like `load_overrides`, but only for `posting_ids` — never reads any other posting's override.
+
+    The scoped counterpart callers should use whenever they only need (and
+    are only about to write back) a known, bounded set of postings — using
+    `load_overrides` there would still be correct, just a wasted whole-table
+    read for a caller that only cares about a handful of rows.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose overrides to load.
+    posting_ids
+        Which postings to load; a posting with no stored override is
+        simply absent from the result, same as `load_overrides`.
+
+    Returns
+    -------
+    dict[str, ManualOverride]
+        Keyed by `posting_id`, only ever containing keys from `posting_ids`.
+    """
+    posting_row_ids = [_posting_id(user_id, posting_id) for posting_id in posting_ids]
+    if not posting_row_ids:
+        return {}
+    override_rows = list(
+        session.query(adb.PostingOverride).filter(
+            adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
+        )
+    )
+    pending_rows = list(
+        session.query(adb.PostingPendingSuggestion).filter(
+            adb.PostingPendingSuggestion.user_id == user_id,
+            adb.PostingPendingSuggestion.posting_id.in_(posting_row_ids),
+        )
+    )
+    return _overrides_from_rows(override_rows, pending_rows, session, user_id)
+
+
+def _overrides_from_rows(
+    override_rows: list[adb.PostingOverride],
+    pending_rows: list[adb.PostingPendingSuggestion],
+    session: Session,
+    user_id: uuid.UUID,
+) -> dict[str, ManualOverride]:
+    """Shared row->pydantic mapping for `load_overrides`/`load_overrides_for_postings`.
+
+    Returns
+    -------
+    dict[str, ManualOverride]
+    """
     posting_natural_key_by_id = natural_keys_by_id(
         session,
         adb.Posting,
@@ -2019,6 +2075,93 @@ def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_
         if override.pending_source is not None
     )
     session.commit()
+    session.commit()
+
+
+def save_overrides_for_postings(
+    posting_ids: Iterable[str], overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID
+) -> None:
+    """Persist overrides for exactly `posting_ids`, touching no other posting's stored override.
+
+    The scoped counterpart to `save_overrides`: that function always
+    deletes and reinserts every posting's override, so two callers racing
+    on *different* postings — one reads, the other reads, one writes back
+    its whole-table snapshot, the other then writes back its own
+    (now-stale) whole-table snapshot — silently erase each other's change.
+    This never reads or rewrites anything outside `posting_ids`, so two
+    such calls for different postings can't conflict no matter how they
+    interleave.
+
+    Parameters
+    ----------
+    posting_ids
+        Every posting this call is allowed to touch — always
+        deleted-and-optionally-reinserted, whether or not it's also a key
+        of `overrides`. A posting present here but absent from `overrides`
+        (or present with an all-`None` override) ends up with no stored
+        override at all, e.g. a resolved pending suggestion or a fully
+        cleared correction.
+    overrides
+        The new override for each posting that should end up with one;
+        must be a subset of `posting_ids`.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose overrides these are.
+    """
+    posting_row_ids = [_posting_id(user_id, posting_id) for posting_id in posting_ids]
+    if not posting_row_ids:
+        return
+    session.query(adb.PostingOverride).filter(
+        adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
+    ).delete(synchronize_session=False)
+    session.query(adb.PostingPendingSuggestion).filter(
+        adb.PostingPendingSuggestion.user_id == user_id,
+        adb.PostingPendingSuggestion.posting_id.in_(posting_row_ids),
+    ).delete(synchronize_session=False)
+
+    override_rows: list[adb.PostingOverride] = []
+    override_tag_rows: list[adb.PostingOverrideTag] = []
+    for posting_id, override in overrides.items():
+        if (
+            override.account_id is None
+            and override.category_id is None
+            and override.subcategory_id is None
+            and override.tag_ids is None
+        ):
+            continue
+        override_row_id = uuid.uuid4()
+        override_rows.append(
+            adb.PostingOverride(
+                id=override_row_id,
+                user_id=user_id,
+                posting_id=_posting_id(user_id, posting_id),
+                account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
+                category_id=_category_id(user_id, override.category_id),
+                subcategory_id=_category_id(user_id, override.subcategory_id),
+                tags_overridden=override.tag_ids is not None,
+            )
+        )
+        if override.tag_ids is not None:
+            override_tag_rows.extend(
+                adb.PostingOverrideTag(user_id=user_id, override_id=override_row_id, tag_id=_tag_id(user_id, tag_id))
+                for tag_id in dict.fromkeys(override.tag_ids)
+            )
+    session.add_all(override_rows)
+    session.flush()
+    session.add_all(override_tag_rows)
+    session.add_all(
+        adb.PostingPendingSuggestion(
+            user_id=user_id,
+            posting_id=_posting_id(user_id, posting_id),
+            source=override.pending_source,
+            selected=override.pending_selected,
+            previous_category_id=_category_id(user_id, override.pending_previous_category_id),
+            previous_subcategory_id=_category_id(user_id, override.pending_previous_subcategory_id),
+        )
+        for posting_id, override in overrides.items()
+        if override.pending_source is not None
+    )
     session.commit()
 
 

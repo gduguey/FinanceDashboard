@@ -33,7 +33,7 @@ from accounting.llm.settings import (
 )
 from accounting.llm.usage import RESET_PERIOD, TrackedProvider, load_usage
 from accounting.models import CategoryClassification, PendingSuggestionSource
-from accounting.store import load_overrides, save_overrides
+from accounting.store import load_overrides_for_postings, save_overrides_for_postings
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -249,17 +249,16 @@ def _stage_and_save_pending_suggestion(
     CategorySuggestionResult
         `applied` is always `True`.
     """
-    overrides = load_overrides(session, user_id)
+    existing = load_overrides_for_postings(session, user_id, [posting_id]).get(posting_id)
     staged = stage_pending_suggestion(
-        existing=overrides.get(posting_id),
+        existing=existing,
         category_id=category_id,
         subcategory_id=subcategory_id,
         source=source,
         previous_category_id=target_row["category_id"],
         previous_subcategory_id=target_row["subcategory_id"],
     )
-    overrides[posting_id] = staged
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings([posting_id], {posting_id: staged}, session, user_id)
     return CategorySuggestionResult(category_id=category_id, subcategory_id=subcategory_id, applied=True)
 
 
@@ -425,7 +424,8 @@ def post_pattern_suggest_category_bulk(
         return BulkSuggestResult(applied=0)
 
     target_rows = {row["posting_id"]: row for row in targets.to_dicts()}
-    overrides = load_overrides(session, user_id)
+    matched_posting_ids = matches["posting_id"].to_list()
+    overrides = load_overrides_for_postings(session, user_id, matched_posting_ids)
     applied = 0
     for match in matches.iter_rows(named=True):
         target_row = target_rows[match["posting_id"]]
@@ -441,5 +441,5 @@ def post_pattern_suggest_category_bulk(
         )
         overrides[match["posting_id"]] = staged
         applied += 1
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings(matched_posting_ids, overrides, session, user_id)
     return BulkSuggestResult(applied=applied)
