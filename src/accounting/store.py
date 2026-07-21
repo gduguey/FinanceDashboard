@@ -2563,6 +2563,77 @@ def remove_general_budget(session: Session, user_id: uuid.UUID, category_id: str
     return deleted > 0
 
 
+def upsert_goal_contribution(contribution: GoalContribution, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one goal contribution, touching no other contribution.
+
+    Scoped counterpart to routing a contribution through `save_store`
+    (which blanket-deletes and reinserts every contribution for the user):
+    two callers editing *different* contributions at once can't clobber
+    each other. Keyed by `contribution.contribution_id`, so re-saving the
+    same contribution is last-write-wins — the intended semantics for an
+    edit of a single dated allocation.
+
+    Parameters
+    ----------
+    contribution
+        The contribution to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose contribution this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.goal_contributions
+                (id, user_id, natural_key, goal_id, date, amount, currency, note, source_posting_id, origin, edited)
+            VALUES
+                (:id, :user_id, :natural_key, :goal_id, :date, :amount, :currency, :note, :source_posting_id,
+                 :origin, :edited)
+            ON CONFLICT (id) DO UPDATE SET
+                goal_id = EXCLUDED.goal_id,
+                date = EXCLUDED.date,
+                amount = EXCLUDED.amount,
+                currency = EXCLUDED.currency,
+                note = EXCLUDED.note,
+                source_posting_id = EXCLUDED.source_posting_id,
+                origin = EXCLUDED.origin,
+                edited = EXCLUDED.edited
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "goal_contributions", contribution.contribution_id)),
+            "user_id": str(user_id),
+            "natural_key": contribution.contribution_id,
+            "goal_id": str(derive_id(user_id, "goals", contribution.goal_id)),
+            "date": contribution.date,
+            "amount": contribution.amount,
+            "currency": contribution.currency,
+            "note": contribution.note,
+            "source_posting_id": str(_posting_id(user_id, contribution.source_posting_id))
+            if contribution.source_posting_id is not None
+            else None,
+            "origin": contribution.origin,
+            "edited": contribution.edited,
+        },
+    )
+    session.commit()
+
+
+def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_id: str) -> bool:
+    """Delete one goal contribution, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "goal_contributions", contribution_id)
+    deleted = session.query(adb.GoalContribution).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
     """Which of `suggestion_ids` have already been dismissed, without loading anything else.
 
