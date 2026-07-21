@@ -212,6 +212,22 @@ class CategoryPatternCreate(BaseModel):
     priority: int = 100
 
 
+class CategoryPatternUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+
+    Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
+    stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
+    the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+    """
+
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int
+    active: bool = True
+    expected_version: int
+
+
 class GoalCreate(BaseModel):
     """Request body for `POST /api/accounting/goals` — creates one new goal.
 
@@ -317,6 +333,12 @@ class GoalIdResponse(BaseModel):
     """Response body naming one goal, for endpoints whose only real effect is removing something."""
 
     goal_id: str
+
+
+class CategoryPatternIdResponse(BaseModel):
+    """Response body naming one category pattern, for endpoints whose only real effect is removing something."""
+
+    pattern_id: str
 
 
 class GeneralBudgetKeyResponse(BaseModel):

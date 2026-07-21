@@ -303,6 +303,7 @@ class CategoryPattern(BaseModel):
     subcategory_id: str | None = None
     priority: int = 0
     active: bool = True
+    version: int = 1
 
 
 class OtherAsset(BaseModel):

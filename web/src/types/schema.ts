@@ -541,6 +541,55 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/category-patterns/{pattern_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Category Pattern Route
+     * @description Delete one category pattern, without touching any other pattern already saved.
+     *
+     *     No version check — see `accounting.store.delete_category_pattern`.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPatternIdResponse
+     *         The pattern id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no pattern with `pattern_id` exists.
+     */
+    delete: operations['delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Category Pattern
+     * @description Update one existing category pattern in place, without touching any other pattern already saved.
+     *
+     *     A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
+     *     `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPattern
+     *         The pattern as persisted after the update.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no pattern with `pattern_id` exists.
+     */
+    patch: operations['patch_category_pattern_api_accounting_category_patterns__pattern_id__patch']
+    trace?: never
+  }
   '/api/accounting/other-assets': {
     parameters: {
       query?: never
@@ -4411,6 +4460,11 @@ export interface components {
        * @default true
        */
       active: boolean
+      /**
+       * Version
+       * @default 1
+       */
+      version: number
     }
     /**
      * CategoryPatternCreate
@@ -4432,6 +4486,39 @@ export interface components {
        * @default 100
        */
       priority: number
+    }
+    /**
+     * CategoryPatternIdResponse
+     * @description Response body naming one category pattern, for endpoints whose only real effect is removing something.
+     */
+    CategoryPatternIdResponse: {
+      /** Pattern Id */
+      pattern_id: string
+    }
+    /**
+     * CategoryPatternUpdate
+     * @description Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+     *
+     *     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
+     *     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
+     *     the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+     */
+    CategoryPatternUpdate: {
+      /** Description Contains */
+      description_contains: string
+      /** Category Id */
+      category_id: string
+      /** Subcategory Id */
+      subcategory_id?: string | null
+      /** Priority */
+      priority: number
+      /**
+       * Active
+       * @default true
+       */
+      active: boolean
+      /** Expected Version */
+      expected_version: number
     }
     /**
      * CategoryRenamePreviewResponse
@@ -7636,6 +7723,76 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['CategoryPatternCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPattern']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        pattern_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPatternIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_category_pattern_api_accounting_category_patterns__pattern_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        pattern_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CategoryPatternUpdate']
       }
     }
     responses: {

@@ -935,6 +935,113 @@ def test_post_category_pattern_twice_with_the_same_criteria_replaces_rather_than
     assert patterns[first["pattern_id"]]["priority"] == 5
 
 
+def test_patch_category_pattern_updates_fields_and_increments_version(client) -> None:
+    pattern = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    assert pattern["version"] == 1
+
+    response = client.patch(
+        f"/api/accounting/category-patterns/{pattern['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 3,
+            "active": False,
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["priority"] == 3
+    assert updated["active"] is False
+    assert updated["version"] == 2
+
+    persisted = client.get("/api/accounting/store").json()["category_patterns"][pattern["pattern_id"]]
+    assert persisted["version"] == 2
+
+
+def test_patch_category_pattern_with_a_stale_expected_version_gets_409(client) -> None:
+    pattern = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    response = client.patch(
+        f"/api/accounting/category-patterns/{pattern['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 3,
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 409
+
+
+def test_patch_category_pattern_that_does_not_exist_gets_404(client) -> None:
+    response = client.patch(
+        "/api/accounting/category-patterns/does-not-exist",
+        json={
+            "description_contains": "X",
+            "category_id": "expense:subscriptions",
+            "priority": 0,
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_delete_category_pattern_removes_it(client) -> None:
+    pattern = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    response = client.delete(f"/api/accounting/category-patterns/{pattern['pattern_id']}")
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["category_patterns"] == {}
+
+
+def test_delete_category_pattern_that_is_already_gone_gets_404(client) -> None:
+    response = client.delete("/api/accounting/category-patterns/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_creating_an_unrelated_pattern_does_not_reset_another_patterns_version(client) -> None:
+    pattern_a = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    pattern_a = client.patch(
+        f"/api/accounting/category-patterns/{pattern_a['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 1,
+            "expected_version": 1,
+        },
+    ).json()
+    assert pattern_a["version"] == 2
+
+    client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "SPOTIFY", "category_id": "expense:subscriptions"},
+    )
+
+    persisted = client.get("/api/accounting/store").json()["category_patterns"][pattern_a["pattern_id"]]
+    assert persisted["version"] == 2
+    response = client.patch(
+        f"/api/accounting/category-patterns/{pattern_a['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 2,
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 200
+
+
 def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
     class _NoCredentials:
         gemini_api_key = None

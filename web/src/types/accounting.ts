@@ -56,6 +56,7 @@ export type PendingSuggestionSource = NonNullable<Posting['pending_source']>
 
 export type CategoryPattern = components['schemas']['CategoryPattern']
 export type CategoryPatternCreate = components['schemas']['CategoryPatternCreate']
+export type CategoryPatternUpdate = components['schemas']['CategoryPatternUpdate']
 export type ManualOverride = components['schemas']['ManualOverride']
 export type EarningsDeposit = components['schemas']['EarningsDeposit']
 export type EarningsLineItem = components['schemas']['EarningsLineItem']

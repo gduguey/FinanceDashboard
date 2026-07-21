@@ -14,8 +14,8 @@ import type {
   BudgetUpsert,
   CanonicalCategoryOverrides,
   Category,
-  CategoryPattern,
   CategoryPatternCreate,
+  CategoryPatternUpdate,
   CurrencyCode,
   DismissSuggestionRequest,
   GeneralBudgetUpsert,
@@ -870,10 +870,53 @@ export function useValidatePending() {
   })
 }
 
-export function useSetCategoryPatterns() {
+export function usePatchCategoryPattern() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (patterns: Record<string, CategoryPattern>) => accountingApi.putCategoryPatterns(patterns),
+    mutationFn: ({ patternId, update }: { patternId: string; update: CategoryPatternUpdate }) =>
+      accountingApi.patchCategoryPattern(patternId, update),
+    // Same per-row optimistic-patch approach as `usePatchTransferRule` — editing or toggling one
+    // pattern can never clobber a concurrent edit to a different one.
+    onMutate: async ({ patternId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          category_patterns: {
+            ...previous.category_patterns,
+            [patternId]: { ...previous.category_patterns[patternId], ...update },
+          },
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteCategoryPattern() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (patternId: string) => accountingApi.deleteCategoryPattern(patternId),
+    onMutate: async (patternId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        const remaining = { ...previous.category_patterns }
+        delete remaining[patternId]
+        queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, category_patterns: remaining })
+      }
+      return { previous }
+    },
+    onError: (_error, _patternId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }

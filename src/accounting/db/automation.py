@@ -99,3 +99,7 @@ class CategoryPattern(Base):
     )
     priority: Mapped[int] = mapped_column(default=0)
     active: Mapped[bool] = mapped_column(default=True)
+    version: Mapped[int] = mapped_column(default=1)
+    """Bumped by `db.base.check_and_bump_row_version` on every `PATCH /category-patterns/{pattern_id}` —
+    never touched by `save_store`'s upsert path (see `accounting.store._upsert_category_patterns_and_prune`),
+    the same shape `TransferRule.version` follows."""
