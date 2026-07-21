@@ -2900,6 +2900,30 @@ def remove_transfer_link(session: Session, user_id: uuid.UUID, link_id: str) -> 
     return deleted > 0
 
 
+def remove_rule_transfer_links(session: Session, user_id: uuid.UUID, rule_id: str) -> int:
+    """Delete every transfer link a given rule created, touching manual links or other rules' links not at all.
+
+    Called when a `TransferRule` is deleted so the links it produced don't
+    outlive it (see `DELETE /transfer-rules/{rule_id}`). Matches on the link's
+    own `source == "rule"` and `rule_id` columns, so a manually-confirmed link
+    (`source == "manual"`) is never swept up even if its two transactions also
+    happen to match the deleted rule. Each link's `TransferLinkedTransaction`
+    membership rows go automatically via their `ON DELETE CASCADE` FK.
+
+    Returns
+    -------
+    int
+        How many links were deleted (0 if the rule created none).
+    """
+    deleted = (
+        session.query(adb.TransferLink)
+        .filter_by(user_id=user_id, source="rule", rule_id=rule_id)
+        .delete()
+    )
+    session.flush()
+    return deleted
+
+
 def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
     """Delete one tag, touching no other. Idempotent, no version check.
 

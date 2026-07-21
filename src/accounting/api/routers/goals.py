@@ -225,6 +225,27 @@ def _recurring_addition_exists(session: Session, user_id: uuid.UUID, addition_id
     return session.get(adb.RecurringAddition, row_id) is not None
 
 
+def _validate_remainder_invariant(additions: list[RecurringAddition]) -> None:
+    """Enforce the whole-list `remainder` rules against a full recurring-addition set.
+
+    Shared by the whole-list `PUT` and the single-row `PATCH` so both reject
+    the same illegal states: a single-row edit is validated against the list it
+    would produce, never in isolation — otherwise a `PATCH` could create a
+    second `remainder` row, or move the `remainder` row off the lowest
+    priority, a state `PUT` itself refuses.
+
+    Raises
+    ------
+    HTTPException
+        400 if more than one addition uses `mode="remainder"`, or one does but isn't the lowest-priority row.
+    """
+    remainder_additions = [addition for addition in additions if addition.mode == "remainder"]
+    if len(remainder_additions) > 1:
+        raise HTTPException(status_code=400, detail="Only one recurring addition may use mode='remainder'")
+    if remainder_additions and remainder_additions[0].priority != max((a.priority for a in additions), default=0):
+        raise HTTPException(status_code=400, detail="A 'remainder' addition must be the lowest-priority row")
+
+
 @router.post("/goal-contributions")
 def post_goal_contribution(
     request: GoalContributionCreate,
@@ -367,21 +388,16 @@ def put_recurring_additions(
 ) -> list[RecurringAddition]:
     """Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
 
+    Rejects an illegal list with a 400 via `_validate_remainder_invariant`
+    (more than one `mode="remainder"`, or a `remainder` row that isn't the
+    lowest priority) — the same check the single-row `PATCH` enforces.
+
     Returns
     -------
     list[RecurringAddition]
         The additions just persisted.
-
-    Raises
-    ------
-    HTTPException
-        400 if more than one addition uses `mode="remainder"`, or one does but isn't the lowest-priority row.
     """
-    remainder_additions = [addition for addition in additions if addition.mode == "remainder"]
-    if len(remainder_additions) > 1:
-        raise HTTPException(status_code=400, detail="Only one recurring addition may use mode='remainder'")
-    if remainder_additions and remainder_additions[0].priority != max((a.priority for a in additions), default=0):
-        raise HTTPException(status_code=400, detail="A 'remainder' addition must be the lowest-priority row")
+    _validate_remainder_invariant(additions)
     store = load_store(session, user_id)
     store = store.model_copy(update={"recurring_additions": additions})
     # Reorder is a pure whole-list ordering operation (last write wins), so opt out of the whole-store
@@ -428,6 +444,12 @@ def patch_recurring_addition(
         currency=request.currency,
         priority=request.priority,
     )
+    # Validate against the whole list this edit would produce, not the row in
+    # isolation — the single-row PATCH must not be able to reach a state the
+    # whole-list PUT would reject (a second `remainder`, or one out of order).
+    store = load_store(session, user_id)
+    effective = [addition if a.addition_id == addition_id else a for a in store.recurring_additions]
+    _validate_remainder_invariant(effective)
     upsert_recurring_addition(addition, session, user_id)
     return addition
 

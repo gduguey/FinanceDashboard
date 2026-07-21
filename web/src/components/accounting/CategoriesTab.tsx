@@ -653,6 +653,10 @@ function CategoryPatternsSection({
   }
 
   function savePattern(updated: CategoryPattern) {
+    const existing = patterns[updated.pattern_id]
+    // Guard the same way `togglePatternActive` does: the pattern may have been
+    // deleted elsewhere while this row was open — don't read `.version` off it.
+    if (!existing) return
     patchPattern.mutate({
       patternId: updated.pattern_id,
       update: {
@@ -661,7 +665,7 @@ function CategoryPatternsSection({
         subcategory_id: updated.subcategory_id,
         priority: updated.priority,
         active: updated.active,
-        expected_version: patterns[updated.pattern_id].version,
+        expected_version: existing.version,
       },
     })
   }

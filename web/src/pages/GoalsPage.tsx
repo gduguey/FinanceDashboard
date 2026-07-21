@@ -70,6 +70,9 @@ function GoalListSection({
 
   function update(goalId: string, patch: Partial<import('@/types/accounting').Goal>) {
     const goal = goals[goalId]
+    // The row may have been deleted in another tab/session while its edit
+    // fields were still open — bail rather than dereference `.version` below.
+    if (!goal) return
     const merged = { ...goal, ...patch }
     patchGoal.mutate({
       goalId,
