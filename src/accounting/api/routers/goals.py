@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+import accounting.db as adb
 from accounting.api.api_models import (
     GoalContributionCreate,
     GoalContributionIdResponse,
@@ -30,7 +31,16 @@ from accounting.ledger.goal_automations import (
     run_withdrawal_automation,
 )
 from accounting.models import CurrencyCode, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
-from accounting.store import delete_goal, load_store, next_available_color, save_store, update_goal
+from accounting.store import (
+    delete_goal,
+    load_store,
+    next_available_color,
+    remove_goal_contribution,
+    save_store,
+    update_goal,
+    upsert_goal_contribution,
+)
+from db.base import derive_id
 from db.current_user import get_current_user_id
 from db.session import get_db
 
@@ -183,6 +193,20 @@ def put_goal_contributions(
     return store.goal_contributions
 
 
+def _goal_contribution_exists(session: Session, user_id: uuid.UUID, contribution_id: str) -> bool:
+    """Whether one contribution row exists, without loading the whole store.
+
+    `PUT /goal-contributions/{id}` needs this because `upsert_goal_contribution` would otherwise happily
+    *create* a row for an unknown id (INSERT ... ON CONFLICT), where the endpoint's contract is a 404.
+
+    Returns
+    -------
+    bool
+    """
+    row_id = derive_id(user_id, "goal_contributions", contribution_id)
+    return session.get(adb.GoalContribution, row_id) is not None
+
+
 @router.post("/goal-contributions")
 def post_goal_contribution(
     request: GoalContributionCreate,
@@ -213,11 +237,7 @@ def post_goal_contribution(
         origin=request.origin,
         edited=request.edited,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(
-        update={"goal_contributions": {**store.goal_contributions, contribution.contribution_id: contribution}}
-    )
-    save_store(store, session, user_id)
+    upsert_goal_contribution(contribution, session, user_id)
     return contribution
 
 
@@ -245,8 +265,7 @@ def put_goal_contribution(
     HTTPException
         404 if no contribution with this id exists.
     """
-    store = load_store(session, user_id)
-    if contribution_id not in store.goal_contributions:
+    if not _goal_contribution_exists(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
     contribution = GoalContribution(
         contribution_id=contribution_id,
@@ -259,8 +278,7 @@ def put_goal_contribution(
         origin=request.origin,
         edited=request.edited,
     )
-    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, contribution_id: contribution}})
-    save_store(store, session, user_id)
+    upsert_goal_contribution(contribution, session, user_id)
     return contribution
 
 
@@ -281,12 +299,9 @@ def delete_goal_contribution(
     HTTPException
         404 if no contribution with this id exists.
     """
-    store = load_store(session, user_id)
-    if contribution_id not in store.goal_contributions:
+    if not remove_goal_contribution(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
-    remaining = {cid: c for cid, c in store.goal_contributions.items() if cid != contribution_id}
-    store = store.model_copy(update={"goal_contributions": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return GoalContributionIdResponse(contribution_id=contribution_id)
 
 
