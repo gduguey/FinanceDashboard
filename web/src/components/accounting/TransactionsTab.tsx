@@ -577,7 +577,7 @@ function TransferDetailDialog({
               <TransferRowCard row={popup.to} />
             </div>
             <Button
-              variant="outline"
+              variant="destructive"
               onClick={() => {
                 onExcludeFromRule([popup.transactionId], popup.ruleId)
                 onClose()
@@ -627,7 +627,7 @@ function TransferDetailDialog({
                 return (
                   <>
                     <Button
-                      variant="outline"
+                      variant="destructive"
                       onClick={() => {
                         onExcludeAndUnlinkFromRule([fromTransactionId, toTransactionId], ruleId, popup.linkId)
                         onClose()
