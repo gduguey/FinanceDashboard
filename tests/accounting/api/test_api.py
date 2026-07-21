@@ -2542,6 +2542,20 @@ def test_post_tag_allows_a_distinct_name(client) -> None:
     assert response.status_code == 200
 
 
+def test_delete_tag_removes_only_that_tag(client) -> None:
+    client.post("/api/accounting/tags", json={"name": "Trip"})
+    client.post("/api/accounting/tags", json={"name": "Move"})
+    response = client.delete("/api/accounting/tags/tag:trip")
+    assert response.status_code == 200
+    tags = client.get("/api/accounting/store").json()["tags"]
+    assert "tag:trip" not in tags
+    assert "tag:move" in tags  # a delete of one tag never disturbs another
+
+
+def test_delete_tag_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/tags/tag:nope").status_code == 404
+
+
 def test_tag_rename_preview_reports_no_merge_for_a_plain_rename(client) -> None:
     client.post("/api/accounting/tags", json={"name": "Trip"})
     response = client.get("/api/accounting/tags/tag:trip/rename-preview", params={"name": "Renamed"})
@@ -2621,6 +2635,19 @@ def test_post_other_asset_creates_one_with_a_server_generated_id(client) -> None
     assert asset["name"] == "Car"
     body = client.get("/api/accounting/net-worth").json()
     assert body["other_assets_total"] == pytest.approx(15000.0)
+
+
+def test_delete_other_asset_removes_only_that_asset(client) -> None:
+    car = client.post("/api/accounting/other-assets", json={"name": "Car", "value": 15000.0}).json()
+    boat = client.post("/api/accounting/other-assets", json={"name": "Boat", "value": 5000.0}).json()
+    response = client.delete(f"/api/accounting/other-assets/{car['asset_id']}")
+    assert response.status_code == 200
+    remaining = {a["asset_id"] for a in client.get("/api/accounting/store").json()["other_assets"]}
+    assert remaining == {boat["asset_id"]}
+
+
+def test_delete_other_asset_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/other-assets/nope").status_code == 404
 
 
 def test_post_other_asset_twice_with_identical_fields_creates_two_distinct_rows(client) -> None:
@@ -3284,6 +3311,26 @@ def test_post_simulator_scenario_twice_with_identical_fields_creates_two_distinc
     second = client.post("/api/accounting/simulator/scenarios", json=payload).json()
     assert first["scenario_id"] != second["scenario_id"]
     assert len(client.get("/api/accounting/store").json()["simulator_scenarios"]) == 2
+
+
+def test_delete_simulator_scenario_removes_only_that_scenario(client) -> None:
+    payload = {
+        "name": "Base case",
+        "initial_capital": 1000.0,
+        "monthly_contribution": 100.0,
+        "horizon_years": 10,
+        "annual_rate_pct": 6.0,
+    }
+    first = client.post("/api/accounting/simulator/scenarios", json=payload).json()
+    second = client.post("/api/accounting/simulator/scenarios", json=payload).json()
+    response = client.delete(f"/api/accounting/simulator/scenarios/{first['scenario_id']}")
+    assert response.status_code == 200
+    remaining = {s["scenario_id"] for s in client.get("/api/accounting/store").json()["simulator_scenarios"]}
+    assert remaining == {second["scenario_id"]}
+
+
+def test_delete_simulator_scenario_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/simulator/scenarios/nope").status_code == 404
 
 
 def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:

@@ -241,8 +241,9 @@ export const accountingApi = {
       `/api/accounting/categories/${encodeURIComponent(categoryId)}`,
       { method: 'DELETE' },
     ),
-  putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
   createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),
+  deleteTag: (tagId: string) =>
+    requestScoped<{ tag_id: string }>(`/api/accounting/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
   tagRenamePreview: (tagId: string, name: string) =>
     request<TagRenamePreview>(
       `/api/accounting/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`,
@@ -263,10 +264,12 @@ export const accountingApi = {
     requestScoped<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
-  putOtherAssets: (otherAssets: OtherAsset[]) =>
-    request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
   createOtherAsset: (asset: OtherAssetCreate) =>
     request<OtherAsset>('/api/accounting/other-assets', jsonInit('POST', asset)),
+  deleteOtherAsset: (assetId: string) =>
+    requestScoped<{ asset_id: string }>(`/api/accounting/other-assets/${encodeURIComponent(assetId)}`, {
+      method: 'DELETE',
+    }),
   postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
     request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
@@ -492,10 +495,12 @@ export const accountingApi = {
     ),
   interestSummary: (asOf?: string) =>
     request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),
-  putSimulatorScenarios: (scenarios: SimulatorScenario[]) =>
-    request<SimulatorScenario[]>('/api/accounting/simulator/scenarios', jsonInit('PUT', scenarios)),
   createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
     request<SimulatorScenario>('/api/accounting/simulator/scenarios', jsonInit('POST', scenario)),
+  deleteSimulatorScenario: (scenarioId: string) =>
+    requestScoped<{ scenario_id: string }>(`/api/accounting/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
+      method: 'DELETE',
+    }),
   simulatorProject: (
     initialCapital: number,
     monthlyContribution: number,

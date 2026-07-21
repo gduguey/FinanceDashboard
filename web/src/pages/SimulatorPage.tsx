@@ -13,7 +13,7 @@ import {
   useAccountingStore,
   useCreateSimulatorScenario,
   useNetWorth,
-  useSetSimulatorScenarios,
+  useDeleteSimulatorScenario,
   useSimulatorProjection,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
@@ -67,7 +67,7 @@ export function SimulatorPage() {
 
   const { data: netWorth } = useNetWorth(undefined, displayCurrency)
   const { data: store } = useAccountingStore()
-  const setScenarios = useSetSimulatorScenarios()
+  const deleteScenarioMutation = useDeleteSimulatorScenario()
   const createScenario = useCreateSimulatorScenario()
 
   const initialCapital = Number.parseFloat(inputs.initialCapital) || 0
@@ -114,8 +114,7 @@ export function SimulatorPage() {
   }
 
   async function deleteScenario(scenarioId: string) {
-    if (!store) return
-    await setScenarios.mutateAsync(store.simulator_scenarios.filter((s) => s.scenario_id !== scenarioId))
+    await deleteScenarioMutation.mutateAsync(scenarioId)
   }
 
   return (

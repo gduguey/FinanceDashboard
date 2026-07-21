@@ -27,7 +27,6 @@ import type {
   ManualOverride,
   ManualTransfer,
   OpeningBalance,
-  OtherAsset,
   OtherAssetCreate,
   PostingMergeUpsert,
   PostingSplitLeg,
@@ -35,7 +34,6 @@ import type {
   RecurringAdditionCreate,
   SimulatorScenario,
   SimulatorScenarioCreate,
-  Tag,
   TransferLinkCreate,
   TransferRuleCreate,
   TransferRuleUpdate,
@@ -425,10 +423,25 @@ export const useSimulatorProjection = (
       ),
   })
 
-export function useSetSimulatorScenarios() {
+export function useDeleteSimulatorScenario() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (scenarios: SimulatorScenario[]) => accountingApi.putSimulatorScenarios(scenarios),
+    mutationFn: (scenarioId: string) => accountingApi.deleteSimulatorScenario(scenarioId),
+    onMutate: async (scenarioId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          simulator_scenarios: previous.simulator_scenarios.filter((s) => s.scenario_id !== scenarioId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _scenarioId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
@@ -511,15 +524,29 @@ export function useDeleteCategory() {
   })
 }
 
-export function useSetTags() {
+export function useDeleteTag() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (tags: Record<string, Tag>) => accountingApi.putTags(tags),
+    mutationFn: (tagId: string) => accountingApi.deleteTag(tagId),
+    onMutate: async (tagId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        const remaining = { ...previous.tags }
+        delete remaining[tagId]
+        queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, tags: remaining })
+      }
+      return { previous }
+    },
+    onError: (_error, _tagId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
 
-// Unlike `useSetTags` (a whole-list replace), this refuses a same-name
+// Unlike a whole-list replace, this refuses a same-name
 // (case-insensitive) duplicate server-side (409) instead of silently
 // overwriting whatever already had that computed id.
 export function useCreateTag() {
@@ -540,7 +567,7 @@ export function useTagRenamePreview() {
 
 // Renaming to an existing tag's name merges into it — repointing
 // `posting_tags` rows and `tag_ids_override` arrays — so this invalidates
-// everything, not just the tag list, unlike a plain `useSetTags` edit.
+// everything, not just the tag list.
 export function useRenameTag() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -617,10 +644,25 @@ export function useCreateTransferRule() {
   })
 }
 
-export function useSetOtherAssets() {
+export function useDeleteOtherAsset() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (otherAssets: OtherAsset[]) => accountingApi.putOtherAssets(otherAssets),
+    mutationFn: (assetId: string) => accountingApi.deleteOtherAsset(assetId),
+    onMutate: async (assetId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          other_assets: previous.other_assets.filter((asset) => asset.asset_id !== assetId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _assetId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
