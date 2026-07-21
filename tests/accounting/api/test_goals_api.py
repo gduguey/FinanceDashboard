@@ -740,6 +740,20 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
     assert body["remaining_shortfall"] == pytest.approx(4000.0)
 
 
+def test_put_withdrawal_priorities_ignores_a_stale_store_version(client) -> None:
+    """Reordering withdrawal priorities is a pure last-write-wins ordering op, so it opts out of the
+
+    whole-store version check — a deliberately stale `X-Expected-Store-Version` header must not 409 it.
+    """
+    _create_goal(client)
+    response = client.put(
+        "/api/accounting/withdrawal-priorities",
+        json=[{"goal_id": "emergency-fund", "priority": 0}],
+        headers={"X-Expected-Store-Version": "0"},  # stale on purpose
+    )
+    assert response.status_code == 200
+
+
 def test_simulate_contribution_flags_exceeding_unallocated(client) -> None:
     _import_checking(client)
     _create_goal(client)

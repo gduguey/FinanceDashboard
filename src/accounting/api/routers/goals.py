@@ -464,6 +464,13 @@ def put_withdrawal_priorities(
 ) -> list[WithdrawalPriorityEntry]:
     """Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
 
+    A pure ordering + set-membership operation (no free text or amount
+    anywhere), so it's last-write-wins by nature — whichever ordering was
+    submitted last is the intended one. It opts out of the whole-store
+    version check (like the recurring-additions reorder) so re-ordering
+    can't spuriously 409 against an unrelated concurrent save elsewhere in
+    the store.
+
     Returns
     -------
     list[WithdrawalPriorityEntry]
@@ -471,6 +478,7 @@ def put_withdrawal_priorities(
     """
     store = load_store(session, user_id)
     store = store.model_copy(update={"withdrawal_priorities": priorities})
+    session.info["expected_store_version"] = None
     save_store(store, session, user_id)
     return store.withdrawal_priorities
 
