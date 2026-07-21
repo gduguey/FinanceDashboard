@@ -623,6 +623,79 @@ def test_post_recurring_addition_appends_after_existing_ones_by_priority(client)
     assert second["priority"] == 1
 
 
+def test_patch_recurring_addition_edits_one_without_touching_another(client) -> None:
+    _create_goal(client)
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-06-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "USD",
+    }
+    first = client.post("/api/accounting/recurring-additions", json=payload).json()
+    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+
+    response = client.patch(
+        f"/api/accounting/recurring-additions/{first['addition_id']}",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-06-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 750.0,
+            "currency": "USD",
+            "priority": first["priority"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["value"] == pytest.approx(750.0)
+
+    additions = {a["addition_id"]: a for a in client.get("/api/accounting/store").json()["recurring_additions"]}
+    assert additions[first["addition_id"]]["value"] == pytest.approx(750.0)
+    assert additions[second["addition_id"]]["value"] == pytest.approx(500.0)  # untouched
+
+
+def test_patch_recurring_addition_404s_for_an_unknown_id(client) -> None:
+    _create_goal(client)
+    response = client.patch(
+        "/api/accounting/recurring-additions/nope",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-06-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 1.0,
+            "currency": "USD",
+            "priority": 0,
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_delete_recurring_addition_removes_only_that_one(client) -> None:
+    _create_goal(client)
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-06-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "USD",
+    }
+    first = client.post("/api/accounting/recurring-additions", json=payload).json()
+    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+
+    response = client.delete(f"/api/accounting/recurring-additions/{first['addition_id']}")
+    assert response.status_code == 200
+    remaining = {a["addition_id"] for a in client.get("/api/accounting/store").json()["recurring_additions"]}
+    assert remaining == {second["addition_id"]}
+
+
+def test_delete_recurring_addition_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/recurring-additions/nope").status_code == 404
+
+
 _BIG_EXPENSE_CSV = (
     "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
     "DEBIT,06/20/2026,Big unexpected expense,-4000.00,SALE,-4000.00,,\n"

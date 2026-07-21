@@ -2716,6 +2716,54 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/recurring-additions/{addition_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Recurring Addition Route
+     * @description Delete one recurring-addition rule, without touching any other. Idempotent, no version check.
+     *
+     *     Returns
+     *     -------
+     *     RecurringAdditionIdResponse
+     *         The rule id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule with `addition_id` exists.
+     */
+    delete: operations['delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Recurring Addition
+     * @description Edit one recurring-addition rule in place, without touching any other. Scoped, last-write-wins.
+     *
+     *     A single-rule field edit no longer round-trips through the whole-list
+     *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
+     *     edit to a different one); see `accounting.store.upsert_recurring_addition`.
+     *
+     *     Returns
+     *     -------
+     *     RecurringAddition
+     *         The rule as persisted after the edit.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule with `addition_id` exists.
+     */
+    patch: operations['patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch']
+    trace?: never
+  }
   '/api/accounting/withdrawal-priorities': {
     parameters: {
       query?: never
@@ -6375,6 +6423,59 @@ export interface components {
        * @enum {string}
        */
       currency: 'USD' | 'EUR'
+    }
+    /**
+     * RecurringAdditionIdResponse
+     * @description Response body naming one recurring addition, for endpoints whose only real effect is removing something.
+     */
+    RecurringAdditionIdResponse: {
+      /** Addition Id */
+      addition_id: string
+    }
+    /**
+     * RecurringAdditionUpdate
+     * @description Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
+     *
+     *     A single-rule field edit (amount, dates, frequency, mode, goal), scoped
+     *     to its own `addition_id` so it never blanket-reinserts every rule.
+     *     Carries `priority` unchanged (the row keeps its place); re-ordering the
+     *     whole list is still `PUT /recurring-additions`. No `expected_version`:
+     *     like a budget cell, an edit of one rule is last-write-wins on that rule
+     *     (see `docs/app-stack/optimistic-concurrency-versioning.md`).
+     */
+    RecurringAdditionUpdate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+      /** Priority */
+      priority: number
     }
     /**
      * RiskStat
@@ -10597,6 +10698,76 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['RecurringAdditionCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecurringAddition']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        addition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecurringAdditionIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        addition_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RecurringAdditionUpdate']
       }
     }
     responses: {

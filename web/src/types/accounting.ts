@@ -36,6 +36,7 @@ export type GoalContributionCreate = components['schemas']['GoalContributionCrea
 export type GoalContributionUpdate = components['schemas']['GoalContributionUpdate']
 export type RecurringAddition = components['schemas']['RecurringAddition']
 export type RecurringAdditionCreate = components['schemas']['RecurringAdditionCreate']
+export type RecurringAdditionUpdate = components['schemas']['RecurringAdditionUpdate']
 export type RecurringAdditionMode = RecurringAddition['mode']
 export type RecurringAdditionFrequency = RecurringAddition['frequency']
 export type WithdrawalPriorityEntry = components['schemas']['WithdrawalPriorityEntry']

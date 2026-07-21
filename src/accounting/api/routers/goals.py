@@ -19,6 +19,8 @@ from accounting.api.api_models import (
     GoalsSummary,
     GoalUpdate,
     RecurringAdditionCreate,
+    RecurringAdditionIdResponse,
+    RecurringAdditionUpdate,
     SimulateContributionRequest,
     SimulateContributionResult,
     WithdrawalAutomationResult,
@@ -36,9 +38,11 @@ from accounting.store import (
     load_store,
     next_available_color,
     remove_goal_contribution,
+    remove_recurring_addition,
     save_store,
     update_goal,
     upsert_goal_contribution,
+    upsert_recurring_addition,
 )
 from db.base import derive_id
 from db.current_user import get_current_user_id
@@ -207,6 +211,20 @@ def _goal_contribution_exists(session: Session, user_id: uuid.UUID, contribution
     return session.get(adb.GoalContribution, row_id) is not None
 
 
+def _recurring_addition_exists(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
+    """Whether one recurring-addition row exists, without loading the whole store.
+
+    `PATCH /recurring-additions/{id}` needs this because `upsert_recurring_addition` would otherwise
+    create a row for an unknown id, where the endpoint's contract is a 404.
+
+    Returns
+    -------
+    bool
+    """
+    row_id = derive_id(user_id, "recurring_additions", addition_id)
+    return session.get(adb.RecurringAddition, row_id) is not None
+
+
 @router.post("/goal-contributions")
 def post_goal_contribution(
     request: GoalContributionCreate,
@@ -366,8 +384,76 @@ def put_recurring_additions(
         raise HTTPException(status_code=400, detail="A 'remainder' addition must be the lowest-priority row")
     store = load_store(session, user_id)
     store = store.model_copy(update={"recurring_additions": additions})
+    # Reorder is a pure whole-list ordering operation (last write wins), so opt out of the whole-store
+    # version check — otherwise a reorder would spuriously 409 against an unrelated concurrent save. The
+    # per-rule field edit and delete go through their own scoped endpoints (PATCH/DELETE below).
+    session.info["expected_store_version"] = None
     save_store(store, session, user_id)
     return store.recurring_additions
+
+
+@router.patch("/recurring-additions/{addition_id}")
+def patch_recurring_addition(
+    addition_id: str,
+    request: RecurringAdditionUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> RecurringAddition:
+    """Edit one recurring-addition rule in place, without touching any other. Scoped, last-write-wins.
+
+    A single-rule field edit no longer round-trips through the whole-list
+    `PUT` (which blanket-reinserts every rule and could revert a concurrent
+    edit to a different one); see `accounting.store.upsert_recurring_addition`.
+
+    Returns
+    -------
+    RecurringAddition
+        The rule as persisted after the edit.
+
+    Raises
+    ------
+    HTTPException
+        404 if no rule with `addition_id` exists.
+    """
+    if not _recurring_addition_exists(session, user_id, addition_id):
+        raise HTTPException(status_code=404, detail=f"Recurring addition {addition_id!r} not found")
+    addition = RecurringAddition(
+        addition_id=addition_id,
+        goal_id=request.goal_id,
+        start_date=request.start_date,
+        frequency=request.frequency,
+        end_date=request.end_date,
+        mode=request.mode,
+        value=request.value,
+        currency=request.currency,
+        priority=request.priority,
+    )
+    upsert_recurring_addition(addition, session, user_id)
+    return addition
+
+
+@router.delete("/recurring-additions/{addition_id}")
+def delete_recurring_addition_route(
+    addition_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> RecurringAdditionIdResponse:
+    """Delete one recurring-addition rule, without touching any other. Idempotent, no version check.
+
+    Returns
+    -------
+    RecurringAdditionIdResponse
+        The rule id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no rule with `addition_id` exists.
+    """
+    if not remove_recurring_addition(session, user_id, addition_id):
+        raise HTTPException(status_code=404, detail=f"Recurring addition {addition_id!r} not found")
+    session.commit()
+    return RecurringAdditionIdResponse(addition_id=addition_id)
 
 
 @router.put("/withdrawal-priorities")

@@ -2634,6 +2634,74 @@ def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_
     return deleted > 0
 
 
+def upsert_recurring_addition(addition: RecurringAddition, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one recurring-addition rule, touching no other. Scoped like `upsert_budget`.
+
+    A single-field edit of one rule (its amount, dates, frequency, mode) no
+    longer blanket-reinserts every rule for the user, so it can't revert a
+    concurrent edit to a different one. Keyed by `addition.addition_id`;
+    `priority` is written too, but re-ordering the whole list is still the
+    whole-list `PUT /recurring-additions` (a pure ordering operation).
+
+    Parameters
+    ----------
+    addition
+        The recurring addition to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose recurring addition this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.recurring_additions
+                (id, user_id, natural_key, goal_id, start_date, frequency, end_date, mode, value, currency, priority)
+            VALUES
+                (:id, :user_id, :natural_key, :goal_id, :start_date, :frequency, :end_date, :mode, :value,
+                 :currency, :priority)
+            ON CONFLICT (id) DO UPDATE SET
+                goal_id = EXCLUDED.goal_id,
+                start_date = EXCLUDED.start_date,
+                frequency = EXCLUDED.frequency,
+                end_date = EXCLUDED.end_date,
+                mode = EXCLUDED.mode,
+                value = EXCLUDED.value,
+                currency = EXCLUDED.currency,
+                priority = EXCLUDED.priority
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "recurring_additions", addition.addition_id)),
+            "user_id": str(user_id),
+            "natural_key": addition.addition_id,
+            "goal_id": str(derive_id(user_id, "goals", addition.goal_id)),
+            "start_date": addition.start_date,
+            "frequency": addition.frequency,
+            "end_date": addition.end_date,
+            "mode": addition.mode,
+            "value": addition.value,
+            "currency": addition.currency,
+            "priority": addition.priority,
+        },
+    )
+    session.commit()
+
+
+def remove_recurring_addition(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
+    """Delete one recurring-addition rule, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "recurring_additions", addition_id)
+    deleted = session.query(adb.RecurringAddition).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 def update_account_fields(session: Session, user_id: uuid.UUID, account: Account) -> bool:
     """Update one account's editable columns in place, touching no other account.
 
