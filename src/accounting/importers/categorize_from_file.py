@@ -29,7 +29,7 @@ from accounting.importers.canonical.csv import (
     resolve_categorization_rows,
 )
 from accounting.models import ManualOverride
-from accounting.store import load_overrides, save_overrides
+from accounting.store import load_overrides_for_postings, save_overrides_for_postings
 
 if TYPE_CHECKING:
     import uuid
@@ -327,7 +327,8 @@ def apply_categorize_from_file(session: Session, confirmed: list[ConfirmedCatego
     if not applicable:
         return 0
 
-    overrides = load_overrides(session, user_id=user_id)
+    posting_ids = [entry.posting_id for entry in applicable]
+    overrides = load_overrides_for_postings(session, user_id, posting_ids)
     for entry in applicable:
         patch: dict[str, str] = {}
         if entry.category_id is not None:
@@ -341,5 +342,5 @@ def apply_categorize_from_file(session: Session, confirmed: list[ConfirmedCatego
             overrides[entry.posting_id] = ManualOverride(
                 category_id=patch.get("category_id"), subcategory_id=patch.get("subcategory_id")
             )
-    save_overrides(overrides, session, user_id=user_id)
+    save_overrides_for_postings(posting_ids, overrides, session, user_id=user_id)
     return len(applicable)

@@ -48,8 +48,9 @@ from accounting.store import (
     dismissed_suggestion_ids,
     list_dismissed_suggestions,
     load_overrides,
+    load_overrides_for_postings,
     load_store,
-    save_overrides,
+    save_overrides_for_postings,
     save_store,
     undismiss_suggestion,
 )
@@ -180,14 +181,12 @@ def put_posting_override(
     ManualOverride
         The override just persisted, merged with any prior one.
     """
-    overrides = load_overrides(session, user_id)
-    existing = overrides.get(posting_id)
+    existing = load_overrides_for_postings(session, user_id, [posting_id]).get(posting_id)
     if existing is not None:
         merged = existing.model_dump()
         merged.update(override.model_dump(include=override.model_fields_set))
         override = ManualOverride(**merged)
-    overrides[posting_id] = override
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings([posting_id], {posting_id: override}, session, user_id)
     return override
 
 
@@ -459,7 +458,7 @@ def post_validate_pending(
     -------
     ValidatePendingResult
     """
-    overrides = load_overrides(session, user_id)
+    overrides = load_overrides_for_postings(session, user_id, payload.posting_ids)
     accepted = reverted = 0
     for posting_id in payload.posting_ids:
         existing = overrides.get(posting_id)
@@ -474,7 +473,7 @@ def post_validate_pending(
             del overrides[posting_id]
         else:
             overrides[posting_id] = resolved
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings(payload.posting_ids, overrides, session, user_id)
     return ValidatePendingResult(accepted=accepted, reverted=reverted)
 
 

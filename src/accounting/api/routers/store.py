@@ -67,7 +67,7 @@ from accounting.store import (
     plan_tag_rename,
     remap_category_ids,
     remap_tag_ids,
-    save_overrides,
+    save_overrides_for_postings,
     save_store,
     slugify,
     uncategorize_category_ids,
@@ -346,14 +346,18 @@ def delete_category(
     def clear(field_id: str | None) -> str | None:
         return None if field_id in ids_to_delete else field_id
 
+    # Only the overrides that actually reference a deleted category/subcategory get touched — every
+    # other posting's override is left alone, unlike the old `load_overrides`/`save_overrides(whole
+    # dict)` pair this replaced, which rewrote the entire table on every category delete.
     overrides = load_overrides(session, user_id)
-    overrides = {
+    changed_overrides = {
         posting_id: override.model_copy(
             update={"category_id": clear(override.category_id), "subcategory_id": clear(override.subcategory_id)}
         )
         for posting_id, override in overrides.items()
+        if override.category_id in ids_to_delete or override.subcategory_id in ids_to_delete
     }
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
     save_store(store, session, user_id)
     return CategoryDeleteResponse(categories=store.categories, uncategorized_posting_count=posting_count)
@@ -475,14 +479,17 @@ def post_category_rename(
             """
             return id_remap.get(category_id, category_id) if category_id is not None else None
 
+        # Only the overrides that actually reference a merged-away category/subcategory get
+        # touched — see the equivalent note in `delete_category` for why.
         overrides = load_overrides(session, user_id)
-        overrides = {
+        changed_overrides = {
             posting_id: override.model_copy(
                 update={"category_id": remap(override.category_id), "subcategory_id": remap(override.subcategory_id)}
             )
             for posting_id, override in overrides.items()
+            if override.category_id in id_remap or override.subcategory_id in id_remap
         }
-        save_overrides(overrides, session, user_id)
+        save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
     save_store(store, session, user_id)
 

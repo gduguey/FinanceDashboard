@@ -50,9 +50,11 @@ from accounting.store import (
     get_store_version,
     list_dismissed_suggestions,
     load_overrides,
+    load_overrides_for_postings,
     load_store,
     remap_tag_ids,
     save_overrides,
+    save_overrides_for_postings,
     save_store,
     undismiss_suggestion,
 )
@@ -294,6 +296,40 @@ def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_
     reloaded = load_overrides(db_session, user_id=test_user_id)
     assert "p1" not in reloaded  # no field set at all, so no row was written in the first place
     assert reloaded["p2"].tag_ids == []
+
+
+def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_different_posting(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Reproduces the actual bug `save_overrides_for_postings` exists to fix: two requests racing on
+
+    *different* postings must not have one silently erase the other. `save_overrides` (the old whole-table
+    path) always rewrote every posting's override from whatever in-memory dict it was handed — a second
+    caller working off a snapshot taken before the first caller's write would resave that stale snapshot
+    and wipe the first caller's change out. `save_overrides_for_postings` takes an explicit `posting_ids`
+    scope instead, so it only ever touches the postings a given call is actually about.
+    """
+    load_store(db_session, user_id=test_user_id)
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    # Both "requests" read their own snapshot before either one writes.
+    snapshot_a = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    snapshot_b = load_overrides_for_postings(db_session, test_user_id, ["p2"])
+    assert snapshot_a == {}
+    assert snapshot_b == {}
+
+    # "Request A" commits its change to p1 first.
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(category_id="expense:food-drink")}, db_session, test_user_id
+    )
+
+    # "Request B" saves its own change to p2, from a snapshot that never saw p1's write.
+    save_overrides_for_postings(["p2"], {"p2": ManualOverride(category_id="expense:travel")}, db_session, test_user_id)
+
+    final = load_overrides(db_session, user_id=test_user_id)
+    assert final["p1"].category_id == "expense:food-drink"  # would be silently wiped by the old save_overrides
+    assert final["p2"].category_id == "expense:travel"
 
 
 def test_save_then_load_store_round_trips_every_entity_type(db_session: Session, test_user_id: uuid.UUID) -> None:
