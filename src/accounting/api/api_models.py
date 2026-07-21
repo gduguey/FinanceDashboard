@@ -310,6 +310,27 @@ class RecurringAdditionCreate(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+class RecurringAdditionUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
+
+    A single-rule field edit (amount, dates, frequency, mode, goal), scoped
+    to its own `addition_id` so it never blanket-reinserts every rule.
+    Carries `priority` unchanged (the row keeps its place); re-ordering the
+    whole list is still `PUT /recurring-additions`. No `expected_version`:
+    like a budget cell, an edit of one rule is last-write-wins on that rule
+    (see `docs/app-stack/optimistic-concurrency-versioning.md`).
+    """
+
+    goal_id: str = Field(min_length=1)
+    start_date: date
+    frequency: RecurringAdditionFrequency
+    end_date: date | None = None
+    mode: RecurringAdditionMode
+    value: float = 0.0
+    currency: CurrencyCode = "USD"
+    priority: int
+
+
 class OtherAssetCreate(BaseModel):
     """Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
 
@@ -758,6 +779,12 @@ class GoalContributionIdResponse(BaseModel):
     """Response body naming one goal contribution, for endpoints whose only real effect is removing something."""
 
     contribution_id: str
+
+
+class RecurringAdditionIdResponse(BaseModel):
+    """Response body naming one recurring addition, for endpoints whose only real effect is removing something."""
+
+    addition_id: str
 
 
 class LlmProviderUsage(BaseModel):

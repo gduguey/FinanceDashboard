@@ -32,6 +32,7 @@ import type {
   PostingSplitLeg,
   RecurringAddition,
   RecurringAdditionCreate,
+  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   TransferLinkCreate,
@@ -1053,10 +1054,29 @@ export function useRemoveGoalContribution() {
   })
 }
 
+// Whole-list PUT — used only for drag-to-reorder (a pure ordering operation); single-rule field
+// edits and deletes go through the scoped hooks below.
 export function useSetRecurringAdditions() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (additions: RecurringAddition[]) => accountingApi.putRecurringAdditions(additions),
+    onSuccess: invalidate,
+  })
+}
+
+export function usePatchRecurringAddition() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ additionId, update }: { additionId: string; update: RecurringAdditionUpdate }) =>
+      accountingApi.patchRecurringAddition(additionId, update),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteRecurringAddition() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (additionId: string) => accountingApi.deleteRecurringAddition(additionId),
     onSuccess: invalidate,
   })
 }

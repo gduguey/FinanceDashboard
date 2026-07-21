@@ -55,6 +55,7 @@ import type {
   ProjectionPoint,
   RecurringAddition,
   RecurringAdditionCreate,
+  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
@@ -537,6 +538,15 @@ export const accountingApi = {
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
   createRecurringAddition: (addition: RecurringAdditionCreate) =>
     request<RecurringAddition>('/api/accounting/recurring-additions', jsonInit('POST', addition)),
+  patchRecurringAddition: (additionId: string, update: RecurringAdditionUpdate) =>
+    requestScoped<RecurringAddition>(
+      `/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteRecurringAddition: (additionId: string) =>
+    requestScoped<{ addition_id: string }>(`/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`, {
+      method: 'DELETE',
+    }),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
