@@ -201,7 +201,10 @@ export function TransferRulesTab({
   function toggleActive(ruleId: string, active: boolean) {
     const rule = rules.find((r) => r.rule_id === ruleId)
     if (!rule) return
-    patchRule.mutate({ ruleId, update: ruleUpdateFromRule(rule, { active }) })
+    // `expected_version: null` -> last-write-wins: flipping the switch on/off/on quickly should settle
+    // on the last click, never 409 against its own in-flight earlier click (a version-checked toggle
+    // would — see the versioning doc). Field edits above keep the real version check.
+    patchRule.mutate({ ruleId, update: ruleUpdateFromRule(rule, { active, expected_version: null }) })
   }
 
   return (

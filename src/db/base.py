@@ -279,7 +279,7 @@ def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, exp
 
 
 def check_and_bump_row_version(
-    session: Session, table: str, row_id: uuid.UUID, user_id: uuid.UUID, expected_version: int
+    session: Session, table: str, row_id: uuid.UUID, user_id: uuid.UUID, expected_version: int | None
 ) -> int | None:
     """Atomically verify one row's version still matches `expected_version`, then bump it by one.
 
@@ -302,7 +302,13 @@ def check_and_bump_row_version(
         Whose row this is — scopes the update so one user can never bump
         another's row by guessing its id.
     expected_version
-        The version the caller last saw.
+        The version the caller last saw, or `None` to skip the check and
+        bump unconditionally — the same `None`-skips-the-check contract
+        `check_and_bump_version` has, used for an idempotent
+        last-write-wins field (a boolean toggle) where losing the race
+        against a newer write of the same field is exactly the wanted
+        outcome, not a conflict (see
+        `docs/app-stack/optimistic-concurrency-versioning.md`).
 
     Returns
     -------
@@ -315,15 +321,16 @@ def check_and_bump_row_version(
     Raises
     ------
     VersionConflictError
-        If the row exists but its stored version no longer matches
-        `expected_version`.
+        If `expected_version` was given and the row exists but its stored
+        version no longer matches it.
     """
     result = session.execute(
         text(
             f"""
             UPDATE {table}
             SET version = version + 1
-            WHERE id = :row_id AND user_id = :user_id AND version = :expected_version
+            WHERE id = :row_id AND user_id = :user_id
+               AND (CAST(:expected_version AS INTEGER) IS NULL OR version = CAST(:expected_version AS INTEGER))
             RETURNING version
             """  # noqa: S608 (table is a fixed internal constant, never user input)
         ),
@@ -343,7 +350,7 @@ def check_and_bump_row_version(
         {"row_id": str(row_id), "user_id": str(user_id)},
     ).scalar_one()
     message = (
-        f"This rule changed elsewhere since version {expected_version} was loaded (now at version {current}) "
+        f"This record changed elsewhere since version {expected_version} was loaded (now at version {current}) "
         "— reload before saving again."
     )
     raise VersionConflictError(message)

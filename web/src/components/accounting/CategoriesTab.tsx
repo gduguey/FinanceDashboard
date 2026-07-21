@@ -27,8 +27,9 @@ import {
   useCreateCategoryPattern,
   useCreateSubcategory,
   useDeleteCategory,
+  useDeleteCategoryPattern,
+  usePatchCategoryPattern,
   useRenameCategory,
-  useSetCategoryPatterns,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import type { BudgetToDeletePreview } from '@/lib/accountingApi'
@@ -614,7 +615,8 @@ function CategoryPatternsSection({
   patterns: Record<string, CategoryPattern>
   categories: Record<string, Category>
 }) {
-  const setPatterns = useSetCategoryPatterns()
+  const patchPattern = usePatchCategoryPattern()
+  const deletePattern = useDeleteCategoryPattern()
   const createPattern = useCreateCategoryPattern()
   const [editing, setEditing] = useState<CategoryPattern | null>(null)
   const [draft, setDraft] = useState<{
@@ -647,18 +649,43 @@ function CategoryPatternsSection({
   }
 
   function removePattern(patternId: string) {
-    const { [patternId]: _removed, ...rest } = patterns
-    setPatterns.mutate(rest)
+    deletePattern.mutate(patternId)
   }
 
   function savePattern(updated: CategoryPattern) {
-    setPatterns.mutate({ ...patterns, [updated.pattern_id]: updated })
+    const existing = patterns[updated.pattern_id]
+    // Guard the same way `togglePatternActive` does: the pattern may have been
+    // deleted elsewhere while this row was open — don't read `.version` off it.
+    if (!existing) return
+    patchPattern.mutate({
+      patternId: updated.pattern_id,
+      update: {
+        description_contains: updated.description_contains,
+        category_id: updated.category_id,
+        subcategory_id: updated.subcategory_id,
+        priority: updated.priority,
+        active: updated.active,
+        expected_version: existing.version,
+      },
+    })
   }
 
   function togglePatternActive(patternId: string, active: boolean) {
     const existing = patterns[patternId]
     if (!existing) return
-    setPatterns.mutate({ ...patterns, [patternId]: { ...existing, active } })
+    patchPattern.mutate({
+      patternId,
+      update: {
+        description_contains: existing.description_contains,
+        category_id: existing.category_id,
+        subcategory_id: existing.subcategory_id,
+        priority: existing.priority,
+        active,
+        // Last-write-wins on a fast on/off/on toggle (see the versioning doc); `savePattern` above
+        // keeps the real version check for destructive field edits.
+        expected_version: null,
+      },
+    })
   }
 
   return (

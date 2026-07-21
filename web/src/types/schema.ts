@@ -341,6 +341,41 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/tags/{tag_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Tag Route
+     * @description Delete one tag, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting a tag by re-sending the whole tag list minus one
+     *     (which risked a stale second delete resurrecting a just-removed tag);
+     *     see `accounting.store.delete_tag`. A tag still applied to postings is
+     *     removed from them too, via the `posting_tags` FK cascade.
+     *
+     *     Returns
+     *     -------
+     *     TagIdResponse
+     *         The tag id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no tag with `tag_id` exists.
+     */
+    delete: operations['delete_tag_route_api_accounting_tags__tag_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/accounting/tags/{tag_id}/rename-preview': {
     parameters: {
       query?: never
@@ -541,6 +576,55 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/category-patterns/{pattern_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Category Pattern Route
+     * @description Delete one category pattern, without touching any other pattern already saved.
+     *
+     *     No version check — see `accounting.store.delete_category_pattern`.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPatternIdResponse
+     *         The pattern id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no pattern with `pattern_id` exists.
+     */
+    delete: operations['delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Category Pattern
+     * @description Update one existing category pattern in place, without touching any other pattern already saved.
+     *
+     *     A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
+     *     `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPattern
+     *         The pattern as persisted after the update.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no pattern with `pattern_id` exists.
+     */
+    patch: operations['patch_category_pattern_api_accounting_category_patterns__pattern_id__patch']
+    trace?: never
+  }
   '/api/accounting/other-assets': {
     parameters: {
       query?: never
@@ -574,6 +658,39 @@ export interface paths {
      */
     post: operations['post_other_asset_api_accounting_other_assets_post']
     delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/other-assets/{asset_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Other Asset Route
+     * @description Delete one manually-entered asset, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting an asset by re-sending the whole list minus one; see
+     *     `accounting.store.delete_other_asset`.
+     *
+     *     Returns
+     *     -------
+     *     OtherAssetIdResponse
+     *         The asset id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no asset with `asset_id` exists.
+     */
+    delete: operations['delete_other_asset_route_api_accounting_other_assets__asset_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -752,6 +869,39 @@ export interface paths {
      */
     post: operations['post_simulator_scenario_api_accounting_simulator_scenarios_post']
     delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/accounting/simulator/scenarios/{scenario_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Simulator Scenario Route
+     * @description Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting a scenario by re-sending the whole list minus one;
+     *     see `accounting.store.delete_simulator_scenario`.
+     *
+     *     Returns
+     *     -------
+     *     SimulatorScenarioIdResponse
+     *         The scenario id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no scenario with `scenario_id` exists.
+     */
+    delete: operations['delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -1522,14 +1672,14 @@ export interface paths {
     put: operations['put_posting_split_api_accounting_postings__posting_id__split_put']
     post?: never
     /**
-     * Delete Posting Split
+     * Delete Posting Split Route
      * @description Undo a posting split, restoring the single original posting.
      *
      *     Returns
      *     -------
      *     PostingIdResponse
      */
-    delete: operations['delete_posting_split_api_accounting_postings__posting_id__split_delete']
+    delete: operations['delete_posting_split_route_api_accounting_postings__posting_id__split_delete']
     options?: never
     head?: never
     patch?: never
@@ -2377,6 +2527,62 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/goals/{goal_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Goal Route
+     * @description Delete one goal, without touching any other goal already saved.
+     *
+     *     No version check — see `accounting.store.delete_goal`'s own
+     *     docstring for why deleting an already-gone goal is a plain 404, not a
+     *     409: there's nothing left to conflict with.
+     *
+     *     Returns
+     *     -------
+     *     GoalIdResponse
+     *         The goal id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no goal with `goal_id` exists.
+     */
+    delete: operations['delete_goal_route_api_accounting_goals__goal_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Goal
+     * @description Update one existing goal in place, without touching any other goal already saved.
+     *
+     *     A true per-resource write — unlike `PUT /goals`, this never
+     *     round-trips through `load_store`/`save_store` (which deletes and
+     *     reinserts every persisted entity for the user); see
+     *     `accounting.store.update_goal`. Guarded by `request.expected_version`
+     *     instead of the whole-store `X-Expected-Store-Version` header, so an
+     *     edit to this one goal can never spuriously conflict with — or be
+     *     silently overwritten by — an unrelated save elsewhere in the store.
+     *
+     *     Returns
+     *     -------
+     *     Goal
+     *         The goal as persisted after the update.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no goal with `goal_id` exists.
+     */
+    patch: operations['patch_goal_api_accounting_goals__goal_id__patch']
+    trace?: never
+  }
   '/api/accounting/goal-contributions': {
     parameters: {
       query?: never
@@ -2510,6 +2716,54 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/accounting/recurring-additions/{addition_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Recurring Addition Route
+     * @description Delete one recurring-addition rule, without touching any other. Idempotent, no version check.
+     *
+     *     Returns
+     *     -------
+     *     RecurringAdditionIdResponse
+     *         The rule id just deleted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule with `addition_id` exists.
+     */
+    delete: operations['delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete']
+    options?: never
+    head?: never
+    /**
+     * Patch Recurring Addition
+     * @description Edit one recurring-addition rule in place, without touching any other. Scoped, last-write-wins.
+     *
+     *     A single-rule field edit no longer round-trips through the whole-list
+     *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
+     *     edit to a different one); see `accounting.store.upsert_recurring_addition`.
+     *
+     *     Returns
+     *     -------
+     *     RecurringAddition
+     *         The rule as persisted after the edit.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule with `addition_id` exists.
+     */
+    patch: operations['patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch']
+    trace?: never
+  }
   '/api/accounting/withdrawal-priorities': {
     parameters: {
       query?: never
@@ -2521,6 +2775,13 @@ export interface paths {
     /**
      * Put Withdrawal Priorities
      * @description Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
+     *
+     *     A pure ordering + set-membership operation (no free text or amount
+     *     anywhere), so it's last-write-wins by nature — whichever ordering was
+     *     submitted last is the intended one. It opts out of the whole-store
+     *     version check (like the recurring-additions reorder) so re-ordering
+     *     can't spuriously 409 against an unrelated concurrent save elsewhere in
+     *     the store.
      *
      *     Returns
      *     -------
@@ -3063,12 +3324,12 @@ export interface paths {
     }
     /**
      * Get Target Allocation
-     * @description Return the persisted target allocation.
+     * @description Return the persisted target allocation, with the settings-row version.
      *
      *     Returns
      *     -------
-     *     dict[str, float]
-     *         Symbol -> target percentage.
+     *     TargetAllocationSetting
+     *         `target_allocation_pct` (symbol -> target percentage) and `version`.
      */
     get: operations['get_target_allocation_api_settings_target_allocation_get']
     /**
@@ -3077,12 +3338,15 @@ export interface paths {
      *
      *     Merges into the existing settings — a settings row is one record, so
      *     writing this field naively from a fresh `DashboardSettings()` would
-     *     silently wipe out the HYSA/benchmark settings saved separately.
+     *     silently wipe out the HYSA/benchmark settings saved separately. The
+     *     response carries `version` (like every other settings endpoint) so the
+     *     client's cached version stays current and a follow-up save to another
+     *     settings field doesn't spuriously 409.
      *
      *     Returns
      *     -------
-     *     dict[str, float]
-     *         The persisted target allocation.
+     *     TargetAllocationSetting
+     *         The persisted target allocation and the new version.
      */
     put: operations['put_target_allocation_api_settings_target_allocation_put']
     post?: never
@@ -4355,6 +4619,11 @@ export interface components {
        * @default true
        */
       active: boolean
+      /**
+       * Version
+       * @default 1
+       */
+      version: number
     }
     /**
      * CategoryPatternCreate
@@ -4376,6 +4645,41 @@ export interface components {
        * @default 100
        */
       priority: number
+    }
+    /**
+     * CategoryPatternIdResponse
+     * @description Response body naming one category pattern, for endpoints whose only real effect is removing something.
+     */
+    CategoryPatternIdResponse: {
+      /** Pattern Id */
+      pattern_id: string
+    }
+    /**
+     * CategoryPatternUpdate
+     * @description Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+     *
+     *     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
+     *     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
+     *     the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+     *     It's `None` (skip the check, last-write-wins) only for an idempotent toggle of the `active` flag,
+     *     the same exemption `TransferRuleUpdate.expected_version` documents.
+     */
+    CategoryPatternUpdate: {
+      /** Description Contains */
+      description_contains: string
+      /** Category Id */
+      category_id: string
+      /** Subcategory Id */
+      subcategory_id?: string | null
+      /** Priority */
+      priority: number
+      /**
+       * Active
+       * @default true
+       */
+      active: boolean
+      /** Expected Version */
+      expected_version?: number | null
     }
     /**
      * CategoryRenamePreviewResponse
@@ -4877,6 +5181,11 @@ export interface components {
        * Format: date-time
        */
       created_at: string
+      /**
+       * Version
+       * @default 1
+       */
+      version: number
     }
     /**
      * GoalContribution
@@ -5054,6 +5363,47 @@ export interface components {
        * Format: date-time
        */
       target_date: string
+    }
+    /**
+     * GoalIdResponse
+     * @description Response body naming one goal, for endpoints whose only real effect is removing something.
+     */
+    GoalIdResponse: {
+      /** Goal Id */
+      goal_id: string
+    }
+    /**
+     * GoalUpdate
+     * @description Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+     *
+     *     Unlike `GoalCreate`, this never mints a new id or color — the goal
+     *     stays identified by the `goal_id` path param, and `color` is an
+     *     explicit field here (never re-picked) since editing one goal should
+     *     never shuffle the color already showing everywhere else it's used.
+     *     `expected_version` is the goal's own `version` field the client last
+     *     saw — see `db.base.check_and_bump_row_version`, which raises a 409 if
+     *     it no longer matches what's persisted.
+     */
+    GoalUpdate: {
+      /** Name */
+      name: string
+      /** Target Amount */
+      target_amount: number
+      /**
+       * Target Currency
+       * @default USD
+       * @enum {string}
+       */
+      target_currency: 'USD' | 'EUR'
+      /**
+       * Target Date
+       * Format: date-time
+       */
+      target_date: string
+      /** Color */
+      color: string
+      /** Expected Version */
+      expected_version: number
     }
     /**
      * GoalsSummary
@@ -5632,6 +5982,14 @@ export interface components {
       note: string
     }
     /**
+     * OtherAssetIdResponse
+     * @description Response body naming one manually-entered asset, for endpoints whose only real effect is removing something.
+     */
+    OtherAssetIdResponse: {
+      /** Asset Id */
+      asset_id: string
+    }
+    /**
      * Overview
      * @description The overview card row: value, gain split, XIRR, dollar alpha, TWR.
      */
@@ -6074,6 +6432,59 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
+     * RecurringAdditionIdResponse
+     * @description Response body naming one recurring addition, for endpoints whose only real effect is removing something.
+     */
+    RecurringAdditionIdResponse: {
+      /** Addition Id */
+      addition_id: string
+    }
+    /**
+     * RecurringAdditionUpdate
+     * @description Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
+     *
+     *     A single-rule field edit (amount, dates, frequency, mode, goal), scoped
+     *     to its own `addition_id` so it never blanket-reinserts every rule.
+     *     Carries `priority` unchanged (the row keeps its place); re-ordering the
+     *     whole list is still `PUT /recurring-additions`. No `expected_version`:
+     *     like a budget cell, an edit of one rule is last-write-wins on that rule
+     *     (see `docs/app-stack/optimistic-concurrency-versioning.md`).
+     */
+    RecurringAdditionUpdate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+      /** Priority */
+      priority: number
+    }
+    /**
      * RiskStat
      * @description The largest peak-to-trough NAV decline over a window.
      */
@@ -6199,6 +6610,14 @@ export interface components {
        * @enum {string}
        */
       currency: 'USD' | 'EUR'
+    }
+    /**
+     * SimulatorScenarioIdResponse
+     * @description Response body naming one simulator scenario, for endpoints whose only real effect is removing something.
+     */
+    SimulatorScenarioIdResponse: {
+      /** Scenario Id */
+      scenario_id: string
     }
     /**
      * SkippedRowsInfo
@@ -6388,6 +6807,14 @@ export interface components {
       name: string
     }
     /**
+     * TagIdResponse
+     * @description Response body naming one tag, for endpoints whose only real effect is removing something.
+     */
+    TagIdResponse: {
+      /** Tag Id */
+      tag_id: string
+    }
+    /**
      * TagRenamePreviewResponse
      * @description Response body for `GET /tags/{tag_id}/rename-preview`.
      */
@@ -6416,6 +6843,23 @@ export interface components {
       }
       /** Merged */
       merged: boolean
+    }
+    /**
+     * TargetAllocationSetting
+     * @description The persisted target allocation, plus the settings-row version so the client can echo it back.
+     *
+     *     Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
+     *     save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
+     *     back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
+     *     save. Carrying `version` (like every other settings response) closes that.
+     */
+    TargetAllocationSetting: {
+      /** Target Allocation Pct */
+      target_allocation_pct: {
+        [key: string]: number
+      }
+      /** Version */
+      version: number
     }
     /**
      * TaxOwedRow
@@ -6727,7 +7171,11 @@ export interface components {
      *     matching criteria) change, so an edit never silently becomes a
      *     different rule. `expected_version` is the rule's own `version` field
      *     the client last saw — see `db.base.check_and_bump_row_version`, which
-     *     raises a 409 if it no longer matches what's persisted.
+     *     raises a 409 if it no longer matches what's persisted. It's `None`
+     *     (skip the check, last-write-wins) only for an idempotent toggle of the
+     *     `active` flag, where losing the race against a newer flip of the same
+     *     switch is the wanted outcome, not a conflict — see
+     *     `docs/app-stack/optimistic-concurrency-versioning.md`.
      */
     TransferRuleUpdate: {
       /** Description Contains */
@@ -6751,7 +7199,7 @@ export interface components {
       /** Excluded Transaction Ids */
       excluded_transaction_ids?: string[]
       /** Expected Version */
-      expected_version: number
+      expected_version?: number | null
     }
     /**
      * TransferSuggestion
@@ -7306,6 +7754,39 @@ export interface operations {
       }
     }
   }
+  delete_tag_route_api_accounting_tags__tag_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        tag_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TagIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get: {
     parameters: {
       query: {
@@ -7557,6 +8038,76 @@ export interface operations {
       }
     }
   }
+  delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        pattern_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPatternIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_category_pattern_api_accounting_category_patterns__pattern_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        pattern_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CategoryPatternUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPattern']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_other_assets_api_accounting_other_assets_put: {
     parameters: {
       query?: never
@@ -7614,6 +8165,39 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['OtherAsset']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_other_asset_route_api_accounting_other_assets__asset_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        asset_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OtherAssetIdResponse']
         }
       }
       /** @description Validation Error */
@@ -7894,6 +8478,39 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['SimulatorScenario']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        scenario_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SimulatorScenarioIdResponse']
         }
       }
       /** @description Validation Error */
@@ -8723,7 +9340,7 @@ export interface operations {
       }
     }
   }
-  delete_posting_split_api_accounting_postings__posting_id__split_delete: {
+  delete_posting_split_route_api_accounting_postings__posting_id__split_delete: {
     parameters: {
       query?: never
       header?: {
@@ -9827,6 +10444,76 @@ export interface operations {
       }
     }
   }
+  delete_goal_route_api_accounting_goals__goal_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        goal_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_goal_api_accounting_goals__goal_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        goal_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GoalUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Goal']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_goal_contributions_api_accounting_goal_contributions_put: {
     parameters: {
       query?: never
@@ -10018,6 +10705,76 @@ export interface operations {
     requestBody: {
       content: {
         'application/json': components['schemas']['RecurringAdditionCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecurringAddition']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        addition_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecurringAdditionIdResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch: {
+    parameters: {
+      query?: never
+      header?: {
+        'x-expected-store-version'?: number | null
+      }
+      path: {
+        addition_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['RecurringAdditionUpdate']
       }
     }
     responses: {
@@ -10604,9 +11361,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: number
-          }
+          'application/json': components['schemas']['TargetAllocationSetting']
         }
       }
       /** @description Validation Error */
@@ -10643,9 +11398,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: number
-          }
+          'application/json': components['schemas']['TargetAllocationSetting']
         }
       }
       /** @description Validation Error */

@@ -935,6 +935,113 @@ def test_post_category_pattern_twice_with_the_same_criteria_replaces_rather_than
     assert patterns[first["pattern_id"]]["priority"] == 5
 
 
+def test_patch_category_pattern_updates_fields_and_increments_version(client) -> None:
+    pattern = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    assert pattern["version"] == 1
+
+    response = client.patch(
+        f"/api/accounting/category-patterns/{pattern['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 3,
+            "active": False,
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["priority"] == 3
+    assert updated["active"] is False
+    assert updated["version"] == 2
+
+    persisted = client.get("/api/accounting/store").json()["category_patterns"][pattern["pattern_id"]]
+    assert persisted["version"] == 2
+
+
+def test_patch_category_pattern_with_a_stale_expected_version_gets_409(client) -> None:
+    pattern = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    response = client.patch(
+        f"/api/accounting/category-patterns/{pattern['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 3,
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 409
+
+
+def test_patch_category_pattern_that_does_not_exist_gets_404(client) -> None:
+    response = client.patch(
+        "/api/accounting/category-patterns/does-not-exist",
+        json={
+            "description_contains": "X",
+            "category_id": "expense:subscriptions",
+            "priority": 0,
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_delete_category_pattern_removes_it(client) -> None:
+    pattern = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    response = client.delete(f"/api/accounting/category-patterns/{pattern['pattern_id']}")
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["category_patterns"] == {}
+
+
+def test_delete_category_pattern_that_is_already_gone_gets_404(client) -> None:
+    response = client.delete("/api/accounting/category-patterns/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_creating_an_unrelated_pattern_does_not_reset_another_patterns_version(client) -> None:
+    pattern_a = client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    pattern_a = client.patch(
+        f"/api/accounting/category-patterns/{pattern_a['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 1,
+            "expected_version": 1,
+        },
+    ).json()
+    assert pattern_a["version"] == 2
+
+    client.post(
+        "/api/accounting/category-patterns",
+        json={"description_contains": "SPOTIFY", "category_id": "expense:subscriptions"},
+    )
+
+    persisted = client.get("/api/accounting/store").json()["category_patterns"][pattern_a["pattern_id"]]
+    assert persisted["version"] == 2
+    response = client.patch(
+        f"/api/accounting/category-patterns/{pattern_a['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 2,
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 200
+
+
 def test_llm_usage_starts_unconfigured_and_unused(client, monkeypatch) -> None:
     class _NoCredentials:
         gemini_api_key = None
@@ -1842,6 +1949,40 @@ def test_two_patches_fired_with_the_same_expected_version_the_second_gets_409(cl
     assert final["priority"] == 1
 
 
+def test_patch_transfer_rule_without_expected_version_is_last_write_wins(client) -> None:
+    """The `active`-toggle path omits `expected_version` (sends null) so fast on/off/on flipping settles
+
+    on the last click instead of 409-ing against its own in-flight earlier click — two PATCHes off the
+    same stale snapshot both succeed, and the last one's value wins.
+    """
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+
+    def toggle(active: bool) -> int:
+        return client.patch(
+            f"/api/accounting/transfer-rules/{rule['rule_id']}",
+            json={
+                "description_contains": "PAYROLL",
+                "counterparty_account_id": employer["account_id"],
+                "priority": rule["priority"],
+                "active": active,
+                "expected_version": None,  # opt out of the check — last-write-wins
+            },
+        ).status_code
+
+    # Both fired from the same original snapshot (version 1); neither 409s.
+    assert toggle(active=False) == 200
+    assert toggle(active=True) == 200
+    assert toggle(active=False) == 200
+
+    final = client.get("/api/accounting/store").json()["transfer_rules"][0]
+    assert final["active"] is False  # the last write won
+    assert final["version"] == 4  # still bumped on every write, just never checked
+
+
 def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
     checking_id = _import_chase_checking(client)
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
@@ -2435,6 +2576,20 @@ def test_post_tag_allows_a_distinct_name(client) -> None:
     assert response.status_code == 200
 
 
+def test_delete_tag_removes_only_that_tag(client) -> None:
+    client.post("/api/accounting/tags", json={"name": "Trip"})
+    client.post("/api/accounting/tags", json={"name": "Move"})
+    response = client.delete("/api/accounting/tags/tag:trip")
+    assert response.status_code == 200
+    tags = client.get("/api/accounting/store").json()["tags"]
+    assert "tag:trip" not in tags
+    assert "tag:move" in tags  # a delete of one tag never disturbs another
+
+
+def test_delete_tag_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/tags/tag:nope").status_code == 404
+
+
 def test_tag_rename_preview_reports_no_merge_for_a_plain_rename(client) -> None:
     client.post("/api/accounting/tags", json={"name": "Trip"})
     response = client.get("/api/accounting/tags/tag:trip/rename-preview", params={"name": "Renamed"})
@@ -2514,6 +2669,19 @@ def test_post_other_asset_creates_one_with_a_server_generated_id(client) -> None
     assert asset["name"] == "Car"
     body = client.get("/api/accounting/net-worth").json()
     assert body["other_assets_total"] == pytest.approx(15000.0)
+
+
+def test_delete_other_asset_removes_only_that_asset(client) -> None:
+    car = client.post("/api/accounting/other-assets", json={"name": "Car", "value": 15000.0}).json()
+    boat = client.post("/api/accounting/other-assets", json={"name": "Boat", "value": 5000.0}).json()
+    response = client.delete(f"/api/accounting/other-assets/{car['asset_id']}")
+    assert response.status_code == 200
+    remaining = {a["asset_id"] for a in client.get("/api/accounting/store").json()["other_assets"]}
+    assert remaining == {boat["asset_id"]}
+
+
+def test_delete_other_asset_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/other-assets/nope").status_code == 404
 
 
 def test_post_other_asset_twice_with_identical_fields_creates_two_distinct_rows(client) -> None:
@@ -3177,6 +3345,26 @@ def test_post_simulator_scenario_twice_with_identical_fields_creates_two_distinc
     second = client.post("/api/accounting/simulator/scenarios", json=payload).json()
     assert first["scenario_id"] != second["scenario_id"]
     assert len(client.get("/api/accounting/store").json()["simulator_scenarios"]) == 2
+
+
+def test_delete_simulator_scenario_removes_only_that_scenario(client) -> None:
+    payload = {
+        "name": "Base case",
+        "initial_capital": 1000.0,
+        "monthly_contribution": 100.0,
+        "horizon_years": 10,
+        "annual_rate_pct": 6.0,
+    }
+    first = client.post("/api/accounting/simulator/scenarios", json=payload).json()
+    second = client.post("/api/accounting/simulator/scenarios", json=payload).json()
+    response = client.delete(f"/api/accounting/simulator/scenarios/{first['scenario_id']}")
+    assert response.status_code == 200
+    remaining = {s["scenario_id"] for s in client.get("/api/accounting/store").json()["simulator_scenarios"]}
+    assert remaining == {second["scenario_id"]}
+
+
+def test_delete_simulator_scenario_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/simulator/scenarios/nope").status_code == 404
 
 
 def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:

@@ -14,6 +14,7 @@ import type {
   CategoryClassification,
   CategoryPattern,
   CategoryPatternCreate,
+  CategoryPatternUpdate,
   CategoryTotalRow,
   Currency,
   CurrencyCode,
@@ -31,6 +32,7 @@ import type {
   GoalContributionUpdate,
   GoalCreate,
   GoalsSummary,
+  GoalUpdate,
   ImportResult,
   InterestAccountRow,
   LlmSettings,
@@ -53,6 +55,7 @@ import type {
   ProjectionPoint,
   RecurringAddition,
   RecurringAdditionCreate,
+  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
@@ -239,8 +242,9 @@ export const accountingApi = {
       `/api/accounting/categories/${encodeURIComponent(categoryId)}`,
       { method: 'DELETE' },
     ),
-  putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
   createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),
+  deleteTag: (tagId: string) =>
+    requestScoped<{ tag_id: string }>(`/api/accounting/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
   tagRenamePreview: (tagId: string, name: string) =>
     request<TagRenamePreview>(
       `/api/accounting/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`,
@@ -261,10 +265,12 @@ export const accountingApi = {
     requestScoped<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
-  putOtherAssets: (otherAssets: OtherAsset[]) =>
-    request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
   createOtherAsset: (asset: OtherAssetCreate) =>
     request<OtherAsset>('/api/accounting/other-assets', jsonInit('POST', asset)),
+  deleteOtherAsset: (assetId: string) =>
+    requestScoped<{ asset_id: string }>(`/api/accounting/other-assets/${encodeURIComponent(assetId)}`, {
+      method: 'DELETE',
+    }),
   postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
     request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
@@ -409,10 +415,17 @@ export const accountingApi = {
       '/api/accounting/postings/validate-pending',
       jsonInit('POST', { posting_ids: postingIds }),
     ),
-  putCategoryPatterns: (patterns: Record<string, CategoryPattern>) =>
-    request<Record<string, CategoryPattern>>('/api/accounting/category-patterns', jsonInit('PUT', patterns)),
   createCategoryPattern: (pattern: CategoryPatternCreate) =>
     request<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
+  patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
+    requestScoped<CategoryPattern>(
+      `/api/accounting/category-patterns/${encodeURIComponent(patternId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteCategoryPattern: (patternId: string) =>
+    requestScoped<{ pattern_id: string }>(`/api/accounting/category-patterns/${encodeURIComponent(patternId)}`, {
+      method: 'DELETE',
+    }),
   transferSuggestions: (windowDays?: number) =>
     request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
   duplicateSuggestions: (windowDays?: number) =>
@@ -483,10 +496,12 @@ export const accountingApi = {
     ),
   interestSummary: (asOf?: string) =>
     request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),
-  putSimulatorScenarios: (scenarios: SimulatorScenario[]) =>
-    request<SimulatorScenario[]>('/api/accounting/simulator/scenarios', jsonInit('PUT', scenarios)),
   createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
     request<SimulatorScenario>('/api/accounting/simulator/scenarios', jsonInit('POST', scenario)),
+  deleteSimulatorScenario: (scenarioId: string) =>
+    requestScoped<{ scenario_id: string }>(`/api/accounting/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
+      method: 'DELETE',
+    }),
   simulatorProject: (
     initialCapital: number,
     monthlyContribution: number,
@@ -503,9 +518,11 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  putGoals: (goals: Record<string, Goal>) =>
-    request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
   createGoal: (goal: GoalCreate) => request<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
+  patchGoal: (goalId: string, update: GoalUpdate) =>
+    requestScoped<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
+  deleteGoal: (goalId: string) =>
+    requestScoped<{ goal_id: string }>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
   createGoalContribution: (contribution: GoalContributionCreate) =>
     request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
@@ -521,6 +538,15 @@ export const accountingApi = {
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
   createRecurringAddition: (addition: RecurringAdditionCreate) =>
     request<RecurringAddition>('/api/accounting/recurring-additions', jsonInit('POST', addition)),
+  patchRecurringAddition: (additionId: string, update: RecurringAdditionUpdate) =>
+    requestScoped<RecurringAddition>(
+      `/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteRecurringAddition: (additionId: string) =>
+    requestScoped<{ addition_id: string }>(`/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`, {
+      method: 'DELETE',
+    }),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),

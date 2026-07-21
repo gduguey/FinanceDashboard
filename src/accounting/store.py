@@ -891,7 +891,7 @@ _TRANSFER_RULES_TABLE = "accounting.transfer_rules"
 
 
 def update_transfer_rule(
-    session: Session, user_id: uuid.UUID, rule: TransferRule, expected_version: int
+    session: Session, user_id: uuid.UUID, rule: TransferRule, expected_version: int | None
 ) -> TransferRule | None:
     """Update one transfer rule's fields in place, touching no other persisted entity.
 
@@ -993,6 +993,7 @@ def _pattern_from_row(row: adb.CategoryPattern, category_natural_key_by_id: dict
         subcategory_id=category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None,
         priority=row.priority,
         active=row.active,
+        version=row.version,
     )
 
 
@@ -1251,6 +1252,7 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
             target_date=row.target_date,
             color=row.color,
             created_at=row.created_at,
+            version=row.version,
         )
         for row in goal_rows
     }
@@ -1418,6 +1420,241 @@ def _upsert_transfer_rules_and_prune(session: Session, user_id: uuid.UUID, rules
         )
 
 
+def _upsert_goals_and_prune(session: Session, user_id: uuid.UUID, goals: list[Goal]) -> None:
+    """Insert-or-update every one of `goals`, then delete this user's rows not among them — never touching `version`.
+
+    Same reasoning as `_upsert_transfer_rules_and_prune`: `Goal` carries a
+    `version` column `PATCH /goals/{goal_id}` depends on for its own
+    per-row optimistic concurrency, so `save_store`'s usual delete-all/
+    reinsert-all treatment (which would silently reset it) can't be used
+    here either.
+    """
+    keep_ids: set[uuid.UUID] = set()
+    for goal in goals:
+        row_id = derive_id(user_id, "goals", goal.goal_id)
+        keep_ids.add(row_id)
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.goals
+                    (id, user_id, natural_key, name, target_amount, target_currency, target_date,
+                     color, created_at, version)
+                VALUES
+                    (:id, :user_id, :natural_key, :name, :target_amount, :target_currency, :target_date,
+                     :color, :created_at, 1)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    target_amount = EXCLUDED.target_amount,
+                    target_currency = EXCLUDED.target_currency,
+                    target_date = EXCLUDED.target_date,
+                    color = EXCLUDED.color
+                """
+            ),
+            {
+                "id": str(row_id),
+                "user_id": str(user_id),
+                "natural_key": goal.goal_id,
+                "name": goal.name,
+                "target_amount": goal.target_amount,
+                "target_currency": goal.target_currency,
+                "target_date": goal.target_date,
+                "color": goal.color,
+                "created_at": goal.created_at,
+            },
+        )
+    session.flush()
+    existing_ids = {row.id for row in session.query(adb.Goal.id).filter_by(user_id=user_id)}
+    removed_ids = existing_ids - keep_ids
+    if removed_ids:
+        session.query(adb.Goal).filter_by(user_id=user_id).filter(adb.Goal.id.in_(removed_ids)).delete(
+            synchronize_session=False
+        )
+
+
+_GOALS_TABLE = "accounting.goals"
+
+
+def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_version: int | None) -> Goal | None:
+    """Update one goal's fields in place, touching no other persisted entity.
+
+    `goal.goal_id` identifies which row to update; every other field on
+    `goal` (`goal.version` is never read here — only `expected_version`
+    is) becomes that row's new state. Unlike `save_store`, this never
+    deletes and reinserts the whole `goals` table — it's a single row,
+    guarded by `db.base.check_and_bump_row_version` so a stale client
+    can't silently clobber a concurrent edit to the same goal.
+
+    Returns
+    -------
+    Goal | None
+        The goal as persisted after the update, or `None` if no goal with
+        `goal.goal_id` exists for this user. Raises `db.base.VersionConflictError`
+        (propagated straight from `check_and_bump_row_version`) if the goal
+        exists but `expected_version` no longer matches what's stored.
+
+    Raises
+    ------
+    RuntimeError
+        If the row vanishes between the version check just above and this
+        function's own read of it — the version check already proved the
+        row exists inside this same transaction, so this is only a
+        defensive invariant, never expected to actually happen.
+    """
+    row_id = derive_id(user_id, "goals", goal.goal_id)
+    new_version = check_and_bump_row_version(session, _GOALS_TABLE, row_id, user_id, expected_version)
+    if new_version is None:
+        return None
+    row = session.get(adb.Goal, row_id)
+    if row is None:
+        message = f"goals row {row_id} vanished between its version check and this read"
+        raise RuntimeError(message)
+    row.name = goal.name
+    row.target_amount = goal.target_amount
+    row.target_currency = goal.target_currency
+    row.target_date = goal.target_date
+    row.color = goal.color
+    session.flush()
+    return Goal(
+        goal_id=goal.goal_id,
+        name=row.name,
+        target_amount=row.target_amount,
+        target_currency=row.target_currency,
+        target_date=row.target_date,
+        color=row.color,
+        created_at=row.created_at,
+        version=new_version,
+    )
+
+
+def delete_goal(session: Session, user_id: uuid.UUID, goal_id: str) -> bool:
+    """Delete one goal, without touching any other persisted entity.
+
+    Idempotent by design, same reasoning as `delete_transfer_rule`: no
+    version check, since a goal that's already gone has nothing left to
+    conflict with. Fails loudly (an `IntegrityError`, uncaught) if the
+    goal still has real `GoalContribution`/`RecurringAddition`/
+    `WithdrawalPriorityEntry` rows referencing it — same as it already
+    would deleting through the whole-store path.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "goals", goal_id)
+    deleted = session.query(adb.Goal).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def _upsert_category_patterns_and_prune(session: Session, user_id: uuid.UUID, patterns: list[CategoryPattern]) -> None:
+    """Insert-or-update every one of `patterns`, then delete this user's rows not among them — never touching `version`.
+
+    Same reasoning as `_upsert_transfer_rules_and_prune`/`_upsert_goals_and_prune`: `CategoryPattern`
+    carries a `version` column `PATCH /category-patterns/{pattern_id}` depends on, so it can't use
+    `save_store`'s usual delete-all/reinsert-all treatment.
+    """
+    keep_ids: set[uuid.UUID] = set()
+    for pattern in patterns:
+        row_id = derive_id(user_id, "category_patterns", pattern.pattern_id)
+        keep_ids.add(row_id)
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.category_patterns
+                    (id, user_id, natural_key, description_contains, category_id, subcategory_id,
+                     priority, active, version)
+                VALUES
+                    (:id, :user_id, :natural_key, :description_contains, :category_id, :subcategory_id,
+                     :priority, :active, 1)
+                ON CONFLICT (id) DO UPDATE SET
+                    description_contains = EXCLUDED.description_contains,
+                    category_id = EXCLUDED.category_id,
+                    subcategory_id = EXCLUDED.subcategory_id,
+                    priority = EXCLUDED.priority,
+                    active = EXCLUDED.active
+                """
+            ),
+            {
+                "id": str(row_id),
+                "user_id": str(user_id),
+                "natural_key": pattern.pattern_id,
+                "description_contains": pattern.description_contains,
+                "category_id": str(derive_id(user_id, "categories", pattern.category_id)),
+                "subcategory_id": str(sub)
+                if (sub := _category_id(user_id, pattern.subcategory_id)) is not None
+                else None,
+                "priority": pattern.priority,
+                "active": pattern.active,
+            },
+        )
+    session.flush()
+    existing_ids = {row.id for row in session.query(adb.CategoryPattern.id).filter_by(user_id=user_id)}
+    removed_ids = existing_ids - keep_ids
+    if removed_ids:
+        session.query(adb.CategoryPattern).filter_by(user_id=user_id).filter(
+            adb.CategoryPattern.id.in_(removed_ids)
+        ).delete(synchronize_session=False)
+
+
+_CATEGORY_PATTERNS_TABLE = "accounting.category_patterns"
+
+
+def update_category_pattern(
+    session: Session, user_id: uuid.UUID, pattern: CategoryPattern, expected_version: int | None
+) -> CategoryPattern | None:
+    """Update one category pattern's fields in place, touching no other persisted entity.
+
+    `pattern.pattern_id` identifies which row to update; every other field on `pattern`
+    (`pattern.version` is never read here — only `expected_version` is) becomes that row's new state.
+    Guarded by `db.base.check_and_bump_row_version`, same shape as `update_transfer_rule`.
+
+    Returns
+    -------
+    CategoryPattern | None
+        The pattern as persisted, or `None` if no pattern with `pattern.pattern_id` exists for this
+        user. Raises `db.base.VersionConflictError` (propagated from `check_and_bump_row_version`) if
+        the pattern exists but `expected_version` no longer matches what's stored.
+
+    Raises
+    ------
+    RuntimeError
+        If the row vanishes between the version check and this function's own read of it — a
+        defensive invariant, never expected to actually happen.
+    """
+    row_id = derive_id(user_id, "category_patterns", pattern.pattern_id)
+    new_version = check_and_bump_row_version(session, _CATEGORY_PATTERNS_TABLE, row_id, user_id, expected_version)
+    if new_version is None:
+        return None
+    row = session.get(adb.CategoryPattern, row_id)
+    if row is None:
+        message = f"category_patterns row {row_id} vanished between its version check and this read"
+        raise RuntimeError(message)
+    row.description_contains = pattern.description_contains
+    row.category_id = derive_id(user_id, "categories", pattern.category_id)
+    row.subcategory_id = _category_id(user_id, pattern.subcategory_id)
+    row.priority = pattern.priority
+    row.active = pattern.active
+    session.flush()
+    return pattern.model_copy(update={"version": new_version})
+
+
+def delete_category_pattern(session: Session, user_id: uuid.UUID, pattern_id: str) -> bool:
+    """Delete one category pattern, without touching any other persisted entity.
+
+    Idempotent, no version check — same reasoning as `delete_transfer_rule`.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "category_patterns", pattern_id)
+    deleted = session.query(adb.CategoryPattern).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
 # A thin, accounting-flavored name for the shared primitive in `db.base` —
 # every call site here and in `accounting.api` was written against this
 # name before the same mechanism was generalized for `trades.dashboard.
@@ -1550,13 +1787,11 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     session.query(adb.GoalContribution).filter_by(user_id=user_id).delete()
     session.query(adb.RecurringAddition).filter_by(user_id=user_id).delete()
     session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id).delete()
-    session.query(adb.Goal).filter_by(user_id=user_id).delete()
     session.query(adb.Budget).filter_by(user_id=user_id).delete()
     session.query(adb.GeneralBudget).filter_by(user_id=user_id).delete()
     session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
     session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
     session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id).delete()
-    session.query(adb.CategoryPattern).filter_by(user_id=user_id).delete()
     session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
     session.query(adb.SimulatorScenario).filter_by(user_id=user_id).delete()
     session.flush()
@@ -1689,19 +1924,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for scenario in store.simulator_scenarios
     )
-    session.add_all(
-        adb.CategoryPattern(
-            id=derive_id(user_id, "category_patterns", pattern.pattern_id),
-            user_id=user_id,
-            natural_key=pattern.pattern_id,
-            description_contains=pattern.description_contains,
-            category_id=_category_id(user_id, pattern.category_id),
-            subcategory_id=_category_id(user_id, pattern.subcategory_id),
-            priority=pattern.priority,
-            active=pattern.active,
-        )
-        for pattern in store.category_patterns.values()
-    )
+    _upsert_category_patterns_and_prune(session, user_id, list(store.category_patterns.values()))
     session.flush()
 
     _upsert_transfer_rules_and_prune(session, user_id, store.rules)
@@ -1765,20 +1988,7 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for budget in store.budgets
     )
-    session.add_all(
-        adb.Goal(
-            id=derive_id(user_id, "goals", goal.goal_id),
-            user_id=user_id,
-            natural_key=goal.goal_id,
-            name=goal.name,
-            target_amount=goal.target_amount,
-            target_currency=goal.target_currency,
-            target_date=goal.target_date,
-            color=goal.color,
-            created_at=goal.created_at,
-        )
-        for goal in store.goals.values()
-    )
+    _upsert_goals_and_prune(session, user_id, list(store.goals.values()))
     session.flush()
 
     session.add_all(
@@ -1893,7 +2103,63 @@ def load_overrides(session: Session, user_id: uuid.UUID) -> dict[str, ManualOver
     """
     override_rows = list(session.query(adb.PostingOverride).filter_by(user_id=user_id))
     pending_rows = list(session.query(adb.PostingPendingSuggestion).filter_by(user_id=user_id))
+    return _overrides_from_rows(override_rows, pending_rows, session, user_id)
 
+
+def load_overrides_for_postings(
+    session: Session, user_id: uuid.UUID, posting_ids: Iterable[str]
+) -> dict[str, ManualOverride]:
+    """Like `load_overrides`, but only for `posting_ids` — never reads any other posting's override.
+
+    The scoped counterpart callers should use whenever they only need (and
+    are only about to write back) a known, bounded set of postings — using
+    `load_overrides` there would still be correct, just a wasted whole-table
+    read for a caller that only cares about a handful of rows.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose overrides to load.
+    posting_ids
+        Which postings to load; a posting with no stored override is
+        simply absent from the result, same as `load_overrides`.
+
+    Returns
+    -------
+    dict[str, ManualOverride]
+        Keyed by `posting_id`, only ever containing keys from `posting_ids`.
+    """
+    posting_row_ids = [_posting_id(user_id, posting_id) for posting_id in posting_ids]
+    if not posting_row_ids:
+        return {}
+    override_rows = list(
+        session.query(adb.PostingOverride).filter(
+            adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
+        )
+    )
+    pending_rows = list(
+        session.query(adb.PostingPendingSuggestion).filter(
+            adb.PostingPendingSuggestion.user_id == user_id,
+            adb.PostingPendingSuggestion.posting_id.in_(posting_row_ids),
+        )
+    )
+    return _overrides_from_rows(override_rows, pending_rows, session, user_id)
+
+
+def _overrides_from_rows(
+    override_rows: list[adb.PostingOverride],
+    pending_rows: list[adb.PostingPendingSuggestion],
+    session: Session,
+    user_id: uuid.UUID,
+) -> dict[str, ManualOverride]:
+    """Shared row->pydantic mapping for `load_overrides`/`load_overrides_for_postings`.
+
+    Returns
+    -------
+    dict[str, ManualOverride]
+    """
     posting_natural_key_by_id = natural_keys_by_id(
         session,
         adb.Posting,
@@ -2020,6 +2286,687 @@ def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_
     )
     session.commit()
     session.commit()
+
+
+def save_overrides_for_postings(
+    posting_ids: Iterable[str], overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID
+) -> None:
+    """Persist overrides for exactly `posting_ids`, touching no other posting's stored override.
+
+    The scoped counterpart to `save_overrides`: that function always
+    deletes and reinserts every posting's override, so two callers racing
+    on *different* postings — one reads, the other reads, one writes back
+    its whole-table snapshot, the other then writes back its own
+    (now-stale) whole-table snapshot — silently erase each other's change.
+    This never reads or rewrites anything outside `posting_ids`, so two
+    such calls for different postings can't conflict no matter how they
+    interleave.
+
+    Parameters
+    ----------
+    posting_ids
+        Every posting this call is allowed to touch — always
+        deleted-and-optionally-reinserted, whether or not it's also a key
+        of `overrides`. A posting present here but absent from `overrides`
+        (or present with an all-`None` override) ends up with no stored
+        override at all, e.g. a resolved pending suggestion or a fully
+        cleared correction.
+    overrides
+        The new override for each posting that should end up with one;
+        must be a subset of `posting_ids`.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose overrides these are.
+    """
+    posting_row_ids = [_posting_id(user_id, posting_id) for posting_id in posting_ids]
+    if not posting_row_ids:
+        return
+    session.query(adb.PostingOverride).filter(
+        adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
+    ).delete(synchronize_session=False)
+    session.query(adb.PostingPendingSuggestion).filter(
+        adb.PostingPendingSuggestion.user_id == user_id,
+        adb.PostingPendingSuggestion.posting_id.in_(posting_row_ids),
+    ).delete(synchronize_session=False)
+
+    override_rows: list[adb.PostingOverride] = []
+    override_tag_rows: list[adb.PostingOverrideTag] = []
+    for posting_id, override in overrides.items():
+        if (
+            override.account_id is None
+            and override.category_id is None
+            and override.subcategory_id is None
+            and override.tag_ids is None
+        ):
+            continue
+        override_row_id = uuid.uuid4()
+        override_rows.append(
+            adb.PostingOverride(
+                id=override_row_id,
+                user_id=user_id,
+                posting_id=_posting_id(user_id, posting_id),
+                account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
+                category_id=_category_id(user_id, override.category_id),
+                subcategory_id=_category_id(user_id, override.subcategory_id),
+                tags_overridden=override.tag_ids is not None,
+            )
+        )
+        if override.tag_ids is not None:
+            override_tag_rows.extend(
+                adb.PostingOverrideTag(user_id=user_id, override_id=override_row_id, tag_id=_tag_id(user_id, tag_id))
+                for tag_id in dict.fromkeys(override.tag_ids)
+            )
+    session.add_all(override_rows)
+    session.flush()
+    session.add_all(override_tag_rows)
+    session.add_all(
+        adb.PostingPendingSuggestion(
+            user_id=user_id,
+            posting_id=_posting_id(user_id, posting_id),
+            source=override.pending_source,
+            selected=override.pending_selected,
+            previous_category_id=_category_id(user_id, override.pending_previous_category_id),
+            previous_subcategory_id=_category_id(user_id, override.pending_previous_subcategory_id),
+        )
+        for posting_id, override in overrides.items()
+        if override.pending_source is not None
+    )
+    session.commit()
+
+
+def save_posting_split(split: PostingSplit, session: Session, user_id: uuid.UUID) -> None:
+    """Persist one posting's split (and its legs), replacing only that posting's prior split.
+
+    Scoped counterpart to routing a split through `save_store` (which
+    blanket-deletes and reinserts every posting's split for the user):
+    two callers splitting *different* postings at once can't clobber each
+    other, since this only ever touches the one `posting_id`'s rows. A
+    split is one coherent replace-in-full unit keyed by `posting_id` (not
+    a set of independently-editable fields), so last-write-wins on the
+    same posting is the intended semantics — see
+    `docs/app-stack/optimistic-concurrency-versioning.md` on why a
+    whole-unit replace scoped to its own key needs no version column.
+
+    Parameters
+    ----------
+    split
+        The split to persist; `split.posting_id` names the posting.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose split this is.
+    """
+    split_row_id = derive_id(user_id, "posting_splits", split.posting_id)
+    session.query(adb.PostingSplitLeg).filter_by(user_id=user_id, posting_split_id=split_row_id).delete(
+        synchronize_session=False
+    )
+    session.query(adb.PostingSplit).filter_by(id=split_row_id, user_id=user_id).delete(synchronize_session=False)
+    session.flush()
+    session.add(adb.PostingSplit(id=split_row_id, user_id=user_id, posting_id=_posting_id(user_id, split.posting_id)))
+    session.flush()
+    session.add_all(
+        adb.PostingSplitLeg(
+            user_id=user_id,
+            posting_split_id=split_row_id,
+            ordinal=ordinal,
+            amount=leg.amount,
+            category_id=_category_id(user_id, leg.category_id),
+            subcategory_id=_category_id(user_id, leg.subcategory_id),
+            description=leg.description,
+        )
+        for ordinal, leg in enumerate(split.legs)
+    )
+    session.commit()
+
+
+def delete_posting_split(session: Session, user_id: uuid.UUID, posting_id: str) -> bool:
+    """Delete one posting's split (and its legs), touching no other posting's split.
+
+    Idempotent, no version check — same reasoning as `delete_transfer_rule`.
+    The legs go first because they foreign-key into the split row.
+
+    Returns
+    -------
+    bool
+        `True` if a split row was actually deleted, `False` if none existed.
+    """
+    split_row_id = derive_id(user_id, "posting_splits", posting_id)
+    session.query(adb.PostingSplitLeg).filter_by(user_id=user_id, posting_split_id=split_row_id).delete(
+        synchronize_session=False
+    )
+    deleted = (
+        session.query(adb.PostingSplit).filter_by(id=split_row_id, user_id=user_id).delete(synchronize_session=False)
+    )
+    session.flush()
+    return deleted > 0
+
+
+def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one per-month budget, touching no other budget cell.
+
+    Scoped counterpart to routing a budget through `save_store` (which
+    blanket-deletes and reinserts every budget for the user): two callers
+    editing *different* month/category cells at once can't clobber each
+    other. Keyed by `budget.budget_id` (derived from month+category+
+    subcategory), so re-setting the same cell is last-write-wins, the
+    intended semantics for a single amount.
+
+    Parameters
+    ----------
+    budget
+        The budget to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose budget this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.budgets
+                (id, user_id, natural_key, month, category_id, subcategory_id, amount, currency)
+            VALUES
+                (:id, :user_id, :natural_key, :month, :category_id, :subcategory_id, :amount, :currency)
+            ON CONFLICT (id) DO UPDATE SET
+                month = EXCLUDED.month,
+                category_id = EXCLUDED.category_id,
+                subcategory_id = EXCLUDED.subcategory_id,
+                amount = EXCLUDED.amount,
+                currency = EXCLUDED.currency
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "budgets", budget.budget_id)),
+            "user_id": str(user_id),
+            "natural_key": budget.budget_id,
+            "month": budget.month,
+            "category_id": str(derive_id(user_id, "categories", budget.category_id)),
+            "subcategory_id": str(sub) if (sub := _category_id(user_id, budget.subcategory_id)) is not None else None,
+            "amount": budget.amount,
+            "currency": budget.currency,
+        },
+    )
+    session.commit()
+
+
+def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:
+    """Delete one per-month budget, touching no other budget cell. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "budgets", budget_id)
+    deleted = session.query(adb.Budget).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def upsert_general_budget(general_budget: GeneralBudget, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one standing (all-month) budget, touching no other entry. Scoped like `upsert_budget`.
+
+    Keyed (like `save_store`'s own general-budget rows) by the
+    category/subcategory pair, so re-setting the same category's standing
+    target is last-write-wins.
+
+    Parameters
+    ----------
+    general_budget
+        The standing budget to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose general budget this is.
+    """
+    row_key = f"{general_budget.category_id}:{general_budget.subcategory_id or ''}"
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.general_budgets
+                (id, user_id, category_id, subcategory_id, amount, currency)
+            VALUES
+                (:id, :user_id, :category_id, :subcategory_id, :amount, :currency)
+            ON CONFLICT (id) DO UPDATE SET
+                category_id = EXCLUDED.category_id,
+                subcategory_id = EXCLUDED.subcategory_id,
+                amount = EXCLUDED.amount,
+                currency = EXCLUDED.currency
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "general_budgets", row_key)),
+            "user_id": str(user_id),
+            "category_id": str(derive_id(user_id, "categories", general_budget.category_id)),
+            "subcategory_id": str(sub)
+            if (sub := _category_id(user_id, general_budget.subcategory_id)) is not None
+            else None,
+            "amount": general_budget.amount,
+            "currency": general_budget.currency,
+        },
+    )
+    session.commit()
+
+
+def remove_general_budget(session: Session, user_id: uuid.UUID, category_id: str, subcategory_id: str | None) -> bool:
+    """Delete one standing budget by its category/subcategory, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "general_budgets", f"{category_id}:{subcategory_id or ''}")
+    deleted = session.query(adb.GeneralBudget).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def upsert_goal_contribution(contribution: GoalContribution, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one goal contribution, touching no other contribution.
+
+    Scoped counterpart to routing a contribution through `save_store`
+    (which blanket-deletes and reinserts every contribution for the user):
+    two callers editing *different* contributions at once can't clobber
+    each other. Keyed by `contribution.contribution_id`, so re-saving the
+    same contribution is last-write-wins — the intended semantics for an
+    edit of a single dated allocation.
+
+    Parameters
+    ----------
+    contribution
+        The contribution to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose contribution this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.goal_contributions
+                (id, user_id, natural_key, goal_id, date, amount, currency, note, source_posting_id, origin, edited)
+            VALUES
+                (:id, :user_id, :natural_key, :goal_id, :date, :amount, :currency, :note, :source_posting_id,
+                 :origin, :edited)
+            ON CONFLICT (id) DO UPDATE SET
+                goal_id = EXCLUDED.goal_id,
+                date = EXCLUDED.date,
+                amount = EXCLUDED.amount,
+                currency = EXCLUDED.currency,
+                note = EXCLUDED.note,
+                source_posting_id = EXCLUDED.source_posting_id,
+                origin = EXCLUDED.origin,
+                edited = EXCLUDED.edited
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "goal_contributions", contribution.contribution_id)),
+            "user_id": str(user_id),
+            "natural_key": contribution.contribution_id,
+            "goal_id": str(derive_id(user_id, "goals", contribution.goal_id)),
+            "date": contribution.date,
+            "amount": contribution.amount,
+            "currency": contribution.currency,
+            "note": contribution.note,
+            "source_posting_id": str(_posting_id(user_id, contribution.source_posting_id))
+            if contribution.source_posting_id is not None
+            else None,
+            "origin": contribution.origin,
+            "edited": contribution.edited,
+        },
+    )
+    session.commit()
+
+
+def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_id: str) -> bool:
+    """Delete one goal contribution, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "goal_contributions", contribution_id)
+    deleted = session.query(adb.GoalContribution).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def upsert_recurring_addition(addition: RecurringAddition, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one recurring-addition rule, touching no other. Scoped like `upsert_budget`.
+
+    A single-field edit of one rule (its amount, dates, frequency, mode) no
+    longer blanket-reinserts every rule for the user, so it can't revert a
+    concurrent edit to a different one. Keyed by `addition.addition_id`;
+    `priority` is written too, but re-ordering the whole list is still the
+    whole-list `PUT /recurring-additions` (a pure ordering operation).
+
+    Parameters
+    ----------
+    addition
+        The recurring addition to persist.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose recurring addition this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.recurring_additions
+                (id, user_id, natural_key, goal_id, start_date, frequency, end_date, mode, value, currency, priority)
+            VALUES
+                (:id, :user_id, :natural_key, :goal_id, :start_date, :frequency, :end_date, :mode, :value,
+                 :currency, :priority)
+            ON CONFLICT (id) DO UPDATE SET
+                goal_id = EXCLUDED.goal_id,
+                start_date = EXCLUDED.start_date,
+                frequency = EXCLUDED.frequency,
+                end_date = EXCLUDED.end_date,
+                mode = EXCLUDED.mode,
+                value = EXCLUDED.value,
+                currency = EXCLUDED.currency,
+                priority = EXCLUDED.priority
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "recurring_additions", addition.addition_id)),
+            "user_id": str(user_id),
+            "natural_key": addition.addition_id,
+            "goal_id": str(derive_id(user_id, "goals", addition.goal_id)),
+            "start_date": addition.start_date,
+            "frequency": addition.frequency,
+            "end_date": addition.end_date,
+            "mode": addition.mode,
+            "value": addition.value,
+            "currency": addition.currency,
+            "priority": addition.priority,
+        },
+    )
+    session.commit()
+
+
+def remove_recurring_addition(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
+    """Delete one recurring-addition rule, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "recurring_additions", addition_id)
+    deleted = session.query(adb.RecurringAddition).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def update_account_fields(session: Session, user_id: uuid.UUID, account: Account) -> bool:
+    """Update one account's editable columns in place, touching no other account.
+
+    Scoped counterpart to routing an account edit through `save_store`,
+    whose `_upsert_and_prune` re-merges *every* account from the caller's
+    (possibly stale) snapshot — so editing account A could silently revert
+    a concurrent edit to account B. This fetches only `account.account_id`'s
+    row and mutates its columns, so an UPDATE is issued for that one row
+    alone. `parent_account_id` is intentionally not touched (it isn't part
+    of the edit surface).
+
+    Returns
+    -------
+    bool
+        `True` if the account existed and was updated, `False` otherwise.
+    """
+    row = session.get(adb.Account, _account_id(user_id, account.account_id))
+    if row is None or row.user_id != user_id:
+        return False
+    row.name = account.name
+    row.kind = account.kind
+    row.institution = account.institution
+    row.currency = account.currency
+    row.last_four = account.last_four
+    row.external_ref = account.external_ref
+    row.meta = account.meta
+    row.closed = account.closed
+    session.flush()
+    return True
+
+
+def set_account_closed(session: Session, user_id: uuid.UUID, account_id: str, *, closed: bool) -> bool:
+    """Flip one account's `closed` flag in place, touching no other account.
+
+    Returns
+    -------
+    bool
+        `True` if the account existed, `False` otherwise.
+    """
+    row = session.get(adb.Account, _account_id(user_id, account_id))
+    if row is None or row.user_id != user_id:
+        return False
+    row.closed = closed
+    session.flush()
+    return True
+
+
+def remove_account(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
+    """Delete one account, touching no other. Idempotent, no version check.
+
+    The caller checks the no-postings precondition first; a delete that
+    still violates a foreign key (a posting somehow references it) fails
+    loudly, same as through the whole-store path.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    deleted = session.query(adb.Account).filter_by(id=_account_id(user_id, account_id), user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def upsert_opening_balance(opening_balance: OpeningBalance, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one account's opening balance, touching no other. Scoped like `upsert_budget`.
+
+    Parameters
+    ----------
+    opening_balance
+        The opening balance to persist; its `account_id` names the account.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose opening balance this is.
+    """
+    session.execute(
+        text(
+            """
+            INSERT INTO accounting.opening_balances (id, user_id, account_id, amount, as_of_date)
+            VALUES (:id, :user_id, :account_id, :amount, :as_of_date)
+            ON CONFLICT (id) DO UPDATE SET
+                amount = EXCLUDED.amount,
+                as_of_date = EXCLUDED.as_of_date
+            """
+        ),
+        {
+            "id": str(derive_id(user_id, "opening_balances", opening_balance.account_id)),
+            "user_id": str(user_id),
+            "account_id": str(_account_id(user_id, opening_balance.account_id)),
+            "amount": opening_balance.amount,
+            "as_of_date": opening_balance.as_of_date,
+        },
+    )
+    session.commit()
+
+
+def remove_opening_balance(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
+    """Delete one account's opening balance, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "opening_balances", account_id)
+    deleted = session.query(adb.OpeningBalance).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Session, user_id: uuid.UUID) -> None:
+    """Insert manual-transfer rows additively, touching no existing transfer.
+
+    Scoped counterpart to routing these through `save_store` (which
+    blanket-deletes and reinserts every manual transfer from the caller's
+    snapshot — so recording a transfer from a stale snapshot could drop a
+    concurrently-added one). Each row is keyed by its own derived id, so
+    re-recording the same transfer is a harmless upsert rather than a
+    duplicate.
+
+    Parameters
+    ----------
+    transfers
+        The transfers to record.
+    session
+        An open database session; the caller commits.
+    user_id
+        Whose transfers these are.
+    """
+    for transfer in transfers:
+        session.execute(
+            text(
+                """
+                INSERT INTO accounting.manual_transfers
+                    (id, user_id, natural_key, date, from_account_id, to_account_id,
+                     from_amount, to_amount, description)
+                VALUES
+                    (:id, :user_id, :natural_key, :date, :from_account_id, :to_account_id,
+                     :from_amount, :to_amount, :description)
+                ON CONFLICT (id) DO UPDATE SET
+                    date = EXCLUDED.date,
+                    from_account_id = EXCLUDED.from_account_id,
+                    to_account_id = EXCLUDED.to_account_id,
+                    from_amount = EXCLUDED.from_amount,
+                    to_amount = EXCLUDED.to_amount,
+                    description = EXCLUDED.description
+                """
+            ),
+            {
+                "id": str(derive_id(user_id, "manual_transfers", transfer.transfer_id)),
+                "user_id": str(user_id),
+                "natural_key": transfer.transfer_id,
+                "date": transfer.date,
+                "from_account_id": str(_account_id(user_id, transfer.from_account_id)),
+                "to_account_id": str(_account_id(user_id, transfer.to_account_id)),
+                "from_amount": transfer.from_amount,
+                "to_amount": transfer.to_amount,
+                "description": transfer.description,
+            },
+        )
+    session.flush()
+
+
+def remove_posting_merge(session: Session, user_id: uuid.UUID, merge_id: str) -> bool:
+    """Delete one duplicate-resolution merge, touching no other. Idempotent, no version check.
+
+    Its `PostingMergeDuplicate` membership rows go automatically via their
+    `ON DELETE CASCADE` FK into `posting_merges`.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "posting_merges", merge_id)
+    deleted = session.query(adb.PostingMerge).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def remove_transfer_link(session: Session, user_id: uuid.UUID, link_id: str) -> bool:
+    """Delete one confirmed transfer link, touching no other. Idempotent, no version check.
+
+    Its `TransferLinkedTransaction` membership rows go automatically via
+    their `ON DELETE CASCADE` FK into `transfer_links`.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "transfer_links", link_id)
+    deleted = session.query(adb.TransferLink).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def remove_rule_transfer_links(session: Session, user_id: uuid.UUID, rule_id: str) -> int:
+    """Delete every transfer link a given rule created, touching manual links or other rules' links not at all.
+
+    Called when a `TransferRule` is deleted so the links it produced don't
+    outlive it (see `DELETE /transfer-rules/{rule_id}`). Matches on the link's
+    own `source == "rule"` and `rule_id` columns, so a manually-confirmed link
+    (`source == "manual"`) is never swept up even if its two transactions also
+    happen to match the deleted rule. Each link's `TransferLinkedTransaction`
+    membership rows go automatically via their `ON DELETE CASCADE` FK.
+
+    Returns
+    -------
+    int
+        How many links were deleted (0 if the rule created none).
+    """
+    deleted = (
+        session.query(adb.TransferLink)
+        .filter_by(user_id=user_id, source="rule", rule_id=rule_id)
+        .delete()
+    )
+    session.flush()
+    return deleted
+
+
+def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
+    """Delete one tag, touching no other. Idempotent, no version check.
+
+    A tag still applied to postings is removed from them too — `posting_tags`
+    and `posting_override_tags` both foreign-key `tags.id` with `ON DELETE
+    CASCADE`, the same cascade the old whole-list `PUT /tags` prune relied on.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    deleted = session.query(adb.Tag).filter_by(id=_tag_id(user_id, tag_id), user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def delete_other_asset(session: Session, user_id: uuid.UUID, asset_id: str) -> bool:
+    """Delete one manually-entered asset, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "other_assets", asset_id)
+    deleted = session.query(adb.OtherAsset).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
+
+
+def delete_simulator_scenario(session: Session, user_id: uuid.UUID, scenario_id: str) -> bool:
+    """Delete one saved simulator scenario, touching no other. Idempotent, no version check.
+
+    Returns
+    -------
+    bool
+        `True` if a row was actually deleted, `False` if none existed.
+    """
+    row_id = derive_id(user_id, "simulator_scenarios", scenario_id)
+    deleted = session.query(adb.SimulatorScenario).filter_by(id=row_id, user_id=user_id).delete()
+    session.flush()
+    return deleted > 0
 
 
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:

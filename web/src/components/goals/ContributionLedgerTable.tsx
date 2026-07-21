@@ -27,6 +27,27 @@ function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+// Locally-controlled so typing a note doesn't fire one PATCH per keystroke — it commits once, on blur
+// (matching how the Amount field uses `onCommit`). Without this, several in-flight per-keystroke writes
+// used to race each other and could surface a spurious version-conflict toast to a user just typing.
+function NoteCell({ value, onCommit }: { value: string; onCommit: (note: string) => void }) {
+  const [draft, setDraft] = useState(value)
+  // Re-sync when the persisted value changes out from under us (e.g. a refetch), but never mid-typing.
+  const [lastSynced, setLastSynced] = useState(value)
+  if (value !== lastSynced) {
+    setLastSynced(value)
+    setDraft(value)
+  }
+  return (
+    <Input
+      className="h-7 text-xs"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => draft !== value && onCommit(draft)}
+    />
+  )
+}
+
 // Reuses the Transactions table's own patterns (per-column is/is-not
 // filters, click-to-sort headers) — not virtualized, unlike Transactions,
 // since a goal's contribution history realistically stays in the dozens
@@ -144,7 +165,7 @@ export function ContributionLedgerTable({
             variant="ghost"
             size="icon"
             onClick={addRow}
-            disabled={goalList.length === 0}
+            disabled={goalList.length === 0 || createContribution.isPending}
             title="Add a contribution"
           >
             <Plus className="size-4" />
@@ -255,10 +276,9 @@ export function ContributionLedgerTable({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Input
-                      className="h-7 text-xs"
+                    <NoteCell
                       value={contribution.note}
-                      onChange={(event) => update(contribution.contribution_id, { note: event.target.value })}
+                      onCommit={(note) => update(contribution.contribution_id, { note })}
                     />
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">

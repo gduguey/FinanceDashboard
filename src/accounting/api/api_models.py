@@ -185,7 +185,11 @@ class TransferRuleUpdate(BaseModel):
     matching criteria) change, so an edit never silently becomes a
     different rule. `expected_version` is the rule's own `version` field
     the client last saw — see `db.base.check_and_bump_row_version`, which
-    raises a 409 if it no longer matches what's persisted.
+    raises a 409 if it no longer matches what's persisted. It's `None`
+    (skip the check, last-write-wins) only for an idempotent toggle of the
+    `active` flag, where losing the race against a newer flip of the same
+    switch is the wanted outcome, not a conflict — see
+    `docs/app-stack/optimistic-concurrency-versioning.md`.
     """
 
     description_contains: str = Field(min_length=1)
@@ -195,7 +199,7 @@ class TransferRuleUpdate(BaseModel):
     description: str = ""
     active: bool = True
     excluded_transaction_ids: list[str] = Field(default_factory=list)
-    expected_version: int
+    expected_version: int | None = None
 
 
 class CategoryPatternCreate(BaseModel):
@@ -210,6 +214,24 @@ class CategoryPatternCreate(BaseModel):
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
     priority: int = 100
+
+
+class CategoryPatternUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+
+    Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
+    stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
+    the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+    It's `None` (skip the check, last-write-wins) only for an idempotent toggle of the `active` flag,
+    the same exemption `TransferRuleUpdate.expected_version` documents.
+    """
+
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int
+    active: bool = True
+    expected_version: int | None = None
 
 
 class GoalCreate(BaseModel):
@@ -228,6 +250,26 @@ class GoalCreate(BaseModel):
     target_amount: float
     target_currency: CurrencyCode = "USD"
     target_date: datetime
+
+
+class GoalUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+
+    Unlike `GoalCreate`, this never mints a new id or color — the goal
+    stays identified by the `goal_id` path param, and `color` is an
+    explicit field here (never re-picked) since editing one goal should
+    never shuffle the color already showing everywhere else it's used.
+    `expected_version` is the goal's own `version` field the client last
+    saw — see `db.base.check_and_bump_row_version`, which raises a 409 if
+    it no longer matches what's persisted.
+    """
+
+    name: str = Field(min_length=1)
+    target_amount: float
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+    color: str = Field(min_length=1)
+    expected_version: int
 
 
 class SimulatorScenarioCreate(BaseModel):
@@ -268,6 +310,27 @@ class RecurringAdditionCreate(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+class RecurringAdditionUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
+
+    A single-rule field edit (amount, dates, frequency, mode, goal), scoped
+    to its own `addition_id` so it never blanket-reinserts every rule.
+    Carries `priority` unchanged (the row keeps its place); re-ordering the
+    whole list is still `PUT /recurring-additions`. No `expected_version`:
+    like a budget cell, an edit of one rule is last-write-wins on that rule
+    (see `docs/app-stack/optimistic-concurrency-versioning.md`).
+    """
+
+    goal_id: str = Field(min_length=1)
+    start_date: date
+    frequency: RecurringAdditionFrequency
+    end_date: date | None = None
+    mode: RecurringAdditionMode
+    value: float = 0.0
+    currency: CurrencyCode = "USD"
+    priority: int
+
+
 class OtherAssetCreate(BaseModel):
     """Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
 
@@ -291,6 +354,36 @@ class TransferRuleIdResponse(BaseModel):
     """Response body naming one transfer rule, for endpoints whose only real effect is removing something."""
 
     rule_id: str
+
+
+class GoalIdResponse(BaseModel):
+    """Response body naming one goal, for endpoints whose only real effect is removing something."""
+
+    goal_id: str
+
+
+class CategoryPatternIdResponse(BaseModel):
+    """Response body naming one category pattern, for endpoints whose only real effect is removing something."""
+
+    pattern_id: str
+
+
+class TagIdResponse(BaseModel):
+    """Response body naming one tag, for endpoints whose only real effect is removing something."""
+
+    tag_id: str
+
+
+class OtherAssetIdResponse(BaseModel):
+    """Response body naming one manually-entered asset, for endpoints whose only real effect is removing something."""
+
+    asset_id: str
+
+
+class SimulatorScenarioIdResponse(BaseModel):
+    """Response body naming one simulator scenario, for endpoints whose only real effect is removing something."""
+
+    scenario_id: str
 
 
 class GeneralBudgetKeyResponse(BaseModel):
@@ -686,6 +779,12 @@ class GoalContributionIdResponse(BaseModel):
     """Response body naming one goal contribution, for endpoints whose only real effect is removing something."""
 
     contribution_id: str
+
+
+class RecurringAdditionIdResponse(BaseModel):
+    """Response body naming one recurring addition, for endpoints whose only real effect is removing something."""
+
+    addition_id: str
 
 
 class LlmProviderUsage(BaseModel):

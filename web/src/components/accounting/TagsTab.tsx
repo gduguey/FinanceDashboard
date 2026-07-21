@@ -7,12 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { useCreateTag, useRenameTag, useSetTags, useTagRenamePreview } from '@/hooks/useAccountingData'
+import { useCreateTag, useDeleteTag, useRenameTag, useTagRenamePreview } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import type { Tag } from '@/types/accounting'
 
 export function TagsTab({ tags }: { tags: Record<string, Tag> }) {
-  const setTags = useSetTags()
+  const deleteTag = useDeleteTag()
   const createTag = useCreateTag()
   const renamePreview = useTagRenamePreview()
   const renameTagMutation = useRenameTag()
@@ -42,9 +42,7 @@ export function TagsTab({ tags }: { tags: Record<string, Tag> }) {
   }
 
   function removeTag(tagId: string) {
-    const next = { ...tags }
-    delete next[tagId]
-    setTags.mutate(next)
+    deleteTag.mutate(tagId)
   }
 
   async function renameTag(tagId: string, name: string) {
