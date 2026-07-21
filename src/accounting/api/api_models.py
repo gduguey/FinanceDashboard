@@ -185,7 +185,11 @@ class TransferRuleUpdate(BaseModel):
     matching criteria) change, so an edit never silently becomes a
     different rule. `expected_version` is the rule's own `version` field
     the client last saw — see `db.base.check_and_bump_row_version`, which
-    raises a 409 if it no longer matches what's persisted.
+    raises a 409 if it no longer matches what's persisted. It's `None`
+    (skip the check, last-write-wins) only for an idempotent toggle of the
+    `active` flag, where losing the race against a newer flip of the same
+    switch is the wanted outcome, not a conflict — see
+    `docs/app-stack/optimistic-concurrency-versioning.md`.
     """
 
     description_contains: str = Field(min_length=1)
@@ -195,7 +199,7 @@ class TransferRuleUpdate(BaseModel):
     description: str = ""
     active: bool = True
     excluded_transaction_ids: list[str] = Field(default_factory=list)
-    expected_version: int
+    expected_version: int | None = None
 
 
 class CategoryPatternCreate(BaseModel):
@@ -218,6 +222,8 @@ class CategoryPatternUpdate(BaseModel):
     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
     the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+    It's `None` (skip the check, last-write-wins) only for an idempotent toggle of the `active` flag,
+    the same exemption `TransferRuleUpdate.expected_version` documents.
     """
 
     description_contains: str = Field(min_length=1)
@@ -225,7 +231,7 @@ class CategoryPatternUpdate(BaseModel):
     subcategory_id: str | None = None
     priority: int
     active: bool = True
-    expected_version: int
+    expected_version: int | None = None
 
 
 class GoalCreate(BaseModel):
