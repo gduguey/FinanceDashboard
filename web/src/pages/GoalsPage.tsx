@@ -104,7 +104,7 @@ function GoalListSection({
       <CardHeader>
         <CardTitle>Goals</CardTitle>
         <CardAction>
-          <Button variant="outline" size="icon" onClick={add} title="Add goal">
+          <Button variant="outline" size="icon" onClick={add} disabled={createGoal.isPending} title="Add goal">
             <Plus className="size-4" />
           </Button>
         </CardAction>
