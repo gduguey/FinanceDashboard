@@ -14,7 +14,9 @@ from accounting.api.api_models import (
     GoalContributionIdResponse,
     GoalContributionUpdate,
     GoalCreate,
+    GoalIdResponse,
     GoalsSummary,
+    GoalUpdate,
     RecurringAdditionCreate,
     SimulateContributionRequest,
     SimulateContributionResult,
@@ -28,7 +30,7 @@ from accounting.ledger.goal_automations import (
     run_withdrawal_automation,
 )
 from accounting.models import CurrencyCode, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
-from accounting.store import load_store, next_available_color, save_store
+from accounting.store import delete_goal, load_store, next_available_color, save_store, update_goal
 from db.current_user import get_current_user_id
 from db.session import get_db
 
@@ -86,6 +88,80 @@ def put_goals(
     store = store.model_copy(update={"goals": goals})
     save_store(store, session, user_id)
     return store.goals
+
+
+@router.patch("/goals/{goal_id}")
+def patch_goal(
+    goal_id: str,
+    request: GoalUpdate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Goal:
+    """Update one existing goal in place, without touching any other goal already saved.
+
+    A true per-resource write — unlike `PUT /goals`, this never
+    round-trips through `load_store`/`save_store` (which deletes and
+    reinserts every persisted entity for the user); see
+    `accounting.store.update_goal`. Guarded by `request.expected_version`
+    instead of the whole-store `X-Expected-Store-Version` header, so an
+    edit to this one goal can never spuriously conflict with — or be
+    silently overwritten by — an unrelated save elsewhere in the store.
+
+    Returns
+    -------
+    Goal
+        The goal as persisted after the update.
+
+    Raises
+    ------
+    HTTPException
+        404 if no goal with `goal_id` exists.
+    """
+    # `created_at` is a required field on `Goal` but `update_goal` never
+    # touches it — it always returns the row's real, untouched value.
+    goal = Goal(
+        goal_id=goal_id,
+        name=request.name,
+        target_amount=request.target_amount,
+        target_currency=request.target_currency,
+        target_date=request.target_date,
+        color=request.color,
+        created_at=datetime.now(tz=UTC),
+    )
+    updated = update_goal(session, user_id, goal, request.expected_version)
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
+    session.commit()
+    return updated
+
+
+@router.delete("/goals/{goal_id}")
+def delete_goal_route(
+    goal_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalIdResponse:
+    """Delete one goal, without touching any other goal already saved.
+
+    No version check — see `accounting.store.delete_goal`'s own
+    docstring for why deleting an already-gone goal is a plain 404, not a
+    409: there's nothing left to conflict with.
+
+    Returns
+    -------
+    GoalIdResponse
+        The goal id just deleted.
+
+    Raises
+    ------
+    HTTPException
+        404 if no goal with `goal_id` exists.
+    """
+    deleted = delete_goal(session, user_id, goal_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
+    session.commit()
+    return GoalIdResponse(goal_id=goal_id)
 
 
 @router.put("/goal-contributions")

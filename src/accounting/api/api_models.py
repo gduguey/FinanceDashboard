@@ -230,6 +230,26 @@ class GoalCreate(BaseModel):
     target_date: datetime
 
 
+class GoalUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+
+    Unlike `GoalCreate`, this never mints a new id or color — the goal
+    stays identified by the `goal_id` path param, and `color` is an
+    explicit field here (never re-picked) since editing one goal should
+    never shuffle the color already showing everywhere else it's used.
+    `expected_version` is the goal's own `version` field the client last
+    saw — see `db.base.check_and_bump_row_version`, which raises a 409 if
+    it no longer matches what's persisted.
+    """
+
+    name: str = Field(min_length=1)
+    target_amount: float
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+    color: str = Field(min_length=1)
+    expected_version: int
+
+
 class SimulatorScenarioCreate(BaseModel):
     """Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
 
@@ -291,6 +311,12 @@ class TransferRuleIdResponse(BaseModel):
     """Response body naming one transfer rule, for endpoints whose only real effect is removing something."""
 
     rule_id: str
+
+
+class GoalIdResponse(BaseModel):
+    """Response body naming one goal, for endpoints whose only real effect is removing something."""
+
+    goal_id: str
 
 
 class GeneralBudgetKeyResponse(BaseModel):

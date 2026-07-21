@@ -31,6 +31,7 @@ import type {
   GoalContributionUpdate,
   GoalCreate,
   GoalsSummary,
+  GoalUpdate,
   ImportResult,
   InterestAccountRow,
   LlmSettings,
@@ -503,9 +504,11 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  putGoals: (goals: Record<string, Goal>) =>
-    request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
   createGoal: (goal: GoalCreate) => request<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
+  patchGoal: (goalId: string, update: GoalUpdate) =>
+    requestScoped<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
+  deleteGoal: (goalId: string) =>
+    requestScoped<{ goal_id: string }>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
   createGoalContribution: (contribution: GoalContributionCreate) =>
     request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
