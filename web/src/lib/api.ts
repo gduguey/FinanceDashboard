@@ -23,6 +23,7 @@ import type {
   SyncProgress,
   SyncResult,
   TargetAllocation,
+  TargetAllocationSetting,
   TaxReport,
   TaxSettings,
   TaxSettingsUpdate,
@@ -44,10 +45,11 @@ export class StoreVersionConflictError extends ApiError {}
 
 // The most recent `version` this module has seen out of any trades
 // settings response — updated below on every response that carries one
-// (`HysaSettings`, `BenchmarkSetting`, `TimezoneSetting`, `TaxSettings`;
-// `TargetAllocation`'s endpoint returns a bare dict with nowhere to carry
-// one, so it doesn't contribute) — and sent back on every non-GET request
-// so the backend can tell whether anything changed in between.
+// (`HysaSettings`, `BenchmarkSetting`, `TimezoneSetting`, `TaxSettings`,
+// and `TargetAllocationSetting` — its endpoint now wraps the allocation
+// map in an envelope carrying `version`, which `request()` reads before
+// the client unwraps it) — and sent back on every non-GET request so the
+// backend can tell whether anything changed in between.
 let lastKnownDashboardSettingsVersion: number | null = null
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -94,13 +96,18 @@ export const api = {
   monthlyPnlBySymbol: (range?: DateRange) =>
     request<MonthlyPnlBySymbol[]>(withRange('/api/chart/monthly-pnl/by-symbol', range)),
   allocation: (asOf?: string) => request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
-  targetAllocation: () => request<TargetAllocation>('/api/settings/target-allocation'),
+  // Unwrap the `{ target_allocation_pct, version }` envelope back to the bare map for callers. The
+  // envelope's `version` is read (and cached) by `request()` itself before we unwrap, which is the
+  // whole point — the old bare-dict shape had nowhere to carry it, so a save here left the cached
+  // settings version stale and spuriously 409-ed the next hysa/benchmark/tax save.
+  targetAllocation: () =>
+    request<TargetAllocationSetting>('/api/settings/target-allocation').then((r) => r.target_allocation_pct),
   setTargetAllocation: (target: TargetAllocation) =>
-    request<TargetAllocation>('/api/settings/target-allocation', {
+    request<TargetAllocationSetting>('/api/settings/target-allocation', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(target),
-    }),
+    }).then((r) => r.target_allocation_pct),
   lots: (asOf?: string) => request<LotsTable>(asOf ? `/api/lots?as_of=${asOf}` : '/api/lots'),
   risk: (range?: DateRange) => request<RiskStat>(withRange('/api/risk', range)),
   cashHistory: (range?: DateRange) => request<CashHistoryPoint[]>(withRange('/api/chart/cash-history', range)),

@@ -44,12 +44,17 @@ from accounting.models import (
     TransferLink,
 )
 from accounting.store import (
+    delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     list_dismissed_suggestions,
     load_overrides,
+    load_overrides_for_postings,
     load_store,
-    save_overrides,
+    remove_posting_merge,
+    remove_transfer_link,
+    save_overrides_for_postings,
+    save_posting_split,
     save_store,
     undismiss_suggestion,
 )
@@ -180,14 +185,12 @@ def put_posting_override(
     ManualOverride
         The override just persisted, merged with any prior one.
     """
-    overrides = load_overrides(session, user_id)
-    existing = overrides.get(posting_id)
+    existing = load_overrides_for_postings(session, user_id, [posting_id]).get(posting_id)
     if existing is not None:
         merged = existing.model_dump()
         merged.update(override.model_dump(include=override.model_fields_set))
         override = ManualOverride(**merged)
-    overrides[posting_id] = override
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings([posting_id], {posting_id: override}, session, user_id)
     return override
 
 
@@ -235,7 +238,7 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -245,13 +248,12 @@ def put_posting_split(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )
     split = PostingSplit(posting_id=posting_id, legs=legs)
-    store = store.model_copy(update={"posting_splits": {**store.posting_splits, posting_id: split}})
-    save_store(store, session, user_id)
+    save_posting_split(split, session, user_id)
     return split
 
 
 @router.delete("/postings/{posting_id}/split")
-def delete_posting_split(
+def delete_posting_split_route(
     posting_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -262,10 +264,8 @@ def delete_posting_split(
     -------
     PostingIdResponse
     """
-    store = load_store(session, user_id)
-    remaining = {pid: split for pid, split in store.posting_splits.items() if pid != posting_id}
-    store = store.model_copy(update={"posting_splits": remaining})
-    save_store(store, session, user_id)
+    delete_posting_split(session, user_id, posting_id)
+    session.commit()
     return PostingIdResponse(posting_id=posting_id)
 
 
@@ -340,12 +340,9 @@ def delete_posting_merge(
     HTTPException
         404 if no merge with this id exists.
     """
-    store = load_store(session, user_id)
-    if merge_id not in store.posting_merges:
+    if not remove_posting_merge(session, user_id, merge_id):
         raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
-    remaining = {mid: merge for mid, merge in store.posting_merges.items() if mid != merge_id}
-    store = store.model_copy(update={"posting_merges": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return PostingMergeIdResponse(merge_id=merge_id)
 
 
@@ -432,12 +429,9 @@ def delete_transfer_link(
     HTTPException
         404 if no link with this id exists.
     """
-    store = load_store(session, user_id)
-    if not any(existing.link_id == link_id for existing in store.transfer_links):
+    if not remove_transfer_link(session, user_id, link_id):
         raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
-    remaining = [existing for existing in store.transfer_links if existing.link_id != link_id]
-    store = store.model_copy(update={"transfer_links": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return TransferLinkIdResponse(link_id=link_id)
 
 
@@ -459,7 +453,7 @@ def post_validate_pending(
     -------
     ValidatePendingResult
     """
-    overrides = load_overrides(session, user_id)
+    overrides = load_overrides_for_postings(session, user_id, payload.posting_ids)
     accepted = reverted = 0
     for posting_id in payload.posting_ids:
         existing = overrides.get(posting_id)
@@ -474,7 +468,7 @@ def post_validate_pending(
             del overrides[posting_id]
         else:
             overrides[posting_id] = resolved
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings(payload.posting_ids, overrides, session, user_id)
     return ValidatePendingResult(accepted=accepted, reverted=reverted)
 
 

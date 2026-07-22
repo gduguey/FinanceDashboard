@@ -133,6 +133,163 @@ def test_post_goal_picks_a_color_distinct_from_existing_goals(client) -> None:
     assert first["color"] != second["color"]
 
 
+def test_patch_goal_updates_fields_and_increments_version(client) -> None:
+    _create_goal(client)
+    goal = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    assert goal["version"] == 1
+
+    response = client.patch(
+        "/api/accounting/goals/emergency-fund",
+        json={
+            "name": "New Car",
+            "target_amount": 20000.0,
+            "target_currency": "USD",
+            "target_date": "2028-01-01T00:00:00",
+            "color": "#123456",
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["name"] == "New Car"
+    assert updated["target_amount"] == pytest.approx(20000.0)
+    assert updated["color"] == "#123456"
+    assert updated["version"] == 2
+    assert updated["created_at"] == "2026-06-01T00:00:00"  # untouched by the update
+
+    persisted = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    assert persisted["name"] == "New Car"
+    assert persisted["version"] == 2
+
+
+def test_patch_goal_with_a_stale_expected_version_gets_409(client) -> None:
+    _create_goal(client)
+    response = client.patch(
+        "/api/accounting/goals/emergency-fund",
+        json={
+            "name": "New Car",
+            "target_amount": 20000.0,
+            "target_currency": "USD",
+            "target_date": "2028-01-01T00:00:00",
+            "color": "#123456",
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 409
+
+    unchanged = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    assert unchanged["name"] == "Emergency Fund"
+    assert unchanged["version"] == 1
+
+
+def test_patch_goal_that_does_not_exist_gets_404(client) -> None:
+    response = client.patch(
+        "/api/accounting/goals/does-not-exist",
+        json={
+            "name": "New Car",
+            "target_amount": 20000.0,
+            "target_currency": "USD",
+            "target_date": "2028-01-01T00:00:00",
+            "color": "#123456",
+            "expected_version": 1,
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_delete_goal_removes_it(client) -> None:
+    _create_goal(client)
+    response = client.delete("/api/accounting/goals/emergency-fund")
+    assert response.status_code == 200
+    assert client.get("/api/accounting/store").json()["goals"] == {}
+
+
+def test_delete_goal_that_is_already_gone_gets_404(client) -> None:
+    response = client.delete("/api/accounting/goals/does-not-exist")
+    assert response.status_code == 404
+
+
+def test_two_patches_on_different_goals_do_not_clobber_each_other(client) -> None:
+    """Reproduces the audit's actual finding for `useSetGoals`: editing two *different* goals used to
+
+    round-trip through the same whole-store `save_store` call — a scoped, row-versioned `PATCH` for one
+    goal must never touch, let alone revert, a sibling goal's own fields.
+    """
+    # `_create_goal` goes through `PUT /goals` (a whole-list replace), so the second call can't be used
+    # to add a goal alongside the first — `POST /goals` is the additive create.
+    _create_goal(client, goal_id="emergency-fund")
+    new_car = client.post(
+        "/api/accounting/goals",
+        json={"name": "New Car", "target_amount": 20000.0, "target_date": "2028-01-01T00:00:00"},
+    ).json()
+
+    response_a = client.patch(
+        "/api/accounting/goals/emergency-fund",
+        json={
+            "name": "Renamed Emergency Fund",
+            "target_amount": 10000.0,
+            "target_currency": "USD",
+            "target_date": "2027-01-01T00:00:00",
+            "color": "#4da568",
+            "expected_version": 1,
+        },
+    )
+    response_b = client.patch(
+        f"/api/accounting/goals/{new_car['goal_id']}",
+        json={
+            "name": "Renamed New Car",
+            "target_amount": 10000.0,
+            "target_currency": "USD",
+            "target_date": "2027-01-01T00:00:00",
+            "color": "#4da568",
+            "expected_version": 1,
+        },
+    )
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+
+    goals = client.get("/api/accounting/store").json()["goals"]
+    assert goals["emergency-fund"]["name"] == "Renamed Emergency Fund"
+    assert goals[new_car["goal_id"]]["name"] == "Renamed New Car"
+
+
+def test_creating_an_unrelated_goal_does_not_reset_another_goals_version(client) -> None:
+    _create_goal(client, goal_id="emergency-fund")
+    patched = client.patch(
+        "/api/accounting/goals/emergency-fund",
+        json={
+            "name": "Renamed",
+            "target_amount": 10000.0,
+            "target_currency": "USD",
+            "target_date": "2027-01-01T00:00:00",
+            "color": "#4da568",
+            "expected_version": 1,
+        },
+    ).json()
+    assert patched["version"] == 2
+
+    client.post(
+        "/api/accounting/goals",
+        json={"name": "New Car", "target_amount": 20000.0, "target_date": "2028-01-01T00:00:00"},
+    )
+
+    persisted = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    assert persisted["version"] == 2
+
+    response = client.patch(
+        "/api/accounting/goals/emergency-fund",
+        json={
+            "name": "Renamed Again",
+            "target_amount": 10000.0,
+            "target_currency": "USD",
+            "target_date": "2027-01-01T00:00:00",
+            "color": "#4da568",
+            "expected_version": 2,
+        },
+    )
+    assert response.status_code == 200
+
+
 def test_goals_summary_reports_balance_and_unallocated(client) -> None:
     _import_checking(client)
     _create_goal(client)
@@ -466,6 +623,79 @@ def test_post_recurring_addition_appends_after_existing_ones_by_priority(client)
     assert second["priority"] == 1
 
 
+def test_patch_recurring_addition_edits_one_without_touching_another(client) -> None:
+    _create_goal(client)
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-06-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "USD",
+    }
+    first = client.post("/api/accounting/recurring-additions", json=payload).json()
+    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+
+    response = client.patch(
+        f"/api/accounting/recurring-additions/{first['addition_id']}",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-06-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 750.0,
+            "currency": "USD",
+            "priority": first["priority"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["value"] == pytest.approx(750.0)
+
+    additions = {a["addition_id"]: a for a in client.get("/api/accounting/store").json()["recurring_additions"]}
+    assert additions[first["addition_id"]]["value"] == pytest.approx(750.0)
+    assert additions[second["addition_id"]]["value"] == pytest.approx(500.0)  # untouched
+
+
+def test_patch_recurring_addition_404s_for_an_unknown_id(client) -> None:
+    _create_goal(client)
+    response = client.patch(
+        "/api/accounting/recurring-additions/nope",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-06-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 1.0,
+            "currency": "USD",
+            "priority": 0,
+        },
+    )
+    assert response.status_code == 404
+
+
+def test_delete_recurring_addition_removes_only_that_one(client) -> None:
+    _create_goal(client)
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-06-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "USD",
+    }
+    first = client.post("/api/accounting/recurring-additions", json=payload).json()
+    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+
+    response = client.delete(f"/api/accounting/recurring-additions/{first['addition_id']}")
+    assert response.status_code == 200
+    remaining = {a["addition_id"] for a in client.get("/api/accounting/store").json()["recurring_additions"]}
+    assert remaining == {second["addition_id"]}
+
+
+def test_delete_recurring_addition_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/recurring-additions/nope").status_code == 404
+
+
 _BIG_EXPENSE_CSV = (
     "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
     "DEBIT,06/20/2026,Big unexpected expense,-4000.00,SALE,-4000.00,,\n"
@@ -508,6 +738,20 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
     # unallocated was -4000 (0 income - 4000 expense) - 1000 (already in the goal) = -5000 shortfall to cover,
     # but the goal only had 1000 to give, so a residual shortfall remains.
     assert body["remaining_shortfall"] == pytest.approx(4000.0)
+
+
+def test_put_withdrawal_priorities_ignores_a_stale_store_version(client) -> None:
+    """Reordering withdrawal priorities is a pure last-write-wins ordering op, so it opts out of the
+
+    whole-store version check — a deliberately stale `X-Expected-Store-Version` header must not 409 it.
+    """
+    _create_goal(client)
+    response = client.put(
+        "/api/accounting/withdrawal-priorities",
+        json=[{"goal_id": "emergency-fund", "priority": 0}],
+        headers={"X-Expected-Store-Version": "0"},  # stale on purpose
+    )
+    assert response.status_code == 200
 
 
 def test_simulate_contribution_flags_exceeding_unallocated(client) -> None:

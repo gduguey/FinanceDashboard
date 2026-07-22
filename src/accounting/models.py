@@ -241,6 +241,7 @@ class TransferRule(BaseModel):
     description: str = ""
     active: bool = True
     excluded_transaction_ids: list[str] = Field(default_factory=list)
+    version: int = 1
 
 
 TransferLinkSource = Literal["manual", "rule"]
@@ -302,6 +303,7 @@ class CategoryPattern(BaseModel):
     subcategory_id: str | None = None
     priority: int = 0
     active: bool = True
+    version: int = 1
 
 
 class OtherAsset(BaseModel):
@@ -456,6 +458,7 @@ class Goal(BaseModel):
     target_date: datetime
     color: str = Field(min_length=1)
     created_at: datetime
+    version: int = 1
 
 
 GoalContributionOrigin = Literal["manual", "automation"]

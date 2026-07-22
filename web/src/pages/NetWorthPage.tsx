@@ -20,7 +20,7 @@ import {
   useCurrencies,
   useNetWorth,
   useRatesToBase,
-  useSetOtherAssets,
+  useDeleteOtherAsset,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useSortableRows } from '@/hooks/useSortableRows'
@@ -270,7 +270,7 @@ function AddOtherAssetForm() {
               onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
             />
           </label>
-          <Button size="sm" onClick={addAsset}>
+          <Button size="sm" onClick={addAsset} disabled={createOtherAsset.isPending}>
             Add
           </Button>
         </div>
@@ -305,11 +305,10 @@ export function NetWorthPage() {
   const { data: currencies } = useCurrencies()
   const nonBaseCurrencies = (currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD')
   const ratesToBase = useRatesToBase(nonBaseCurrencies)
-  const setOtherAssets = useSetOtherAssets()
+  const deleteOtherAsset = useDeleteOtherAsset()
 
   function removeOtherAsset(assetId: string) {
-    if (!data) return
-    setOtherAssets.mutate(data.other_assets.filter((asset) => asset.asset_id !== assetId))
+    deleteOtherAsset.mutate(assetId)
   }
 
   // Jumping to History/Allocation/Interest/etc. is meaningless when there's

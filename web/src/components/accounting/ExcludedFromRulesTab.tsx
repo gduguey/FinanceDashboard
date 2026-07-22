@@ -7,9 +7,15 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { useSetTransferRules } from '@/hooks/useAccountingData'
+import { usePatchTransferRule } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { pairTransferRows, realLegByTransactionId, type TransferRowInfo } from '@/lib/transferRowInfo'
+import {
+  type LinkedPairRow,
+  pairTransferRows,
+  realLegByTransactionId,
+  type TransferRowInfo,
+} from '@/lib/transferRowInfo'
+import { ruleUpdateFromRule } from '@/lib/transferRules'
 import type { Account, Posting, TransferRule } from '@/types/accounting'
 
 // A rule's `excluded_transaction_ids` names transactions, never postings —
@@ -49,13 +55,28 @@ export function ExcludedFromRulesTab({
   accounts: Record<string, Account>
   postings: Posting[]
 }) {
-  const setRules = useSetTransferRules()
+  const patchRule = usePatchTransferRule()
   const rulesWithExclusions = useMemo(
     () => rules.filter((rule) => (rule.excluded_transaction_ids ?? []).length > 0),
     [rules],
   )
   const { sorted, sort, toggleSort } = useSortableRows(rulesWithExclusions, 'priority')
   const legByTransactionId = useMemo(() => realLegByTransactionId(postings, accounts), [postings, accounts])
+  // Pairing is computed once per rule here (not just on expand) so the
+  // "Excluded" count column below and the expanded detail tables always
+  // agree on what counts as one transfer — a rule's `excluded_transaction_ids`
+  // names transactions (1 transfer = 2 ids), so a raw `.length` overcounts
+  // by roughly 2x for every rule whose exclusions paired up.
+  const exclusionsByRuleId = useMemo(() => {
+    const map = new Map<string, { pairs: LinkedPairRow[]; singles: TransferRowInfo[] }>()
+    for (const rule of rulesWithExclusions) {
+      map.set(
+        rule.rule_id,
+        pairTransferRows(excludedRowsForRule(legByTransactionId, rule.excluded_transaction_ids ?? [])),
+      )
+    }
+    return map
+  }, [rulesWithExclusions, legByTransactionId])
   const [searchParams] = useSearchParams()
   const [expandedRuleId, setExpandedRuleId] = useState<string | null>(searchParams.get('ruleId'))
 
@@ -63,24 +84,26 @@ export function ExcludedFromRulesTab({
   // falls back to the next-matching rule, or stays uncategorized if none
   // matches, the same choice excluding it made in the first place. Takes
   // every id to restore in one call (both sides of a reconstructed pair)
-  // so two synchronous calls never race each other off the same stale
-  // `rules` closure.
+  // so this rule's own `excluded_transaction_ids` only gets patched once,
+  // not twice against the same starting `expected_version`.
   function removeExclusion(ruleId: string, transactionIds: string[]) {
+    const rule = rules.find((r) => r.rule_id === ruleId)
+    if (!rule) return
     const toRemove = new Set(transactionIds)
-    const updated = rules.map((rule) =>
-      rule.rule_id === ruleId
-        ? {
-            ...rule,
-            excluded_transaction_ids: (rule.excluded_transaction_ids ?? []).filter((id) => !toRemove.has(id)),
-          }
-        : rule,
+    patchRule.mutate(
+      {
+        ruleId,
+        update: ruleUpdateFromRule(rule, {
+          excluded_transaction_ids: (rule.excluded_transaction_ids ?? []).filter((id) => !toRemove.has(id)),
+        }),
+      },
+      {
+        onSuccess: () =>
+          toast.success(
+            `Exclusion removed — ${transactionIds.length > 1 ? 'both transactions' : 'this transaction'} will resolve again, if the rule still matches.`,
+          ),
+      },
     )
-    setRules.mutate(updated, {
-      onSuccess: () =>
-        toast.success(
-          `Exclusion removed — ${transactionIds.length > 1 ? 'both transactions' : 'this transaction'} will resolve again, if the rule still matches.`,
-        ),
-    })
   }
 
   return (
@@ -112,8 +135,8 @@ export function ExcludedFromRulesTab({
               </TableRow>
             )}
             {sorted.map((rule) => {
-              const excludedIds = rule.excluded_transaction_ids ?? []
               const expanded = expandedRuleId === rule.rule_id
+              const { pairs, singles } = exclusionsByRuleId.get(rule.rule_id) ?? { pairs: [], singles: [] }
               return (
                 <Fragment key={rule.rule_id}>
                   <TableRow
@@ -125,53 +148,40 @@ export function ExcludedFromRulesTab({
                     <TableCell className="text-muted-foreground">
                       {(rule.counterparty_account_id && accounts[rule.counterparty_account_id]?.name) || '—'}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{excludedIds.length}</TableCell>
+                    <TableCell className="text-muted-foreground">{pairs.length + singles.length}</TableCell>
                   </TableRow>
-                  {expanded &&
-                    (() => {
-                      // Excluding a rule-found link always excludes both its
-                      // transactions together (see `TransactionsTab.tsx`'s
-                      // `TransferDetailDialog`) — reconstructing those pairs
-                      // here (no `TransferLink` survives to look them up
-                      // directly) is what actually shows "both ends of the
-                      // transfer" instead of two unrelated single rows. A
-                      // rule whose counterparty is a single non-importable
-                      // account only ever excludes one transaction at a
-                      // time, so those fall through to `singles` untouched.
-                      const { pairs, singles } = pairTransferRows(excludedRowsForRule(legByTransactionId, excludedIds))
-                      return (
-                        <TableRow className="bg-muted/30 hover:bg-muted/30">
-                          <TableCell colSpan={3} onClick={(event) => event.stopPropagation()}>
-                            <div className="flex flex-col gap-4 py-1">
-                              {pairs.length > 0 && (
-                                <LinkedTransactionsTable
-                                  rows={pairs}
-                                  emptyMessage="No excluded transfer pairs for this rule."
-                                  renderRowAction={(row) => (
-                                    <Button
-                                      variant="destructive"
-                                      size="sm"
-                                      title="Remove this exclusion — the rule will try to re-link these transactions again, if it still matches"
-                                      onClick={() =>
-                                        removeExclusion(rule.rule_id, [row.fromTransactionId, row.toTransactionId])
-                                      }
-                                    >
-                                      Remove exclusion
-                                    </Button>
-                                  )}
-                                />
+                  {expanded && (
+                    <TableRow className="bg-muted/30 hover:bg-muted/30">
+                      <TableCell colSpan={3} onClick={(event) => event.stopPropagation()}>
+                        <div className="flex flex-col gap-4 py-1">
+                          {pairs.length > 0 && (
+                            <LinkedTransactionsTable
+                              rows={pairs}
+                              emptyMessage="No excluded transfer pairs for this rule."
+                              renderRowAction={(row) => (
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  title="Remove this exclusion — the rule will try to re-link these transactions again, if it still matches"
+                                  onClick={() =>
+                                    removeExclusion(rule.rule_id, [row.fromTransactionId, row.toTransactionId])
+                                  }
+                                >
+                                  Remove exclusion
+                                </Button>
                               )}
-                              {singles.length > 0 && (
-                                <ExcludedTransactionsTable
-                                  rows={singles}
-                                  onRemoveExclusion={(transactionId) => removeExclusion(rule.rule_id, [transactionId])}
-                                />
-                              )}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })()}
+                            />
+                          )}
+                          {singles.length > 0 && (
+                            <ExcludedTransactionsTable
+                              rows={singles}
+                              onRemoveExclusion={(transactionId) => removeExclusion(rule.rule_id, [transactionId])}
+                            />
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </Fragment>
               )
             })}

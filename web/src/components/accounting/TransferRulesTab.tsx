@@ -1,6 +1,7 @@
 import { Pencil, Trash2 } from 'lucide-react'
 import { Fragment, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { toast } from 'sonner'
 import { LinkedTransactionsTable } from '@/components/accounting/LinkedTransactionsTable'
 import { CounterpartySelect } from '@/components/shared/CounterpartySelect'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
@@ -13,10 +14,16 @@ import { NumberInput } from '@/components/ui/number-input'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
-import { useCreateTransferRule, useSetTransferRules } from '@/hooks/useAccountingData'
+import {
+  useCreateTransferRule,
+  useDeleteTransferRule,
+  usePatchTransferRule,
+  useRemoveTransferLink,
+} from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
-import { type LinkedPairRow, realLegByTransactionId } from '@/lib/transferRowInfo'
+import { type LinkedPairRow, linkedPairRowFromLink, realLegByTransactionId } from '@/lib/transferRowInfo'
+import { addedExcludedTransactionIds, ruleUpdateFromRule } from '@/lib/transferRules'
 import type { Account, Posting, TransferLink, TransferRule } from '@/types/accounting'
 
 // Shown under the counterparty picker whenever the chosen account is one a
@@ -115,8 +122,10 @@ export function TransferRulesTab({
   postings: Posting[]
   transferLinks: TransferLink[]
 }) {
-  const setRules = useSetTransferRules()
+  const patchRule = usePatchTransferRule()
+  const deleteRule = useDeleteTransferRule()
   const createRule = useCreateTransferRule()
+  const removeTransferLink = useRemoveTransferLink()
   const [editing, setEditing] = useState<TransferRule | null>(null)
   // Which rule's "linked by this rule" table is open. Seeded from `?ruleId=`
   // so the transfer-detail popup's "part of rule…" link can jump straight
@@ -140,33 +149,34 @@ export function TransferRulesTab({
     const map = new Map<string, LinkedPairRow[]>()
     for (const link of transferLinks) {
       if (!link.rule_id) continue
-      const legA = legByTransactionId.get(link.transaction_id_a)
-      const legB = legByTransactionId.get(link.transaction_id_b)
-      if (!legA || !legB) continue
-      // Negative amount = money leaving that account = the "from" side,
-      // same convention `TransactionsTab`'s "Transfer to/from…" badge uses.
-      const [from, to] = legA.amount < 0 ? [legA, legB] : [legB, legA]
-      const row: LinkedPairRow = {
-        linkId: link.link_id,
-        fromTransactionId: from.transactionId,
-        fromAccountName: from.accountName,
-        fromDescription: from.description,
-        fromPostedAt: from.postedAt,
-        fromAmount: from.amount,
-        fromCurrency: from.currency,
-        toTransactionId: to.transactionId,
-        toAccountName: to.accountName,
-        toDescription: to.description,
-        toPostedAt: to.postedAt,
-        toAmount: to.amount,
-        toCurrency: to.currency,
-      }
+      const row = linkedPairRowFromLink(link, legByTransactionId)
+      if (!row) continue
       const existing = map.get(link.rule_id)
       if (existing) existing.push(row)
       else map.set(link.rule_id, [row])
     }
     return map
   }, [transferLinks, legByTransactionId])
+
+  // Excluding a rule-linked transfer both stops the rule from re-linking it
+  // (via `excluded_transaction_ids`, same as the Excluded-from-rules tab's
+  // "remove exclusion" is the inverse of) and drops the `TransferLink` it
+  // already made — sequential, not parallel, since `removeTransferLink` goes
+  // out against the whole-store version header, which only advances once
+  // the rule patch's own success has refetched the store (see
+  // `TransactionsTab.tsx`'s `handleExcludeAndUnlinkFromRule`, which this
+  // mirrors for the Rules page's own "linked by this rule" table).
+  async function excludeFromRule(rule: TransferRule, linkId: string, transactionIds: string[]) {
+    const ruleLabel = rule.description || rule.description_contains || rule.rule_id
+    await patchRule.mutateAsync({
+      ruleId: rule.rule_id,
+      update: ruleUpdateFromRule(rule, {
+        excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
+      }),
+    })
+    await removeTransferLink.mutateAsync(linkId)
+    toast.success(`Excluded from "${ruleLabel}" — both transactions are back to being normal transactions.`)
+  }
 
   function addRule() {
     if (!draft.descriptionContains || !draft.counterpartyAccountId) return
@@ -181,15 +191,20 @@ export function TransferRulesTab({
   }
 
   function removeRule(ruleId: string) {
-    setRules.mutate(rules.filter((rule) => rule.rule_id !== ruleId))
+    deleteRule.mutate(ruleId)
   }
 
   function saveRule(updated: TransferRule) {
-    setRules.mutate(rules.map((rule) => (rule.rule_id === updated.rule_id ? updated : rule)))
+    patchRule.mutate({ ruleId: updated.rule_id, update: ruleUpdateFromRule(updated) })
   }
 
   function toggleActive(ruleId: string, active: boolean) {
-    setRules.mutate(rules.map((rule) => (rule.rule_id === ruleId ? { ...rule, active } : rule)))
+    const rule = rules.find((r) => r.rule_id === ruleId)
+    if (!rule) return
+    // `expected_version: null` -> last-write-wins: flipping the switch on/off/on quickly should settle
+    // on the last click, never 409 against its own in-flight earlier click (a version-checked toggle
+    // would — see the versioning doc). Field edits above keep the real version check.
+    patchRule.mutate({ ruleId, update: ruleUpdateFromRule(rule, { active, expected_version: null }) })
   }
 
   return (
@@ -269,7 +284,21 @@ export function TransferRulesTab({
                     <TableRow className="bg-muted/30 hover:bg-muted/30">
                       <TableCell colSpan={7} onClick={(event) => event.stopPropagation()}>
                         <div className="py-1">
-                          <LinkedTransactionsTable rows={linkedRows} />
+                          <LinkedTransactionsTable
+                            rows={linkedRows}
+                            renderRowAction={(row) => (
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                title="Exclude this transfer from the rule — both transactions go back to being normal transactions"
+                                onClick={() =>
+                                  excludeFromRule(rule, row.linkId, [row.fromTransactionId, row.toTransactionId])
+                                }
+                              >
+                                Exclude from rule
+                              </Button>
+                            )}
+                          />
                         </div>
                       </TableCell>
                     </TableRow>
