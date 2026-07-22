@@ -37,7 +37,7 @@ export function AllocationView() {
     const parsed = Object.fromEntries(
       Object.entries(drafts)
         .map(([symbol, value]) => [symbol, Number(value)] as const)
-        .filter(([, value]) => !Number.isNaN(value)),
+        .filter(([, value]) => Number.isFinite(value)),
     )
     setTargets.mutate(parsed)
   }
