@@ -1351,7 +1351,8 @@ def put_account(
             "meta": update.meta,
         }
     )
-    update_account_fields(session, user_id, updated)
+    if not update_account_fields(session, user_id, updated):
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     session.commit()
     return updated
 
@@ -1422,7 +1423,8 @@ def close_account(
             raise HTTPException(status_code=400, detail=f"Account {transfer.to_account_id!r} not found")
 
     updated_account = account.model_copy(update={"closed": True})
-    set_account_closed(session, user_id, account_id, closed=True)
+    if not set_account_closed(session, user_id, account_id, closed=True):
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     insert_manual_transfers(request.transfers, session, user_id)
     session.commit()
     return AccountCloseResponse(account=updated_account, manual_transfers=[*store.manual_transfers, *request.transfers])
@@ -1451,7 +1453,8 @@ def reopen_account(
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     updated_account = account.model_copy(update={"closed": False})
-    set_account_closed(session, user_id, account_id, closed=False)
+    if not set_account_closed(session, user_id, account_id, closed=False):
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     session.commit()
     return updated_account
 

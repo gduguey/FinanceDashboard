@@ -106,13 +106,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data
 }
 
-// For per-resource endpoints that carry their own row-scoped `version`
-// (currently just `PATCH`/`DELETE /transfer-rules/{rule_id}`) — routing
-// these through `request` would both send the unrelated whole-store
-// version as `X-Expected-Store-Version` (harmless; the backend for these
-// two routes never reads it) and, more importantly, overwrite
-// `lastKnownStoreVersion` with the *rule's* version number, corrupting
-// every other resource's own conflict check on its next save. A 409 here
+// For per-resource endpoints that must never touch the whole-store version
+// cache — used across transfer rules, tags, other-assets, category patterns,
+// simulator scenarios, goals, and recurring additions. Some carry their own
+// row-scoped `version`; others (several deletes) do no version check at all.
+// Routing any of these through `request` would both send the unrelated
+// whole-store version as `X-Expected-Store-Version` (harmless; these backends
+// never read it) and, more importantly, overwrite `lastKnownStoreVersion` with
+// the *resource's own* version number, corrupting every other resource's own
+// conflict check on its next save. A 409 here
 // still throws the same `StoreVersionConflictError` `App.tsx`'s one
 // global handler already knows how to show — it's a version conflict
 // either way, just scoped to one row instead of the whole store.
