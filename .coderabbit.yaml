@@ -4,3 +4,7 @@ reviews:
     base_branches:
       - "^main$"
       - "^gduguey/.*$"
+  path_filters:
+    - "!web/src/types/schema.ts"
+    - "!**/package-lock.json"
+    - "!uv.lock"
