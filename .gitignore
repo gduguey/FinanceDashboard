@@ -48,4 +48,4 @@ deploy/seed_owner_user.py
 skills-lock.json
 AGENTS.md
 CLAUDE.md
-VISION.md
+VISION*.md
