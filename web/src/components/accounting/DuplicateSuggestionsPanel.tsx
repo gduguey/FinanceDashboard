@@ -3,6 +3,7 @@ import { Archive, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { FilterSelect } from '@/components/shared/FilterSelect'
+import { IncludeExcludeToggle } from '@/components/shared/IncludeExcludeToggle'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
@@ -340,20 +341,25 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
   // group one-by-one without changes would have produced. Each group is
   // its own independent POST rather than one batched request — there's no
   // single endpoint left that accepts more than one merge at a time.
+  // Sequential, not `Promise.all` — each request snapshots the store's
+  // last-known version (see `accountingApi.ts`'s `request`), which only
+  // advances once its own mutation's `onSuccess` invalidation has refetched
+  // the store. Firing every merge in the batch at once would have them all
+  // race the same stale version, so only the first to land would succeed
+  // and every other would spuriously 409 against its own sibling's bump
+  // (same bug class fixed once already in commit 704abe9).
   async function handleBulkAccept() {
-    await Promise.all(
-      checkedRows.map((row) => {
-        const kept = pickDefaultKeptPosting(row)
-        const merge: PostingMergeUpsert = {
-          kept_transaction_id: kept.transaction_id,
-          duplicate_transaction_ids: row.postings
-            .filter((posting) => posting.transaction_id !== kept.transaction_id)
-            .map((posting) => posting.transaction_id),
-          description: null,
-        }
-        return createMerge.mutateAsync(merge)
-      }),
-    )
+    for (const row of checkedRows) {
+      const kept = pickDefaultKeptPosting(row)
+      const merge: PostingMergeUpsert = {
+        kept_transaction_id: kept.transaction_id,
+        duplicate_transaction_ids: row.postings
+          .filter((posting) => posting.transaction_id !== kept.transaction_id)
+          .map((posting) => posting.transaction_id),
+        description: null,
+      }
+      await createMerge.mutateAsync(merge)
+    }
     setCheckedKeys(new Set())
   }
 
@@ -423,15 +429,10 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
               className="w-36"
             />
             {filters.dateFilter && (
-              <Button
-                type="button"
-                variant={filters.dateExclude ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setFilters({ ...filters, dateExclude: !filters.dateExclude })}
-              >
-                {filters.dateExclude ? 'Not' : 'Is'}
-              </Button>
+              <IncludeExcludeToggle
+                exclude={filters.dateExclude}
+                onChange={(dateExclude) => setFilters({ ...filters, dateExclude })}
+              />
             )}
           </div>
           <FilterSelect

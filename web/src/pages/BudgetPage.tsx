@@ -267,7 +267,12 @@ export function BudgetPage() {
     if (mode === 'general') {
       const key = subcategoryId ?? categoryId
       if (isValid) {
-        setGeneralBudget.mutate({ category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency })
+        setGeneralBudget.mutate({
+          category_id: categoryId,
+          subcategory_id: subcategoryId,
+          amount,
+          currency: displayCurrency,
+        })
       } else if (store?.general_budgets[key]) {
         removeGeneralBudget.mutate(key)
       }
@@ -275,7 +280,13 @@ export function BudgetPage() {
     }
     const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
     if (isValid) {
-      setBudget.mutate({ month, category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency })
+      setBudget.mutate({
+        month,
+        category_id: categoryId,
+        subcategory_id: subcategoryId,
+        amount,
+        currency: displayCurrency,
+      })
     } else if ((store?.budgets ?? []).some((budget) => budget.budget_id === budgetId)) {
       removeBudget.mutate(budgetId)
     }
@@ -283,9 +294,29 @@ export function BudgetPage() {
 
   const comparison = expenseCategories
     .map((category) => {
-      const budgetedText = budgetedAmountFor(category.category_id, null)
-      const budgeted = Number.parseFloat(budgetedText)
-      if (budgetedText.trim() === '' || Number.isNaN(budgeted)) return null
+      const parentText = budgetedAmountFor(category.category_id, null)
+      const parentBudget = Number.parseFloat(parentText)
+      let budgeted: number
+      if (parentText.trim() !== '' && !Number.isNaN(parentBudget)) {
+        budgeted = parentBudget
+      } else {
+        // No top-level budget: fall back to the sum of this category's
+        // subcategory budgets, so a category budgeted only on its
+        // subcategories still counts toward the totals (and the Sankey),
+        // matching how the hierarchy renders it below.
+        let childTotal = 0
+        let hasChildBudget = false
+        for (const sub of subcategoriesByParent.get(category.category_id) ?? []) {
+          const childText = budgetedAmountFor(category.category_id, sub.category_id)
+          const childBudget = Number.parseFloat(childText)
+          if (childText.trim() !== '' && !Number.isNaN(childBudget)) {
+            childTotal += childBudget
+            hasChildBudget = true
+          }
+        }
+        if (!hasChildBudget) return null
+        budgeted = childTotal
+      }
       return {
         category_id: category.category_id,
         category_name: category.name,
@@ -435,6 +466,23 @@ export function BudgetPage() {
                       </Fragment>
                     )
                   })}
+                  {comparison.length > 0 && (
+                    <TableRow className="border-t-2 font-semibold">
+                      <TableCell>Total</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(budgetedTotal, displayCurrency)}
+                      </TableCell>
+                      <TableCell className="text-right">—</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(actualTotal, displayCurrency)}
+                      </TableCell>
+                      <TableCell
+                        className={`text-right tabular-nums ${budgetedTotal - actualTotal < 0 ? 'text-destructive' : ''}`}
+                      >
+                        {formatCurrency(budgetedTotal - actualTotal, displayCurrency)}
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             )}
@@ -457,14 +505,6 @@ export function BudgetPage() {
               title="Budgeted cash flow"
             />
           </div>
-        )}
-
-        {comparison.length > 0 && (
-          <p className="text-center text-xs text-muted-foreground">
-            Budgeted {formatCurrency(budgetedTotal, displayCurrency)} vs. actual{' '}
-            {formatCurrency(actualTotal, displayCurrency)} across {comparison.length} budgeted categor
-            {comparison.length === 1 ? 'y' : 'ies'} this month.
-          </p>
         )}
       </div>
     </div>

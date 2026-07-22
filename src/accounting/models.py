@@ -15,7 +15,7 @@ reimbursement legs).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, assert_never, get_args
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -42,6 +42,45 @@ another account you hold. `external_investment` is a placeholder whose
 balance is deliberately never computed here — see `dashboard.net_worth`.
 `other_asset` is a manually-entered net-worth line (property, etc.) with no
 transaction history at all.
+"""
+
+
+def _is_importable_account_kind(kind: AccountKind) -> bool:
+    """Classify one `AccountKind` as importable (has its own CSV standardizer) or not.
+
+    Deliberately exhaustive rather than a bare frozenset literal: every
+    branch below names every `AccountKind` value explicitly, so adding a
+    new one to that `Literal` without updating this function fails the
+    `assert_never` type check at build time — a bare `frozenset` would
+    have silently classified an unhandled new kind as "not importable"
+    forever, with nothing ever flagging that no one actually decided that.
+
+    Returns
+    -------
+    bool
+    """
+    match kind:
+        case "checking" | "savings" | "credit_card" | "vault":
+            return True
+        case "cash" | "loan" | "income_source" | "expense_payee" | "external_investment" | "other_asset":
+            return False
+    assert_never(kind)
+
+
+IMPORTABLE_ACCOUNT_KINDS: frozenset[AccountKind] = frozenset(
+    kind for kind in get_args(AccountKind) if _is_importable_account_kind(kind)
+)
+"""Every `AccountKind` with a registered CSV standardizer (see `importers.ingest.supported_import_kinds`).
+
+An account of one of these kinds might already have its own,
+independently-imported transaction for the same real-world event as some
+other posting's placeholder counterparty — so a `TransferRule` may never
+repoint a placeholder directly onto one of these (see
+`ledger.categorization.apply_rules`); doing so risks the same posting being
+counted twice, once from each side's own import. Repointing straight onto
+any other kind (a virtual `income_source`/`expense_payee`, or a real
+account nothing is ever independently imported for) stays safe, since
+nothing else will ever independently post to it.
 """
 
 CategoryClassification = Literal["income", "expense"]
@@ -186,6 +225,10 @@ class TransferRule(BaseModel):
     later, never read by the matching logic. `active` lets a rule be
     switched off without deleting it — an inactive rule is skipped by
     matching entirely, as if it weren't in the list at all.
+    `excluded_transaction_ids` opts specific, otherwise-matching
+    transactions out of this one rule, without disabling it for anything
+    else it correctly resolves — the excluded transaction simply falls
+    back to whatever the next-matching rule (or no rule) would have done.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -197,6 +240,44 @@ class TransferRule(BaseModel):
     priority: int = 0
     description: str = ""
     active: bool = True
+    excluded_transaction_ids: list[str] = Field(default_factory=list)
+    version: int = 1
+
+
+TransferLinkSource = Literal["manual", "rule"]
+"""Which mechanism confirmed a `TransferLink` — display-only, never read by resolution itself."""
+
+
+class TransferLink(BaseModel):
+    """A confirmed pairing of two transactions as the two sides of one real-world transfer.
+
+    Neither transaction's own postings are ever changed to create this —
+    each side's real leg (already on its own real account from import)
+    stays exactly as it was; the link only changes classification, via
+    `ledger.transfers.apply_transfer_links`: both transactions are excluded
+    from income/expense regardless of what account either placeholder leg
+    still points at. `link_id` is always derived from the two transaction
+    ids sorted once (see `ledger.transfers.make_transfer_link`) — the same
+    real-world pair links (and unlinks) under the same id no matter which
+    side a caller names first. `source` is `"manual"` for a user's own
+    "flag as transfer"/suggestion-panel pick, `"rule"` for one a
+    `TransferRule` found a safe, unique match for at write time (see
+    `ledger.transfers.reconcile_rule_links`) — display-only, never read by
+    resolution itself. `rule_id`, set only when `source == "rule"`, names
+    *which* rule found it — a plain historical label, not a foreign key
+    enforced anywhere: if that rule is later deleted, this link keeps
+    remembering which one originally created it rather than the id turning
+    meaningless, the same way a bank statement keeps a routing number that
+    later stops being valid.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    link_id: str = Field(min_length=1)
+    transaction_id_a: str = Field(min_length=1)
+    transaction_id_b: str = Field(min_length=1)
+    source: TransferLinkSource = "manual"
+    rule_id: str | None = None
 
 
 class CategoryPattern(BaseModel):
@@ -222,6 +303,7 @@ class CategoryPattern(BaseModel):
     subcategory_id: str | None = None
     priority: int = 0
     active: bool = True
+    version: int = 1
 
 
 class OtherAsset(BaseModel):
@@ -376,6 +458,7 @@ class Goal(BaseModel):
     target_date: datetime
     color: str = Field(min_length=1)
     created_at: datetime
+    version: int = 1
 
 
 GoalContributionOrigin = Literal["manual", "automation"]

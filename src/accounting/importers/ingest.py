@@ -26,7 +26,8 @@ from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
 from accounting.ledger.replay import validate_balanced
-from accounting.models import Posting
+from accounting.ledger.transfers import reconcile_and_persist_rule_links
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Posting
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.statement_archive import StatementArchive
 from db.base import derive_id, natural_keys_by_id
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
-    from accounting.models import Category
+    from accounting.models import Account, Category
     from accounting.store import AccountingStore
 
 _Fingerprint = tuple[str, datetime, float, str]
@@ -174,12 +175,17 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
 
     `transactions`/`postings` are upserted and pruned rather than deleted
     wholesale and reinserted — `manual_overrides`, `posting_splits`,
-    `posting_merges`, and `goal_contributions.source_posting_id` all
-    foreign-key into them (see `accounting.store.save_store`'s own
-    `_upsert_and_prune` for the same reasoning applied to accounts,
-    categories, and tags). `posting_tags` has nothing foreign-keying into
-    it, so it's safe to delete in full and rebuild from `ledger`'s own
-    `tag_ids` column every time.
+    `posting_merges`, `transfer_links`, `transfer_rule_exclusions`, and
+    `goal_contributions.source_posting_id` all foreign-key into them (see
+    `accounting.store.save_store`'s own `_upsert_and_prune` for the same
+    reasoning applied to accounts, categories, and tags). Pruning a
+    transaction still referenced by one of these needs `transfer_links`
+    handled explicitly (see below); `posting_merges`/`transfer_rule_exclusions`
+    lean on `ondelete="CASCADE"` instead, since each references its
+    transaction directly rather than through a separate join table.
+    `posting_tags` has nothing foreign-keying into it, so it's safe to
+    delete in full and rebuild from `ledger`'s own `tag_ids` column every
+    time.
 
     Parameters
     ----------
@@ -239,6 +245,25 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     existing_transaction_ids = {row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id)}
     removed_transaction_ids = existing_transaction_ids - transaction_ids
     if removed_transaction_ids:
+        # A `TransferLink` has no FK of its own into `transactions` — only
+        # its `TransferLinkedTransaction` children do — so cascading that
+        # child row alone would leave the link's other side referencing a
+        # link with only one member. Deleting the whole link here instead
+        # (its children cascade off `link_id`) removes both sides together.
+        # `PostingMerge`/`PostingMergeDuplicate`/`TransferRuleExclusion`
+        # don't need the same handling: each references its transaction
+        # directly, so `ondelete="CASCADE"` on those columns is enough.
+        stale_link_ids = {
+            row.link_id
+            for row in session
+            .query(adb.TransferLinkedTransaction.link_id)
+            .filter_by(user_id=user_id)
+            .filter(adb.TransferLinkedTransaction.transaction_id.in_(removed_transaction_ids))
+        }
+        if stale_link_ids:
+            session.query(adb.TransferLink).filter_by(user_id=user_id).filter(
+                adb.TransferLink.id.in_(stale_link_ids)
+            ).delete(synchronize_session=False)
         session.query(adb.Transaction).filter_by(user_id=user_id).filter(
             adb.Transaction.id.in_(removed_transaction_ids)
         ).delete(synchronize_session=False)
@@ -587,6 +612,7 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     merged = _merge_ledger(existing, new_postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
+    reconcile_and_persist_rule_links(merged, session, user_id=user_id)
 
     return IngestResult(
         account_id=account_id,
@@ -594,6 +620,30 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
         total_posting_count=len(merged),
         skipped_rows=skip_info,
     )
+
+
+def _reject_non_importable_kind(account: Account, account_id: str) -> None:
+    """Refuse to canonically import into an account kind nothing should ever independently import into.
+
+    Unlike `ingest_csv`, this path takes an arbitrary already-registered
+    `account_id` rather than being restricted by `_STANDARDIZERS` to a
+    fixed set of (institution, kind) pairs — so it needs its own gate to
+    keep the same guarantee `IMPORTABLE_ACCOUNT_KINDS` exists for: a
+    `TransferRule` counterparty outside that set is trusted to never have
+    its own independently-imported statement, and direct-repoint safety
+    (see `ledger.categorization.apply_rules`) depends on that staying true.
+
+    Raises
+    ------
+    UnsupportedImportError
+        If `account.kind` isn't one of `IMPORTABLE_ACCOUNT_KINDS`.
+    """
+    if account.kind not in IMPORTABLE_ACCOUNT_KINDS:
+        message = (
+            f"Cannot import a statement into {account_id!r} — {account.kind!r} accounts have no independent "
+            "importer; only checking, savings, credit_card, and vault accounts can be canonically imported."
+        )
+        raise UnsupportedImportError(message)
 
 
 @dataclass(frozen=True)
@@ -624,7 +674,9 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     for how it guesses column names and formats instead. Any category or
     subcategory named in the file that doesn't already exist is created and
     persisted here, the same way a rule creates a new counterparty account
-    the first time it matches.
+    the first time it matches. Still refuses to import into a non-`IMPORTABLE_ACCOUNT_KINDS`
+    account (see `_reject_non_importable_kind`) — this path takes an
+    arbitrary registered account, so it needs that same gate explicitly.
 
     Parameters
     ----------
@@ -654,6 +706,7 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     """
     store = load_store(session, user_id=user_id)
     account = store.accounts[account_id]
+    _reject_non_importable_kind(account, account_id)
 
     _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config, user_id)
     outcome = standardize_canonical_csv(
@@ -702,6 +755,7 @@ def ingest_canonical_excel(
     """
     store = load_store(session, user_id=user_id)
     account = store.accounts[account_id]
+    _reject_non_importable_kind(account, account_id)
 
     _archive_raw_statement(account.institution, account_id, file_bytes, config, user_id, suffix="xlsx")
     outcome = standardize_canonical_excel(
@@ -731,6 +785,7 @@ def _apply_canonical_outcome(
     merged = _merge_ledger(existing, outcome.postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
+    reconcile_and_persist_rule_links(merged, session, user_id=user_id)
 
     return CanonicalIngestResult(
         account_id=account_id,
@@ -837,4 +892,5 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
     validate_balanced(ledger)
     _write_ledger(ledger, session, user_id=user_id)
+    reconcile_and_persist_rule_links(ledger, session, user_id=user_id)
     return ledger

@@ -20,6 +20,7 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CategoryPattern,
+    CompoundingFrequency,
     CurrencyCode,
     EarningsStatement,
     GeneralBudget,
@@ -35,8 +36,12 @@ from accounting.models import (
     PostingSplit,
     PostingSplitLeg,
     RecurringAddition,
+    RecurringAdditionFrequency,
+    RecurringAdditionMode,
     SimulatorScenario,
     Tag,
+    TransferLink,
+    TransferLinkSource,
     TransferRule,
     WithdrawalPriorityEntry,
 )
@@ -65,6 +70,7 @@ class AccountingStoreResponse(BaseModel):
     simulator_scenarios: list[SimulatorScenario]
     posting_splits: dict[str, PostingSplit]
     posting_merges: dict[str, PostingMerge]
+    transfer_links: list[TransferLink]
     general_budgets: dict[str, GeneralBudget]
     category_patterns: dict[str, CategoryPattern]
     goals: dict[str, Goal]
@@ -152,10 +158,232 @@ class GeneralBudgetUpsert(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+class TransferRuleCreate(BaseModel):
+    """Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+
+    `rule_id` is never taken from the client — derived server-side from
+    `(description_contains, account_id, counterparty_account_id)`, the
+    rule's own matching criteria, the same way `BudgetUpsert`'s id comes
+    from a budget's own `(month, category_id, subcategory_id)`. Posting
+    this twice for the same criteria replaces the existing rule rather
+    than duplicating it.
+    """
+
+    description_contains: str = Field(min_length=1)
+    account_id: str | None = None
+    counterparty_account_id: str | None = None
+    priority: int = 100
+    description: str = ""
+
+
+class TransferRuleUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+
+    Unlike `TransferRuleCreate`, this never changes which rule is being
+    edited — the rule stays identified by the `rule_id` path param even if
+    `description_contains`/`account_id`/`counterparty_account_id` (its
+    matching criteria) change, so an edit never silently becomes a
+    different rule. `expected_version` is the rule's own `version` field
+    the client last saw — see `db.base.check_and_bump_row_version`, which
+    raises a 409 if it no longer matches what's persisted. It's `None`
+    (skip the check, last-write-wins) only for an idempotent toggle of the
+    `active` flag, where losing the race against a newer flip of the same
+    switch is the wanted outcome, not a conflict — see
+    `docs/app-stack/optimistic-concurrency-versioning.md`.
+    """
+
+    description_contains: str = Field(min_length=1)
+    account_id: str | None = None
+    counterparty_account_id: str | None = None
+    priority: int
+    description: str = ""
+    active: bool = True
+    excluded_transaction_ids: list[str] = Field(default_factory=list)
+    expected_version: int | None = None
+
+
+class CategoryPatternCreate(BaseModel):
+    """Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+
+    `pattern_id` is derived server-side the same way `TransferRuleCreate`
+    derives `rule_id` — from `(description_contains, category_id,
+    subcategory_id)`, this pattern's own matching criteria.
+    """
+
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int = 100
+
+
+class CategoryPatternUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+
+    Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
+    stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
+    the client last saw — see `db.base.check_and_bump_row_version`, which raises a 409 on a mismatch.
+    It's `None` (skip the check, last-write-wins) only for an idempotent toggle of the `active` flag,
+    the same exemption `TransferRuleUpdate.expected_version` documents.
+    """
+
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int
+    active: bool = True
+    expected_version: int | None = None
+
+
+class GoalCreate(BaseModel):
+    """Request body for `POST /api/accounting/goals` — creates one new goal.
+
+    `goal_id`, `color`, and `created_at` are never taken from the client —
+    a goal is an arbitrary user record with no natural key two "the same"
+    goal would collide on (two goals can validly share a name), so the
+    server mints an opaque id, the same way `GoalContributionCreate`
+    already does for a contribution; `color` is picked to be distinct
+    from every color already in use, the same way
+    `store.next_available_color` already works for categories.
+    """
+
+    name: str = Field(min_length=1)
+    target_amount: float
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+
+
+class GoalUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+
+    Unlike `GoalCreate`, this never mints a new id or color — the goal
+    stays identified by the `goal_id` path param, and `color` is an
+    explicit field here (never re-picked) since editing one goal should
+    never shuffle the color already showing everywhere else it's used.
+    `expected_version` is the goal's own `version` field the client last
+    saw — see `db.base.check_and_bump_row_version`, which raises a 409 if
+    it no longer matches what's persisted.
+    """
+
+    name: str = Field(min_length=1)
+    target_amount: float
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+    color: str = Field(min_length=1)
+    expected_version: int
+
+
+class SimulatorScenarioCreate(BaseModel):
+    """Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+
+    `scenario_id` is never taken from the client — two scenarios can
+    validly share every input field (a user comparing "what if I ran this
+    twice"), so there's no meaningful content to derive an id from; the
+    server mints an opaque one instead, the same reasoning as `GoalCreate`.
+    """
+
+    name: str = Field(min_length=1)
+    initial_capital: float
+    monthly_contribution: float
+    horizon_years: float
+    annual_rate_pct: float
+    compounding_frequency: CompoundingFrequency = "monthly"
+    currency: CurrencyCode = "USD"
+
+
+class RecurringAdditionCreate(BaseModel):
+    """Request body for `POST /api/accounting/recurring-additions` — creates one new automation rule.
+
+    `addition_id` is server-minted, same reasoning as `GoalCreate`.
+    `priority` is never taken from the client either — a newly created
+    rule always goes last (one past the current lowest-priority row),
+    matching the Goals page's own "append at the end of the ordered list"
+    behavior; drag-and-drop reordering still goes through the existing
+    `PUT /recurring-additions`, unaffected by this.
+    """
+
+    goal_id: str = Field(min_length=1)
+    start_date: date
+    frequency: RecurringAdditionFrequency
+    end_date: date | None = None
+    mode: RecurringAdditionMode
+    value: float = 0.0
+    currency: CurrencyCode = "USD"
+
+
+class RecurringAdditionUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
+
+    A single-rule field edit (amount, dates, frequency, mode, goal), scoped
+    to its own `addition_id` so it never blanket-reinserts every rule.
+    Carries `priority` unchanged (the row keeps its place); re-ordering the
+    whole list is still `PUT /recurring-additions`. No `expected_version`:
+    like a budget cell, an edit of one rule is last-write-wins on that rule
+    (see `docs/app-stack/optimistic-concurrency-versioning.md`).
+    """
+
+    goal_id: str = Field(min_length=1)
+    start_date: date
+    frequency: RecurringAdditionFrequency
+    end_date: date | None = None
+    mode: RecurringAdditionMode
+    value: float = 0.0
+    currency: CurrencyCode = "USD"
+    priority: int
+
+
+class OtherAssetCreate(BaseModel):
+    """Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+
+    `asset_id` is server-minted, same reasoning as `GoalCreate` — two
+    assets can validly share a name (e.g. two rental properties).
+    """
+
+    name: str = Field(min_length=1)
+    value: float
+    currency: CurrencyCode = "USD"
+    note: str = ""
+
+
 class BudgetIdResponse(BaseModel):
     """Response body naming one budget, for endpoints whose only real effect is removing something."""
 
     budget_id: str
+
+
+class TransferRuleIdResponse(BaseModel):
+    """Response body naming one transfer rule, for endpoints whose only real effect is removing something."""
+
+    rule_id: str
+
+
+class GoalIdResponse(BaseModel):
+    """Response body naming one goal, for endpoints whose only real effect is removing something."""
+
+    goal_id: str
+
+
+class CategoryPatternIdResponse(BaseModel):
+    """Response body naming one category pattern, for endpoints whose only real effect is removing something."""
+
+    pattern_id: str
+
+
+class TagIdResponse(BaseModel):
+    """Response body naming one tag, for endpoints whose only real effect is removing something."""
+
+    tag_id: str
+
+
+class OtherAssetIdResponse(BaseModel):
+    """Response body naming one manually-entered asset, for endpoints whose only real effect is removing something."""
+
+    asset_id: str
+
+
+class SimulatorScenarioIdResponse(BaseModel):
+    """Response body naming one simulator scenario, for endpoints whose only real effect is removing something."""
+
+    scenario_id: str
 
 
 class GeneralBudgetKeyResponse(BaseModel):
@@ -435,14 +663,35 @@ class RebuildResult(BaseModel):
 class PostingRow(Posting):
     """One posting as displayed on the Transactions page — a `Posting` plus its current resolution state.
 
-    The three extra fields are display-only, bolted onto the resolved
-    ledger by `get_postings` itself rather than stored on the posting —
-    see `ledger.pending`/`ledger.categorization.resolved_transfer_rule_ids_by_transaction`.
+    The extra fields are display-only, bolted onto the resolved ledger by
+    `get_postings` itself rather than stored on the posting — see
+    `ledger.pending`/`ledger.categorization.resolved_transfer_rule_ids_by_transaction`/
+    `ledger.transfers.apply_transfer_links`. `resolved_by_transfer_rule_id`
+    is only ever set for a rule that *directly* repointed this posting's
+    placeholder (a safe, non-`IMPORTABLE_ACCOUNT_KINDS` counterparty) —
+    never for one a `TransferLink` (manual or rule-found) resolved
+    instead, which shows up via `is_linked_transfer`/`linked_transaction_id`/
+    `transfer_link_source` regardless of which account this posting's own
+    placeholder leg still points at. `manual_transfer_override_posting_id`
+    is set (to the posting actually carrying the override) on both legs of
+    a transaction whose placeholder was directly repointed via a manual
+    `ManualOverride.account_id`, the same way `resolved_by_transfer_rule_id`
+    is set on both legs of a rule-repointed one — and since a manual
+    override is applied *after* rules in the resolution pipeline (see
+    `api.dependencies._resolved_postings_and_store`) and so always wins if
+    both somehow apply to the same transaction, `get_postings` never sets
+    `resolved_by_transfer_rule_id` on a transaction that also has one of
+    these, so the two are mutually exclusive here — never "via rule" when
+    a manual override is what actually decided the account shown.
     """
 
     pending_source: PendingSuggestionSource | None = None
     pending_selected: bool = True
     resolved_by_transfer_rule_id: str | None = None
+    manual_transfer_override_posting_id: str | None = None
+    is_linked_transfer: bool = False
+    linked_transaction_id: str | None = None
+    transfer_link_source: TransferLinkSource | None = None
 
 
 class PostingIdResponse(BaseModel):
@@ -469,6 +718,25 @@ class PostingMergeIdResponse(BaseModel):
     """Response body naming one posting merge, for endpoints whose only real effect is removing something."""
 
     merge_id: str
+
+
+class TransferLinkCreate(BaseModel):
+    """Request body for `POST /api/accounting/transfer-links` — confirms two transactions as one transfer's two sides.
+
+    `link_id`/ordering are never taken from the client — derived
+    server-side from the two ids sorted once (see
+    `ledger.transfers.make_transfer_link`), so confirming the same pair
+    from either side is idempotent.
+    """
+
+    transaction_id_a: str = Field(min_length=1)
+    transaction_id_b: str = Field(min_length=1)
+
+
+class TransferLinkIdResponse(BaseModel):
+    """Response body naming one transfer link, for endpoints whose only real effect is removing something."""
+
+    link_id: str
 
 
 class GoalContributionCreate(BaseModel):
@@ -511,6 +779,12 @@ class GoalContributionIdResponse(BaseModel):
     """Response body naming one goal contribution, for endpoints whose only real effect is removing something."""
 
     contribution_id: str
+
+
+class RecurringAdditionIdResponse(BaseModel):
+    """Response body naming one recurring addition, for endpoints whose only real effect is removing something."""
+
+    addition_id: str
 
 
 class LlmProviderUsage(BaseModel):
@@ -718,7 +992,7 @@ class SpendCurvePoint(BaseModel):
 
     day: int
     current_month_cumulative: float
-    average_previous_months_cumulative: float
+    average_previous_months_cumulative: float | None
 
 
 class BudgetComparisonRow(BaseModel):

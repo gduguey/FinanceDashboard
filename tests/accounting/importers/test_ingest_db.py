@@ -22,7 +22,8 @@ from accounting.importers.ingest import (
     remap_ledger_category_ids,
     uncategorize_ledger_postings,
 )
-from accounting.models import Account, Posting, Tag
+from accounting.ledger.transfers import make_transfer_link
+from accounting.models import Account, Goal, GoalContribution, Posting, PostingMerge, Tag, TransferRule
 from accounting.store import load_store, save_store
 
 if TYPE_CHECKING:
@@ -237,3 +238,110 @@ def test_uncategorize_ledger_postings_leaves_unrelated_postings_untouched(
     rows = {row["posting_id"]: row["category_id"] for row in load_ledger(db_session, user_id=test_user_id).to_dicts()}
     assert rows["p1"] is None
     assert rows["p2"] == "expense:transport"
+
+
+def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_link_deletes_the_whole_link(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1"), _posting("p2", "t2")), db_session, user_id=test_user_id)
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(update={"transfer_links": [make_transfer_link("t1", "t2")]})
+    save_store(store, db_session, user_id=test_user_id)
+
+    # Dropping t1 (as a real rebuild would if its raw statement disappeared)
+    # must not raise a foreign-key error — and must take t2's membership in
+    # the same link with it rather than leaving a link with only one side.
+    _write_ledger(_frame(_posting("p2", "t2")), db_session, user_id=test_user_id)
+
+    assert load_store(db_session, user_id=test_user_id).transfer_links == []
+
+
+def test_write_ledger_dropping_a_transaction_kept_by_a_posting_merge_deletes_the_whole_merge(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1"), _posting("p2", "t2")), db_session, user_id=test_user_id)
+    store = load_store(db_session, user_id=test_user_id)
+    merge = PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])
+    store = store.model_copy(update={"posting_merges": {"m1": merge}})
+    save_store(store, db_session, user_id=test_user_id)
+
+    # Dropping t1, the merge's own kept_transaction_id, must not raise — and
+    # must remove the merge entirely (its duplicate's own reference, cascading
+    # off merge_id, would otherwise point at a merge decision that no longer
+    # names a surviving transaction).
+    _write_ledger(_frame(_posting("p2", "t2")), db_session, user_id=test_user_id)
+
+    assert load_store(db_session, user_id=test_user_id).posting_merges == {}
+
+
+def test_write_ledger_dropping_a_duplicate_transaction_removes_just_that_one_from_its_merge(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    _write_ledger(
+        _frame(_posting("p1", "t1"), _posting("p2", "t2"), _posting("p3", "t3")), db_session, user_id=test_user_id
+    )
+    store = load_store(db_session, user_id=test_user_id)
+    merge = PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2", "t3"])
+    store = store.model_copy(update={"posting_merges": {"m1": merge}})
+    save_store(store, db_session, user_id=test_user_id)
+
+    # Dropping just one duplicate (t2) must not raise, and the merge itself
+    # (kept_transaction_id=t1, still-real duplicate t3) survives untouched.
+    _write_ledger(_frame(_posting("p1", "t1"), _posting("p3", "t3")), db_session, user_id=test_user_id)
+
+    reloaded = load_store(db_session, user_id=test_user_id).posting_merges["m1"]
+    assert reloaded.kept_transaction_id == "t1"
+    assert reloaded.duplicate_transaction_ids == ["t3"]
+
+
+def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_rule_exclusion_removes_just_that_exclusion(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
+    store = load_store(db_session, user_id=test_user_id)
+    rule = TransferRule(rule_id="r1", description_contains="x", excluded_transaction_ids=["t1"])
+    store = store.model_copy(update={"rules": [rule]})
+    save_store(store, db_session, user_id=test_user_id)
+
+    # Dropping the excluded transaction itself must not raise — the
+    # exclusion row is single-transaction, nothing else to keep in sync.
+    _write_ledger(_frame(), db_session, user_id=test_user_id)
+
+    reloaded = load_store(db_session, user_id=test_user_id).rules[0]
+    assert reloaded.excluded_transaction_ids == []
+
+
+def test_write_ledger_dropping_a_posting_a_goal_contribution_traces_back_to_keeps_the_contribution(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
+    store = load_store(db_session, user_id=test_user_id)
+    goal = Goal(
+        goal_id="g1",
+        name="Emergency fund",
+        target_amount=1000,
+        target_date=datetime(2027, 1, 1, tzinfo=UTC),
+        color="#abcdef",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    contribution = GoalContribution(
+        contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5, tzinfo=UTC), amount=100, source_posting_id="p1"
+    )
+    store = store.model_copy(update={"goals": {"g1": goal}, "goal_contributions": {"gc1": contribution}})
+    save_store(store, db_session, user_id=test_user_id)
+
+    # Dropping the posting the contribution traces back to must not raise —
+    # and, unlike TransferLink/PostingMerge, must NOT delete the
+    # contribution itself: its amount/date is the real financial record,
+    # source_posting_id is purely a traceability link (see
+    # `models.GoalContribution`'s own docstring). Only the link clears.
+    _write_ledger(_frame(), db_session, user_id=test_user_id)
+
+    reloaded = load_store(db_session, user_id=test_user_id).goal_contributions["gc1"]
+    assert reloaded.amount == 100
+    assert reloaded.source_posting_id is None

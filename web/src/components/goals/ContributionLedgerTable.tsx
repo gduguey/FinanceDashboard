@@ -1,9 +1,11 @@
 import { AlertTriangle, Plus, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { FilterSelect } from '@/components/shared/FilterSelect'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -17,13 +19,33 @@ import {
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { BASE_CURRENCY, convertCurrency } from '@/lib/currency'
+import { FILTER_ALL as ALL, matchesFilter } from '@/lib/filters'
 import { formatCurrency } from '@/lib/format'
 import type { Goal, GoalContribution } from '@/types/accounting'
 
-const ALL = '__all__'
-
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+// Locally-controlled so typing a note doesn't fire one PATCH per keystroke — it commits once, on blur
+// (matching how the Amount field uses `onCommit`). Without this, several in-flight per-keystroke writes
+// used to race each other and could surface a spurious version-conflict toast to a user just typing.
+function NoteCell({ value, onCommit }: { value: string; onCommit: (note: string) => void }) {
+  const [draft, setDraft] = useState(value)
+  // Re-sync when the persisted value changes out from under us (e.g. a refetch), but never mid-typing.
+  const [lastSynced, setLastSynced] = useState(value)
+  if (value !== lastSynced) {
+    setLastSynced(value)
+    setDraft(value)
+  }
+  return (
+    <Input
+      className="h-7 text-xs"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => draft !== value && onCommit(draft)}
+    />
+  )
 }
 
 // Reuses the Transactions table's own patterns (per-column is/is-not
@@ -60,8 +82,8 @@ export function ContributionLedgerTable({
   const filtered = useMemo(
     () =>
       rows
-        .filter((row) => goalFilter === ALL || goalExclude !== (row.goal_id === goalFilter))
-        .filter((row) => originFilter === ALL || originExclude !== (row.origin === originFilter)),
+        .filter((row) => matchesFilter(row.goal_id === goalFilter, goalFilter, goalExclude))
+        .filter((row) => matchesFilter(row.origin === originFilter, originFilter, originExclude)),
     [rows, goalFilter, goalExclude, originFilter, originExclude],
   )
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'date')
@@ -143,61 +165,29 @@ export function ContributionLedgerTable({
             variant="ghost"
             size="icon"
             onClick={addRow}
-            disabled={goalList.length === 0}
+            disabled={goalList.length === 0 || createContribution.isPending}
             title="Add a contribution"
           >
             <Plus className="size-4" />
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1">
-            <Select value={goalFilter} onValueChange={(value) => value && setGoalFilter(value)}>
-              <SelectTrigger size="sm" className="min-w-36">
-                <SelectValue items={goalItems} />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(goalItems).map(([id, name]) => (
-                  <SelectItem key={id} value={id}>
-                    {name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {goalFilter !== ALL && (
-              <Button
-                variant={goalExclude ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setGoalExclude((v) => !v)}
-              >
-                {goalExclude ? 'Not' : 'Is'}
-              </Button>
-            )}
-          </div>
-          <div className="flex items-center gap-1">
-            <Select value={originFilter} onValueChange={(value) => value && setOriginFilter(value)}>
-              <SelectTrigger size="sm" className="min-w-28">
-                <SelectValue items={originItems} />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(originItems).map(([id, name]) => (
-                  <SelectItem key={id} value={id}>
-                    {name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {originFilter !== ALL && (
-              <Button
-                variant={originExclude ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setOriginExclude((v) => !v)}
-              >
-                {originExclude ? 'Not' : 'Is'}
-              </Button>
-            )}
-          </div>
+          <FilterSelect
+            value={goalFilter}
+            exclude={goalExclude}
+            items={goalItems}
+            width="min-w-36"
+            onValueChange={setGoalFilter}
+            onExcludeChange={setGoalExclude}
+          />
+          <FilterSelect
+            value={originFilter}
+            exclude={originExclude}
+            items={originItems}
+            width="min-w-28"
+            onValueChange={setOriginFilter}
+            onExcludeChange={setOriginExclude}
+          />
         </div>
       </CardHeader>
       <CardContent>
@@ -226,7 +216,6 @@ export function ContributionLedgerTable({
                   Amount
                 </SortableTableHead>
                 <TableHead>Note</TableHead>
-                <TableHead>Source</TableHead>
                 <SortableTableHead active={sort.key === 'origin'} desc={sort.desc} onClick={() => toggleSort('origin')}>
                   Origin
                 </SortableTableHead>
@@ -274,27 +263,23 @@ export function ContributionLedgerTable({
                           <TooltipContent>{warnings[contribution.contribution_id]}</TooltipContent>
                         </Tooltip>
                       )}
-                      <Input
-                        type="number"
+                      <NumberInput
                         className="h-7 w-24 text-right text-xs"
                         value={contribution.amount}
-                        onChange={(event) =>
-                          update(contribution.contribution_id, { amount: Number(event.target.value) })
-                        }
-                        onBlur={() => checkContribution(contribution)}
+                        onCommit={(amount) => {
+                          const resolved = amount ?? 0
+                          update(contribution.contribution_id, { amount: resolved })
+                          checkContribution({ ...contribution, amount: resolved })
+                        }}
                       />
                       <span className="w-9 text-left text-xs text-muted-foreground">{contribution.currency}</span>
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Input
-                      className="h-7 text-xs"
+                    <NoteCell
                       value={contribution.note}
-                      onChange={(event) => update(contribution.contribution_id, { note: event.target.value })}
+                      onCommit={(note) => update(contribution.contribution_id, { note })}
                     />
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {contribution.source_posting_id ?? '—'}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {contribution.origin === 'automation'

@@ -1,18 +1,24 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Archive } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { useDismissSuggestion, useSetTransferRules, useTransferSuggestions } from '@/hooks/useAccountingData'
+import {
+  useCreateTransferLink,
+  useCreateTransferRule,
+  useDismissSuggestion,
+  useTransferSuggestions,
+} from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
+import type { Account, Posting, TransferRule, TransferSuggestion } from '@/types/accounting'
 
 function suggestionKey(suggestion: TransferSuggestion): string {
   return suggestion.suggestion_id
@@ -40,27 +46,38 @@ type VirtualEntry =
 // contains X, repoint to B" and the mirror for B. Adding only one leaves
 // the other transaction exactly as it was, so both are always added
 // together as one action.
-function suggestedRuleDrafts(suggestion: TransferSuggestion): TransferRule[] {
+interface RuleDraft {
+  description_contains: string
+  account_id: string | null
+  counterparty_account_id: string | null
+}
+
+function suggestedRuleDrafts(suggestion: TransferSuggestion): RuleDraft[] {
   return [
     {
-      rule_id: `transfer:${suggestion.posting_id}`,
       description_contains: suggestion.description,
       account_id: suggestion.account_id,
       counterparty_account_id: suggestion.other_account_id,
-      priority: 100,
-      description: '',
-      active: true,
     },
     {
-      rule_id: `transfer:${suggestion.other_posting_id}`,
       description_contains: suggestion.other_description,
       account_id: suggestion.other_account_id,
       counterparty_account_id: suggestion.account_id,
-      priority: 100,
-      description: '',
-      active: true,
     },
   ]
+}
+
+// A rule's identity is its matching criteria (see `post_transfer_rule`'s
+// content-derived id), so "already added" means an existing rule with the
+// same criteria — never an id comparison, since the draft has no id of its
+// own until the server mints one.
+function draftAlreadyAdded(rules: TransferRule[], draft: RuleDraft): boolean {
+  return rules.some(
+    (rule) =>
+      rule.description_contains === draft.description_contains &&
+      (rule.account_id ?? null) === draft.account_id &&
+      (rule.counterparty_account_id ?? null) === draft.counterparty_account_id,
+  )
 }
 
 function accountName(accounts: Record<string, Account>, accountId: string | null): string {
@@ -73,10 +90,10 @@ function DraftRuleCard({
   alreadyAdded,
   onChange,
 }: {
-  draft: TransferRule
+  draft: RuleDraft
   accounts: Record<string, Account>
   alreadyAdded: boolean
-  onChange: (draft: TransferRule) => void
+  onChange: (draft: RuleDraft) => void
 }) {
   return (
     <div className="space-y-2 rounded-md border p-3">
@@ -104,39 +121,43 @@ function SuggestedRulePair({
   suggestion,
   accounts,
   existingRules,
+  transactionIds,
   onAdd,
+  onLink,
   onDismiss,
+  linkPending,
 }: {
   suggestion: TransferSuggestion
   accounts: Record<string, Account>
   existingRules: TransferRule[]
-  onAdd: (rules: TransferRule[]) => void
+  transactionIds: { transactionId: string; otherTransactionId: string } | null
+  onAdd: (drafts: RuleDraft[]) => void
+  onLink: (transactionId: string, otherTransactionId: string) => void
   onDismiss: () => void
+  linkPending: boolean
 }) {
   const [drafts, setDrafts] = useState(() => suggestedRuleDrafts(suggestion))
-  const existingRuleIds = new Set(existingRules.map((rule) => rule.rule_id))
-  const alreadyAdded = drafts.map((draft) => existingRuleIds.has(draft.rule_id))
+  const alreadyAdded = drafts.map((draft) => draftAlreadyAdded(existingRules, draft))
   const allAdded = alreadyAdded.every(Boolean)
 
-  function updateDraft(index: number, next: TransferRule) {
+  function updateDraft(index: number, next: RuleDraft) {
     setDrafts((prev) => prev.map((draft, draftIndex) => (draftIndex === index ? next : draft)))
   }
 
   function handleAddBoth() {
-    const toAdd = drafts.filter((_, index) => !alreadyAdded[index])
-    onAdd(toAdd)
+    onAdd(drafts.filter((_, index) => !alreadyAdded[index]))
   }
 
   return (
     <div className="space-y-3">
       <p className="max-w-xl text-xs break-words text-muted-foreground">
-        Both rules below are needed to fully resolve this transfer — each one only fixes the transaction on its own
-        account; the other side stays exactly as it is until its own rule is added too.
+        Two ways to resolve this: link just this one pair (a one-off fact about these two transactions), or add rules
+        that also catch every future occurrence of this same description.
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         {drafts.map((draft, index) => (
           <DraftRuleCard
-            key={draft.rule_id}
+            key={`${draft.account_id ?? 'none'}:${draft.counterparty_account_id ?? 'none'}`}
             draft={draft}
             accounts={accounts}
             alreadyAdded={alreadyAdded[index]}
@@ -144,7 +165,20 @@ function SuggestedRulePair({
           />
         ))}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!transactionIds || linkPending}
+          title={
+            transactionIds
+              ? 'Link just this pair, without adding an ongoing rule'
+              : "Couldn't resolve these postings to transactions"
+          }
+          onClick={() => transactionIds && onLink(transactionIds.transactionId, transactionIds.otherTransactionId)}
+        >
+          Link this pair
+        </Button>
         <Button size="sm" disabled={allAdded} onClick={handleAddBoth}>
           {allAdded ? 'Both rules added' : 'Add both rules'}
         </Button>
@@ -165,17 +199,38 @@ function SuggestedRulePair({
 export function TransferSuggestionsPanel({
   accounts,
   rules,
+  postings,
 }: {
   accounts: Record<string, Account>
   rules: TransferRule[]
+  postings: Posting[]
 }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.transfer-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
   const { data, isLoading, isError, error } = useTransferSuggestions(windowDays)
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
-  const setRules = useSetTransferRules()
+  const createRule = useCreateTransferRule()
   const dismissSuggestion = useDismissSuggestion()
+  const createTransferLink = useCreateTransferLink()
   const { sorted, sort, toggleSort } = useSortableRows(data ?? [], 'posted_at')
+  // A suggestion pairs two postings, never transactions directly — needed
+  // to turn "link this pair" into the transaction ids `POST /transfer-links`
+  // actually takes.
+  const transactionIdByPostingId = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const posting of postings) lookup.set(posting.posting_id, posting.transaction_id)
+    return lookup
+  }, [postings])
+
+  function transactionIdsFor(suggestion: TransferSuggestion) {
+    const transactionId = transactionIdByPostingId.get(suggestion.posting_id)
+    const otherTransactionId = transactionIdByPostingId.get(suggestion.other_posting_id)
+    return transactionId && otherTransactionId ? { transactionId, otherTransactionId } : null
+  }
+
+  function linkPair(transactionId: string, otherTransactionId: string) {
+    createTransferLink.mutate({ transaction_id_a: transactionId, transaction_id_b: otherTransactionId })
+  }
 
   function dismiss(suggestion: TransferSuggestion) {
     dismissSuggestion.mutate({
@@ -206,9 +261,35 @@ export function TransferSuggestionsPanel({
     }
   }
 
-  function addRules(newRules: TransferRule[]) {
-    if (newRules.length === 0) return
-    setRules.mutate([...rules, ...newRules])
+  // Sequential, not fired in parallel — each request carries a snapshot of
+  // the last-known store version (see `accountingApi.ts`'s `request`), which
+  // only advances once this mutation's own `onSuccess` invalidation has
+  // refetched the store. Firing both at once would have them race on that
+  // same stale version, so the second create would spuriously 409 even
+  // though nothing external actually conflicted.
+  async function addRules(newDrafts: RuleDraft[]) {
+    let added = 0
+    try {
+      for (const draft of newDrafts) {
+        await createRule.mutateAsync({
+          description_contains: draft.description_contains,
+          account_id: draft.account_id,
+          counterparty_account_id: draft.counterparty_account_id,
+          priority: 100,
+          description: '',
+        })
+        added += 1
+      }
+    } catch {
+      // The loop is sequential (see above), so a mid-batch failure leaves the
+      // earlier rules saved and the rest untried — say exactly that instead of
+      // silently swallowing it and leaving "Add both rules" half-applied.
+      toast.error(
+        added > 0
+          ? `Added ${added} of ${newDrafts.length} rules — the rest failed, try again.`
+          : 'Could not add the rule — try again.',
+      )
+    }
   }
 
   const virtualEntries = useMemo(
@@ -392,8 +473,11 @@ export function TransferSuggestionsPanel({
                               suggestion={suggestion}
                               accounts={accounts}
                               existingRules={rules}
+                              transactionIds={transactionIdsFor(suggestion)}
                               onAdd={addRules}
+                              onLink={linkPair}
                               onDismiss={() => dismiss(suggestion)}
+                              linkPending={createTransferLink.isPending}
                             />
                           </div>
                         </TableCell>

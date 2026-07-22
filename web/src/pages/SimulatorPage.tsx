@@ -11,8 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   useAccountingStore,
+  useCreateSimulatorScenario,
   useNetWorth,
-  useSetSimulatorScenarios,
+  useDeleteSimulatorScenario,
   useSimulatorProjection,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
@@ -66,7 +67,8 @@ export function SimulatorPage() {
 
   const { data: netWorth } = useNetWorth(undefined, displayCurrency)
   const { data: store } = useAccountingStore()
-  const setScenarios = useSetSimulatorScenarios()
+  const deleteScenarioMutation = useDeleteSimulatorScenario()
+  const createScenario = useCreateSimulatorScenario()
 
   const initialCapital = Number.parseFloat(inputs.initialCapital) || 0
   const monthlyContribution = Number.parseFloat(inputs.monthlyContribution) || 0
@@ -99,8 +101,7 @@ export function SimulatorPage() {
 
   async function saveScenario() {
     if (!scenarioName.trim() || !store) return
-    const scenario: SimulatorScenario = {
-      scenario_id: `${Date.now()}-${scenarioName.trim().toLowerCase().replace(/\s+/g, '-')}`,
+    await createScenario.mutateAsync({
       name: scenarioName.trim(),
       initial_capital: initialCapital,
       monthly_contribution: monthlyContribution,
@@ -108,14 +109,12 @@ export function SimulatorPage() {
       annual_rate_pct: annualRatePct,
       compounding_frequency: inputs.compoundingFrequency,
       currency: displayCurrency,
-    }
-    await setScenarios.mutateAsync([...store.simulator_scenarios, scenario])
+    })
     setScenarioName('')
   }
 
   async function deleteScenario(scenarioId: string) {
-    if (!store) return
-    await setScenarios.mutateAsync(store.simulator_scenarios.filter((s) => s.scenario_id !== scenarioId))
+    await deleteScenarioMutation.mutateAsync(scenarioId)
   }
 
   return (
@@ -280,7 +279,7 @@ export function SimulatorPage() {
                 value={scenarioName}
                 onChange={(e) => setScenarioName(e.target.value)}
               />
-              <Button size="sm" onClick={saveScenario} disabled={!scenarioName.trim() || setScenarios.isPending}>
+              <Button size="sm" onClick={saveScenario} disabled={!scenarioName.trim() || createScenario.isPending}>
                 Save as scenario
               </Button>
             </div>

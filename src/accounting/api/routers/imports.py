@@ -297,7 +297,11 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
         422 if `account_id` doesn't already exist, or if the file couldn't
         be parsed — the message explains what columns are supported, and
         (when the column separator couldn't be guessed) asks the user to
-        pick one and retry with `separator` set.
+        pick one and retry with `separator` set. 400 if `account_id`'s kind
+        has no independent importer (see `IMPORTABLE_ACCOUNT_KINDS`) — a
+        `cash`/`loan`/`other_asset`/`income_source`/`expense_payee` account
+        can never be canonically imported into, the same guarantee the
+        bank-specific `/import` route already has by construction.
     """
     store = load_store(session, user_id)
     if account_id not in store.accounts:
@@ -337,6 +341,8 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
             )
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    except UnsupportedImportError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     return CanonicalImportResult(
         account_id=result.account_id,

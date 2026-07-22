@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Legend, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/shared/ChartCard'
-import { Button } from '@/components/ui/button'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { useAllocation, useSetTargetAllocation, useTargetAllocation } from '@/hooks/usePortfolioData'
 import { formatPercent, formatUsd } from '@/lib/format'
@@ -11,8 +10,9 @@ import { formatPercent, formatUsd } from '@/lib/format'
 // reads target-vs-actual pairs more directly than two donuts.
 //
 // The chart and the drift numbers react to the draft target the moment you
-// type it — "Save" only persists it for next time, it isn't required to
-// see the effect.
+// type it. Leaving a field (blur) persists the whole draft map, the same
+// auto-save-on-blur pattern HysaSettingsPanel uses — there's no separate
+// Save action to remember to click.
 export function AllocationView() {
   const { data, isLoading, error } = useAllocation()
   const { data: targets } = useTargetAllocation()
@@ -33,11 +33,11 @@ export function AllocationView() {
     [data, drafts],
   )
 
-  function saveTargets() {
+  function commitDrafts() {
     const parsed = Object.fromEntries(
       Object.entries(drafts)
         .map(([symbol, value]) => [symbol, Number(value)] as const)
-        .filter(([, value]) => !Number.isNaN(value)),
+        .filter(([, value]) => Number.isFinite(value)),
     )
     setTargets.mutate(parsed)
   }
@@ -78,9 +78,7 @@ export function AllocationView() {
       <div className="rounded-xl ring-1 ring-foreground/10">
         <div className="p-4">
           <h3 className="text-base font-medium">Target allocation</h3>
-          <p className="text-sm text-muted-foreground">
-            The chart updates as you type — Save just keeps it for next time.
-          </p>
+          <p className="text-sm text-muted-foreground">Saves automatically as you edit each field.</p>
         </div>
         <div className="space-y-2 px-4 pb-4">
           {liveRows?.map((row) => (
@@ -96,13 +94,11 @@ export function AllocationView() {
                 className="w-20 rounded-md border border-input bg-background px-2 py-1 text-right text-sm tabular-nums"
                 value={drafts[row.symbol] ?? ''}
                 onChange={(event) => setDrafts((prev) => ({ ...prev, [row.symbol]: event.target.value }))}
+                onBlur={commitDrafts}
                 placeholder="0"
               />
             </div>
           ))}
-          <Button size="sm" onClick={saveTargets} disabled={setTargets.isPending} className="mt-2">
-            Save targets
-          </Button>
         </div>
       </div>
     </div>

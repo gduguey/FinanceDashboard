@@ -1,4 +1,4 @@
-import { AlertTriangle, Lock, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
+import { Lock, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
 import { useState } from 'react'
 import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
 import { CloseAccountDialog } from '@/components/accounting/CloseAccountDialog'
@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   useCloseAccount,
   useCreateAccount,
@@ -15,7 +14,6 @@ import {
   useNetWorth,
   useReopenAccount,
   useSetOpeningBalance,
-  useSupportedImportKinds,
   useUpdateAccount,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
@@ -112,7 +110,6 @@ export function AccountsManagementTable({
   const closeAccount = useCloseAccount()
   const reopenAccount = useReopenAccount()
   const { data: netWorth } = useNetWorth()
-  const { data: supportedImportKinds } = useSupportedImportKinds()
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
   const [closing, setClosing] = useState<Account | null>(null)
@@ -122,14 +119,7 @@ export function AccountsManagementTable({
   const parentAccountOptions = rows.filter((account) => account.kind !== 'vault')
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'name')
   const knownInstitutions = [...new Set(rows.map((account) => account.institution))].sort()
-  const supportedKinds = new Set(
-    (supportedImportKinds ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`),
-  )
   const isCounterpartyKind = (kind: Account['kind']) => kind === 'income_source' || kind === 'expense_payee'
-  // A counterparty (employer, payee) is never imported into, so it never
-  // needs a CSV parsing rule — only real, importable accounts do.
-  const hasNoImporter = (account: Account) =>
-    !isCounterpartyKind(account.kind) && !supportedKinds.has(`${account.institution}:${account.kind}`)
 
   async function handleCreate(value: AccountFormValue) {
     setError(null)
@@ -266,18 +256,6 @@ export function AccountsManagementTable({
                           <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                             Closed
                           </span>
-                        )}
-                        {hasNoImporter(account) && (
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <AlertTriangle className="size-3.5 text-amber-500" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              No CSV parsing rule registered for {account.institution}{' '}
-                              {ACCOUNT_KIND_LABELS[account.kind]} — imports for this account must be added to the
-                              codebase first.
-                            </TooltipContent>
-                          </Tooltip>
                         )}
                       </span>
                     </TableCell>

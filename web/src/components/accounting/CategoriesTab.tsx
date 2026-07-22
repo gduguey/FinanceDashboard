@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import {
   Select,
   SelectContent,
@@ -23,10 +24,12 @@ import {
   useCategoryDeletePreview,
   useCategoryRenamePreview,
   useCreateCategory,
+  useCreateCategoryPattern,
   useCreateSubcategory,
   useDeleteCategory,
+  useDeleteCategoryPattern,
+  usePatchCategoryPattern,
   useRenameCategory,
-  useSetCategoryPatterns,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import type { BudgetToDeletePreview } from '@/lib/accountingApi'
@@ -575,10 +578,9 @@ function PatternEditDialog({
           )}
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Priority (lower wins ties)
-            <Input
-              type="number"
+            <NumberInput
               value={draft.priority}
-              onChange={(event) => setDraft((prev) => ({ ...prev, priority: Number(event.target.value) }))}
+              onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? 0 }))}
             />
           </label>
         </div>
@@ -613,7 +615,9 @@ function CategoryPatternsSection({
   patterns: Record<string, CategoryPattern>
   categories: Record<string, Category>
 }) {
-  const setPatterns = useSetCategoryPatterns()
+  const patchPattern = usePatchCategoryPattern()
+  const deletePattern = useDeleteCategoryPattern()
+  const createPattern = useCreateCategoryPattern()
   const [editing, setEditing] = useState<CategoryPattern | null>(null)
   const [draft, setDraft] = useState<{
     descriptionContains: string
@@ -635,32 +639,53 @@ function CategoryPatternsSection({
 
   function addPattern() {
     if (!canAdd || !draft.categoryId) return
-    const patternId = `pattern:${Date.now()}`
-    const pattern: CategoryPattern = {
-      pattern_id: patternId,
+    createPattern.mutate({
       description_contains: draft.descriptionContains,
       category_id: draft.categoryId,
       subcategory_id: draft.subcategoryId,
       priority: 100,
-      active: true,
-    }
-    setPatterns.mutate({ ...patterns, [patternId]: pattern })
+    })
     setDraft({ descriptionContains: '', categoryId: null, subcategoryId: null })
   }
 
   function removePattern(patternId: string) {
-    const { [patternId]: _removed, ...rest } = patterns
-    setPatterns.mutate(rest)
+    deletePattern.mutate(patternId)
   }
 
   function savePattern(updated: CategoryPattern) {
-    setPatterns.mutate({ ...patterns, [updated.pattern_id]: updated })
+    const existing = patterns[updated.pattern_id]
+    // Guard the same way `togglePatternActive` does: the pattern may have been
+    // deleted elsewhere while this row was open — don't read `.version` off it.
+    if (!existing) return
+    patchPattern.mutate({
+      patternId: updated.pattern_id,
+      update: {
+        description_contains: updated.description_contains,
+        category_id: updated.category_id,
+        subcategory_id: updated.subcategory_id,
+        priority: updated.priority,
+        active: updated.active,
+        expected_version: existing.version,
+      },
+    })
   }
 
   function togglePatternActive(patternId: string, active: boolean) {
     const existing = patterns[patternId]
     if (!existing) return
-    setPatterns.mutate({ ...patterns, [patternId]: { ...existing, active } })
+    patchPattern.mutate({
+      patternId,
+      update: {
+        description_contains: existing.description_contains,
+        category_id: existing.category_id,
+        subcategory_id: existing.subcategory_id,
+        priority: existing.priority,
+        active,
+        // Last-write-wins on a fast on/off/on toggle (see the versioning doc); `savePattern` above
+        // keeps the real version check for destructive field edits.
+        expected_version: null,
+      },
+    })
   }
 
   return (

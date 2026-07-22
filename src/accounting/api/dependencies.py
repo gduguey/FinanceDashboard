@@ -25,6 +25,7 @@ from accounting.ledger.categorization import (
 )
 from accounting.ledger.currency import DisplayCurrency
 from accounting.ledger.manual_transfers import postings_for_manual_transfers
+from accounting.ledger.transfers import apply_transfer_links
 from accounting.market_data import exchange_rates
 from accounting.models import CurrencyCode
 from accounting.store import AccountingStore, load_overrides, load_store
@@ -129,6 +130,12 @@ def _resolved_postings_and_store(
         if until is not None:
             manual = manual.filter(pl.col("posted_at").dt.date() <= until)
         resolved = pl.concat([resolved, manual], how="vertical")
+    # Deliberately the *last* step: `apply_posting_splits`/`apply_manual_overrides`
+    # above rebuild the frame through `Posting.polars_schema`, which would
+    # silently drop `is_linked_transfer`/`linked_transaction_id`/
+    # `transfer_link_source` if they were added any earlier (see
+    # `ledger.transfers.apply_transfer_links`'s own docstring).
+    resolved = apply_transfer_links(resolved, store.transfer_links)
     return resolved, store
 
 

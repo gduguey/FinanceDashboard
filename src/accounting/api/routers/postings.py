@@ -21,6 +21,8 @@ from accounting.api.api_models import (
     PostingMergeUpsert,
     PostingRow,
     SuggestionIdResponse,
+    TransferLinkCreate,
+    TransferLinkIdResponse,
     TransferSuggestion,
     ValidatePendingRequest,
     ValidatePendingResult,
@@ -31,15 +33,28 @@ from accounting.ledger.categorization import resolved_transfer_rule_ids_by_trans
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.pending import resolve_pending_suggestion
-from accounting.ledger.transfers import find_unmatched_transfer_candidates
-from accounting.models import DismissedSuggestion, ManualOverride, Posting, PostingMerge, PostingSplit, PostingSplitLeg
+from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
+from accounting.models import (
+    DismissedSuggestion,
+    ManualOverride,
+    Posting,
+    PostingMerge,
+    PostingSplit,
+    PostingSplitLeg,
+    TransferLink,
+)
 from accounting.store import (
+    delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     list_dismissed_suggestions,
     load_overrides,
+    load_overrides_for_postings,
     load_store,
-    save_overrides,
+    remove_posting_merge,
+    remove_transfer_link,
+    save_overrides_for_postings,
+    save_posting_split,
     save_store,
     undismiss_suggestion,
 )
@@ -59,10 +74,18 @@ def get_postings(
     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
     `None`) and `pending_selected` — an automated categorizer's
     not-yet-confirmed suggestion, and whether it's currently checked for
-    the next "validate selection" action (see `ledger.pending`) — and
-    `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any) resolved this
-    posting's transaction, purely for display (see
-    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`).
+    the next "validate selection" action (see `ledger.pending`) —
+    `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any)
+    resolved this posting's transaction, purely for display (see
+    `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) —
+    and `manual_transfer_override_posting_id`, the same thing for a manual
+    "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
+    manual override always wins if both somehow apply to the same
+    transaction (it's applied after rules — see
+    `api.dependencies._resolved_postings_and_store`), so
+    `resolved_by_transfer_rule_id` is suppressed whenever
+    `manual_transfer_override_posting_id` is set for that transaction —
+    see `PostingRow`'s own docstring.
 
     Returns
     -------
@@ -78,11 +101,25 @@ def get_postings(
     raw = load_ledger(session, user_id)
     resolved_by_rule = resolved_transfer_rule_ids_by_transaction(raw, store.rules, store.accounts)
     rows = postings.to_dicts()
+
+    posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
+    manual_override_posting_by_transaction: dict[str, str] = {}
+    for posting_id, posting_override in overrides.items():
+        if posting_override.account_id is None:
+            continue
+        transaction_id = posting_id_to_transaction_id.get(posting_id)
+        if transaction_id is not None:
+            manual_override_posting_by_transaction[transaction_id] = posting_id
+
     for row in rows:
         override = overrides.get(row["posting_id"])
         row["pending_source"] = override.pending_source if override is not None else None
         row["pending_selected"] = override.pending_selected if override is not None else True
-        row["resolved_by_transfer_rule_id"] = resolved_by_rule.get(row["transaction_id"])
+        manual_override_posting_id = manual_override_posting_by_transaction.get(row["transaction_id"])
+        row["manual_transfer_override_posting_id"] = manual_override_posting_id
+        row["resolved_by_transfer_rule_id"] = (
+            None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
+        )
     return [PostingRow(**row) for row in rows]
 
 
@@ -148,14 +185,12 @@ def put_posting_override(
     ManualOverride
         The override just persisted, merged with any prior one.
     """
-    overrides = load_overrides(session, user_id)
-    existing = overrides.get(posting_id)
+    existing = load_overrides_for_postings(session, user_id, [posting_id]).get(posting_id)
     if existing is not None:
         merged = existing.model_dump()
         merged.update(override.model_dump(include=override.model_fields_set))
         override = ManualOverride(**merged)
-    overrides[posting_id] = override
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings([posting_id], {posting_id: override}, session, user_id)
     return override
 
 
@@ -203,7 +238,7 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -213,13 +248,12 @@ def put_posting_split(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )
     split = PostingSplit(posting_id=posting_id, legs=legs)
-    store = store.model_copy(update={"posting_splits": {**store.posting_splits, posting_id: split}})
-    save_store(store, session, user_id)
+    save_posting_split(split, session, user_id)
     return split
 
 
 @router.delete("/postings/{posting_id}/split")
-def delete_posting_split(
+def delete_posting_split_route(
     posting_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -230,10 +264,8 @@ def delete_posting_split(
     -------
     PostingIdResponse
     """
-    store = load_store(session, user_id)
-    remaining = {pid: split for pid, split in store.posting_splits.items() if pid != posting_id}
-    store = store.model_copy(update={"posting_splits": remaining})
-    save_store(store, session, user_id)
+    delete_posting_split(session, user_id, posting_id)
+    session.commit()
     return PostingIdResponse(posting_id=posting_id)
 
 
@@ -308,13 +340,99 @@ def delete_posting_merge(
     HTTPException
         404 if no merge with this id exists.
     """
-    store = load_store(session, user_id)
-    if merge_id not in store.posting_merges:
+    if not remove_posting_merge(session, user_id, merge_id):
         raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
-    remaining = {mid: merge for mid, merge in store.posting_merges.items() if mid != merge_id}
-    store = store.model_copy(update={"posting_merges": remaining})
-    save_store(store, session, user_id)
+    session.commit()
     return PostingMergeIdResponse(merge_id=merge_id)
+
+
+@router.post("/transfer-links")
+def post_transfer_link(
+    request: TransferLinkCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferLink:
+    """Confirm two transactions as the two sides of one real-world transfer.
+
+    Neither transaction's own posting is ever touched — see
+    `ledger.transfers.apply_transfer_links` for how this changes
+    classification instead. Re-confirming the exact same pair (from
+    either side) is a no-op, returning the existing link.
+
+    Returns
+    -------
+    TransferLink
+        The link just persisted (or the already-existing one, if this
+        exact pair was already linked).
+
+    Raises
+    ------
+    HTTPException
+        400 if either transaction names itself, or already has a
+        `PostingSplit`; 409 if either transaction is already part of a
+        *different* transfer link.
+    """
+    if request.transaction_id_a == request.transaction_id_b:
+        raise HTTPException(status_code=400, detail="Cannot link a transaction to itself")
+
+    link = make_transfer_link(request.transaction_id_a, request.transaction_id_b, source="manual")
+    store = load_store(session, user_id)
+
+    already_this_link = next((existing for existing in store.transfer_links if existing.link_id == link.link_id), None)
+    if already_this_link is not None:
+        return already_this_link
+
+    linked_transaction_ids = {
+        transaction_id
+        for existing in store.transfer_links
+        for transaction_id in (existing.transaction_id_a, existing.transaction_id_b)
+    }
+    for transaction_id in (link.transaction_id_a, link.transaction_id_b):
+        if transaction_id in linked_transaction_ids:
+            raise HTTPException(
+                status_code=409, detail=f"Transaction {transaction_id!r} is already part of another transfer link"
+            )
+
+    raw = load_ledger(session, user_id)
+    posting_to_transaction = dict(zip(raw["posting_id"].to_list(), raw["transaction_id"].to_list(), strict=True))
+    split_transaction_ids = {
+        posting_to_transaction[posting_id]
+        for posting_id in store.posting_splits
+        if posting_id in posting_to_transaction
+    }
+    for transaction_id in (link.transaction_id_a, link.transaction_id_b):
+        if transaction_id in split_transaction_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Transaction {transaction_id!r} has already been split and can't be linked",
+            )
+
+    store = store.model_copy(update={"transfer_links": [*store.transfer_links, link]})
+    save_store(store, session, user_id)
+    return link
+
+
+@router.delete("/transfer-links/{link_id}")
+def delete_transfer_link(
+    link_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferLinkIdResponse:
+    """Undo a confirmed transfer link, restoring both transactions to their prior classification.
+
+    Returns
+    -------
+    TransferLinkIdResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if no link with this id exists.
+    """
+    if not remove_transfer_link(session, user_id, link_id):
+        raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
+    session.commit()
+    return TransferLinkIdResponse(link_id=link_id)
 
 
 @router.post("/postings/validate-pending")
@@ -335,7 +453,7 @@ def post_validate_pending(
     -------
     ValidatePendingResult
     """
-    overrides = load_overrides(session, user_id)
+    overrides = load_overrides_for_postings(session, user_id, payload.posting_ids)
     accepted = reverted = 0
     for posting_id in payload.posting_ids:
         existing = overrides.get(posting_id)
@@ -350,7 +468,7 @@ def post_validate_pending(
             del overrides[posting_id]
         else:
             overrides[posting_id] = resolved
-    save_overrides(overrides, session, user_id)
+    save_overrides_for_postings(payload.posting_ids, overrides, session, user_id)
     return ValidatePendingResult(accepted=accepted, reverted=reverted)
 
 
@@ -404,8 +522,11 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `POST /dismissed-suggestions`).
     """
-    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
-    rows = find_unmatched_transfer_candidates(postings, window_days=window_days).to_dicts()
+    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    candidates = find_unmatched_transfer_candidates(
+        postings, window_days=window_days, existing_links=store.transfer_links
+    )
+    rows = candidates.to_dicts()
     suggestion_ids = [_transfer_suggestion_id(row) for row in rows]
     dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)
     return [

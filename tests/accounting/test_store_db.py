@@ -37,6 +37,7 @@ from accounting.models import (
     RecurringAddition,
     SimulatorScenario,
     Tag,
+    TransferLink,
     TransferRule,
     WithdrawalPriorityEntry,
 )
@@ -44,14 +45,18 @@ from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     StoreVersionConflictError,
+    delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     get_store_version,
     list_dismissed_suggestions,
     load_overrides,
+    load_overrides_for_postings,
     load_store,
     remap_tag_ids,
     save_overrides,
+    save_overrides_for_postings,
+    save_posting_split,
     save_store,
     undismiss_suggestion,
 )
@@ -295,6 +300,80 @@ def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_
     assert reloaded["p2"].tag_ids == []
 
 
+def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_different_posting(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Reproduces the actual bug `save_overrides_for_postings` exists to fix: two requests racing on
+
+    *different* postings must not have one silently erase the other. `save_overrides` (the old whole-table
+    path) always rewrote every posting's override from whatever in-memory dict it was handed — a second
+    caller working off a snapshot taken before the first caller's write would resave that stale snapshot
+    and wipe the first caller's change out. `save_overrides_for_postings` takes an explicit `posting_ids`
+    scope instead, so it only ever touches the postings a given call is actually about.
+    """
+    load_store(db_session, user_id=test_user_id)
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    # Both "requests" read their own snapshot before either one writes.
+    snapshot_a = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    snapshot_b = load_overrides_for_postings(db_session, test_user_id, ["p2"])
+    assert snapshot_a == {}
+    assert snapshot_b == {}
+
+    # "Request A" commits its change to p1 first.
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(category_id="expense:food-drink")}, db_session, test_user_id
+    )
+
+    # "Request B" saves its own change to p2, from a snapshot that never saw p1's write.
+    save_overrides_for_postings(["p2"], {"p2": ManualOverride(category_id="expense:travel")}, db_session, test_user_id)
+
+    final = load_overrides(db_session, user_id=test_user_id)
+    assert final["p1"].category_id == "expense:food-drink"  # would be silently wiped by the old save_overrides
+    assert final["p2"].category_id == "expense:travel"
+
+
+def test_save_posting_split_does_not_clobber_a_concurrently_saved_different_postings_split(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Same scoping guarantee as the overrides test above, for `save_posting_split`: splitting one posting
+
+    must never touch another posting's already-saved split (the old whole-store path blanket-reinserted
+    the entire `posting_splits`/`posting_split_leg` tables on every save).
+    """
+    load_store(db_session, user_id=test_user_id)
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    save_posting_split(
+        PostingSplit(
+            posting_id="p1",
+            legs=[PostingSplitLeg(amount=6.0, category_id="expense:food-drink"), PostingSplitLeg(amount=4.0)],
+        ),
+        db_session,
+        test_user_id,
+    )
+    save_posting_split(
+        PostingSplit(
+            posting_id="p2",
+            legs=[PostingSplitLeg(amount=7.0, category_id="expense:travel"), PostingSplitLeg(amount=3.0)],
+        ),
+        db_session,
+        test_user_id,
+    )
+
+    store = load_store(db_session, user_id=test_user_id)
+    assert set(store.posting_splits.keys()) == {"p1", "p2"}
+    assert store.posting_splits["p1"].legs[0].amount == pytest.approx(6.0)
+    assert store.posting_splits["p2"].legs[0].amount == pytest.approx(7.0)
+
+    assert delete_posting_split(db_session, test_user_id, "p1") is True
+    assert delete_posting_split(db_session, test_user_id, "p1") is False  # idempotent
+    store = load_store(db_session, user_id=test_user_id)
+    assert set(store.posting_splits.keys()) == {"p2"}  # p2 untouched by p1's delete
+
+
 def test_save_then_load_store_round_trips_every_entity_type(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
@@ -454,6 +533,73 @@ def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Sess
                     counterparty_account_id="does-not-exist",
                 )
             ],
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "rules": [TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"])],
+        }
+    )
+    save_store(store, db_session, user_id=test_user_id)
+    reloaded = load_store(db_session, user_id=test_user_id)
+
+    assert reloaded.rules[0].excluded_transaction_ids == ["t1"]
+
+
+def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transaction_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "rules": [
+                TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
+            ],
+        }
+    )
+    with pytest.raises(IntegrityError):
+        save_store(store, db_session, user_id=test_user_id)
+
+
+def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    store = load_store(db_session, user_id=test_user_id)
+    link = TransferLink(
+        link_id="transfer-link:t1:t2",
+        transaction_id_a="t1",
+        transaction_id_b="t2",
+        source="rule",
+        rule_id="chase-card-payoff",
+    )
+    store = store.model_copy(update={"transfer_links": [link]})
+    save_store(store, db_session, user_id=test_user_id)
+    reloaded = load_store(db_session, user_id=test_user_id)
+
+    assert reloaded.transfer_links == [link]
+    assert reloaded.transfer_links[0].rule_id == "chase-card-payoff"
+
+
+def test_transfer_link_naming_an_already_linked_transaction_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    _seed_posting(db_session, test_user_id, transaction_id="t3", posting_id="p3")
+    store = load_store(db_session, user_id=test_user_id)
+    store = store.model_copy(
+        update={
+            "transfer_links": [
+                TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2"),
+                TransferLink(link_id="transfer-link:t1:t3", transaction_id_a="t1", transaction_id_b="t3"),
+            ]
         }
     )
     with pytest.raises(IntegrityError):

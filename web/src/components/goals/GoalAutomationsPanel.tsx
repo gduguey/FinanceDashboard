@@ -4,8 +4,15 @@ import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useSetRecurringAdditions, useSetWithdrawalPriorities } from '@/hooks/useAccountingData'
+import {
+  useCreateRecurringAddition,
+  useDeleteRecurringAddition,
+  usePatchRecurringAddition,
+  useSetRecurringAdditions,
+  useSetWithdrawalPriorities,
+} from '@/hooks/useAccountingData'
 import type {
   Goal,
   RecurringAddition,
@@ -60,38 +67,52 @@ function goalName(goals: Record<string, Goal>, goalId: string): string {
 
 function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddition[]; goals: Record<string, Goal> }) {
   const setAdditions = useSetRecurringAdditions()
+  const patchAddition = usePatchRecurringAddition()
+  const deleteAddition = useDeleteRecurringAddition()
+  const createAddition = useCreateRecurringAddition()
   const ordered = [...additions].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
-  const drag = useRowDrag(ordered, (next) => persist(next))
+  // Drag-to-reorder is the one whole-list operation (renumbers every rule's priority at once).
+  const drag = useRowDrag(ordered, (next) =>
+    setAdditions.mutate(next.map((addition, index) => ({ ...addition, priority: index }))),
+  )
 
-  function persist(next: RecurringAddition[]) {
-    setAdditions.mutate(next.map((addition, index) => ({ ...addition, priority: index })))
-  }
-
+  // A single-rule field edit is scoped to its own id (last-write-wins), so it can't revert a
+  // concurrent edit to a different rule the way the old whole-list PUT could.
   function update(additionId: string, patch: Partial<RecurringAddition>) {
-    persist(ordered.map((a) => (a.addition_id === additionId ? { ...a, ...patch } : a)))
+    const existing = ordered.find((a) => a.addition_id === additionId)
+    if (!existing) return
+    const merged = { ...existing, ...patch }
+    patchAddition.mutate({
+      additionId,
+      update: {
+        goal_id: merged.goal_id,
+        start_date: merged.start_date,
+        frequency: merged.frequency,
+        end_date: merged.end_date,
+        mode: merged.mode,
+        value: merged.value,
+        currency: merged.currency,
+        priority: merged.priority,
+      },
+    })
   }
 
   function remove(additionId: string) {
-    persist(ordered.filter((a) => a.addition_id !== additionId))
+    deleteAddition.mutate(additionId)
   }
 
   function add() {
     if (goalList.length === 0) return
-    persist([
-      ...ordered,
-      {
-        addition_id: `addition:${Date.now()}`,
-        goal_id: goalList[0].goal_id,
-        start_date: today(),
-        frequency: 'monthly',
-        end_date: null,
-        mode: 'fixed_amount',
-        value: 0,
-        currency: 'USD',
-        priority: ordered.length,
-      },
-    ])
+    createAddition.mutate({
+      goal_id: goalList[0].goal_id,
+      start_date: today(),
+      frequency: 'monthly',
+      end_date: null,
+      mode: 'fixed_amount',
+      value: 0,
+      currency: 'USD',
+    })
   }
 
   return (
@@ -183,11 +204,10 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
                 </SelectContent>
               </Select>
               {addition.mode !== 'remainder' && (
-                <Input
-                  type="number"
+                <NumberInput
                   className="w-24"
                   value={addition.value}
-                  onChange={(event) => update(addition.addition_id, { value: Number(event.target.value) })}
+                  onCommit={(value) => update(addition.addition_id, { value: value ?? 0 })}
                 />
               )}
               <Button variant="ghost" size="icon" onClick={() => remove(addition.addition_id)}>
@@ -196,7 +216,7 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
             </div>
           )
         })}
-        <Button variant="outline" size="sm" onClick={add} disabled={goalList.length === 0}>
+        <Button variant="outline" size="sm" onClick={add} disabled={goalList.length === 0 || createAddition.isPending}>
           + Add recurring addition
         </Button>
       </CardContent>

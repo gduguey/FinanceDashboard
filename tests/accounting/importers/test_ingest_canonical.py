@@ -9,12 +9,13 @@ import xlsxwriter
 from accounting.config import AccountingConfig
 from accounting.importers.canonical.csv import CanonicalCsvError
 from accounting.importers.ingest import (
+    UnsupportedImportError,
     ingest_canonical_csv,
     ingest_canonical_excel,
     load_ledger,
     remap_ledger_category_ids,
 )
-from accounting.models import Account
+from accounting.models import Account, AccountKind
 from accounting.store import load_store, save_store
 
 if TYPE_CHECKING:
@@ -30,10 +31,10 @@ def _config(tmp_path) -> AccountingConfig:
     return AccountingConfig(data_dir=tmp_path)
 
 
-def _register_account(session: Session, user_id: uuid.UUID) -> None:
+def _register_account(session: Session, user_id: uuid.UUID, kind: AccountKind = "checking") -> None:
     store = load_store(session, user_id=user_id)
     account = Account(
-        account_id=ACCOUNT_ID, name="Generic Checking", kind="checking", institution="Generic Bank", currency="USD"
+        account_id=ACCOUNT_ID, name="Generic Checking", kind=kind, institution="Generic Bank", currency="USD"
     )
     save_store(store.model_copy(update={"accounts": {**store.accounts, ACCOUNT_ID: account}}), session, user_id=user_id)
 
@@ -109,6 +110,27 @@ def test_ingest_canonical_csv_raises_when_the_account_isnt_registered(
     load_store(db_session, user_id=test_user_id)  # seeds defaults, but never registers ACCOUNT_ID
     with pytest.raises(KeyError):
         ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
+
+
+@pytest.mark.parametrize("kind", ["cash", "loan", "other_asset", "income_source", "expense_payee"])
+def test_ingest_canonical_csv_rejects_a_non_importable_account_kind(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID, kind: AccountKind
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, kind=kind)
+    with pytest.raises(UnsupportedImportError):
+        ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
+
+
+def test_ingest_canonical_excel_rejects_a_non_importable_account_kind(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, kind="loan")
+    with pytest.raises(UnsupportedImportError):
+        ingest_canonical_excel(
+            _xlsx_bytes([["Date", "Description", "Amount"]]), ACCOUNT_ID, config, db_session, user_id=test_user_id
+        )
 
 
 def test_ingest_canonical_csv_raises_a_clear_error_for_an_unparseable_file(

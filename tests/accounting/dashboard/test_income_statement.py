@@ -165,6 +165,25 @@ def test_category_totals_excludes_transfers_between_two_real_accounts() -> None:
     assert totals.is_empty()
 
 
+def test_category_totals_excludes_a_confirmed_transfer_link_between_two_real_accounts() -> None:
+    """`is_linked_transfer` (added by `ledger.transfers.apply_transfer_links`) excludes even a still-unresolved pair.
+
+    `t1`/`t2` are two *separate* transactions here (unlike the placeholder
+    mechanism, a `TransferLink` never merges them into one) — each still
+    carries its own unresolved placeholder leg (an `IMPORTABLE_ACCOUNT_KINDS`
+    counterparty is never repointed by `apply_rules`), yet the link alone
+    is enough to exclude both real legs.
+    """
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -70.0),
+        _posting("p2", "t1", "uncategorized:expense", 70.0),
+        _posting("p3", "t2", "sofi:savings:3680", 70.0),
+        _posting("p4", "t2", "uncategorized:income", -70.0),
+    ).with_columns(is_linked_transfer=pl.lit(value=True))
+    totals = category_totals(postings, ACCOUNTS, CATEGORIES, date(2026, 6, 1), date(2026, 6, 30))
+    assert totals.is_empty()
+
+
 def test_category_totals_buckets_uncategorized_legs_by_sign() -> None:
     postings = _postings(
         _posting("p1", "t1", "chase:checking:9579", 1500.0),
@@ -301,3 +320,30 @@ def test_spend_curve_vs_average_preserves_lazy_type() -> None:
     assert isinstance(result, pl.LazyFrame)
     by_day = {row["day"]: row["current_month_cumulative"] for row in result.collect().iter_rows(named=True)}
     assert by_day[1] == pytest.approx(10.0)
+
+
+def test_spend_curve_vs_average_is_none_when_no_lookback_month_has_real_history() -> None:
+    # A brand-new user: every real expense ever recorded is inside the
+    # month being charted itself, so none of the 3 lookback months have
+    # any history to average — the average line should be absent (None),
+    # not a flat 0 that misleadingly implies "you usually spend nothing."
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -20.0, posted_at="2026-06-15"),
+        _posting("p2", "t1", "uncategorized:expense", 20.0, posted_at="2026-06-15"),
+    )
+    curve = spend_curve_vs_average(postings, ACCOUNTS, date(2026, 6, 20), lookback_months=3)
+    assert all(row["average_previous_months_cumulative"] is None for row in curve.iter_rows(named=True))
+
+
+def test_spend_curve_vs_average_only_averages_lookback_months_with_real_history() -> None:
+    # Only May has any real history; March and April (also inside the
+    # 3-month lookback window) are entirely before the ledger's first real
+    # expense and must not dilute the average toward 0.
+    postings = _postings(
+        _posting("p1", "t1", "chase:checking:9579", -40.0, posted_at="2026-05-10"),
+        _posting("p2", "t1", "uncategorized:expense", 40.0, posted_at="2026-05-10"),
+    )
+    curve = spend_curve_vs_average(postings, ACCOUNTS, date(2026, 6, 20), lookback_months=3)
+    by_day = {row["day"]: row["average_previous_months_cumulative"] for row in curve.iter_rows(named=True)}
+    assert by_day[9] == pytest.approx(0.0)
+    assert by_day[10] == pytest.approx(40.0)

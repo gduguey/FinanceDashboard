@@ -181,7 +181,15 @@ class PostingMerge(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
-    kept_transaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id"))
+    # CASCADE is safe here: this row itself references its kept transaction
+    # directly (unlike TransferLink, which only relates to a transaction
+    # through its TransferLinkedTransaction children) — pruning the kept
+    # transaction in a ledger rebuild (see `importers.ingest._write_ledger`)
+    # correctly deletes the whole merge decision, which itself cascades to
+    # PostingMergeDuplicate below via merge_id.
+    kept_transaction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
+    )
     description: Mapped[str | None] = mapped_column(default=None)
 
 
@@ -201,8 +209,13 @@ class PostingMergeDuplicate(Base):
     merge_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_merges.id", ondelete="CASCADE")
     )
+    # CASCADE is safe: this row is a single duplicate's own membership in
+    # the merge, not the merge's defining reference (that's
+    # PostingMerge.kept_transaction_id, above) — pruning just one duplicate
+    # transaction in a ledger rebuild should only ever drop its own row,
+    # never the merge or its other duplicates.
     duplicate_transaction_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id")
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
     )
 
 

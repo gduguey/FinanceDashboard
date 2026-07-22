@@ -225,12 +225,17 @@ def test_ingest_csv_two_different_accounts_both_land_in_the_ledger(
     assert set(ledger["account_id"].unique().to_list()) >= {"chase:checking:1234", "sofi:savings:9999"}
 
 
-def test_ingest_csv_routes_a_vault_transfer_to_its_real_opaque_parent_id(
+def test_ingest_csv_handles_a_vault_transfer_with_opaque_parent_id(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    # Deliberately opaque, non-colon-shaped ids — proves the parent is read
-    # off the account row (via `parent_account_id`), never parsed out of
-    # `account_id`'s own shape (see `ingest.py:802`'s old `.split(":")[1]`).
+    # Deliberately opaque, non-colon-shaped ids — proves ingestion doesn't
+    # depend on `account_id`'s own shape to find the parent (see
+    # `ingest.py:802`'s old `.split(":")[1]`), even though the vault's own
+    # transfer row no longer auto-resolves its counterparty at the parent
+    # account (see `importers.sofi.csv`) — the parent's own export records
+    # the same transfer independently, so auto-resolving both sides
+    # double-booked it. Landing on the placeholder instead is a
+    # `TransferRule`'s job to resolve now, same as every other transfer.
     config = _config(tmp_path)
     savings_id = "a1b2c3d4savings"
     vault_id = "e5f6a7b8vault"
@@ -250,11 +255,14 @@ def test_ingest_csv_routes_a_vault_transfer_to_its_real_opaque_parent_id(
     assert result.new_posting_count == 4
 
     ledger = load_ledger(db_session, user_id=test_user_id)
-    transfer_leg = ledger.filter(ledger["account_id"] == savings_id).row(0, named=True)
-    assert transfer_leg["amount"] == pytest.approx(-10000.0)
+    transfer_leg = ledger.filter(
+        (ledger["account_id"] == vault_id) & (ledger["description"] == "Transfer From Savings")
+    ).row(0, named=True)
+    assert transfer_leg["amount"] == pytest.approx(10000.0)
+    assert savings_id not in ledger["account_id"].unique().to_list()
 
 
-def test_rebuild_from_raw_statements_resolves_a_vault_transfer_with_opaque_ids(
+def test_rebuild_from_raw_statements_handles_a_vault_transfer_with_opaque_ids(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     # Regression test for `ingest.py:802`'s `account_id.split(":")[1]`, which
@@ -278,8 +286,11 @@ def test_rebuild_from_raw_statements_resolves_a_vault_transfer_with_opaque_ids(
 
     rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
-    transfer_leg = rebuilt.filter(rebuilt["account_id"] == savings_id).row(0, named=True)
-    assert transfer_leg["amount"] == pytest.approx(-10000.0)
+    transfer_leg = rebuilt.filter(
+        (rebuilt["account_id"] == vault_id) & (rebuilt["description"] == "Transfer From Savings")
+    ).row(0, named=True)
+    assert transfer_leg["amount"] == pytest.approx(10000.0)
+    assert savings_id not in rebuilt["account_id"].unique().to_list()
 
 
 def test_ingest_csv_unsupported_institution_raises(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:

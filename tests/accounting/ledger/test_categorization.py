@@ -79,8 +79,15 @@ def test_apply_rules_does_not_match_when_the_counterparty_account_does_not_exist
     assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
 
 
-def test_apply_rules_repoints_a_transfer_to_a_pre_created_vault_account() -> None:
-    """A vault is an ordinary account + an ordinary rule — no vault-specific matching exists."""
+def test_apply_rules_never_repoints_a_transfer_onto_a_vault_account() -> None:
+    """A vault has its own CSV standardizer (see `importers.ingest.supported_import_kinds`) — an importable, unsafe repoint target.
+
+    Repointing straight onto it here is exactly the double-counting bug
+    this rule mechanism used to have (a vault's own independently-imported
+    statement could already carry this same transfer) — `apply_rules`
+    leaves it on the placeholder; `ledger.transfers.reconcile_rule_links`
+    is what safely links it, once (if) the vault's own side is imported.
+    """
     vault = Account(
         account_id="sofi:savings:3680:vault:travel",
         name="Travel Vault",
@@ -96,11 +103,17 @@ def test_apply_rules_repoints_a_transfer_to_a_pre_created_vault_account() -> Non
         _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(-250.0, "To Travel Vault"))
     )
     resolved = apply_rules(postings, [vault_rule], {"sofi:savings:3680": SOFI_SAVINGS, vault.account_id: vault})
-    assert set(resolved["account_id"].unique().to_list()) == {"sofi:savings:3680", vault.account_id}
-    assert resolved.filter(pl.col("account_id") == vault.account_id)["amount"].to_list() == pytest.approx([250.0])
+    assert set(resolved["account_id"].unique().to_list()) == {"sofi:savings:3680", UNCATEGORIZED_EXPENSE_ACCOUNT_ID}
 
 
-def test_apply_rules_respects_a_rule_scoped_to_one_account() -> None:
+def test_apply_rules_never_repoints_a_transfer_onto_a_credit_card_account() -> None:
+    """Same bug, different account kind: a Chase card payoff rule must never repoint onto the card itself.
+
+    The card's own statement may already independently carry a "Payment
+    Thank You" deposit for the exact same payoff — see
+    `tests/accounting/importers/test_bank_importers.py`'s
+    `test_standardize_chase_credit_card_keeps_payment_thank_you_rows`.
+    """
     chase_card = Account(
         account_id="chase:credit_card:8235",
         name="Chase Credit Card",
@@ -120,7 +133,8 @@ def test_apply_rules_respects_a_rule_scoped_to_one_account() -> None:
         )
     )
     resolved = apply_rules(matching, [scoped_rule], {"chase:credit_card:8235": chase_card})
-    assert "chase:credit_card:8235" in resolved["account_id"].unique().to_list()
+    assert "chase:credit_card:8235" not in resolved["account_id"].unique().to_list()
+    assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in resolved["account_id"].unique().to_list()
 
     elsewhere = postings_to_frame(
         _placeholder_pair(
@@ -282,5 +296,101 @@ def test_resolved_transfer_rule_ids_by_transaction_omits_transactions_no_rule_ma
     )
     resolved_by = resolved_transfer_rule_ids_by_transaction(
         postings, [EQORE_RULE], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+    assert resolved_by == {}
+
+
+def test_apply_rules_skips_a_rule_for_an_excluded_transaction() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    transaction_id = postings.row(0, named=True)["transaction_id"]
+    excluded_rule = EQORE_RULE.model_copy(update={"excluded_transaction_ids": [transaction_id]})
+
+    resolved = apply_rules(
+        postings, [excluded_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+
+    counterparties = set(resolved["account_id"].unique().to_list()) - {"sofi:savings:3680"}
+    assert counterparties == {UNCATEGORIZED_INCOME_ACCOUNT_ID}
+
+
+def test_apply_rules_still_matches_other_transactions_when_one_is_excluded() -> None:
+    excluded_pair = _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    other_pair = _placeholder_pair("sofi-savings", "2", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    postings = postings_to_frame([*excluded_pair, *other_pair])
+    excluded_transaction_id = excluded_pair[0].transaction_id
+    other_transaction_id = other_pair[0].transaction_id
+    excluded_rule = EQORE_RULE.model_copy(update={"excluded_transaction_ids": [excluded_transaction_id]})
+
+    resolved = apply_rules(
+        postings, [excluded_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+
+    resolved_transaction_ids = set(
+        resolved.filter(pl.col("account_id") == "employer:eqore")["transaction_id"].to_list()
+    )
+    assert resolved_transaction_ids == {other_transaction_id}
+
+
+def test_apply_rules_prefers_the_lower_priority_number_when_two_rules_both_match() -> None:
+    high_priority = TransferRule(
+        rule_id="specific-eqore",
+        description_contains="EQORE Inc.",
+        counterparty_account_id="employer:eqore",
+        priority=0,
+    )
+    low_priority_account = Account(
+        account_id="income_source:generic",
+        name="Generic Income",
+        kind="income_source",
+        institution="external",
+        currency="USD",
+    )
+    low_priority = TransferRule(
+        rule_id="generic-catch-all",
+        description_contains="EQORE",
+        counterparty_account_id="income_source:generic",
+        priority=100,
+    )
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    resolved = apply_rules(
+        postings,
+        [low_priority, high_priority],
+        {
+            "sofi:savings:3680": SOFI_SAVINGS,
+            "employer:eqore": EQORE_ACCOUNT,
+            "income_source:generic": low_priority_account,
+        },
+    )
+    counterparty_leg = resolved.filter(pl.col("account_id") == "employer:eqore")
+    assert counterparty_leg.height == 1
+    assert "income_source:generic" not in resolved["account_id"].unique().to_list()
+
+
+def test_resolved_transfer_rule_ids_by_transaction_prefers_the_lower_priority_number() -> None:
+    high_priority = EQORE_RULE.model_copy(update={"rule_id": "specific-eqore", "priority": 0})
+    low_priority = EQORE_RULE.model_copy(update={"rule_id": "generic-catch-all", "priority": 100})
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    resolved_by = resolved_transfer_rule_ids_by_transaction(
+        postings, [low_priority, high_priority], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
+    )
+    transaction_id = postings.row(0, named=True)["transaction_id"]
+    assert resolved_by == {transaction_id: "specific-eqore"}
+
+
+def test_resolved_transfer_rule_ids_by_transaction_omits_an_excluded_transaction() -> None:
+    postings = postings_to_frame(
+        _placeholder_pair("sofi-savings", "1", "sofi:savings:3680", _leg(2000.0, "EQORE Inc."))
+    )
+    transaction_id = postings.row(0, named=True)["transaction_id"]
+    excluded_rule = EQORE_RULE.model_copy(update={"excluded_transaction_ids": [transaction_id]})
+
+    resolved_by = resolved_transfer_rule_ids_by_transaction(
+        postings, [excluded_rule], {"sofi:savings:3680": SOFI_SAVINGS, "employer:eqore": EQORE_ACCOUNT}
     )
     assert resolved_by == {}

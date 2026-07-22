@@ -13,6 +13,8 @@ import type {
   Category,
   CategoryClassification,
   CategoryPattern,
+  CategoryPatternCreate,
+  CategoryPatternUpdate,
   CategoryTotalRow,
   Currency,
   CurrencyCode,
@@ -28,7 +30,9 @@ import type {
   GoalContribution,
   GoalContributionCreate,
   GoalContributionUpdate,
+  GoalCreate,
   GoalsSummary,
+  GoalUpdate,
   ImportResult,
   InterestAccountRow,
   LlmSettings,
@@ -42,6 +46,7 @@ import type {
   NetWorthSummary,
   OpeningBalance,
   OtherAsset,
+  OtherAssetCreate,
   PaystubReconciliationResult,
   Posting,
   PostingMerge,
@@ -49,11 +54,18 @@ import type {
   PostingSplitLeg,
   ProjectionPoint,
   RecurringAddition,
+  RecurringAdditionCreate,
+  RecurringAdditionUpdate,
   SimulatorScenario,
+  SimulatorScenarioCreate,
   SpendCurvePoint,
   SyncStatus,
   Tag,
+  TransferLink,
+  TransferLinkCreate,
   TransferRule,
+  TransferRuleCreate,
+  TransferRuleUpdate,
   TransferSuggestion,
   VerifyResult,
   WithdrawalPriorityEntry,
@@ -70,25 +82,43 @@ import type {
 // threading it through its own ~30 call sites.
 let lastKnownStoreVersion: number | null = null
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const method = init?.method ?? 'GET'
-  const headers = new Headers(init?.headers)
-  if (method !== 'GET' && lastKnownStoreVersion !== null) {
-    headers.set('X-Expected-Store-Version', String(lastKnownStoreVersion))
-  }
-  const response = await fetch(path, { ...init, headers })
+async function requestRaw<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     const message = body?.detail ?? `${response.status} ${response.statusText}`
     if (response.status === 409) throw new StoreVersionConflictError(message)
     throw new ApiError(message)
   }
-  const data = (await response.json()) as T
+  return (await response.json()) as T
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET'
+  const headers = new Headers(init?.headers)
+  if (method !== 'GET' && lastKnownStoreVersion !== null) {
+    headers.set('X-Expected-Store-Version', String(lastKnownStoreVersion))
+  }
+  const data = await requestRaw<T>(path, { ...init, headers })
   if (data && typeof data === 'object' && 'version' in data && typeof data.version === 'number') {
     lastKnownStoreVersion = data.version
   }
   return data
 }
+
+// For per-resource endpoints that must never touch the whole-store version
+// cache — used across transfer rules, tags, other-assets, category patterns,
+// simulator scenarios, goals, and recurring additions. Some carry their own
+// row-scoped `version`; others (several deletes) do no version check at all.
+// Routing any of these through `request` would both send the unrelated
+// whole-store version as `X-Expected-Store-Version` (harmless; these backends
+// never read it) and, more importantly, overwrite `lastKnownStoreVersion` with
+// the *resource's own* version number, corrupting every other resource's own
+// conflict check on its next save. A 409 here
+// still throws the same `StoreVersionConflictError` `App.tsx`'s one
+// global handler already knows how to show — it's a version conflict
+// either way, just scoped to one row instead of the whole store.
+const requestScoped = requestRaw
 
 const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
@@ -214,8 +244,9 @@ export const accountingApi = {
       `/api/accounting/categories/${encodeURIComponent(categoryId)}`,
       { method: 'DELETE' },
     ),
-  putTags: (tags: Record<string, Tag>) => request<Record<string, Tag>>('/api/accounting/tags', jsonInit('PUT', tags)),
   createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),
+  deleteTag: (tagId: string) =>
+    requestScoped<{ tag_id: string }>(`/api/accounting/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
   tagRenamePreview: (tagId: string, name: string) =>
     request<TagRenamePreview>(
       `/api/accounting/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`,
@@ -225,10 +256,23 @@ export const accountingApi = {
       `/api/accounting/tags/${encodeURIComponent(tagId)}/rename`,
       jsonInit('POST', { name }),
     ),
-  putTransferRules: (rules: TransferRule[]) =>
-    request<TransferRule[]>('/api/accounting/transfer-rules', jsonInit('PUT', rules)),
-  putOtherAssets: (otherAssets: OtherAsset[]) =>
-    request<OtherAsset[]>('/api/accounting/other-assets', jsonInit('PUT', otherAssets)),
+  createTransferRule: (rule: TransferRuleCreate) =>
+    requestScoped<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
+  patchTransferRule: (ruleId: string, update: TransferRuleUpdate) =>
+    requestScoped<TransferRule>(
+      `/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteTransferRule: (ruleId: string) =>
+    requestScoped<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
+      method: 'DELETE',
+    }),
+  createOtherAsset: (asset: OtherAssetCreate) =>
+    request<OtherAsset>('/api/accounting/other-assets', jsonInit('POST', asset)),
+  deleteOtherAsset: (assetId: string) =>
+    requestScoped<{ asset_id: string }>(`/api/accounting/other-assets/${encodeURIComponent(assetId)}`, {
+      method: 'DELETE',
+    }),
   postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
     request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
@@ -373,8 +417,17 @@ export const accountingApi = {
       '/api/accounting/postings/validate-pending',
       jsonInit('POST', { posting_ids: postingIds }),
     ),
-  putCategoryPatterns: (patterns: Record<string, CategoryPattern>) =>
-    request<Record<string, CategoryPattern>>('/api/accounting/category-patterns', jsonInit('PUT', patterns)),
+  createCategoryPattern: (pattern: CategoryPatternCreate) =>
+    requestScoped<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
+  patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
+    requestScoped<CategoryPattern>(
+      `/api/accounting/category-patterns/${encodeURIComponent(patternId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteCategoryPattern: (patternId: string) =>
+    requestScoped<{ pattern_id: string }>(`/api/accounting/category-patterns/${encodeURIComponent(patternId)}`, {
+      method: 'DELETE',
+    }),
   transferSuggestions: (windowDays?: number) =>
     request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
   duplicateSuggestions: (windowDays?: number) =>
@@ -390,6 +443,12 @@ export const accountingApi = {
     request<PostingMerge>('/api/accounting/posting-merges', jsonInit('POST', merge)),
   removePostingMerge: (mergeId: string) =>
     request<{ merge_id: string }>(`/api/accounting/posting-merges/${encodeURIComponent(mergeId)}`, {
+      method: 'DELETE',
+    }),
+  createTransferLink: (link: TransferLinkCreate) =>
+    request<TransferLink>('/api/accounting/transfer-links', jsonInit('POST', link)),
+  removeTransferLink: (linkId: string) =>
+    request<{ link_id: string }>(`/api/accounting/transfer-links/${encodeURIComponent(linkId)}`, {
       method: 'DELETE',
     }),
   netWorth: (asOf?: string, displayCurrency?: string) =>
@@ -439,8 +498,12 @@ export const accountingApi = {
     ),
   interestSummary: (asOf?: string) =>
     request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),
-  putSimulatorScenarios: (scenarios: SimulatorScenario[]) =>
-    request<SimulatorScenario[]>('/api/accounting/simulator/scenarios', jsonInit('PUT', scenarios)),
+  createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
+    request<SimulatorScenario>('/api/accounting/simulator/scenarios', jsonInit('POST', scenario)),
+  deleteSimulatorScenario: (scenarioId: string) =>
+    requestScoped<{ scenario_id: string }>(`/api/accounting/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
+      method: 'DELETE',
+    }),
   simulatorProject: (
     initialCapital: number,
     monthlyContribution: number,
@@ -457,8 +520,11 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  putGoals: (goals: Record<string, Goal>) =>
-    request<Record<string, Goal>>('/api/accounting/goals', jsonInit('PUT', goals)),
+  createGoal: (goal: GoalCreate) => requestScoped<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
+  patchGoal: (goalId: string, update: GoalUpdate) =>
+    requestScoped<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
+  deleteGoal: (goalId: string) =>
+    requestScoped<{ goal_id: string }>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
   createGoalContribution: (contribution: GoalContributionCreate) =>
     request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
@@ -467,12 +533,22 @@ export const accountingApi = {
       jsonInit('PUT', contribution),
     ),
   removeGoalContribution: (contributionId: string) =>
-    request<{ contribution_id: string }>(
-      `/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`,
-      { method: 'DELETE' },
-    ),
+    request<{ contribution_id: string }>(`/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`, {
+      method: 'DELETE',
+    }),
   putRecurringAdditions: (additions: RecurringAddition[]) =>
     request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
+  createRecurringAddition: (addition: RecurringAdditionCreate) =>
+    request<RecurringAddition>('/api/accounting/recurring-additions', jsonInit('POST', addition)),
+  patchRecurringAddition: (additionId: string, update: RecurringAdditionUpdate) =>
+    requestScoped<RecurringAddition>(
+      `/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`,
+      jsonInit('PATCH', update),
+    ),
+  deleteRecurringAddition: (additionId: string) =>
+    requestScoped<{ addition_id: string }>(`/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`, {
+      method: 'DELETE',
+    }),
   putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
     request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
