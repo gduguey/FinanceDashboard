@@ -339,16 +339,12 @@ def check_and_bump_row_version(
     row = result.first()
     if row is not None:
         return row.version
-    exists = session.execute(
-        text(f"SELECT 1 FROM {table} WHERE id = :row_id AND user_id = :user_id"),  # noqa: S608 (see above)
-        {"row_id": str(row_id), "user_id": str(user_id)},
-    ).first()
-    if exists is None:
-        return None
     current = session.execute(
         text(f"SELECT version FROM {table} WHERE id = :row_id AND user_id = :user_id"),  # noqa: S608 (see above)
         {"row_id": str(row_id), "user_id": str(user_id)},
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if current is None:
+        return None
     message = (
         f"This record changed elsewhere since version {expected_version} was loaded (now at version {current}) "
         "— reload before saving again."
