@@ -708,7 +708,8 @@ def post_transfer_rule(
 
     Posting this again for the same
     `(description_contains, account_id, counterparty_account_id)` replaces
-    that rule (its `priority`/`description` update in place) rather than
+    that rule (its `priority`/`description` update in place, while its
+    `active` toggle and accumulated exclusions are preserved) rather than
     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
     for editing an existing rule by id, which never risks that ambiguity.
 
@@ -717,16 +718,25 @@ def post_transfer_rule(
     TransferRule
         The rule just persisted.
     """
+    store = load_store(session, user_id)
+    rule_id = _transfer_rule_id(request.description_contains, request.account_id, request.counterparty_account_id)
+    # A create body can't express `active`/`excluded_transaction_ids`, so when
+    # this natural key already exists, carry those forward from the rule being
+    # replaced — otherwise re-posting would silently re-enable a disabled rule
+    # and drop every exclusion the user built up. Only priority/description
+    # come from the request.
+    existing = next((r for r in store.rules if r.rule_id == rule_id), None)
     rule = TransferRule(
-        rule_id=_transfer_rule_id(request.description_contains, request.account_id, request.counterparty_account_id),
+        rule_id=rule_id,
         description_contains=request.description_contains,
         account_id=request.account_id,
         counterparty_account_id=request.counterparty_account_id,
         priority=request.priority,
         description=request.description,
+        active=existing.active if existing else True,
+        excluded_transaction_ids=list(existing.excluded_transaction_ids) if existing else [],
     )
-    store = load_store(session, user_id)
-    remaining = [r for r in store.rules if r.rule_id != rule.rule_id]
+    remaining = [r for r in store.rules if r.rule_id != rule_id]
     store = store.model_copy(update={"rules": [*remaining, rule]})
     raw_ledger = load_ledger(session, user_id)
     save_store(store, session, user_id)

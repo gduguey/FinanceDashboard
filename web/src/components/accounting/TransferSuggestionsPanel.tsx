@@ -1,6 +1,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Archive } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
@@ -267,14 +268,27 @@ export function TransferSuggestionsPanel({
   // same stale version, so the second create would spuriously 409 even
   // though nothing external actually conflicted.
   async function addRules(newDrafts: RuleDraft[]) {
-    for (const draft of newDrafts) {
-      await createRule.mutateAsync({
-        description_contains: draft.description_contains,
-        account_id: draft.account_id,
-        counterparty_account_id: draft.counterparty_account_id,
-        priority: 100,
-        description: '',
-      })
+    let added = 0
+    try {
+      for (const draft of newDrafts) {
+        await createRule.mutateAsync({
+          description_contains: draft.description_contains,
+          account_id: draft.account_id,
+          counterparty_account_id: draft.counterparty_account_id,
+          priority: 100,
+          description: '',
+        })
+        added += 1
+      }
+    } catch {
+      // The loop is sequential (see above), so a mid-batch failure leaves the
+      // earlier rules saved and the rest untried — say exactly that instead of
+      // silently swallowing it and leaving "Add both rules" half-applied.
+      toast.error(
+        added > 0
+          ? `Added ${added} of ${newDrafts.length} rules — the rest failed, try again.`
+          : 'Could not add the rule — try again.',
+      )
     }
   }
 

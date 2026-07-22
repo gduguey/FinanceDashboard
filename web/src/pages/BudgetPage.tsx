@@ -294,9 +294,29 @@ export function BudgetPage() {
 
   const comparison = expenseCategories
     .map((category) => {
-      const budgetedText = budgetedAmountFor(category.category_id, null)
-      const budgeted = Number.parseFloat(budgetedText)
-      if (budgetedText.trim() === '' || Number.isNaN(budgeted)) return null
+      const parentText = budgetedAmountFor(category.category_id, null)
+      const parentBudget = Number.parseFloat(parentText)
+      let budgeted: number
+      if (parentText.trim() !== '' && !Number.isNaN(parentBudget)) {
+        budgeted = parentBudget
+      } else {
+        // No top-level budget: fall back to the sum of this category's
+        // subcategory budgets, so a category budgeted only on its
+        // subcategories still counts toward the totals (and the Sankey),
+        // matching how the hierarchy renders it below.
+        let childTotal = 0
+        let hasChildBudget = false
+        for (const sub of subcategoriesByParent.get(category.category_id) ?? []) {
+          const childText = budgetedAmountFor(category.category_id, sub.category_id)
+          const childBudget = Number.parseFloat(childText)
+          if (childText.trim() !== '' && !Number.isNaN(childBudget)) {
+            childTotal += childBudget
+            hasChildBudget = true
+          }
+        }
+        if (!hasChildBudget) return null
+        budgeted = childTotal
+      }
       return {
         category_id: category.category_id,
         category_name: category.name,

@@ -1758,6 +1758,42 @@ def test_post_transfer_rule_twice_with_the_same_criteria_replaces_rather_than_du
     assert matching[0]["priority"] == 5
 
 
+def test_post_transfer_rule_replacing_an_existing_one_preserves_active_and_exclusions(client) -> None:
+    _import_chase_checking(client)
+    postings = client.get("/api/accounting/postings").json()
+    transaction_id = next(p["transaction_id"] for p in postings if p["transaction_id"])
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule = client.post(
+        "/api/accounting/transfer-rules",
+        json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
+    ).json()
+    client.patch(
+        f"/api/accounting/transfer-rules/{rule['rule_id']}",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": rule["priority"],
+            "active": False,
+            "excluded_transaction_ids": [transaction_id],
+            "expected_version": 1,
+        },
+    )
+
+    replaced = client.post(
+        "/api/accounting/transfer-rules",
+        json={
+            "description_contains": "PAYROLL",
+            "counterparty_account_id": employer["account_id"],
+            "priority": 5,
+        },
+    ).json()
+
+    assert replaced["rule_id"] == rule["rule_id"]
+    assert replaced["priority"] == 5
+    assert replaced["active"] is False
+    assert replaced["excluded_transaction_ids"] == [transaction_id]
+
+
 def test_post_transfer_rule_with_different_criteria_gets_a_different_id(client) -> None:
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
     other_employer = _create_account(client, name="Other Co", kind="income_source", institution="internal")

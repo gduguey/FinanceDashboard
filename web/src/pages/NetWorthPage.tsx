@@ -212,10 +212,11 @@ function AddOtherAssetForm() {
   })
 
   function addAsset() {
-    if (!draft.name || !draft.value) return
+    const value = Number(draft.value)
+    if (!draft.name.trim() || !Number.isFinite(value)) return
     createOtherAsset.mutate({
       name: draft.name,
-      value: Number(draft.value),
+      value,
       currency: draft.currency,
       note: draft.note,
     })
