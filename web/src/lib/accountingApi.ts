@@ -257,7 +257,7 @@ export const accountingApi = {
       jsonInit('POST', { name }),
     ),
   createTransferRule: (rule: TransferRuleCreate) =>
-    request<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
+    requestScoped<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
   patchTransferRule: (ruleId: string, update: TransferRuleUpdate) =>
     requestScoped<TransferRule>(
       `/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`,
@@ -418,7 +418,7 @@ export const accountingApi = {
       jsonInit('POST', { posting_ids: postingIds }),
     ),
   createCategoryPattern: (pattern: CategoryPatternCreate) =>
-    request<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
+    requestScoped<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
   patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
     requestScoped<CategoryPattern>(
       `/api/accounting/category-patterns/${encodeURIComponent(patternId)}`,
@@ -520,7 +520,7 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  createGoal: (goal: GoalCreate) => request<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
+  createGoal: (goal: GoalCreate) => requestScoped<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
   patchGoal: (goalId: string, update: GoalUpdate) =>
     requestScoped<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
   deleteGoal: (goalId: string) =>
