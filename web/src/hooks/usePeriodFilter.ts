@@ -33,8 +33,12 @@ function yearBounds(yearValue: string): Period {
   return { start: `${yearValue}-01-01`, end: `${yearValue}-12-31` }
 }
 
-const CURRENT_MONTH = new Date().toISOString().slice(0, 7)
-const CURRENT_YEAR = String(new Date().getFullYear())
+// Local calendar, not `toISOString()` (which is UTC): a user near a month/year
+// boundary in a negative-UTC timezone should default to *their* current month,
+// and CURRENT_YEAR already uses the local `getFullYear()` — keep them consistent.
+const _now = new Date()
+const CURRENT_MONTH = `${_now.getFullYear()}-${pad(_now.getMonth() + 1)}`
+const CURRENT_YEAR = String(_now.getFullYear())
 
 function defaultState(): PeriodFilterState {
   return {

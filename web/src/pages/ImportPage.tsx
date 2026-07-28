@@ -355,8 +355,12 @@ export function ImportPage() {
             key,
             kind: 'csv',
             file,
-            institution: matches.length === 1 ? matches[0].institution : (detected?.institution ?? ''),
-            accountKind: matches.length === 1 ? matches[0].kind : (detected?.account_kind ?? ''),
+            // Use a matched account's own institution/kind spelling (not the
+            // detector's) even in the ambiguous case, so the account picker's
+            // exact-match filter actually finds the candidate accounts instead
+            // of showing "No accounts registered".
+            institution: matches.length > 0 ? matches[0].institution : (detected?.institution ?? ''),
+            accountKind: matches.length > 0 ? matches[0].kind : (detected?.account_kind ?? ''),
             accountId: matches.length === 1 ? matches[0].account_id : '',
             currency: matches.length === 1 ? matches[0].currency : 'USD',
             candidateAccountIds: matches.length > 1 ? matches.map((account) => account.account_id) : [],

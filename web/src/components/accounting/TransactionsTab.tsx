@@ -98,8 +98,13 @@ function transferFlagsForPosting(posting: Posting, excludedTransactionIds: Set<s
   ) {
     flags.push('manual')
   }
+  // `excluded` is a historical fact, not a transfer classification, so decide
+  // "is this a transfer" before adding it — otherwise an excluded-but-otherwise
+  // -untransferred posting would be denied its `none` flag and drop out of the
+  // "Non transfer" filter (see this function's own doc comment).
+  const isTransfer = flags.length > 0
   if (excludedTransactionIds.has(posting.transaction_id)) flags.push('excluded')
-  if (flags.length === 0) flags.push('none')
+  if (!isTransfer) flags.push('none')
   return flags
 }
 

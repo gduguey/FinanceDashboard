@@ -45,7 +45,10 @@ export function NumberInput({
   function commit() {
     if (draft === null) return
     const trimmed = draft.trim()
-    onCommit(trimmed === '' ? null : Number(trimmed))
+    const parsed = trimmed === '' ? null : Number(trimmed)
+    // Reject non-finite input (e.g. "1e999" → Infinity, which JSON-serializes to
+    // null downstream) — treat it as a cleared value rather than committing it.
+    onCommit(parsed !== null && Number.isFinite(parsed) ? parsed : null)
     setDraft(null)
   }
 
