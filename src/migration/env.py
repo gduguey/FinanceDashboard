@@ -1,4 +1,3 @@
-from contextlib import suppress
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
@@ -9,14 +8,29 @@ from db.settings import DatabaseSettings
 
 # Registers every table on `Base.metadata` — required before `target_metadata`
 # is read below, and before `--autogenerate` can see any of these tables.
-# `accounting` and `trades` are independent packages (see docs/architecture.md:
-# deleting either one should never break the other), so each import is guarded —
-# a tree with only one of them still generates/runs migrations for that one.
 import db.models  # noqa: F401
-with suppress(ModuleNotFoundError):
-    import accounting.db  # noqa: F401
-with suppress(ModuleNotFoundError):
-    import trades.db  # noqa: F401
+
+
+def _import_optional_package(name: str) -> None:
+    """Import a table-registering package, tolerating only its own absence.
+
+    `accounting` and `trades` are independent packages (see
+    docs/architecture.md: deleting either one should never break the other),
+    so a tree with only one of them still generates/runs migrations for that
+    one. Only the top-level package being absent is swallowed — a
+    `ModuleNotFoundError` for a *different* module (a real broken import
+    inside the package) is re-raised, so it can't silently register zero
+    tables and make `--autogenerate` emit destructive DROPs.
+    """
+    try:
+        __import__(name)
+    except ModuleNotFoundError as error:
+        if error.name != name and error.name != name.split(".", 1)[0]:
+            raise
+
+
+_import_optional_package("accounting.db")
+_import_optional_package("trades.db")
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -24,8 +38,10 @@ config = context.config
 
 # The connection string always comes from `.env` (via `DatabaseSettings`), never
 # from `alembic.ini` — one source of truth for where Postgres lives, shared with
-# the app itself (`db.session.get_engine`).
-config.set_main_option("sqlalchemy.url", DatabaseSettings().database_url)
+# the app itself (`db.session.get_engine`). `%` is doubled because
+# `set_main_option` stores into a ConfigParser, which treats a bare `%` as
+# interpolation syntax — a password containing one would otherwise crash here.
+config.set_main_option("sqlalchemy.url", DatabaseSettings().database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
