@@ -1,5 +1,5 @@
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import type { ComponentType, ReactNode } from 'react'
+import { type ComponentType, type ReactNode, useEffect } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
 import { AuthGate } from '@/components/layout/AuthGate'
@@ -58,6 +58,12 @@ function AppShell() {
   const { data: store, isPending: storeIsPending, isError: storeIsError } = useAccountingStore()
   const hasAnyData = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
   useSyncBrowserTimezone()
+
+  // `queryClient` is a module singleton that outlives AuthGate's sign-out
+  // unmount, so without this the next signed-in user would be served the
+  // previous user's cached finance data. Drop every cached query on sign-out
+  // (when this shell unmounts), so each session starts clean.
+  useEffect(() => () => queryClient.clear(), [])
 
   // The whole Money side reads from the same underlying data layer — if
   // the core store call is failing outright (e.g. the deploy VM's `data/`
