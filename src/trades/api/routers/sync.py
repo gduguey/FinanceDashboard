@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
 from db.current_user import get_current_user_id
-from db.session import get_db
+from db.session import get_db, set_rls_user
 from trades import dashboard
 from trades.api.api_models import SyncProgress, SyncResult, SyncStep
 from trades.api.dependencies import _config, _last_synced_iso, _report_sync_progress, app
@@ -131,6 +131,13 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
     except Exception as error:  # noqa: BLE001 — report the failure as a step, not a 500
         session.rollback()  # same reason as above — keep the session usable for the fallback reads
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=False, error=str(error)))
+
+    # sync_ibkr_account ends the request's transaction either way — _write_ledger
+    # commits on success, the except branches roll back on failure — and that
+    # resets the transaction-local app.current_user_id GUC to '', so the
+    # RLS-scoped reads below would cast ''::uuid and 500. Re-establish it first
+    # (see db.session.set_rls_user).
+    set_rls_user(session, user_id)
 
     if sync_result is not None:
         new_event_count = sync_result.new_event_count
