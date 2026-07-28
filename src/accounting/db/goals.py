@@ -6,7 +6,7 @@ import uuid
 from datetime import date, datetime
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,7 +38,7 @@ class Goal(Base):
     target_currency: Mapped[str] = mapped_column(default="USD")
     target_date: Mapped[datetime]
     color: Mapped[str]
-    created_at: Mapped[datetime]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(default=1)
     """Bumped by `db.base.check_and_bump_row_version` on every `PATCH /goals/{goal_id}` — see that
     function's own docstring. Never touched by `save_store`'s upsert path for this table (see

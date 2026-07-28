@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -240,4 +240,4 @@ class DismissedSuggestion(Base):
     natural_key: Mapped[str]
     kind: Mapped[str]
     description: Mapped[str]
-    dismissed_at: Mapped[datetime]
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
