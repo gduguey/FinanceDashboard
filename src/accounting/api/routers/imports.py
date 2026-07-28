@@ -108,8 +108,8 @@ def get_sync_status(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)])
 @router.post("/import")
 async def post_import(  # noqa: PLR0913
     file: UploadFile,
-    institution: Annotated[str, Form()],
-    account_kind: Annotated[str, Form()],
+    institution: Annotated[str, Form()],  # noqa: ARG001 (superseded by the account's own institution; see docstring)
+    account_kind: Annotated[str, Form()],  # noqa: ARG001 (superseded by the account's own kind; see docstring)
     account_id: Annotated[str, Form()],
     account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
     currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
@@ -120,13 +120,15 @@ async def post_import(  # noqa: PLR0913
 ) -> ImportResult:
     """Archive and import the uploaded CSV against an already-registered account.
 
-    `account_name`, `currency`, and `parent_account_id` are no longer used
-    to construct anything here — every account this endpoint is called
-    with must already exist (see `AccountCreate`/`POST /accounts`), so the
-    account's own `parent_account_id` (not this form field) is what's
-    threaded into the standardizer. Kept as accepted form fields anyway
-    rather than narrowing this endpoint's request contract as part of this
-    change.
+    `institution`, `account_kind`, `account_name`, `currency`, and
+    `parent_account_id` are no longer used to select the importer or
+    construct anything here — every account this endpoint is called with
+    must already exist (see `AccountCreate`/`POST /accounts`), so the
+    account's own `institution`/`kind`/`parent_account_id` (not these form
+    fields) are the source of truth: a form value that disagreed with the
+    registered account would otherwise pick the wrong importer. Kept as
+    accepted form fields anyway rather than narrowing this endpoint's
+    request contract as part of this change.
 
     Returns
     -------
@@ -171,8 +173,11 @@ async def post_import(  # noqa: PLR0913
     try:
         result = ingest_csv(
             csv_text,
-            institution,
-            account_kind,
+            # The registered account is the source of truth for which importer to
+            # use — a form value that differs from it (e.g. the detector's own
+            # institution spelling) would otherwise pick the wrong importer.
+            account.institution,
+            account.kind,
             account_id,
             state.config,
             session,

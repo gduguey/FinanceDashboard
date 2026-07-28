@@ -88,7 +88,11 @@ def reconcile_earnings_statement(
             if abs(row["amount"] - deposit.amount) > _AMOUNT_TOLERANCE:
                 continue
             account = accounts.get(row["account_id"])
-            if deposit.account_last4 and account and account.last_four != deposit.account_last4:
+            # When the deposit names a last-4, skip any candidate we can't
+            # positively confirm it against — both a mismatch AND an account we
+            # can't find at all (previously `and account` let the unverifiable
+            # case fall through and match).
+            if deposit.account_last4 and (account is None or account.last_four != deposit.account_last4):
                 continue
             matched_row = row
             break

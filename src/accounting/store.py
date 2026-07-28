@@ -1050,8 +1050,20 @@ def _transfer_link_from_row(
     Returns
     -------
     TransferLink
+
+    Raises
+    ------
+    ValueError
+        If the link doesn't have exactly two membership rows.
     """
-    first, second = sorted(transaction_natural_key_by_id[transaction_id] for transaction_id in transaction_ids)
+    natural_keys = sorted(transaction_natural_key_by_id[transaction_id] for transaction_id in transaction_ids)
+    if len(natural_keys) != 2:  # noqa: PLR2004 — a transfer link is by definition exactly two transactions
+        # A link is always exactly two transactions; a malformed membership set
+        # should fail with a clear message naming the row, not a bare unpacking
+        # ValueError that takes down the whole load_store for this user.
+        message = f"TransferLink {row.natural_key!r} has {len(natural_keys)} membership rows, expected exactly 2"
+        raise ValueError(message)
+    first, second = natural_keys
     return TransferLink(
         link_id=row.natural_key,
         transaction_id_a=first,

@@ -191,6 +191,13 @@ def post_category(
         )
 
     category_id = f"{request.classification}:{slugify(request.name)}"
+    if category_id in store.categories:
+        # The name-collision check above is case-insensitive on the name, but the
+        # id is a lossy slug — two distinct names can still collide on it and
+        # silently overwrite the existing category. Reject instead.
+        raise HTTPException(
+            status_code=409, detail=f"The name {request.name!r} is too similar to an existing category — pick another"
+        )
     new_category = Category(
         category_id=category_id,
         name=request.name,
@@ -241,6 +248,13 @@ def post_subcategory(
         )
 
     category_id = f"{parent_id}:{slugify(request.name)}"
+    if category_id in store.categories:
+        # See post_category: the name check is case-insensitive, but the slug id
+        # is lossy — guard against two distinct names colliding on it.
+        raise HTTPException(
+            status_code=409,
+            detail=f"The name {request.name!r} is too similar to an existing subcategory — pick another",
+        )
     new_category = Category(
         category_id=category_id,
         name=request.name,
@@ -574,6 +588,12 @@ def post_tag(
         raise HTTPException(status_code=409, detail=f"A tag named {request.name!r} already exists")
 
     tag_id = f"tag:{slugify(request.name)}"
+    if tag_id in store.tags:
+        # See post_category: the name check is case-insensitive, but the slug id
+        # is lossy — guard against two distinct names colliding on it.
+        raise HTTPException(
+            status_code=409, detail=f"The name {request.name!r} is too similar to an existing tag — pick another"
+        )
     new_tag = Tag(tag_id=tag_id, name=request.name)
     store = store.model_copy(update={"tags": {**store.tags, tag_id: new_tag}})
     save_store(store, session, user_id)
@@ -717,8 +737,22 @@ def post_transfer_rule(
     -------
     TransferRule
         The rule just persisted.
+
+    Raises
+    ------
+    HTTPException
+        404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
     """
     store = load_store(session, user_id)
+    # Both reference real accounts (counterparty_account_id is a DB foreign key);
+    # validate up front so an unknown id is a clean 404, not an IntegrityError 500
+    # from save_store.
+    for label, ref in (
+        ("account_id", request.account_id),
+        ("counterparty_account_id", request.counterparty_account_id),
+    ):
+        if ref is not None and ref not in store.accounts:
+            raise HTTPException(status_code=404, detail=f"Account {ref!r} referenced by {label} does not exist")
     rule_id = _transfer_rule_id(request.description_contains, request.account_id, request.counterparty_account_id)
     # A create body can't express `active`/`excluded_transaction_ids`, so when
     # this natural key already exists, carry those forward from the rule being
@@ -1296,8 +1330,15 @@ def post_account(
     -------
     Account
         The account just persisted, including its newly-generated `account_id`.
+
+    Raises
+    ------
+    HTTPException
+        404 if `parent_account_id` is set but names an account that doesn't exist.
     """
     store = load_store(session, user_id)
+    if account.parent_account_id is not None and account.parent_account_id not in store.accounts:
+        raise HTTPException(status_code=404, detail=f"Parent account {account.parent_account_id!r} does not exist")
     new_account = Account(
         account_id=uuid.uuid4().hex,
         name=account.name,

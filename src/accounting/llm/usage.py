@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from accounting.db.llm import LLMUsage as LLMUsageRow
 from accounting.llm.provider import LLMProviderError
@@ -112,14 +113,18 @@ def save_usage(usage: dict[str, ProviderUsage], session: Session, user_id: uuid.
         Whose usage this is.
     """
     for provider, entry in usage.items():
-        row = session.get(LLMUsageRow, (user_id, provider))
-        if row is None:
-            row = LLMUsageRow(user_id=user_id, provider=provider)
-            session.add(row)
-        row.period_start = entry.period_start
-        row.used_count = entry.used_count
-        row.is_limited = entry.is_limited
-        row.last_error = entry.last_error
+        # One atomic upsert per provider instead of get-then-add: two concurrent
+        # saves for the same (user_id, provider) would otherwise both see no row
+        # and both INSERT, tripping the composite primary key.
+        columns = {
+            "period_start": entry.period_start,
+            "used_count": entry.used_count,
+            "is_limited": entry.is_limited,
+            "last_error": entry.last_error,
+        }
+        statement = pg_insert(LLMUsageRow).values(user_id=user_id, provider=provider, **columns)
+        statement = statement.on_conflict_do_update(index_elements=["user_id", "provider"], set_=columns)
+        session.execute(statement)
     session.commit()
 
 
