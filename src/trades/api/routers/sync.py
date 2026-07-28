@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import uuid
 import zipfile
 from datetime import UTC, datetime
@@ -22,6 +23,8 @@ from trades.brokers.ibkr import main
 from trades.brokers.ibkr.credentials import BROKER_DISPLAY_NAME, resolve_ibkr_credentials
 from trades.config import AppConfig
 from trades.utils.statement_archive import StatementArchive
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -124,12 +127,19 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
         # writes leaves the session's transaction aborted, which would make the
         # `load_ledger`/`load_settings` reads below fail too.
         session.rollback()
-        # Not str(error): a request-level failure's own message includes the
-        # full IBKR request URL, which embeds the token as a query param (see
-        # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
+        # Message only, never the exception: a request-level failure's own text
+        # includes the full IBKR request URL, which embeds the token as a query
+        # param (see trades.brokers.ibkr.api._send_flex_request) — it must reach
+        # neither the client nor the server logs.
+        logger.error(  # noqa: TRY400 — message-only on purpose; the exception text embeds the IBKR token
+            "IBKR sync: request to IBKR failed for user %s (detail omitted — contains the token)", user_id
+        )
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=False, error="Could not reach IBKR"))
-    except Exception as error:  # noqa: BLE001 — report the failure as a step, not a 500
+    except Exception as error:
         session.rollback()  # same reason as above — keep the session usable for the fallback reads
+        # Log the full traceback: these are the token-free failures (parse, archive, DB, gap check)
+        # a bare failed step would otherwise hide, leaving a sync that silently does nothing.
+        logger.exception("IBKR sync failed for user %s", user_id)
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=False, error=str(error)))
 
     # sync_ibkr_account ends the request's transaction either way — _write_ledger
