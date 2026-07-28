@@ -25,7 +25,7 @@ from accounting.api.api_models import (
     SimulateContributionResult,
     WithdrawalAutomationResult,
 )
-from accounting.api.dependencies import _display_currency, _resolved_postings_and_store, state
+from accounting.api.dependencies import _display_currency, _resolved_postings_and_store
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
@@ -522,7 +522,7 @@ def get_goals_summary(
     -------
     GoalsSummary
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     display = _display_currency(display_currency, store, as_of_date)
     contributions = contributions_to_frame(store.goal_contributions)
@@ -569,7 +569,7 @@ def post_run_recurring_additions(
     list[GoalContribution]
         The new contributions just written (empty if nothing was due).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     existing_ids = set(store.goal_contributions.keys())
 
@@ -633,7 +633,7 @@ def post_run_withdrawal_automation(
         The contributions just written, and however much of the shortfall
         (if any) no goal had enough left to cover.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     contributions_frame = contributions_to_frame(store.goal_contributions)
     unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
@@ -686,7 +686,7 @@ def post_simulate_contribution(
         running once more, with this contribution already applied, so the
         user can see if it sets up a shortfall soon after (non-blocking).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     contributions_frame = contributions_to_frame(store.goal_contributions)
     unallocated_as_of_date = unallocated_balance(postings, store.accounts, contributions_frame, payload.date)
     exceeds_unallocated = payload.amount > unallocated_as_of_date

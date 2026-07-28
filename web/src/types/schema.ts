@@ -1246,15 +1246,11 @@ export interface paths {
      * Post Import
      * @description Archive and import the uploaded CSV against an already-registered account.
      *
-     *     `institution`, `account_kind`, `account_name`, `currency`, and
-     *     `parent_account_id` are no longer used to select the importer or
-     *     construct anything here — every account this endpoint is called with
-     *     must already exist (see `AccountCreate`/`POST /accounts`), so the
-     *     account's own `institution`/`kind`/`parent_account_id` (not these form
-     *     fields) are the source of truth: a form value that disagreed with the
-     *     registered account would otherwise pick the wrong importer. Kept as
-     *     accepted form fields anyway rather than narrowing this endpoint's
-     *     request contract as part of this change.
+     *     Every account this endpoint is called with must already exist (see
+     *     `AccountCreate`/`POST /accounts`), so the account's own
+     *     `institution`/`kind`/`parent_account_id` are the source of truth for
+     *     picking the importer — a form field that disagreed with the registered
+     *     account would pick the wrong one.
      *
      *     Returns
      *     -------
@@ -1323,8 +1319,8 @@ export interface paths {
      * Post Canonical Import
      * @description Import the file, against an already-registered account, through the canonical fallback parser.
      *
-     *     Used when no dedicated standardizer exists for `institution`/`account_kind`
-     *     (see `supported_import_kinds`) — the canonical parser guesses column
+     *     Used when no dedicated standardizer exists for the account's own
+     *     institution/kind (see `supported_import_kinds`) — the canonical parser guesses column
      *     names and date/amount formats instead of expecting an exact shape (see
      *     `importers.canonical.csv`). Both `.csv` and `.xlsx` files are accepted
      *     (dispatched on `file.filename`'s extension); an Excel workbook has every
@@ -1333,12 +1329,6 @@ export interface paths {
      *     automatically, unless `category_overrides` (a JSON-encoded
      *     `CanonicalCategoryOverridesRequest`) renames or merges it — typically
      *     collected via `post_canonical_import_preview` first.
-     *
-     *     `institution`, `account_name`, `currency`, and `parent_account_id` are
-     *     accepted but unused — every account this endpoint is called with must
-     *     already exist (see `AccountCreate`/`POST /accounts`). Kept as accepted
-     *     form fields anyway rather than narrowing this endpoint's request
-     *     contract as part of this change.
      *
      *     Returns
      *     -------
@@ -3821,6 +3811,39 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/{full_path}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Serve Frontend
+     * @description Serve the built React app for anything no route above matched.
+     *
+     *     Registered last on purpose: Starlette matches routes in registration
+     *     order, so every `/api/...` route (and `/docs`, `/openapi.json`)
+     *     defined earlier is tried first. Falls back to `index.html` for any
+     *     path that isn't a real file in `web/dist/` — e.g. a hard refresh on
+     *     `/settings` — so the frontend's client-side router gets a chance to
+     *     handle it instead of a bare 404.
+     *
+     *     Returns
+     *     -------
+     *     FileResponse
+     *         The requested static file if it exists under `web/dist/`,
+     *         otherwise `index.html` so client-side routing can take over.
+     */
+    get: operations['serve_frontend__full_path__get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -4139,21 +4162,8 @@ export interface components {
     Body_post_canonical_import_api_accounting_import_canonical_post: {
       /** File */
       file: string
-      /** Institution */
-      institution: string
-      /** Account Kind */
-      account_kind: string
       /** Account Id */
       account_id: string
-      /** Account Name */
-      account_name: string
-      /**
-       * Currency
-       * @default USD
-       */
-      currency: string
-      /** Parent Account Id */
-      parent_account_id?: string | null
       /** Separator */
       separator?: string | null
       /**
@@ -4229,21 +4239,8 @@ export interface components {
     Body_post_import_api_accounting_import_post: {
       /** File */
       file: string
-      /** Institution */
-      institution: string
-      /** Account Kind */
-      account_kind: string
       /** Account Id */
       account_id: string
-      /** Account Name */
-      account_name: string
-      /**
-       * Currency
-       * @default USD
-       */
-      currency: string
-      /** Parent Account Id */
-      parent_account_id?: string | null
     }
     /** Body_post_paystub_reconciliation_api_accounting_import_paystub_post */
     Body_post_paystub_reconciliation_api_accounting_import_paystub_post: {
@@ -11951,6 +11948,37 @@ export interface operations {
           'application/json': {
             [key: string]: string
           }
+        }
+      }
+    }
+  }
+  serve_frontend__full_path__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        full_path: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': unknown
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

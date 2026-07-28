@@ -28,7 +28,6 @@ from accounting.api.dependencies import (
     _display_currency,
     _resolved_postings_and_store,
     _resolved_postings_for_aggregation,
-    state,
 )
 from accounting.dashboard import budgets, income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
@@ -156,7 +155,7 @@ def get_interest_summary(
     -------
     list[InterestAccountRow]
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     rows = interest.interest_summary(
         postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of, session, user_id)
@@ -178,7 +177,7 @@ def get_net_worth(
     -------
     NetWorthSummary
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     has_external_investment = any(
         account.kind == "external_investment" and account.external_ref == "trades"
         for account in store.accounts.values()
@@ -230,7 +229,7 @@ def get_net_worth_history(
     list[NetWorthHistoryPoint]
         Oldest first.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     has_external_investment = any(
         account.kind == "external_investment" and account.external_ref == "trades"
         for account in store.accounts.values()
@@ -276,7 +275,7 @@ def get_net_worth_history_by_account(
     list[NetWorthHistoryByAccountPoint]
         `balance` already converted into `display_currency`.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     real_accounts = {
         account_id: account
@@ -330,7 +329,7 @@ def get_category_totals(
     -------
     list[CategoryTotalRow]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=start, until=end)
+    postings, store = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
     parsed_account_ids = account_ids.split(",") if account_ids else None
     totals = collect_if_lazy(
         income_statement.category_totals(
@@ -361,7 +360,7 @@ def get_monthly_income_expense(
     -------
     list[MonthlyIncomeExpenseRow]
     """
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=start, until=end)
+    postings, store = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
     rows = collect_if_lazy(
         income_statement.monthly_income_expense(
             postings, store.accounts, start, end, _display_currency(display_currency, store)
@@ -386,7 +385,7 @@ def get_spend_curve(
     list[SpendCurvePoint]
     """
     since, until = income_statement.spend_curve_window(month, lookback_months)
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=since, until=until)
+    postings, store = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     rows = collect_if_lazy(
         income_statement.spend_curve_vs_average(
             postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
@@ -417,7 +416,7 @@ def get_budget_comparison(
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     since, until = budgets.month_bounds(month)
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=since, until=until)
+    postings, store = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     rows = budgets.budget_comparison(
         postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
     )
@@ -450,7 +449,7 @@ def get_suggested_budget_amount(
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     window = budgets.suggested_budget_amount_window(month, lookback_months)
     since, until = window if window is not None else (None, None)
-    postings, store = _resolved_postings_for_aggregation(state.config, session, user_id, since=since, until=until)
+    postings, store = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     amount = budgets.suggested_budget_amount(
         postings,
         store.accounts,

@@ -92,7 +92,7 @@ def get_postings(
     list[PostingRow]
         One row per posting.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     overrides = load_overrides(session, user_id)
     # Recomputed from the raw ledger rather than threaded through
     # `_resolved_postings_and_store`'s return value — that function's
@@ -238,7 +238,7 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -522,7 +522,7 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `POST /dismissed-suggestions`).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     candidates = find_unmatched_transfer_candidates(
         postings, window_days=window_days, existing_links=store.transfer_links
     )
@@ -557,7 +557,7 @@ def get_duplicate_suggestions(
         Each carries a `suggestion_id` for dismissing it. Excludes any
         group already dismissed (see `POST /dismissed-suggestions`).
     """
-    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, _store = _resolved_postings_and_store(session, user_id)
     groups = find_duplicate_candidates(postings, window_days=window_days)
     suggestion_ids = [_duplicate_suggestion_id(group) for group in groups]
     dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)

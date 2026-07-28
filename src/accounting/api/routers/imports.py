@@ -106,29 +106,20 @@ def get_sync_status(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)])
 
 
 @router.post("/import")
-async def post_import(  # noqa: PLR0913
+async def post_import(
     file: UploadFile,
-    institution: Annotated[str, Form()],  # noqa: ARG001 (superseded by the account's own institution; see docstring)
-    account_kind: Annotated[str, Form()],  # noqa: ARG001 (superseded by the account's own kind; see docstring)
     account_id: Annotated[str, Form()],
-    account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    parent_account_id: Annotated[str | None, Form()] = None,  # noqa: ARG001 (kept for request-contract stability)
     *,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ImportResult:
     """Archive and import the uploaded CSV against an already-registered account.
 
-    `institution`, `account_kind`, `account_name`, `currency`, and
-    `parent_account_id` are no longer used to select the importer or
-    construct anything here — every account this endpoint is called with
-    must already exist (see `AccountCreate`/`POST /accounts`), so the
-    account's own `institution`/`kind`/`parent_account_id` (not these form
-    fields) are the source of truth: a form value that disagreed with the
-    registered account would otherwise pick the wrong importer. Kept as
-    accepted form fields anyway rather than narrowing this endpoint's
-    request contract as part of this change.
+    Every account this endpoint is called with must already exist (see
+    `AccountCreate`/`POST /accounts`), so the account's own
+    `institution`/`kind`/`parent_account_id` are the source of truth for
+    picking the importer — a form field that disagreed with the registered
+    account would pick the wrong one.
 
     Returns
     -------
@@ -182,7 +173,6 @@ async def post_import(  # noqa: PLR0913
             state.config,
             session,
             user_id,
-            parent_account_id=account.parent_account_id,
         )
     except UnsupportedImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -257,14 +247,9 @@ async def post_canonical_import_preview(
 
 
 @router.post("/import/canonical")
-async def post_canonical_import(  # noqa: PLR0913, PLR0917
+async def post_canonical_import(
     file: UploadFile,
-    institution: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    account_kind: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
     account_id: Annotated[str, Form()],
-    account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    parent_account_id: Annotated[str | None, Form()] = None,  # noqa: ARG001 (kept for request-contract stability)
     separator: Annotated[str | None, Form()] = None,
     date_order: Annotated[str, Form()] = "MDY",
     category_overrides: Annotated[str | None, Form()] = None,
@@ -274,8 +259,8 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
 ) -> CanonicalImportResult:
     """Import the file, against an already-registered account, through the canonical fallback parser.
 
-    Used when no dedicated standardizer exists for `institution`/`account_kind`
-    (see `supported_import_kinds`) — the canonical parser guesses column
+    Used when no dedicated standardizer exists for the account's own
+    institution/kind (see `supported_import_kinds`) — the canonical parser guesses column
     names and date/amount formats instead of expecting an exact shape (see
     `importers.canonical.csv`). Both `.csv` and `.xlsx` files are accepted
     (dispatched on `file.filename`'s extension); an Excel workbook has every
@@ -284,12 +269,6 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     automatically, unless `category_overrides` (a JSON-encoded
     `CanonicalCategoryOverridesRequest`) renames or merges it — typically
     collected via `post_canonical_import_preview` first.
-
-    `institution`, `account_name`, `currency`, and `parent_account_id` are
-    accepted but unused — every account this endpoint is called with must
-    already exist (see `AccountCreate`/`POST /accounts`). Kept as accepted
-    form fields anyway rather than narrowing this endpoint's request
-    contract as part of this change.
 
     Returns
     -------
@@ -561,7 +540,7 @@ async def post_paystub_reconciliation(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     result = reconcile_earnings_statement(statement, postings, store.accounts)
     proposed_splits = propose_posting_splits(statement, result.matches)
     return PaystubReconciliationResult(

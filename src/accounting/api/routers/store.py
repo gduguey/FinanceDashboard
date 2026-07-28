@@ -43,7 +43,7 @@ from accounting.api.api_models import (
     TransferRuleIdResponse,
     TransferRuleUpdate,
 )
-from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
+from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store
 from accounting.importers.common import row_hash
 from accounting.importers.ingest import load_ledger, remap_ledger_category_ids, uncategorize_ledger_postings
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
@@ -117,7 +117,7 @@ def get_store(
         mutating request, so `save_store` can detect if something else
         changed this data in the meantime.
     """
-    _postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    _postings, store = _resolved_postings_and_store(session, user_id)
     return AccountingStoreResponse(
         accounts=store.accounts,
         categories=store.categories,
@@ -1386,7 +1386,7 @@ def put_account(
         or update.kind != existing.kind
         or update.currency != existing.currency
     )
-    if locked_fields_changed and _account_has_postings(account_id, state.config, session, user_id):
+    if locked_fields_changed and _account_has_postings(account_id, session, user_id):
         raise HTTPException(
             status_code=400,
             detail="This account already has transactions — only its display name and meta can be edited",
@@ -1430,7 +1430,7 @@ def delete_account(
     store = load_store(session, user_id)
     if account_id not in store.accounts:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
-    if _account_has_postings(account_id, state.config, session, user_id):
+    if _account_has_postings(account_id, session, user_id):
         raise HTTPException(status_code=400, detail="This account already has transactions and can't be deleted")
     remove_account(session, user_id, account_id)
     session.commit()

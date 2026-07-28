@@ -17,9 +17,7 @@ if TYPE_CHECKING:
     from accounting.models import Posting
 
 
-def standardize_chase_credit_card(
-    csv_text: str, account_id: str, _parent_account_id: str | None = None
-) -> pl.DataFrame:
+def standardize_chase_credit_card(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map Chase credit-card export rows onto postings against `account_id`.
 
     Uses `Post Date` over `Transaction Date` when both are present, the
@@ -44,9 +42,6 @@ def standardize_chase_credit_card(
         The raw CSV file contents, exactly as uploaded.
     account_id
         The real Chase credit-card account these rows belong to.
-    _parent_account_id
-        Unused — Chase credit-card accounts never have vaults. Accepted
-        only so this function matches `_STANDARDIZERS`' shared call signature.
 
     Returns
     -------

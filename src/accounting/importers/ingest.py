@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 _Fingerprint = tuple[str, datetime, float, str]
 """`(account_id, posted_at, amount, description)` — two transactions with the same fingerprint look identical."""
 
-_STANDARDIZERS: dict[tuple[str, str], Callable[[str, str, str | None], pl.DataFrame]] = {
+_STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
     ("Chase", "credit_card"): standardize_chase_credit_card,
     ("SoFi", "checking"): standardize_sofi_checking,
@@ -497,7 +497,6 @@ def _archive_raw_statement(
 def _fallback_to_canonical_csv(
     csv_text: str,
     account_id: str,
-    config: AccountingConfig,  # noqa: ARG001 (kept for call-site signature uniformity with the other standardizers)
     session: Session,
     user_id: uuid.UUID,
 ) -> tuple[pl.DataFrame, SkippedRowsInfo | None]:
@@ -509,8 +508,10 @@ def _fallback_to_canonical_csv(
         The raw CSV file contents.
     account_id
         The account these rows belong to.
-    config
-        Application configuration.
+    session
+        An open database session.
+    user_id
+        Whose store the newly-created categories are merged into.
 
     Returns
     -------
@@ -525,7 +526,7 @@ def _fallback_to_canonical_csv(
     return canonical_result.postings, canonical_result.skipped_rows
 
 
-def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the CSV-parsing options, push this one over)
+def ingest_csv(
     csv_text: str,
     institution: str,
     account_kind: str,
@@ -533,7 +534,6 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     config: AccountingConfig,
     session: Session,
     user_id: uuid.UUID,
-    parent_account_id: str | None = None,
 ) -> IngestResult:
     """Archive one uploaded CSV verbatim, standardize it, and merge the result into the ledger.
 
@@ -564,10 +564,6 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
         An open database session.
     user_id
         Whose store/ledger this is.
-    parent_account_id
-        `account_id`'s own parent account, if it has one (a vault's savings
-        account) — only meaningful to the SoFi standardizers; ignored by
-        every other registered standardizer.
 
     Returns
     -------
@@ -591,12 +587,12 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     skip_info: SkippedRowsInfo | None = None
     # Try the bank-specific standardizer first; if it fails, fall back to canonical CSV
     try:
-        new_postings = standardizer(csv_text, account_id, parent_account_id)
+        new_postings = standardizer(csv_text, account_id)
     except (ValueError, RuntimeError) as error:
         # Bank-specific standardizer failed (likely validation, parsing, or format mismatch).
         # Fall back to canonical CSV importer, which is more forgiving about column names/formats.
         try:
-            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, config, session, user_id=user_id)
+            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, session, user_id=user_id)
         except (CanonicalCsvError, ValueError, KeyError, RuntimeError) as canonical_error:
             # Both standardizers failed; raise the original bank error with fallback note
             message = (
@@ -879,7 +875,7 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
         if standardizer is None:
             message = f"No importer for institution={institution!r}, account_kind={account.kind!r}."
             raise UnsupportedImportError(message)
-        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id, account.parent_account_id))
+        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id))
 
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
     validate_balanced(ledger)

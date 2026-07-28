@@ -250,7 +250,6 @@ def test_ingest_csv_handles_a_vault_transfer_with_opaque_parent_id(
         config,
         db_session,
         user_id=test_user_id,
-        parent_account_id=savings_id,
     )
     assert result.new_posting_count == 4
 
@@ -281,7 +280,6 @@ def test_rebuild_from_raw_statements_handles_a_vault_transfer_with_opaque_ids(
         config,
         db_session,
         user_id=test_user_id,
-        parent_account_id=savings_id,
     )
 
     rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)

@@ -126,15 +126,6 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 })
 
-export interface ImportAccountInfo {
-  institution: string
-  account_kind: string
-  account_id: string
-  account_name: string
-  currency?: string
-  parent_account_id?: string | null
-}
-
 export interface AccountCreate {
   name: string
   kind: string
@@ -301,15 +292,10 @@ export const accountingApi = {
     ),
   supportedImportKinds: () =>
     request<{ institution: string; account_kind: string }[]>('/api/accounting/supported-import-kinds'),
-  importCsv: (file: File, info: ImportAccountInfo) => {
+  importCsv: (file: File, accountId: string) => {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('institution', info.institution)
-    formData.append('account_kind', info.account_kind)
-    formData.append('account_id', info.account_id)
-    formData.append('account_name', info.account_name)
-    if (info.currency) formData.append('currency', info.currency)
-    if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
+    formData.append('account_id', accountId)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
   },
   previewCanonicalImport: (
@@ -332,19 +318,14 @@ export const accountingApi = {
   },
   importCanonicalCsv: (
     file: File,
-    info: ImportAccountInfo,
+    accountId: string,
     separator?: string,
     dateOrder?: string,
     categoryOverrides?: CanonicalCategoryOverrides,
   ) => {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('institution', info.institution)
-    formData.append('account_kind', info.account_kind)
-    formData.append('account_id', info.account_id)
-    formData.append('account_name', info.account_name)
-    if (info.currency) formData.append('currency', info.currency)
-    if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
+    formData.append('account_id', accountId)
     if (separator) formData.append('separator', separator)
     if (dateOrder) formData.append('date_order', dateOrder)
     if (categoryOverrides) formData.append('category_overrides', JSON.stringify(categoryOverrides))

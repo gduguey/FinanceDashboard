@@ -4,7 +4,6 @@ import {
   type AccountUpdate,
   accountingApi,
   type CategoryCreate,
-  type ImportAccountInfo,
   type SubcategoryCreate,
   type TagCreate,
 } from '@/lib/accountingApi'
@@ -756,7 +755,7 @@ export function useReopenAccount() {
 export function useImportCsv() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ file, info }: { file: File; info: ImportAccountInfo }) => accountingApi.importCsv(file, info),
+    mutationFn: ({ file, accountId }: { file: File; accountId: string }) => accountingApi.importCsv(file, accountId),
     onSuccess: invalidate,
   })
 }
@@ -766,17 +765,17 @@ export function useImportCanonicalCsv() {
   return useMutation({
     mutationFn: ({
       file,
-      info,
+      accountId,
       separator,
       dateOrder,
       categoryOverrides,
     }: {
       file: File
-      info: ImportAccountInfo
+      accountId: string
       separator?: string
       dateOrder?: string
       categoryOverrides?: CanonicalCategoryOverrides
-    }) => accountingApi.importCanonicalCsv(file, info, separator, dateOrder, categoryOverrides),
+    }) => accountingApi.importCanonicalCsv(file, accountId, separator, dateOrder, categoryOverrides),
     onSuccess: invalidate,
   })
 }

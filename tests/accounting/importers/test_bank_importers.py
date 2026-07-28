@@ -146,7 +146,7 @@ def test_standardize_sofi_wide_csv_leaves_a_savings_transfer_as_a_generic_placeh
     # same as every other transfer, so a `TransferRule` resolves it exactly
     # once.
     vault_id = "a1b2c3d4"
-    result = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
+    result = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id)
     counterparties = set(result["account_id"].unique().to_list()) - {vault_id}
     assert "sofi:savings:3680" not in counterparties
     # Both of SOFI_VAULT_CSV's rows are positive (interest earned, money
@@ -160,6 +160,6 @@ def test_standardize_sofi_wide_csv_leaves_a_savings_transfer_as_a_generic_placeh
 
 def test_standardize_sofi_wide_csv_used_via_the_checking_and_savings_dispatchers() -> None:
     vault_id = "a1b2c3d4"
-    via_savings = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
-    via_checking = standardize_sofi_checking(SOFI_VAULT_CSV, vault_id, parent_account_id="sofi:savings:3680")
+    via_savings = standardize_sofi_savings(SOFI_VAULT_CSV, vault_id)
+    via_checking = standardize_sofi_checking(SOFI_VAULT_CSV, vault_id)
     assert len(via_savings) == len(via_checking) == 4

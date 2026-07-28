@@ -18,7 +18,7 @@ from accounting.api.api_models import (
     PatternSuggestBulkRequest,
     VerifyResult,
 )
-from accounting.api.dependencies import _resolved_postings_and_store, state
+from accounting.api.dependencies import _resolved_postings_and_store
 from accounting.ledger.patterns import match_patterns_bulk, matching_pattern
 from accounting.ledger.pending import stage_pending_suggestion
 from accounting.llm import categorize
@@ -302,7 +302,7 @@ def post_ai_suggest_category(
     HTTPException
         404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -365,7 +365,7 @@ def post_pattern_suggest_category(
     HTTPException
         404 if the posting doesn't exist.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -414,7 +414,7 @@ def post_pattern_suggest_category_bulk(
     BulkSuggestResult
         How many postings got a staged suggestion.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings, store = _resolved_postings_and_store(session, user_id)
     targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
     if targets.is_empty():
         return BulkSuggestResult(applied=0)

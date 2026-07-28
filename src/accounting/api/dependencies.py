@@ -64,7 +64,6 @@ state = _State()
 
 
 def _resolved_postings_and_store(
-    config: AccountingConfig,  # noqa: ARG001
     session: Session,
     user_id: uuid.UUID,
     *,
@@ -82,8 +81,6 @@ def _resolved_postings_and_store(
 
     Parameters
     ----------
-    config
-        Unused; kept for every caller's existing call shape.
     session
         An open database session.
     user_id
@@ -140,7 +137,6 @@ def _resolved_postings_and_store(
 
 
 def _resolved_postings_for_aggregation(
-    config: AccountingConfig,
     session: Session,
     user_id: uuid.UUID,
     *,
@@ -159,7 +155,7 @@ def _resolved_postings_for_aggregation(
 
     Parameters
     ----------
-    config, session, user_id
+    session, user_id
         See `_resolved_postings_and_store`.
     since, until
         See `_resolved_postings_and_store` — every caller of *this*
@@ -172,7 +168,7 @@ def _resolved_postings_for_aggregation(
         The resolved postings (with any pending posting's category/subcategory
         nulled out), and the current store.
     """
-    postings, store = _resolved_postings_and_store(config, session, user_id, since=since, until=until)
+    postings, store = _resolved_postings_and_store(session, user_id, since=since, until=until)
     overrides = load_overrides(session, user_id)
     pending_ids = [posting_id for posting_id, override in overrides.items() if override.pending_source is not None]
     if not pending_ids:
@@ -182,12 +178,7 @@ def _resolved_postings_for_aggregation(
     return postings.with_columns(category_id=cleared, subcategory_id=cleared_sub), store
 
 
-def _account_has_postings(
-    account_id: str,
-    config: AccountingConfig,  # noqa: ARG001
-    session: Session,
-    user_id: uuid.UUID,
-) -> bool:
+def _account_has_postings(account_id: str, session: Session, user_id: uuid.UUID) -> bool:
     """Check whether any imported posting has ever been assigned to this account.
 
     Used to enforce the accounts-CRUD rule: an account's institution,
