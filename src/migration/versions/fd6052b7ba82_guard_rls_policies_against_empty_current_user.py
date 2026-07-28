@@ -47,14 +47,21 @@ def _owner_column(schema: str, table: str) -> str:
     return "id" if schema == "public" and table == "users" else "user_id"
 
 
+def _quote_ident(name: str) -> str:
+    """Double-quote a SQL identifier, escaping any embedded double quote."""
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
+
+
 def _recreate_policies(marker_expr: str) -> None:
     """Drop and recreate every `user_isolation` policy so its owner column compares against `marker_expr`."""
     connection = op.get_bind()
     for schema, table in _isolation_policies(connection):
         column = _owner_column(schema, table)
-        op.execute(f'DROP POLICY user_isolation ON "{schema}"."{table}"')
+        qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+        op.execute(f"DROP POLICY user_isolation ON {qualified}")
         op.execute(
-            f'CREATE POLICY user_isolation ON "{schema}"."{table}" '
+            f"CREATE POLICY user_isolation ON {qualified} "
             f"USING ({column} = {marker_expr}) "
             f"WITH CHECK ({column} = {marker_expr})"
         )
