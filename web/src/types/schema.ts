@@ -98,7 +98,7 @@ export interface paths {
      *     ------
      *     HTTPException
      *         409 if a top-level category of the same classification already
-     *         has this name (case-insensitive).
+     *         has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
      */
     post: operations['post_category_api_accounting_categories_post']
     delete?: never
@@ -129,7 +129,7 @@ export interface paths {
      *     ------
      *     HTTPException
      *         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
-     *         already has this name (case-insensitive).
+     *         already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
      */
     post: operations['post_subcategory_api_accounting_categories__parent_id__subcategories_post']
     delete?: never
@@ -332,7 +332,8 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         409 if a tag with this name (case-insensitive) already exists.
+     *         409 if a tag with this name (case-insensitive) already exists, or a
+     *         distinct name collides with an existing tag's slug id.
      */
     post: operations['post_tag_api_accounting_tags_post']
     delete?: never
@@ -466,7 +467,8 @@ export interface paths {
      *
      *     Posting this again for the same
      *     `(description_contains, account_id, counterparty_account_id)` replaces
-     *     that rule (its `priority`/`description` update in place) rather than
+     *     that rule (its `priority`/`description` update in place, while its
+     *     `active` toggle and accumulated exclusions are preserved) rather than
      *     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
      *     for editing an existing rule by id, which never risks that ambiguity.
      *
@@ -474,6 +476,11 @@ export interface paths {
      *     -------
      *     TransferRule
      *         The rule just persisted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
      */
     post: operations['post_transfer_rule_api_accounting_transfer_rules_post']
     delete?: never
@@ -494,7 +501,14 @@ export interface paths {
     post?: never
     /**
      * Delete Transfer Rule Route
-     * @description Delete one transfer rule, without touching any other rule already saved.
+     * @description Delete one transfer rule and every transfer link it created, touching no other rule.
+     *
+     *     Deleting a rule cascades to the links it produced: a rule-created link
+     *     (`source == "rule"`) is a consequence of the rule, so it must not outlive
+     *     it. Manually-confirmed links are never swept up (see
+     *     `accounting.store.remove_rule_transfer_links`). The follow-up
+     *     `reconcile_and_persist_rule_links` re-proposes only from the *remaining*
+     *     rules, so the deleted rule's links stay gone rather than being re-derived.
      *
      *     No version check — see `accounting.store.delete_transfer_rule`'s own
      *     docstring for why deleting an already-gone rule is a plain 404, not a
@@ -924,6 +938,11 @@ export interface paths {
      *     -------
      *     Account
      *         The account just persisted, including its newly-generated `account_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `parent_account_id` is set but names an account that doesn't exist.
      */
     post: operations['post_account_api_accounting_accounts_post']
     delete?: never
@@ -1227,13 +1246,15 @@ export interface paths {
      * Post Import
      * @description Archive and import the uploaded CSV against an already-registered account.
      *
-     *     `account_name`, `currency`, and `parent_account_id` are no longer used
-     *     to construct anything here — every account this endpoint is called
-     *     with must already exist (see `AccountCreate`/`POST /accounts`), so the
-     *     account's own `parent_account_id` (not this form field) is what's
-     *     threaded into the standardizer. Kept as accepted form fields anyway
-     *     rather than narrowing this endpoint's request contract as part of this
-     *     change.
+     *     `institution`, `account_kind`, `account_name`, `currency`, and
+     *     `parent_account_id` are no longer used to select the importer or
+     *     construct anything here — every account this endpoint is called with
+     *     must already exist (see `AccountCreate`/`POST /accounts`), so the
+     *     account's own `institution`/`kind`/`parent_account_id` (not these form
+     *     fields) are the source of truth: a form value that disagreed with the
+     *     registered account would otherwise pick the wrong importer. Kept as
+     *     accepted form fields anyway rather than narrowing this endpoint's
+     *     request contract as part of this change.
      *
      *     Returns
      *     -------
@@ -2683,15 +2704,14 @@ export interface paths {
      * Put Recurring Additions
      * @description Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
      *
+     *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
+     *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
+     *     lowest priority) — the same check the single-row `PATCH` enforces.
+     *
      *     Returns
      *     -------
      *     list[RecurringAddition]
      *         The additions just persisted.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         400 if more than one addition uses `mode="remainder"`, or one does but isn't the lowest-priority row.
      */
     put: operations['put_recurring_additions_api_accounting_recurring_additions_put']
     /**
@@ -3795,39 +3815,6 @@ export interface paths {
      *         400 if the delivery's signature doesn't verify.
      */
     post: operations['handle_clerk_webhook_api_webhooks_clerk_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/{full_path}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Serve Frontend
-     * @description Serve the built React app for anything no route above matched.
-     *
-     *     Registered last on purpose: Starlette matches routes in registration
-     *     order, so every `/api/...` route (and `/docs`, `/openapi.json`)
-     *     defined earlier is tried first. Falls back to `index.html` for any
-     *     path that isn't a real file in `web/dist/` — e.g. a hard refresh on
-     *     `/settings` — so the frontend's client-side router gets a chance to
-     *     handle it instead of a bare 404.
-     *
-     *     Returns
-     *     -------
-     *     FileResponse
-     *         The requested static file if it exists under `web/dist/`,
-     *         otherwise `index.html` so client-side routing can take over.
-     */
-    get: operations['serve_frontend__full_path__get']
-    put?: never
-    post?: never
     delete?: never
     options?: never
     head?: never
@@ -11964,37 +11951,6 @@ export interface operations {
           'application/json': {
             [key: string]: string
           }
-        }
-      }
-    }
-  }
-  serve_frontend__full_path__get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        full_path: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': unknown
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

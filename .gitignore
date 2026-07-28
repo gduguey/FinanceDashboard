@@ -43,6 +43,9 @@ info/
 # Hardcodes a real personal Clerk id/email — never meant to be committed
 deploy/seed_owner_user.py
 
+# Generated OpenAPI schema (CI regenerates it to check web/src/types/schema.ts drift)
+openapi.json
+
 # Agents and their skills
 .agents/
 skills-lock.json

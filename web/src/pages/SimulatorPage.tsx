@@ -12,8 +12,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import {
   useAccountingStore,
   useCreateSimulatorScenario,
-  useNetWorth,
   useDeleteSimulatorScenario,
+  useNetWorth,
   useSimulatorProjection,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'

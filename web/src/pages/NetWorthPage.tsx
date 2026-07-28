@@ -18,9 +18,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import {
   useCreateOtherAsset,
   useCurrencies,
+  useDeleteOtherAsset,
   useNetWorth,
   useRatesToBase,
-  useDeleteOtherAsset,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useSortableRows } from '@/hooks/useSortableRows'
