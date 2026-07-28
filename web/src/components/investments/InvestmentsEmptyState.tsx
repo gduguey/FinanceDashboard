@@ -1,6 +1,5 @@
 import { ArrowRight, Settings as SettingsIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { SyncButton } from '@/components/investments/SyncButton'
 import { useIbkrSettings, useOverview } from '@/hooks/usePortfolioData'
 
 // Mirrors NoAccountsYetBanner's role on the Money side: one clear
@@ -34,9 +33,8 @@ export function InvestmentsEmptyState() {
   return (
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border bg-muted/40 px-4 py-12 text-center">
       <p className="text-sm text-muted-foreground">
-        IBKR is connected, but nothing's been synced yet — hit Sync to pull your portfolio.
+        IBKR is connected — use the Sync button at the top of the page to pull your portfolio.
       </p>
-      <SyncButton lastSyncedAt={null} />
     </div>
   )
 }
