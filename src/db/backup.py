@@ -26,9 +26,10 @@ from pathlib import Path
 import boto3
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
+from db.session import create_one_shot_engine
 from db.settings import DatabaseSettings
 from db.timestamped_backups import prune_local_timestamped_files, prune_r2_timestamped_objects, timestamped_filename
 
@@ -235,7 +236,7 @@ def verify_backup_restorable(dump: bytes) -> None:
         The dump's bytes, in `pg_dump --format=custom` form (see `run_pg_dump`).
     """
     maintenance_url = make_url(DatabaseSettings().database_url).set(database="postgres")  # type: ignore[call-arg]
-    engine = create_engine(maintenance_url, isolation_level="AUTOCOMMIT")
+    engine = create_one_shot_engine(maintenance_url, autocommit=True)
     scratch_db_name = f"backup_verify_{uuid.uuid4().hex}"
     scratch_url = maintenance_url.set(database=scratch_db_name)
 

@@ -57,6 +57,42 @@ class AppRuntimeDatabaseSettings(BaseSettings):
 
     database_url: str = Field(validation_alias="DATABASE_URL_APP")
 
+    pool_size: int = Field(
+        default=5,
+        ge=1,
+        validation_alias="DB_POOL_SIZE",
+        description=(
+            "Connections held open per process. Sized for the 1-CPU deployment container: uvicorn serves "
+            "requests from one event loop, so concurrency is bounded by how many requests are simultaneously "
+            "inside a `session_scope`, not by CPU count. Raise this with the container, not ahead of it."
+        ),
+    )
+    max_overflow: int = Field(
+        default=5,
+        ge=0,
+        validation_alias="DB_MAX_OVERFLOW",
+        description=(
+            "Extra connections opened past `pool_size` under burst, then discarded. Deliberately lower than "
+            "SQLAlchemy's default of 10: Postgres' own `max_connections` is the scarce resource, and a burst "
+            "that needs 10 spare connections on a 1-CPU box is a queueing problem, not a pool-sizing one."
+        ),
+    )
+    pool_recycle_seconds: int = Field(
+        default=1800,
+        ge=-1,
+        validation_alias="DB_POOL_RECYCLE_SECONDS",
+        description=(
+            "Discard a pooled connection older than this. Guards against an idle connection being reaped "
+            "server-side or by a NAT/proxy timeout between requests; `pool_pre_ping` catches the rest."
+        ),
+    )
+    pool_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        validation_alias="DB_POOL_TIMEOUT_SECONDS",
+        description="How long a request waits for a free connection before failing rather than hanging.",
+    )
+
 
 class TestDatabaseSettings(BaseSettings):
     """The test suite's own Postgres connection string — never `DatabaseSettings`'s.

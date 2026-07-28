@@ -3,6 +3,15 @@
 `get_engine` is cached so every caller in a running process shares the same
 connection pool rather than each opening its own — the pool itself is what
 makes concurrent requests safe against Postgres, not anything session-level.
+Its pool is sized here rather than left on SQLAlchemy's defaults, because
+the deployment container is capped at 1 CPU and Postgres' `max_connections`
+is a shared budget.
+
+Every engine this process builds comes from one of exactly two functions in
+this module: `get_engine` for request traffic (the `app_runtime` role, RLS
+applies, pooled) and `create_one_shot_engine` for the two administrative
+tasks that deliberately need the superuser role (unpooled, disposed after
+use). Nothing else calls `create_engine` — connection policy has one home.
 """
 
 from __future__ import annotations
@@ -15,6 +24,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import Depends
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from db.current_user import get_current_user_id
 from db.settings import AppRuntimeDatabaseSettings
@@ -22,26 +32,69 @@ from db.settings import AppRuntimeDatabaseSettings
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from sqlalchemy.engine import URL
+
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    """Build (once) and return the process-wide SQLAlchemy engine.
+    """Build (once) and return the process-wide SQLAlchemy engine that serves requests.
 
     Returns
     -------
     Engine
         Bound to `AppRuntimeDatabaseSettings().database_url` — the
-        `app_runtime` role Row-Level Security policies actually apply to,
-        once it's configured (`DATABASE_URL_APP`); the superuser/owner
-        role from `DATABASE_URL` otherwise. `pool_pre_ping` guards against
-        Postgres having silently closed an idle connection (e.g. after a
-        container restart) by testing it before reuse rather than failing
-        the request that happens to draw it next.
+        `app_runtime` role Row-Level Security policies actually apply to
+        (`DATABASE_URL_APP`, required, no superuser fallback). The pool is
+        explicitly sized rather than left on SQLAlchemy's defaults; see
+        `AppRuntimeDatabaseSettings`' own field descriptions for why each
+        number is what it is. `pool_pre_ping` guards against Postgres
+        having silently closed an idle connection (e.g. after a container
+        restart) by testing it before reuse rather than failing the
+        request that happens to draw it next.
     """
     # database_url has no default (see AppRuntimeDatabaseSettings) — pydantic-settings fills
-    # it from DATABASE_URL_APP/DATABASE_URL at runtime, but mypy has no pydantic plugin
-    # configured here to know that, so it sees a required constructor argument never passed.
-    return create_engine(AppRuntimeDatabaseSettings().database_url, pool_pre_ping=True)  # type: ignore[call-arg]
+    # it from DATABASE_URL_APP at runtime, but mypy has no pydantic plugin configured here
+    # to know that, so it sees a required constructor argument never passed.
+    settings = AppRuntimeDatabaseSettings()  # type: ignore[call-arg]
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=settings.pool_size,
+        max_overflow=settings.max_overflow,
+        pool_recycle=settings.pool_recycle_seconds,
+        pool_timeout=settings.pool_timeout_seconds,
+    )
+
+
+def create_one_shot_engine(url: str | URL, *, autocommit: bool = False) -> Engine:
+    """Build an unpooled engine for a single administrative task, then throw it away.
+
+    Every engine in this process is built either here or in `get_engine`,
+    so connection policy lives in exactly one module. The two callers —
+    the price-sync user enumeration and backup verification — connect as
+    the migration-owning superuser to do something Row-Level Security is
+    deliberately meant to prevent an ordinary request from doing, run
+    once, and exit. Pooling them would hold superuser connections open for
+    the life of the process against Postgres' `max_connections` budget for
+    no benefit, so they get `NullPool`: connect, work, disconnect.
+
+    Parameters
+    ----------
+    url
+        The connection string to bind to.
+    autocommit
+        Run every statement outside a transaction block. Required for
+        `CREATE DATABASE`/`DROP DATABASE`, which Postgres refuses to run
+        inside one — that is the whole reason backup verification needs it.
+
+    Returns
+    -------
+    Engine
+        Unpooled. The caller owns disposing of it.
+    """
+    if autocommit:
+        return create_engine(url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    return create_engine(url, poolclass=NullPool)
 
 
 def session_factory() -> sessionmaker[Session]:

@@ -125,7 +125,7 @@ class _FakeMaintenanceConnection:
 
 
 class _FakeMaintenanceEngine:
-    """Fake SQLAlchemy engine standing in for `create_engine(..., isolation_level="AUTOCOMMIT")`."""
+    """Fake SQLAlchemy engine standing in for `create_one_shot_engine(..., autocommit=True)`."""
 
     def __init__(self, executed: list[str]) -> None:
         self._executed = executed
@@ -138,7 +138,9 @@ class _FakeMaintenanceEngine:
 
 
 def _patch_maintenance_engine(monkeypatch: pytest.MonkeyPatch, executed: list[str]) -> None:
-    monkeypatch.setattr(backup_module, "create_engine", lambda *args, **kwargs: _FakeMaintenanceEngine(executed))
+    monkeypatch.setattr(
+        backup_module, "create_one_shot_engine", lambda *args, **kwargs: _FakeMaintenanceEngine(executed)
+    )
     # A placeholder, not the real value used below — `DatabaseSettings.__init__` still validates
     # that *some* DATABASE_URL is present (env var or `.env` file) before the property override
     # two lines down replaces every instance's `.database_url` outright; with conftest.py's
