@@ -21,6 +21,7 @@ mostly no-ops beyond the trailing buffer window. Run via
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,8 @@ from trades.market_data import prices
 
 if TYPE_CHECKING:
     import uuid
+
+logger = logging.getLogger(__name__)
 
 
 def _all_user_ids() -> list[uuid.UUID]:
@@ -94,9 +97,16 @@ def run_price_sync(config: AppConfig | None = None) -> list[str]:
     benchmark_symbols: set[str] = set()
     first_event = today
     for user_id in _all_user_ids():
-        with session_scope(user_id) as session:
-            raw_ledger = main.load_ledger(session, user_id)
-            settings = dashboard.load_settings(session, user_id)
+        # Isolate per-user failures: this is a cross-user batch, so one user's
+        # unreadable ledger/settings must not abort the price refresh for
+        # everyone else — log it and move on.
+        try:
+            with session_scope(user_id) as session:
+                raw_ledger = main.load_ledger(session, user_id)
+                settings = dashboard.load_settings(session, user_id)
+        except Exception:
+            logger.exception("price sync: skipping user %s after an error", user_id)
+            continue
         benchmark_symbols.add(dashboard.resolved_benchmark_symbol(config, settings))
         if not raw_ledger.is_empty():
             held_symbols |= set(raw_ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol}

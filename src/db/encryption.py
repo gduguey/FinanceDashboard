@@ -39,7 +39,9 @@ class SecretsEncryptionSettings(BaseSettings):
 
     current_key: SecretStr = Field(validation_alias="APP_SECRETS_ENCRYPTION_KEY")
     current_version: int = Field(default=1, validation_alias="APP_SECRETS_ENCRYPTION_KEY_VERSION")
-    previous_keys_json: str | None = Field(default=None, validation_alias="APP_SECRETS_ENCRYPTION_KEYS_PREVIOUS")
+    # `SecretStr`, not a plain `str`: this holds rotated-out key material, so it
+    # must never surface in a repr/log/traceback of the settings object.
+    previous_keys_json: SecretStr | None = Field(default=None, validation_alias="APP_SECRETS_ENCRYPTION_KEYS_PREVIOUS")
 
     def previous_keys(self) -> dict[int, str]:
         """Every rotated-out key, keyed by the `key_version` it encrypted rows under.
@@ -49,9 +51,12 @@ class SecretsEncryptionSettings(BaseSettings):
         dict[int, str]
             Empty if `previous_keys_json` is unset.
         """
-        if not self.previous_keys_json:
+        if self.previous_keys_json is None:
             return {}
-        return {int(version): key for version, key in json.loads(self.previous_keys_json).items()}
+        raw = self.previous_keys_json.get_secret_value()
+        if not raw:
+            return {}
+        return {int(version): key for version, key in json.loads(raw).items()}
 
 
 @dataclass(frozen=True)
