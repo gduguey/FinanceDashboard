@@ -123,7 +123,10 @@ def rule_matches_by_transaction(postings: pl.DataFrame | pl.LazyFrame, rules: li
             & (pl.col("_rule_account_id").is_null() | (pl.col("_rule_account_id") == pl.col("account_id")))
             & ~pl.col("_excluded_transaction_ids").list.contains(pl.col("transaction_id"))
         )
-        .sort("_priority")
+        # `rule_id` as a secondary key makes ties deterministic — without it,
+        # two equal-priority rules resolve by whatever order the non-stable sort
+        # happens to yield.
+        .sort(["_priority", "rule_id"])
         .group_by("transaction_id", maintain_order=True)
         .first()
         .select("transaction_id", "rule_id", "counterparty_account_id")

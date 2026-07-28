@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from typing import Annotated, cast
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
@@ -374,7 +374,7 @@ def get_monthly_income_expense(
 def get_spend_curve(
     month: date,
     *,
-    lookback_months: int = 3,
+    lookback_months: Annotated[int, Query(ge=1)] = 3,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -429,7 +429,7 @@ def get_suggested_budget_amount(
     category_id: str,
     month: str,
     *,
-    lookback_months: int = 3,
+    lookback_months: Annotated[int, Query(ge=1)] = 3,
     subcategory_id: str | None = None,
     display_currency: CurrencyCode = "USD",
     session: Annotated[Session, Depends(get_db)],
