@@ -7,16 +7,16 @@ module's own schema.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, func
+from sqlalchemy import ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import Base
+from db.base import Base, Timestamped
+from db.indexes import ensure_foreign_key_indexes
 
 
-class User(Base):
+class User(Base, Timestamped):
     """One person using this app. Every other table's `user_id` foreign-keys here.
 
     Knows nothing about Clerk, or any other identity provider, on purpose
@@ -38,10 +38,9 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class ExternalIdentity(Base):
+class ExternalIdentity(Base, Timestamped):
     """Links one identity-provider account to a row in `users` — see `db.external_identities`.
 
     `(provider, external_id)` is the primary key: one external account
@@ -59,10 +58,9 @@ class ExternalIdentity(Base):
     provider: Mapped[str] = mapped_column(primary_key=True)
     external_id: Mapped[str] = mapped_column(primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class UserSecret(Base):
+class UserSecret(Base, Timestamped):
     """One named credential belonging to a user — a broker token, an LLM API key, whatever comes next.
 
     Generic by design: a new kind of secret (a new broker's API token, a
@@ -93,7 +91,8 @@ class UserSecret(Base):
     kind: Mapped[str]
     ciphertext: Mapped[str]
     encryption_key_version: Mapped[int]
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+
+
+# Every foreign key in this schema gets its index here rather than on each
+# model, so adding a foreign key cannot ship without one. See `db.indexes`.
+ensure_foreign_key_indexes(Base.metadata, schema="public")

@@ -12,21 +12,21 @@ constraint instead of being the primary key itself.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.models import AccountKind, CategoryClassification, CurrencyCode
-from db.base import MONEY, Base, check_in_sql
+from db.base import MONEY, Base, Timestamped, check_in_sql
 
 SCHEMA = "accounting"
 
 
-class Account(Base):
+class Account(Base, Timestamped):
     """One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty."""
 
     __tablename__ = "accounts"
@@ -53,7 +53,7 @@ class Account(Base):
     closed: Mapped[bool] = mapped_column(default=False)
 
 
-class Category(Base):
+class Category(Base, Timestamped):
     """One node in the two-level category tree: a top-level category, or a subcategory of one."""
 
     __tablename__ = "categories"
@@ -74,7 +74,7 @@ class Category(Base):
     color: Mapped[str]
 
 
-class Tag(Base):
+class Tag(Base, Timestamped):
     """A cross-cutting label — a trip, a move, an event — independent of the category tree."""
 
     __tablename__ = "tags"
@@ -89,7 +89,7 @@ class Tag(Base):
     name: Mapped[str]
 
 
-class Transaction(Base):
+class Transaction(Base, Timestamped):
     """One economic event, grouping the postings that are its legs.
 
     Doesn't exist as a pydantic model today — `transaction_id` is just a
@@ -106,10 +106,9 @@ class Transaction(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
-class Posting(Base):
+class Posting(Base, Timestamped):
     """One leg of one economic event — one row, like `trades.db.LedgerEvent`.
 
     `budget_id` is a real foreign key into `budgets`, like `category_id`/
@@ -153,7 +152,7 @@ class Posting(Base):
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
 
-class PostingTag(Base):
+class PostingTag(Base, Timestamped):
     """One (posting, tag) pairing — the normalized replacement for `Posting.tag_ids`."""
 
     __tablename__ = "posting_tags"
@@ -170,7 +169,7 @@ class PostingTag(Base):
     tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
 
 
-class OpeningBalance(Base):
+class OpeningBalance(Base, Timestamped):
     """The balance a real account already had the day before its postings start."""
 
     __tablename__ = "opening_balances"
@@ -188,7 +187,7 @@ class OpeningBalance(Base):
     as_of_date: Mapped[datetime]
 
 
-class ManualTransfer(Base):
+class ManualTransfer(Base, Timestamped):
     """A user-recorded transfer between two of their own accounts, never derived from an import."""
 
     __tablename__ = "manual_transfers"
@@ -208,7 +207,7 @@ class ManualTransfer(Base):
     description: Mapped[str] = mapped_column(default="")
 
 
-class OtherAsset(Base):
+class OtherAsset(Base, Timestamped):
     """A manually-entered net-worth line with no transaction history — property, a car, etc."""
 
     __tablename__ = "other_assets"

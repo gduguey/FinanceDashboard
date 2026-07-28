@@ -19,10 +19,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import PendingSuggestionSource
-from db.base import MONEY, Base, check_in_sql
+from db.base import MONEY, Base, Timestamped, check_in_sql
 
 
-class PostingOverride(Base):
+class PostingOverride(Base, Timestamped):
     """A user's direct edit to one posting, always winning over whatever a rule would have produced.
 
     Split from the old combined `manual_overrides` table:
@@ -69,7 +69,7 @@ class PostingOverride(Base):
     tags_overridden: Mapped[bool] = mapped_column(default=False)
 
 
-class PostingOverrideTag(Base):
+class PostingOverrideTag(Base, Timestamped):
     """One tag in a posting override's overridden tag set — the FK-enforced replacement for a loose id array.
 
     Mirrors `accounting.db.core.PostingTag` exactly, one row per
@@ -93,7 +93,7 @@ class PostingOverrideTag(Base):
     tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
 
 
-class PostingPendingSuggestion(Base):
+class PostingPendingSuggestion(Base, Timestamped):
     """A not-yet-confirmed automated suggestion for one posting — deleted outright once resolved.
 
     Existence of a row here *is* "this posting is pending" — no more
@@ -127,7 +127,7 @@ class PostingPendingSuggestion(Base):
     )
 
 
-class PostingSplit(Base):
+class PostingSplit(Base, Timestamped):
     """A user's decision to break one posting into several legs, keyed by the original posting's id."""
 
     __tablename__ = "posting_splits"
@@ -143,7 +143,7 @@ class PostingSplit(Base):
     )
 
 
-class PostingSplitLeg(Base):
+class PostingSplitLeg(Base, Timestamped):
     """One piece of a posting split into several independently-categorized legs.
 
     `ordinal` preserves the legs' display order, since the amounts they
@@ -170,7 +170,7 @@ class PostingSplitLeg(Base):
     description: Mapped[str] = mapped_column(default="")
 
 
-class PostingMerge(Base):
+class PostingMerge(Base, Timestamped):
     """A user's decision that two or more imported transactions are the same real-world event, recorded twice."""
 
     __tablename__ = "posting_merges"
@@ -194,7 +194,7 @@ class PostingMerge(Base):
     description: Mapped[str | None] = mapped_column(default=None)
 
 
-class PostingMergeDuplicate(Base):
+class PostingMergeDuplicate(Base, Timestamped):
     """One transaction dropped from the resolved ledger because a `PostingMerge` kept a different one instead."""
 
     __tablename__ = "posting_merge_duplicates"
@@ -220,7 +220,7 @@ class PostingMergeDuplicate(Base):
     )
 
 
-class DismissedSuggestion(Base):
+class DismissedSuggestion(Base, Timestamped):
     """A user's decision that an auto-detected suggestion isn't relevant, archived rather than discarded.
 
     `natural_key` is a stable key derived from the suggestion's own

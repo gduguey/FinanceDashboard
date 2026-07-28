@@ -12,10 +12,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import CompoundingFrequency, CurrencyCode
-from db.base import MONEY, RATE, Base, check_in_sql
+from db.base import MONEY, RATE, Base, Timestamped, check_in_sql
 
 
-class SimulatorScenario(Base):
+class SimulatorScenario(Base, Timestamped):
     """A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`)."""
 
     __tablename__ = "simulator_scenarios"

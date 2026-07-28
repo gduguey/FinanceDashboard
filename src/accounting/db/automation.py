@@ -9,10 +9,10 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
-from db.base import Base
+from db.base import Base, Timestamped
 
 
-class TransferRule(Base):
+class TransferRule(Base, Timestamped):
     """A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
 
     `account_id`/`counterparty_account_id` are real foreign keys into
@@ -50,7 +50,7 @@ class TransferRule(Base):
     invalidates a version a client already has in hand."""
 
 
-class TransferRuleExclusion(Base):
+class TransferRuleExclusion(Base, Timestamped):
     """One transaction opted out of matching one otherwise-applicable `TransferRule`.
 
     Mirrors `PostingMergeDuplicate`'s own shape (a join table with a real
@@ -80,7 +80,7 @@ class TransferRuleExclusion(Base):
     )
 
 
-class CategoryPattern(Base):
+class CategoryPattern(Base, Timestamped):
     """A user-maintained description-match pattern that *suggests* a category — never applies one silently."""
 
     __tablename__ = "category_patterns"

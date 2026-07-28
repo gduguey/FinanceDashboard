@@ -17,21 +17,21 @@ keyed on directly.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import MONEY, RATE, SHARES, Base, RateMap, check_in_sql
+from db.base import MONEY, RATE, SHARES, Base, RateMap, Timestamped, check_in_sql
 from trades.config import LedgerEventType, TaxRegime
 
 SCHEMA = "trades"
 
 
-class BrokerConnection(Base):
+class BrokerConnection(Base, Timestamped):
     """One user's own link to a brokerage — their own credentials, not a shared process-wide `.env`.
 
     Credentials themselves live in `db.models.UserSecret`, keyed by
@@ -50,10 +50,9 @@ class BrokerConnection(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     broker: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
 
-class LedgerEvent(Base):
+class LedgerEvent(Base, Timestamped):
     """One immutable row of one user's transaction ledger — mirrors `trades.models.LedgerEvent`.
 
     `shares`/`price` live on the side table `LedgerEventTradeDetails`
@@ -84,7 +83,7 @@ class LedgerEvent(Base):
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
 
-class LedgerEventTradeDetails(Base):
+class LedgerEventTradeDetails(Base, Timestamped):
     """The share count and per-share price for a `BUY`/`SELL` `LedgerEvent` — never any other event type.
 
     Carries its own `user_id`, denormalized from the parent `LedgerEvent`,
@@ -105,7 +104,7 @@ class LedgerEventTradeDetails(Base):
     price: Mapped[Decimal] = mapped_column(MONEY)
 
 
-class DashboardSettings(Base):
+class DashboardSettings(Base, Timestamped):
     """One user's dashboard preferences — target allocation, HYSA/benchmark overrides, tax settings, display timezone.
 
     Exactly zero or one row per user (a singleton preferences record) —
@@ -136,7 +135,7 @@ class DashboardSettings(Base):
     qualified_ltcg_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
 
 
-class DashboardSettingsVersion(Base):
+class DashboardSettingsVersion(Base, Timestamped):
     """One user's save counter for `DashboardSettings`, bumped by one on every successful `save_settings` call.
 
     The same `db.base.check_and_bump_version`/`get_version` mechanism

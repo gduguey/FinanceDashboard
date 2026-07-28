@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import CurrencyCode
-from db.base import MONEY, Base, check_in_sql
+from db.base import MONEY, Base, Timestamped, check_in_sql
 
 _NIL_SUBCATEGORY = "00000000-0000-0000-0000-000000000000"
 """Sentinel `coalesce`d in place of a `NULL` `subcategory_id` in the unique indexes below.
@@ -25,7 +25,7 @@ used with `coalesce(subcategory_id, '')`.
 """
 
 
-class Budget(Base):
+class Budget(Base, Timestamped):
     """One month's spending target for one top-level expense category, or one of its subcategories."""
 
     __tablename__ = "budgets"
@@ -55,7 +55,7 @@ class Budget(Base):
     currency: Mapped[str] = mapped_column(default="USD")
 
 
-class GeneralBudget(Base):
+class GeneralBudget(Base, Timestamped):
     """A category's (or subcategory's) spending target applied to every month alike.
 
     Its `id` is derived deterministically from `(category_id, subcategory_id)`

@@ -8,12 +8,12 @@ from sqlalchemy import ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import Base
+from db.base import Base, Timestamped
 
 SCHEMA = "accounting"
 
 
-class StoreVersion(Base):
+class StoreVersion(Base, Timestamped):
     """One user's save counter, bumped by exactly one on every successful `save_store` call.
 
     Exactly zero or one row per user (a singleton counter) — `user_id` is

@@ -11,10 +11,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import TransferLinkSource
-from db.base import Base, check_in_sql
+from db.base import Base, Timestamped, check_in_sql
 
 
-class TransferLink(Base):
+class TransferLink(Base, Timestamped):
     """A confirmed pairing of two transactions as the two sides of one real-world transfer.
 
     `natural_key` is always derived from the two transaction ids sorted
@@ -43,7 +43,7 @@ class TransferLink(Base):
     rule_id: Mapped[str | None] = mapped_column(default=None)
 
 
-class TransferLinkedTransaction(Base):
+class TransferLinkedTransaction(Base, Timestamped):
     """One transaction belonging to one `TransferLink` — exactly two rows per link.
 
     Mirrors `PostingMergeDuplicate`'s own shape (a join table with a real

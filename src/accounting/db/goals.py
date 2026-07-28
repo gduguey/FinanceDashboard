@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,10 +18,10 @@ from accounting.models import (
     RecurringAdditionFrequency,
     RecurringAdditionMode,
 )
-from db.base import MONEY, Base, check_in_sql
+from db.base import MONEY, Base, Timestamped, check_in_sql
 
 
-class Goal(Base):
+class Goal(Base, Timestamped):
     """A savings target — its balance is never stored here, only derived from its `GoalContribution`s."""
 
     __tablename__ = "goals"
@@ -39,7 +39,6 @@ class Goal(Base):
     target_currency: Mapped[str] = mapped_column(default="USD")
     target_date: Mapped[datetime]
     color: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(default=1)
     """Bumped by `db.base.check_and_bump_row_version` on every `PATCH /goals/{goal_id}` — see that
     function's own docstring. Never touched by `save_store`'s upsert path for this table (see
@@ -47,7 +46,7 @@ class Goal(Base):
     invalidates a version a client already has in hand."""
 
 
-class GoalContribution(Base):
+class GoalContribution(Base, Timestamped):
     """One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
 
     `goal_id` is a real foreign key into `goals` — a contribution can only
@@ -86,7 +85,7 @@ class GoalContribution(Base):
     edited: Mapped[bool] = mapped_column(default=False)
 
 
-class RecurringAddition(Base):
+class RecurringAddition(Base, Timestamped):
     """One ordered rule for automatically allocating unallocated money into a goal on a recurring schedule.
 
     `goal_id` is a real foreign key into `goals` — see `GoalContribution`'s
@@ -116,7 +115,7 @@ class RecurringAddition(Base):
     priority: Mapped[int] = mapped_column(default=0)
 
 
-class WithdrawalPriorityEntry(Base):
+class WithdrawalPriorityEntry(Base, Timestamped):
     """One goal's place in the order goals are drawn down from when unallocated money goes negative.
 
     `goal_id` is a real foreign key into `goals` — see `GoalContribution`'s

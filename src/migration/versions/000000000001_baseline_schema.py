@@ -59,6 +59,7 @@ def _create_tables() -> None:
     sa.Column('email', sa.String(), nullable=False),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_users'))
     )
     op.create_table('accounts',
@@ -74,6 +75,8 @@ def _create_tables() -> None:
     sa.Column('external_ref', sa.String(), nullable=True),
     sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('closed', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_accounts_currency')),
     sa.CheckConstraint("kind IN ('checking', 'savings', 'credit_card', 'vault', 'cash', 'loan', 'income_source', 'expense_payee', 'external_investment', 'other_asset')", name=op.f('ck_accounts_kind')),
     sa.ForeignKeyConstraint(['parent_account_id'], ['accounting.accounts.id'], name=op.f('fk_accounts_parent_account_id_accounts')),
@@ -82,6 +85,7 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_accounts_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_accounts_parent_account_id_user_id', 'accounts', ['parent_account_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('categories',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -90,6 +94,8 @@ def _create_tables() -> None:
     sa.Column('classification', sa.String(), nullable=False),
     sa.Column('parent_category_id', sa.UUID(), nullable=True),
     sa.Column('color', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("classification IN ('income', 'expense')", name=op.f('ck_categories_classification')),
     sa.ForeignKeyConstraint(['parent_category_id'], ['accounting.categories.id'], name=op.f('fk_categories_parent_category_id_categories')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_categories_user_id_users'), ondelete='CASCADE'),
@@ -97,6 +103,7 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_categories_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_categories_parent_category_id_user_id', 'categories', ['parent_category_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('dismissed_suggestions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -104,6 +111,8 @@ def _create_tables() -> None:
     sa.Column('kind', sa.String(), nullable=False),
     sa.Column('description', sa.String(), nullable=False),
     sa.Column('dismissed_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dismissed_suggestions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_dismissed_suggestions')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_dismissed_suggestions_user_natural_key'),
@@ -118,8 +127,9 @@ def _create_tables() -> None:
     sa.Column('target_currency', sa.String(), nullable=False),
     sa.Column('target_date', sa.DateTime(), nullable=False),
     sa.Column('color', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('version', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("target_currency IN ('USD', 'EUR')", name=op.f('ck_goals_target_currency')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_goals_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_goals')),
@@ -133,6 +143,8 @@ def _create_tables() -> None:
     sa.Column('used_count', sa.Integer(), nullable=False),
     sa.Column('is_limited', sa.Boolean(), nullable=False),
     sa.Column('last_error', sa.String(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_llm_usage_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('user_id', 'provider', name=op.f('pk_llm_usage')),
     schema='accounting'
@@ -145,6 +157,8 @@ def _create_tables() -> None:
     sa.Column('value', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('note', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_other_assets_currency')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_other_assets_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_other_assets')),
@@ -162,6 +176,8 @@ def _create_tables() -> None:
     sa.Column('annual_rate_pct', sa.Numeric(precision=12, scale=6), nullable=False),
     sa.Column('compounding_frequency', sa.String(), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("compounding_frequency IN ('annually', 'monthly', 'daily')", name=op.f('ck_simulator_scenarios_compounding_frequency')),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_simulator_scenarios_currency')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_simulator_scenarios_user_id_users'), ondelete='CASCADE'),
@@ -172,6 +188,8 @@ def _create_tables() -> None:
     op.create_table('store_versions',
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('version', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_store_versions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('user_id', name=op.f('pk_store_versions')),
     schema='accounting'
@@ -181,6 +199,8 @@ def _create_tables() -> None:
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_tags_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_tags')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_tags_user_natural_key'),
@@ -190,7 +210,8 @@ def _create_tables() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transactions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_transactions')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_transactions_user_natural_key'),
@@ -202,6 +223,8 @@ def _create_tables() -> None:
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('source', sa.String(), nullable=False),
     sa.Column('rule_id', sa.String(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("source IN ('manual', 'rule')", name=op.f('ck_transfer_links_source')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_links_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_transfer_links')),
@@ -213,15 +236,18 @@ def _create_tables() -> None:
     sa.Column('external_id', sa.String(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_external_identities_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('provider', 'external_id', name=op.f('pk_external_identities'))
     )
+    op.create_index('ix_external_identities_user_id', 'external_identities', ['user_id'], unique=False)
     op.create_table('broker_connections',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('broker', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_broker_connections_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_broker_connections')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_broker_connections_user_natural_key'),
@@ -241,6 +267,8 @@ def _create_tables() -> None:
     sa.Column('w8ben_treaty_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('marginal_ordinary_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
     sa.Column('qualified_ltcg_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("tax_regime IN ('NRA', 'RESIDENT')", name=op.f('ck_dashboard_settings_tax_regime')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dashboard_settings_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('user_id', name=op.f('pk_dashboard_settings')),
@@ -249,6 +277,8 @@ def _create_tables() -> None:
     op.create_table('dashboard_settings_versions',
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('version', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dashboard_settings_versions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('user_id', name=op.f('pk_dashboard_settings_versions')),
     schema='trades'
@@ -273,6 +303,8 @@ def _create_tables() -> None:
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_budgets_currency')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_budgets_category_id_categories')),
     sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_budgets_subcategory_id_categories')),
@@ -281,6 +313,8 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_budgets_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_budgets_category_id_user_id', 'budgets', ['category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_budgets_subcategory_id_user_id', 'budgets', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
     op.create_index('uq_budgets_user_month_category', 'budgets', ['user_id', 'month', 'category_id', sa.literal_column("coalesce(subcategory_id, '00000000-0000-0000-0000-000000000000'::uuid)")], unique=True, schema='accounting')
     op.create_table('category_patterns',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -292,6 +326,8 @@ def _create_tables() -> None:
     sa.Column('priority', sa.Integer(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.Column('version', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_category_patterns_category_id_categories')),
     sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_category_patterns_subcategory_id_categories')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_category_patterns_user_id_users'), ondelete='CASCADE'),
@@ -299,6 +335,8 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_category_patterns_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_category_patterns_category_id_user_id', 'category_patterns', ['category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_category_patterns_subcategory_id_user_id', 'category_patterns', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('general_budgets',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -306,6 +344,8 @@ def _create_tables() -> None:
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_general_budgets_currency')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_general_budgets_category_id_categories')),
     sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_general_budgets_subcategory_id_categories')),
@@ -313,6 +353,8 @@ def _create_tables() -> None:
     sa.PrimaryKeyConstraint('id', name=op.f('pk_general_budgets')),
     schema='accounting'
     )
+    op.create_index('ix_general_budgets_category_id_user_id', 'general_budgets', ['category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_general_budgets_subcategory_id_user_id', 'general_budgets', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
     op.create_index('uq_general_budgets_user_category_subcategory', 'general_budgets', ['user_id', 'category_id', sa.literal_column("coalesce(subcategory_id, '00000000-0000-0000-0000-000000000000'::uuid)")], unique=True, schema='accounting')
     op.create_table('manual_transfers',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -324,6 +366,8 @@ def _create_tables() -> None:
     sa.Column('from_amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('to_amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('description', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['from_account_id'], ['accounting.accounts.id'], name=op.f('fk_manual_transfers_from_account_id_accounts')),
     sa.ForeignKeyConstraint(['to_account_id'], ['accounting.accounts.id'], name=op.f('fk_manual_transfers_to_account_id_accounts')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_manual_transfers_user_id_users'), ondelete='CASCADE'),
@@ -331,30 +375,38 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_manual_transfers_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_manual_transfers_from_account_id_user_id', 'manual_transfers', ['from_account_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_manual_transfers_to_account_id_user_id', 'manual_transfers', ['to_account_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('opening_balances',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('account_id', sa.UUID(), nullable=False),
     sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('as_of_date', sa.DateTime(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_opening_balances_account_id_accounts'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_opening_balances_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_opening_balances')),
     sa.UniqueConstraint('user_id', 'account_id', name='uq_opening_balances_user_account'),
     schema='accounting'
     )
+    op.create_index('ix_opening_balances_account_id_user_id', 'opening_balances', ['account_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_merges',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('kept_transaction_id', sa.UUID(), nullable=False),
     sa.Column('description', sa.String(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['kept_transaction_id'], ['accounting.transactions.id'], name=op.f('fk_posting_merges_kept_transaction_id_transactions'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_merges_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_merges')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_posting_merges_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_posting_merges_kept_transaction_id_user_id', 'posting_merges', ['kept_transaction_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('recurring_additions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -367,6 +419,8 @@ def _create_tables() -> None:
     sa.Column('value', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('priority', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_recurring_additions_currency')),
     sa.CheckConstraint("frequency IN ('daily', 'weekly', 'biweekly', 'monthly')", name=op.f('ck_recurring_additions_frequency')),
     sa.CheckConstraint("mode IN ('fixed_amount', 'percent_of_unallocated', 'remainder')", name=op.f('ck_recurring_additions_mode')),
@@ -376,11 +430,14 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_recurring_additions_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_recurring_additions_goal_id_user_id', 'recurring_additions', ['goal_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('transfer_linked_transactions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('link_id', sa.UUID(), nullable=False),
     sa.Column('transaction_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['link_id'], ['accounting.transfer_links.id'], name=op.f('fk_transfer_linked_transactions_link_id_transfer_links'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['transaction_id'], ['accounting.transactions.id'], name=op.f('fk_transfer_linked_transactions_transaction_id_transactions')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_linked_transactions_user_id_users'), ondelete='CASCADE'),
@@ -388,6 +445,8 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'transaction_id', name='uq_transfer_linked_transactions_user_transaction'),
     schema='accounting'
     )
+    op.create_index('ix_transfer_linked_transactions_link_id_user_id', 'transfer_linked_transactions', ['link_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_transfer_linked_transactions_transaction_id_user_id', 'transfer_linked_transactions', ['transaction_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('transfer_rules',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -399,6 +458,8 @@ def _create_tables() -> None:
     sa.Column('description', sa.String(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.Column('version', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_transfer_rules_account_id_accounts')),
     sa.ForeignKeyConstraint(['counterparty_account_id'], ['accounting.accounts.id'], name=op.f('fk_transfer_rules_counterparty_account_id_accounts')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_rules_user_id_users'), ondelete='CASCADE'),
@@ -406,17 +467,22 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_transfer_rules_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_transfer_rules_account_id_user_id', 'transfer_rules', ['account_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_transfer_rules_counterparty_account_id_user_id', 'transfer_rules', ['counterparty_account_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('withdrawal_priority_entries',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('goal_id', sa.UUID(), nullable=False),
     sa.Column('priority', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['goal_id'], ['accounting.goals.id'], name=op.f('fk_withdrawal_priority_entries_goal_id_goals')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_withdrawal_priority_entries_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_withdrawal_priority_entries')),
     sa.UniqueConstraint('user_id', 'goal_id', name='uq_withdrawal_priority_entries_user_goal'),
     schema='accounting'
     )
+    op.create_index('ix_withdrawal_priority_entries_goal_id_user_id', 'withdrawal_priority_entries', ['goal_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('ledger_events',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -428,6 +494,8 @@ def _create_tables() -> None:
     sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("event_type IN ('DEPOSIT', 'WITHDRAWAL', 'BUY', 'SELL', 'DIVIDEND', 'WITHHOLDING', 'FEE', 'SPLIT')", name=op.f('ck_ledger_events_event_type')),
     sa.ForeignKeyConstraint(['connection_id'], ['trades.broker_connections.id'], name=op.f('fk_ledger_events_connection_id_broker_connections'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_ledger_events_user_id_users'), ondelete='CASCADE'),
@@ -435,11 +503,14 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_ledger_events_user_natural_key'),
     schema='trades'
     )
+    op.create_index('ix_ledger_events_connection_id_user_id', 'ledger_events', ['connection_id', 'user_id'], unique=False, schema='trades')
     op.create_table('posting_merge_duplicates',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('merge_id', sa.UUID(), nullable=False),
     sa.Column('duplicate_transaction_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['duplicate_transaction_id'], ['accounting.transactions.id'], name=op.f('fk_posting_merge_duplicates_duplicate_transaction_id_transactions'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['merge_id'], ['accounting.posting_merges.id'], name=op.f('fk_posting_merge_duplicates_merge_id_posting_merges'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_merge_duplicates_user_id_users'), ondelete='CASCADE'),
@@ -447,6 +518,8 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'merge_id', 'duplicate_transaction_id', name='uq_posting_merge_duplicates_user_merge_txn'),
     schema='accounting'
     )
+    op.create_index('ix_posting_merge_duplicates_duplicate_transaction_id_user_id', 'posting_merge_duplicates', ['duplicate_transaction_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_merge_duplicates_merge_id_user_id', 'posting_merge_duplicates', ['merge_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('postings',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -461,6 +534,8 @@ def _create_tables() -> None:
     sa.Column('budget_id', sa.UUID(), nullable=True),
     sa.Column('description', sa.String(), nullable=False),
     sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_postings_currency')),
     sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_postings_account_id_accounts')),
     sa.ForeignKeyConstraint(['budget_id'], ['accounting.budgets.id'], name=op.f('fk_postings_budget_id_budgets')),
@@ -472,12 +547,19 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_postings_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_postings_account_id_user_id', 'postings', ['account_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_postings_budget_id_user_id', 'postings', ['budget_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_postings_category_id_user_id', 'postings', ['category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_postings_subcategory_id_user_id', 'postings', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_postings_transaction_id_user_id', 'postings', ['transaction_id', 'user_id'], unique=False, schema='accounting')
     op.create_index('ix_postings_user_posted_at', 'postings', ['user_id', 'posted_at'], unique=False, schema='accounting')
     op.create_table('transfer_rule_exclusions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('rule_id', sa.UUID(), nullable=False),
     sa.Column('transaction_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['rule_id'], ['accounting.transfer_rules.id'], name=op.f('fk_transfer_rule_exclusions_rule_id_transfer_rules'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['transaction_id'], ['accounting.transactions.id'], name=op.f('fk_transfer_rule_exclusions_transaction_id_transactions'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_rule_exclusions_user_id_users'), ondelete='CASCADE'),
@@ -485,16 +567,22 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'rule_id', 'transaction_id', name='uq_transfer_rule_exclusions_user_rule_txn'),
     schema='accounting'
     )
+    op.create_index('ix_transfer_rule_exclusions_rule_id_user_id', 'transfer_rule_exclusions', ['rule_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_transfer_rule_exclusions_transaction_id_user_id', 'transfer_rule_exclusions', ['transaction_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('ledger_event_trade_details',
     sa.Column('ledger_event_id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('shares', sa.Numeric(precision=20, scale=8), nullable=False),
     sa.Column('price', sa.Numeric(precision=18, scale=4), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['ledger_event_id'], ['trades.ledger_events.id'], name=op.f('fk_ledger_event_trade_details_ledger_event_id_ledger_events'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_ledger_event_trade_details_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('ledger_event_id', name=op.f('pk_ledger_event_trade_details')),
     schema='trades'
     )
+    op.create_index('ix_ledger_event_trade_details_ledger_event_id_user_id', 'ledger_event_trade_details', ['ledger_event_id', 'user_id'], unique=False, schema='trades')
+    op.create_index('ix_ledger_event_trade_details_user_id', 'ledger_event_trade_details', ['user_id'], unique=False, schema='trades')
     op.create_table('goal_contributions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -507,6 +595,8 @@ def _create_tables() -> None:
     sa.Column('source_posting_id', sa.UUID(), nullable=True),
     sa.Column('origin', sa.String(), nullable=False),
     sa.Column('edited', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_goal_contributions_currency')),
     sa.CheckConstraint("origin IN ('manual', 'automation')", name=op.f('ck_goal_contributions_origin')),
     sa.ForeignKeyConstraint(['goal_id'], ['accounting.goals.id'], name=op.f('fk_goal_contributions_goal_id_goals')),
@@ -516,6 +606,8 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_goal_contributions_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_goal_contributions_goal_id_user_id', 'goal_contributions', ['goal_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_goal_contributions_source_posting_id_user_id', 'goal_contributions', ['source_posting_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_overrides',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -524,6 +616,8 @@ def _create_tables() -> None:
     sa.Column('category_id', sa.UUID(), nullable=True),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('tags_overridden', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_posting_overrides_account_id_accounts')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_posting_overrides_category_id_categories')),
     sa.ForeignKeyConstraint(['posting_id'], ['accounting.postings.id'], name=op.f('fk_posting_overrides_posting_id_postings'), ondelete='CASCADE'),
@@ -533,6 +627,10 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'posting_id', name='uq_posting_overrides_user_posting'),
     schema='accounting'
     )
+    op.create_index('ix_posting_overrides_account_id_user_id', 'posting_overrides', ['account_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_overrides_category_id_user_id', 'posting_overrides', ['category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_overrides_posting_id_user_id', 'posting_overrides', ['posting_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_overrides_subcategory_id_user_id', 'posting_overrides', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_pending_suggestions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -541,6 +639,8 @@ def _create_tables() -> None:
     sa.Column('selected', sa.Boolean(), nullable=False),
     sa.Column('previous_category_id', sa.UUID(), nullable=True),
     sa.Column('previous_subcategory_id', sa.UUID(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("source IN ('ai', 'pattern')", name=op.f('ck_posting_pending_suggestions_source')),
     sa.ForeignKeyConstraint(['posting_id'], ['accounting.postings.id'], name=op.f('fk_posting_pending_suggestions_posting_id_postings'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['previous_category_id'], ['accounting.categories.id'], name=op.f('fk_posting_pending_suggestions_previous_category_id_categories')),
@@ -550,21 +650,29 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'posting_id', name='uq_posting_pending_suggestions_user_posting'),
     schema='accounting'
     )
+    op.create_index('ix_posting_pending_suggestions_posting_id_user_id', 'posting_pending_suggestions', ['posting_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_pending_suggestions_previous_category_id_user_id', 'posting_pending_suggestions', ['previous_category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_pending_suggestions_previous_subcategory_id_user_id', 'posting_pending_suggestions', ['previous_subcategory_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_splits',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('posting_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['posting_id'], ['accounting.postings.id'], name=op.f('fk_posting_splits_posting_id_postings'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_splits_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_splits')),
     sa.UniqueConstraint('user_id', 'posting_id', name='uq_posting_splits_user_posting'),
     schema='accounting'
     )
+    op.create_index('ix_posting_splits_posting_id_user_id', 'posting_splits', ['posting_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_tags',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('posting_id', sa.UUID(), nullable=False),
     sa.Column('tag_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['posting_id'], ['accounting.postings.id'], name=op.f('fk_posting_tags_posting_id_postings'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['tag_id'], ['accounting.tags.id'], name=op.f('fk_posting_tags_tag_id_tags'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_tags_user_id_users'), ondelete='CASCADE'),
@@ -572,11 +680,15 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'posting_id', 'tag_id', name='uq_posting_tags_user_posting_tag'),
     schema='accounting'
     )
+    op.create_index('ix_posting_tags_posting_id_user_id', 'posting_tags', ['posting_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_tags_tag_id_user_id', 'posting_tags', ['tag_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_override_tags',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('override_id', sa.UUID(), nullable=False),
     sa.Column('tag_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['override_id'], ['accounting.posting_overrides.id'], name=op.f('fk_posting_override_tags_override_id_posting_overrides'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['tag_id'], ['accounting.tags.id'], name=op.f('fk_posting_override_tags_tag_id_tags'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_override_tags_user_id_users'), ondelete='CASCADE'),
@@ -584,6 +696,8 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'override_id', 'tag_id', name='uq_posting_override_tags_user_override_tag'),
     schema='accounting'
     )
+    op.create_index('ix_posting_override_tags_override_id_user_id', 'posting_override_tags', ['override_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_override_tags_tag_id_user_id', 'posting_override_tags', ['tag_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('posting_split_legs',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -593,6 +707,8 @@ def _create_tables() -> None:
     sa.Column('category_id', sa.UUID(), nullable=True),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('description', sa.String(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_posting_split_legs_category_id_categories')),
     sa.ForeignKeyConstraint(['posting_split_id'], ['accounting.posting_splits.id'], name=op.f('fk_posting_split_legs_posting_split_id_posting_splits'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_posting_split_legs_subcategory_id_categories')),
@@ -600,6 +716,10 @@ def _create_tables() -> None:
     sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_split_legs')),
     schema='accounting'
     )
+    op.create_index('ix_posting_split_legs_category_id_user_id', 'posting_split_legs', ['category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_split_legs_posting_split_id_user_id', 'posting_split_legs', ['posting_split_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_split_legs_subcategory_id_user_id', 'posting_split_legs', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_posting_split_legs_user_id', 'posting_split_legs', ['user_id'], unique=False, schema='accounting')
     # ### end Alembic commands ###
 
 
@@ -616,35 +736,82 @@ def downgrade() -> None:
 def _drop_tables() -> None:
     """Drop every table and index, exactly as autogenerated from the models."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index('ix_posting_split_legs_user_id', table_name='posting_split_legs', schema='accounting')
+    op.drop_index('ix_posting_split_legs_subcategory_id_user_id', table_name='posting_split_legs', schema='accounting')
+    op.drop_index('ix_posting_split_legs_posting_split_id_user_id', table_name='posting_split_legs', schema='accounting')
+    op.drop_index('ix_posting_split_legs_category_id_user_id', table_name='posting_split_legs', schema='accounting')
     op.drop_table('posting_split_legs', schema='accounting')
+    op.drop_index('ix_posting_override_tags_tag_id_user_id', table_name='posting_override_tags', schema='accounting')
+    op.drop_index('ix_posting_override_tags_override_id_user_id', table_name='posting_override_tags', schema='accounting')
     op.drop_table('posting_override_tags', schema='accounting')
+    op.drop_index('ix_posting_tags_tag_id_user_id', table_name='posting_tags', schema='accounting')
+    op.drop_index('ix_posting_tags_posting_id_user_id', table_name='posting_tags', schema='accounting')
     op.drop_table('posting_tags', schema='accounting')
+    op.drop_index('ix_posting_splits_posting_id_user_id', table_name='posting_splits', schema='accounting')
     op.drop_table('posting_splits', schema='accounting')
+    op.drop_index('ix_posting_pending_suggestions_previous_subcategory_id_user_id', table_name='posting_pending_suggestions', schema='accounting')
+    op.drop_index('ix_posting_pending_suggestions_previous_category_id_user_id', table_name='posting_pending_suggestions', schema='accounting')
+    op.drop_index('ix_posting_pending_suggestions_posting_id_user_id', table_name='posting_pending_suggestions', schema='accounting')
     op.drop_table('posting_pending_suggestions', schema='accounting')
+    op.drop_index('ix_posting_overrides_subcategory_id_user_id', table_name='posting_overrides', schema='accounting')
+    op.drop_index('ix_posting_overrides_posting_id_user_id', table_name='posting_overrides', schema='accounting')
+    op.drop_index('ix_posting_overrides_category_id_user_id', table_name='posting_overrides', schema='accounting')
+    op.drop_index('ix_posting_overrides_account_id_user_id', table_name='posting_overrides', schema='accounting')
     op.drop_table('posting_overrides', schema='accounting')
+    op.drop_index('ix_goal_contributions_source_posting_id_user_id', table_name='goal_contributions', schema='accounting')
+    op.drop_index('ix_goal_contributions_goal_id_user_id', table_name='goal_contributions', schema='accounting')
     op.drop_table('goal_contributions', schema='accounting')
+    op.drop_index('ix_ledger_event_trade_details_user_id', table_name='ledger_event_trade_details', schema='trades')
+    op.drop_index('ix_ledger_event_trade_details_ledger_event_id_user_id', table_name='ledger_event_trade_details', schema='trades')
     op.drop_table('ledger_event_trade_details', schema='trades')
+    op.drop_index('ix_transfer_rule_exclusions_transaction_id_user_id', table_name='transfer_rule_exclusions', schema='accounting')
+    op.drop_index('ix_transfer_rule_exclusions_rule_id_user_id', table_name='transfer_rule_exclusions', schema='accounting')
     op.drop_table('transfer_rule_exclusions', schema='accounting')
     op.drop_index('ix_postings_user_posted_at', table_name='postings', schema='accounting')
+    op.drop_index('ix_postings_transaction_id_user_id', table_name='postings', schema='accounting')
+    op.drop_index('ix_postings_subcategory_id_user_id', table_name='postings', schema='accounting')
+    op.drop_index('ix_postings_category_id_user_id', table_name='postings', schema='accounting')
+    op.drop_index('ix_postings_budget_id_user_id', table_name='postings', schema='accounting')
+    op.drop_index('ix_postings_account_id_user_id', table_name='postings', schema='accounting')
     op.drop_table('postings', schema='accounting')
+    op.drop_index('ix_posting_merge_duplicates_merge_id_user_id', table_name='posting_merge_duplicates', schema='accounting')
+    op.drop_index('ix_posting_merge_duplicates_duplicate_transaction_id_user_id', table_name='posting_merge_duplicates', schema='accounting')
     op.drop_table('posting_merge_duplicates', schema='accounting')
+    op.drop_index('ix_ledger_events_connection_id_user_id', table_name='ledger_events', schema='trades')
     op.drop_table('ledger_events', schema='trades')
+    op.drop_index('ix_withdrawal_priority_entries_goal_id_user_id', table_name='withdrawal_priority_entries', schema='accounting')
     op.drop_table('withdrawal_priority_entries', schema='accounting')
+    op.drop_index('ix_transfer_rules_counterparty_account_id_user_id', table_name='transfer_rules', schema='accounting')
+    op.drop_index('ix_transfer_rules_account_id_user_id', table_name='transfer_rules', schema='accounting')
     op.drop_table('transfer_rules', schema='accounting')
+    op.drop_index('ix_transfer_linked_transactions_transaction_id_user_id', table_name='transfer_linked_transactions', schema='accounting')
+    op.drop_index('ix_transfer_linked_transactions_link_id_user_id', table_name='transfer_linked_transactions', schema='accounting')
     op.drop_table('transfer_linked_transactions', schema='accounting')
+    op.drop_index('ix_recurring_additions_goal_id_user_id', table_name='recurring_additions', schema='accounting')
     op.drop_table('recurring_additions', schema='accounting')
+    op.drop_index('ix_posting_merges_kept_transaction_id_user_id', table_name='posting_merges', schema='accounting')
     op.drop_table('posting_merges', schema='accounting')
+    op.drop_index('ix_opening_balances_account_id_user_id', table_name='opening_balances', schema='accounting')
     op.drop_table('opening_balances', schema='accounting')
+    op.drop_index('ix_manual_transfers_to_account_id_user_id', table_name='manual_transfers', schema='accounting')
+    op.drop_index('ix_manual_transfers_from_account_id_user_id', table_name='manual_transfers', schema='accounting')
     op.drop_table('manual_transfers', schema='accounting')
     op.drop_index('uq_general_budgets_user_category_subcategory', table_name='general_budgets', schema='accounting')
+    op.drop_index('ix_general_budgets_subcategory_id_user_id', table_name='general_budgets', schema='accounting')
+    op.drop_index('ix_general_budgets_category_id_user_id', table_name='general_budgets', schema='accounting')
     op.drop_table('general_budgets', schema='accounting')
+    op.drop_index('ix_category_patterns_subcategory_id_user_id', table_name='category_patterns', schema='accounting')
+    op.drop_index('ix_category_patterns_category_id_user_id', table_name='category_patterns', schema='accounting')
     op.drop_table('category_patterns', schema='accounting')
     op.drop_index('uq_budgets_user_month_category', table_name='budgets', schema='accounting')
+    op.drop_index('ix_budgets_subcategory_id_user_id', table_name='budgets', schema='accounting')
+    op.drop_index('ix_budgets_category_id_user_id', table_name='budgets', schema='accounting')
     op.drop_table('budgets', schema='accounting')
     op.drop_table('user_secrets')
     op.drop_table('dashboard_settings_versions', schema='trades')
     op.drop_table('dashboard_settings', schema='trades')
     op.drop_table('broker_connections', schema='trades')
+    op.drop_index('ix_external_identities_user_id', table_name='external_identities')
     op.drop_table('external_identities')
     op.drop_table('transfer_links', schema='accounting')
     op.drop_table('transactions', schema='accounting')
@@ -655,7 +822,9 @@ def _drop_tables() -> None:
     op.drop_table('llm_usage', schema='accounting')
     op.drop_table('goals', schema='accounting')
     op.drop_table('dismissed_suggestions', schema='accounting')
+    op.drop_index('ix_categories_parent_category_id_user_id', table_name='categories', schema='accounting')
     op.drop_table('categories', schema='accounting')
+    op.drop_index('ix_accounts_parent_account_id_user_id', table_name='accounts', schema='accounting')
     op.drop_table('accounts', schema='accounting')
     op.drop_table('users')
     # ### end Alembic commands ###

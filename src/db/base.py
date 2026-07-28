@@ -10,12 +10,13 @@ their own Postgres schema and never foreign-key into each other directly.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime  # noqa: TC003 — SQLAlchemy resolves Mapped[...] at runtime
 from decimal import Decimal
 from typing import TYPE_CHECKING, override
 
-from sqlalchemy import MetaData, Numeric, TypeDecorator, text
+from sqlalchemy import DateTime, MetaData, Numeric, TypeDecorator, func, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -125,6 +126,28 @@ class Base(DeclarativeBase):
     """Shared declarative base; every table's `metadata` lives on this one instance."""
 
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+class Timestamped:
+    """Mixin giving a table the `created_at`/`updated_at` pair every table should have.
+
+    The field guide's rule is "timestamp every row from day one" precisely
+    because creation time cannot be backfilled — once a row exists without
+    one, that fact is gone. Only six of ~39 tables had `created_at` and
+    exactly one had `updated_at` (DB-audit D13), so debugging "when did
+    this change?" was usually impossible.
+
+    Both are `TIMESTAMPTZ` and both are filled by the *database*, not by
+    Python: `server_default=now()` and `onupdate=now()` mean a row written
+    by a migration, a bulk statement, or `psql` is timestamped the same way
+    one written through the ORM is, and every timestamp comes from a single
+    clock rather than from whichever machine happened to run the code.
+    """
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 def check_in_sql(column: str, values: Sequence[str]) -> str:
