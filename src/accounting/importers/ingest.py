@@ -60,8 +60,6 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str, str | None], pl.DataFr
     ("SoFi", "vault"): standardize_sofi_savings,
 }
 
-_SOFI_STATEMENT_PDF_ACCOUNT_KIND = "statement_pdf"
-
 
 def supported_import_kinds() -> set[tuple[str, str]]:
     """Every `(institution, account_kind)` pair with a registered CSV standardizer.
@@ -817,10 +815,7 @@ def last_import_at(config: AccountingConfig, user_id: uuid.UUID) -> datetime | N
         Timezone-aware (UTC), or `None` if nothing has ever been imported.
     """
     archive = StatementArchive(config.raw_statement_dir, f"statements/{user_id}")
-    relative_paths = [
-        *archive.list_relative_paths("*/*/*.csv"),
-        *archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
-    ]
+    relative_paths = archive.list_relative_paths("*/*/*.csv")
     timestamps: list[datetime] = []
     for relative_path in relative_paths:
         filename = relative_path.rsplit("/", 1)[-1]
@@ -840,12 +835,9 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     (`raw_statement_dir/{institution}/{account_id}/...`) — no separate
     registry of "which files belong to which account" is needed.
 
-    Archived SoFi statement PDFs (see `importers.sofi.statement_pdf`, kept
-    only for that module's own sake — see its docstring) are deliberately
-    ignored here, not replayed: PDF-based import is retired, and any
-    postings that were only ever derived from an old PDF are dropped by a
-    rebuild rather than re-parsed. If that ever matters for a real
-    archive, re-run the parser against it manually first.
+    Only archived CSVs are replayed. PDF-based import was retired and its
+    parser deleted, so any posting that was only ever derived from an old
+    archived PDF is dropped by a rebuild rather than re-parsed.
 
     Parameters
     ----------

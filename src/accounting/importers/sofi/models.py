@@ -6,8 +6,7 @@ Current balance, Status`) is the older checking/savings export;
 Description, Primary Category, Detailed Category, Amount`) is the newer
 one, which also covers vaults — something the old format has no export
 for at all (SoFi only ever offered vault history via the monthly
-statement PDF, see `importers.sofi.statement_pdf` — retired for new
-imports, see that module's own docstring).
+statement PDF, whose importer has since been retired and deleted).
 """
 
 from __future__ import annotations

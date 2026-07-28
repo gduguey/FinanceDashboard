@@ -2,7 +2,7 @@
 
 Every fact this aggregates already exists elsewhere in the module —
 `apy_pct` on `Account.meta` (set by whichever importer last saw a
-statement with a rate block, see `importers.sofi.statement_pdf`), and
+statement carrying a rate block), and
 interest itself as ordinary `Posting` rows already categorized under the
 "Interest Earned" income category. This is purely a read: no new fact is
 stored here.

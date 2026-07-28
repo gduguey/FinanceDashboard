@@ -181,10 +181,8 @@ src/accounting/
                             rebuild_from_raw_statements recomputes it all
     paystub.py              PDF text extraction -> structured EarningsStatement
     chase/                  checking.py, credit_card.py
-    sofi/                   checking.py, savings.py (CSV, both formats);
-                            statement_pdf.py (monthly PDF — checking + savings +
-                            every Vault in one file, the only source for Vault
-                            transactions and interest)
+    sofi/                   checking.py, savings.py (CSV, both formats —
+                            the newer wide format also covers Vaults)
     canonical/              no-code fallback importer for any bank with no
                             dedicated standardizer — fuzzy column/date/amount
                             parsing, auto-creates categories (see
@@ -213,7 +211,6 @@ data/accounting/         (gitignored) — raw archives only; every derived/persi
                           fact (ledger, store, overrides, goals, budgets, LLM usage,
                           ...) lives in Postgres instead, per-user, RLS-scoped
   raw_statements/{institution}/{account_id}/{timestamp}.csv   verbatim, never overwritten
-  raw_statements/SoFi/statement_pdf/{timestamp}.pdf            verbatim, never overwritten
   exchange_rates/raw/{timestamp}.json                          verbatim, never overwritten
   exchange_rates/rates.csv                                     disposable cache, rebuildable;
                                                                 shared across every user, not

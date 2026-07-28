@@ -331,25 +331,26 @@ def test_rebuild_from_raw_statements_with_no_archives_raises(
         rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
 
-def _archive_sofi_statement_pdf(config: AccountingConfig, pdf_bytes: bytes) -> None:
-    """Write a raw PDF straight into the archive, exactly where an old (pre-retirement) upload would have.
+def _archive_non_csv_statement(config: AccountingConfig, pdf_bytes: bytes) -> None:
+    """Write a non-CSV file into the archive, exactly where a retired PDF upload used to land.
 
-    `rebuild_from_raw_statements` no longer reads anything under
-    `SoFi/statement_pdf/*.pdf` — this only exists to prove a rebuild
-    ignores it rather than erroring on it or re-deriving postings from it.
+    A rebuild only ever replays `*/*/*.csv`. Real archives still hold
+    files left by the deleted PDF importer, so this proves a rebuild
+    walks past them rather than erroring or trying to derive postings
+    from them.
     """
     directory = config.raw_statement_dir / "SoFi" / "statement_pdf"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "statement.pdf").write_bytes(pdf_bytes)
 
 
-def test_rebuild_from_raw_statements_ignores_archived_pdfs(
+def test_rebuild_from_raw_statements_ignores_archived_non_csv_files(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
     ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
-    _archive_sofi_statement_pdf(config, b"%PDF-fake")
+    _archive_non_csv_statement(config, b"%PDF-fake")
 
     rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
@@ -358,11 +359,11 @@ def test_rebuild_from_raw_statements_ignores_archived_pdfs(
     assert "sofi:savings:3680" not in load_store(db_session, user_id=test_user_id).accounts
 
 
-def test_rebuild_from_raw_statements_with_only_archived_pdfs_raises(
+def test_rebuild_from_raw_statements_with_only_archived_non_csv_files_raises(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     config = _config(tmp_path)
-    _archive_sofi_statement_pdf(config, b"%PDF-fake")
+    _archive_non_csv_statement(config, b"%PDF-fake")
 
     with pytest.raises(FileNotFoundError):
         rebuild_from_raw_statements(config, db_session, user_id=test_user_id)

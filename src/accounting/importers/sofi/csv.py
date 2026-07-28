@@ -4,8 +4,8 @@ Two distinct export shapes exist (see `importers.sofi.models`): an older,
 per-account-kind shape (`SofiRow`) with no vault support at all, and a
 newer, wider shape (`SofiCsvRow`) that covers checking, savings, and
 vaults alike — SoFi previously only ever exposed vault history via the
-monthly statement PDF (`importers.sofi.statement_pdf`, retired for new
-imports); this format lets a vault be dragged straight in as a CSV
+monthly statement PDF, whose importer has since been retired and
+deleted; this format lets a vault be dragged straight in as a CSV
 instead. `standardize_sofi_checking`/`standardize_sofi_savings` dispatch
 to whichever shape a given file is actually in, so both are safe to keep
 registered against their account kind regardless of which shape the user

@@ -3405,11 +3405,10 @@ def test_delete_simulator_scenario_that_is_already_gone_gets_404(client) -> None
 
 def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:
     account = _create_account(client, name="SoFi Savings", kind="savings", institution="SoFi")
-    # Seeded directly as a posting, not via `importers.sofi.statement_pdf`'s
-    # real PDF/text parser — this test is checking that the interest-summary
-    # endpoint correctly aggregates an already-categorized "Interest Earned"
-    # posting, not exercising SoFi statement parsing (see
-    # tests/accounting/importers/sofi/test_statement_pdf.py for that).
+    # Seeded directly as a posting, not through a real importer — this test
+    # is checking that the interest-summary endpoint correctly aggregates an
+    # already-categorized "Interest Earned" posting, not exercising SoFi
+    # statement parsing.
     interest_posting = Posting(
         posting_id="p1",
         transaction_id="t1",
