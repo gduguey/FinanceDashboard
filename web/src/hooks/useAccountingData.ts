@@ -1,31 +1,44 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { accountingApi, type AccountUpdate, type ImportAccountInfo } from '@/lib/accountingApi'
+import {
+  type AccountCreate,
+  type AccountUpdate,
+  accountingApi,
+  type CategoryCreate,
+  type ImportAccountInfo,
+  type SubcategoryCreate,
+  type TagCreate,
+} from '@/lib/accountingApi'
+import { BASE_CURRENCY } from '@/lib/currency'
 import type {
-  Account,
-  Budget,
+  AccountingStore,
+  BudgetUpsert,
   CanonicalCategoryOverrides,
-  Category,
-  CategoryPattern,
+  CategoryPatternCreate,
+  CategoryPatternUpdate,
   CurrencyCode,
   DismissSuggestionRequest,
-  GeneralBudget,
-  Goal,
-  GoalContribution,
+  GeneralBudgetUpsert,
+  GoalContributionCreate,
+  GoalContributionUpdate,
+  GoalCreate,
+  GoalUpdate,
   LlmSettingsUpdate,
   ManualOverride,
   ManualTransfer,
   OpeningBalance,
-  OtherAsset,
-  PostingMerge,
+  OtherAssetCreate,
+  PostingMergeUpsert,
   PostingSplitLeg,
   RecurringAddition,
+  RecurringAdditionCreate,
+  RecurringAdditionUpdate,
   SimulatorScenario,
-  Tag,
-  TransferRule,
+  SimulatorScenarioCreate,
+  TransferLinkCreate,
+  TransferRuleCreate,
+  TransferRuleUpdate,
   WithdrawalPriorityEntry,
 } from '@/types/accounting'
-
-const BASE_CURRENCY: CurrencyCode = 'USD'
 
 const keys = {
   store: ['accounting', 'store'],
@@ -257,10 +270,59 @@ export function useRestoreSuggestion() {
   })
 }
 
-export function useSetPostingMerges() {
+export function useCreatePostingMerge() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (merges: Record<string, PostingMerge>) => accountingApi.putPostingMerges(merges),
+    mutationFn: (merge: PostingMergeUpsert) => accountingApi.createPostingMerge(merge),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemovePostingMerge() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (mergeId: string) => accountingApi.removePostingMerge(mergeId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateTransferLink() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (link: TransferLinkCreate) => accountingApi.createTransferLink(link),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveTransferLink() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (linkId: string) => accountingApi.removeTransferLink(linkId),
+    // Drops the link from the cached store the instant "unmark as
+    // transfer"/"exclude this transfer" fires, instead of waiting on the
+    // round trip — the badge disappears immediately and just reconciles
+    // quietly once the real response (and `onSuccess`'s refetch) lands.
+    // Rolled back on failure; `onSuccess: invalidate` still refetches
+    // regardless, both to reconcile with whatever the server actually
+    // persisted and to advance `lastKnownStoreVersion` for the next
+    // mutation's own version-conflict check (see `accountingApi.ts`'s
+    // `request`) — this optimistic patch only changes how fast the UI
+    // *looks* like it responded, never which version header goes out next.
+    onMutate: async (linkId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          transfer_links: previous.transfer_links.filter((link) => link.link_id !== linkId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _linkId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
@@ -361,24 +423,63 @@ export const useSimulatorProjection = (
       ),
   })
 
-export function useSetSimulatorScenarios() {
+export function useDeleteSimulatorScenario() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (scenarios: SimulatorScenario[]) => accountingApi.putSimulatorScenarios(scenarios),
+    mutationFn: (scenarioId: string) => accountingApi.deleteSimulatorScenario(scenarioId),
+    onMutate: async (scenarioId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          simulator_scenarios: previous.simulator_scenarios.filter((s) => s.scenario_id !== scenarioId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _scenarioId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
 
-export function useSyncExchangeRates() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({ mutationFn: accountingApi.syncExchangeRates, onSuccess: invalidate })
-}
-
-export function useSetCategories() {
+export function useCreateSimulatorScenario() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (categories: Record<string, Category>) => accountingApi.putCategories(categories),
+    mutationFn: (scenario: SimulatorScenarioCreate) => accountingApi.createSimulatorScenario(scenario),
     onSuccess: invalidate,
+  })
+}
+
+// Unlike a whole-tree replace, this refuses a
+// same-classification, same-name duplicate server-side (409) instead of
+// silently overwriting whatever already had that computed id.
+export function useCreateCategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (category: CategoryCreate) => accountingApi.createCategory(category),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateSubcategory() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ parentId, subcategory }: { parentId: string; subcategory: SubcategoryCreate }) =>
+      accountingApi.createSubcategory(parentId, subcategory),
+    onSuccess: invalidate,
+  })
+}
+
+// Read-only — reports whether a rename would merge into an existing
+// category without persisting anything, so no cache invalidation.
+export function useCategoryRenamePreview() {
+  return useMutation({
+    mutationFn: ({ categoryId, name }: { categoryId: string; name: string }) =>
+      accountingApi.categoryRenamePreview(categoryId, name),
   })
 }
 
@@ -395,42 +496,208 @@ export function useRenameCategory() {
   })
 }
 
-export function useSetTags() {
+// Read-only — reports how many postings deleting a category would
+// uncategorize without persisting anything, so no cache invalidation.
+export function useCategoryDeletePreview() {
+  return useMutation({
+    mutationFn: (categoryId: string) => accountingApi.categoryDeletePreview(categoryId),
+  })
+}
+
+// Uncategorizes every posting (and clears/drops every rule, budget,
+// pattern, and split leg) referencing the deleted category or, for a
+// top-level one, any of its subcategories — so this invalidates
+// everything, same as a merge does.
+export function useDeleteCategory() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (tags: Record<string, Tag>) => accountingApi.putTags(tags),
+    mutationFn: (categoryId: string) => accountingApi.deleteCategory(categoryId),
     onSuccess: invalidate,
   })
 }
 
-export function useSetTransferRules() {
+export function useDeleteTag() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (rules: TransferRule[]) => accountingApi.putTransferRules(rules),
+    mutationFn: (tagId: string) => accountingApi.deleteTag(tagId),
+    onMutate: async (tagId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        const remaining = { ...previous.tags }
+        delete remaining[tagId]
+        queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, tags: remaining })
+      }
+      return { previous }
+    },
+    onError: (_error, _tagId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
 
-export function useSetOtherAssets() {
+// Unlike a whole-list replace, this refuses a same-name
+// (case-insensitive) duplicate server-side (409) instead of silently
+// overwriting whatever already had that computed id.
+export function useCreateTag() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (otherAssets: OtherAsset[]) => accountingApi.putOtherAssets(otherAssets),
+    mutationFn: (tag: TagCreate) => accountingApi.createTag(tag),
     onSuccess: invalidate,
   })
 }
 
-export function useSetBudgets() {
+// Read-only — reports whether a rename would merge into an existing tag
+// without persisting anything, so no cache invalidation.
+export function useTagRenamePreview() {
+  return useMutation({
+    mutationFn: ({ tagId, name }: { tagId: string; name: string }) => accountingApi.tagRenamePreview(tagId, name),
+  })
+}
+
+// Renaming to an existing tag's name merges into it — repointing
+// `posting_tags` rows and `tag_ids_override` arrays — so this invalidates
+// everything, not just the tag list.
+export function useRenameTag() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (budgets: Budget[]) => accountingApi.putBudgets(budgets),
+    mutationFn: ({ tagId, name }: { tagId: string; name: string }) => accountingApi.renameTag(tagId, name),
     onSuccess: invalidate,
   })
 }
 
-export function useSetGeneralBudgets() {
+export function usePatchTransferRule() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (generalBudgets: Record<string, GeneralBudget>) => accountingApi.putGeneralBudgets(generalBudgets),
+    mutationFn: ({ ruleId, update }: { ruleId: string; update: TransferRuleUpdate }) =>
+      accountingApi.patchTransferRule(ruleId, update),
+    // Same optimistic-patch-then-reconcile approach as `useRemoveTransferLink`,
+    // but scoped to the one rule being edited (toggling active, editing
+    // fields, excluding/un-excluding a transaction) rather than the whole
+    // `transfer_rules` array — each call carries and checks its own
+    // `update.expected_version`, not the shared whole-store one, so firing
+    // several of these back-to-back (e.g. rapid clicks) can never silently
+    // clobber a sibling rule's edit or spuriously conflict with an
+    // unrelated save elsewhere in the store. Rolled back on failure;
+    // `onSuccess: invalidate` still refetches regardless, to reconcile
+    // with whatever the server actually persisted (including the bumped
+    // `version` for this rule's next edit).
+    onMutate: async ({ ruleId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          transfer_rules: previous.transfer_rules.map((rule) =>
+            rule.rule_id === ruleId ? { ...rule, ...update } : rule,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteTransferRule() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (ruleId: string) => accountingApi.deleteTransferRule(ruleId),
+    onMutate: async (ruleId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          transfer_rules: previous.transfer_rules.filter((rule) => rule.rule_id !== ruleId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _ruleId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateTransferRule() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (rule: TransferRuleCreate) => accountingApi.createTransferRule(rule),
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteOtherAsset() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (assetId: string) => accountingApi.deleteOtherAsset(assetId),
+    onMutate: async (assetId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          other_assets: previous.other_assets.filter((asset) => asset.asset_id !== assetId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _assetId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateOtherAsset() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (asset: OtherAssetCreate) => accountingApi.createOtherAsset(asset),
+    onSuccess: invalidate,
+  })
+}
+
+// Single-item budget mutations — only send the one budget being changed
+// over the wire, not the user's entire budget history for every edit
+// (see accounting.api.routers.store.post_budget/post_general_budget).
+export function useSetBudget() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (budget: BudgetUpsert) => accountingApi.setBudget(budget),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveBudget() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (budgetId: string) => accountingApi.removeBudget(budgetId),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetGeneralBudget() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (generalBudget: GeneralBudgetUpsert) => accountingApi.setGeneralBudget(generalBudget),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveGeneralBudget() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (key: string) => accountingApi.removeGeneralBudget(key),
     onSuccess: invalidate,
   })
 }
@@ -438,7 +705,7 @@ export function useSetGeneralBudgets() {
 export function useCreateAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (account: Account) => accountingApi.postAccount(account),
+    mutationFn: (account: AccountCreate) => accountingApi.postAccount(account),
     onSuccess: invalidate,
   })
 }
@@ -465,14 +732,6 @@ export function useSetOpeningBalance() {
   return useMutation({
     mutationFn: ({ accountId, openingBalance }: { accountId: string; openingBalance: OpeningBalance }) =>
       accountingApi.putOpeningBalance(accountId, openingBalance),
-    onSuccess: invalidate,
-  })
-}
-
-export function useDeleteOpeningBalance() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (accountId: string) => accountingApi.deleteOpeningBalance(accountId),
     onSuccess: invalidate,
   })
 }
@@ -580,7 +839,7 @@ export function useRebuildLedger() {
 export function useSetPostingOverride() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ postingId, override }: { postingId: string; override: ManualOverride }) =>
+    mutationFn: ({ postingId, override }: { postingId: string; override: Partial<ManualOverride> }) =>
       accountingApi.putPostingOverride(postingId, override),
     onSuccess: invalidate,
   })
@@ -637,34 +896,213 @@ export function useValidatePending() {
   })
 }
 
-export function useSetCategoryPatterns() {
+export function usePatchCategoryPattern() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (patterns: Record<string, CategoryPattern>) => accountingApi.putCategoryPatterns(patterns),
+    mutationFn: ({ patternId, update }: { patternId: string; update: CategoryPatternUpdate }) =>
+      accountingApi.patchCategoryPattern(patternId, update),
+    // Same per-row optimistic-patch approach as `usePatchTransferRule` — editing or toggling one
+    // pattern can never clobber a concurrent edit to a different one.
+    onMutate: async ({ patternId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          category_patterns: {
+            ...previous.category_patterns,
+            [patternId]: { ...previous.category_patterns[patternId], ...update },
+          },
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
 
-export function useSetGoals() {
+export function useDeleteCategoryPattern() {
+  const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (goals: Record<string, Goal>) => accountingApi.putGoals(goals),
+    mutationFn: (patternId: string) => accountingApi.deleteCategoryPattern(patternId),
+    onMutate: async (patternId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        const remaining = { ...previous.category_patterns }
+        delete remaining[patternId]
+        queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, category_patterns: remaining })
+      }
+      return { previous }
+    },
+    onError: (_error, _patternId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
     onSuccess: invalidate,
   })
 }
 
-export function useSetGoalContributions() {
+export function useCreateCategoryPattern() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (contributions: Record<string, GoalContribution>) => accountingApi.putGoalContributions(contributions),
+    mutationFn: (pattern: CategoryPatternCreate) => accountingApi.createCategoryPattern(pattern),
     onSuccess: invalidate,
   })
 }
 
+export function usePatchGoal() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ goalId, update }: { goalId: string; update: GoalUpdate }) => accountingApi.patchGoal(goalId, update),
+    // Same per-row optimistic-patch approach as `usePatchTransferRule` —
+    // each call carries and checks its own `update.expected_version`, not
+    // a shared whole-store one, so editing two different goals can never
+    // clobber each other regardless of how the requests interleave.
+    onMutate: async ({ goalId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          goals: { ...previous.goals, [goalId]: { ...previous.goals[goalId], ...update } },
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteGoal() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (goalId: string) => accountingApi.deleteGoal(goalId),
+    onMutate: async (goalId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        const remaining = { ...previous.goals }
+        delete remaining[goalId]
+        queryClient.setQueryData<AccountingStore>(keys.store, { ...previous, goals: remaining })
+      }
+      return { previous }
+    },
+    onError: (_error, _goalId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateGoal() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (goal: GoalCreate) => accountingApi.createGoal(goal),
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateGoalContribution() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (contribution: GoalContributionCreate) => accountingApi.createGoalContribution(contribution),
+    onSuccess: invalidate,
+  })
+}
+
+export function useUpdateGoalContribution() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ contributionId, contribution }: { contributionId: string; contribution: GoalContributionUpdate }) =>
+      accountingApi.updateGoalContribution(contributionId, contribution),
+    onSuccess: invalidate,
+  })
+}
+
+export function useRemoveGoalContribution() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (contributionId: string) => accountingApi.removeGoalContribution(contributionId),
+    onSuccess: invalidate,
+  })
+}
+
+// Whole-list PUT — used only for drag-to-reorder (a pure ordering operation); single-rule field
+// edits and deletes go through the scoped hooks below.
 export function useSetRecurringAdditions() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (additions: RecurringAddition[]) => accountingApi.putRecurringAdditions(additions),
+    onSuccess: invalidate,
+  })
+}
+
+export function usePatchRecurringAddition() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: ({ additionId, update }: { additionId: string; update: RecurringAdditionUpdate }) =>
+      accountingApi.patchRecurringAddition(additionId, update),
+    // Optimistically patch the one addition in the cached list so a field edit
+    // reflects immediately instead of lagging until the refetch — same
+    // onMutate/onError shape as `usePatchGoal`, over a list rather than a map.
+    onMutate: async ({ additionId, update }) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          recurring_additions: previous.recurring_additions.map((addition) =>
+            addition.addition_id === additionId ? { ...addition, ...update } : addition,
+          ),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useDeleteRecurringAddition() {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (additionId: string) => accountingApi.deleteRecurringAddition(additionId),
+    onMutate: async (additionId) => {
+      await queryClient.cancelQueries({ queryKey: keys.store })
+      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
+      if (previous) {
+        queryClient.setQueryData<AccountingStore>(keys.store, {
+          ...previous,
+          recurring_additions: previous.recurring_additions.filter((addition) => addition.addition_id !== additionId),
+        })
+      }
+      return { previous }
+    },
+    onError: (_error, _additionId, context) => {
+      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
+    },
+    onSuccess: invalidate,
+  })
+}
+
+export function useCreateRecurringAddition() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (addition: RecurringAdditionCreate) => accountingApi.createRecurringAddition(addition),
     onSuccess: invalidate,
   })
 }

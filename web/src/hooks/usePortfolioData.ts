@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useRef } from 'react'
 import { api, type DateRange } from '@/lib/api'
 import type {
   BenchmarkSettingUpdate,
-  HysaSettings,
+  HysaSettingsUpdate,
   IbkrSettingsUpdate,
   TargetAllocation,
   TaxSettingsUpdate,
+  TimezoneSettingUpdate,
 } from '@/types/portfolio'
 
 // One query key per endpoint, grouped under a shared "portfolio" root so a
@@ -30,6 +32,7 @@ const keys = {
   taxReport: ['portfolio', 'tax-report'],
   ibkrSettings: ['portfolio', 'settings', 'ibkr'],
   ibkrVerify: ['portfolio', 'settings', 'ibkr', 'verify'],
+  timezoneSetting: ['portfolio', 'settings', 'timezone'],
 } as const
 
 export const useOverview = () => useQuery({ queryKey: keys.overview, queryFn: () => api.overview() })
@@ -79,7 +82,7 @@ export const useHysaSettings = () => useQuery({ queryKey: keys.hysaSettings, que
 export function useSetHysaSettings() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (settings: HysaSettings) => api.setHysaSettings(settings),
+    mutationFn: (settings: HysaSettingsUpdate) => api.setHysaSettings(settings),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
   })
 }
@@ -183,3 +186,39 @@ export function useSetTaxSettings() {
 }
 
 export const useTaxReport = () => useQuery({ queryKey: keys.taxReport, queryFn: () => api.taxReport() })
+
+export const useTimezoneSetting = () => useQuery({ queryKey: keys.timezoneSetting, queryFn: api.timezoneSetting })
+
+// `last_synced_at` (in `overview`) is the only other cached value derived
+// from this setting — narrower than the whole-tree invalidation
+// HYSA/benchmark/tax use, since nothing else on the dashboard reads it.
+export function useSetTimezoneSetting() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (setting: TimezoneSettingUpdate) => api.setTimezoneSetting(setting),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.timezoneSetting })
+      queryClient.invalidateQueries({ queryKey: keys.overview })
+    },
+  })
+}
+
+// Reports the browser's own IANA zone once per mount — never user-picked
+// from a list, the same "detected, not asked" approach as everything else
+// under `Intl.DateTimeFormat().resolvedOptions().timeZone`. The `attempted`
+// ref (not a `data`/mutation-state dependency) is what makes this exactly
+// one attempt per session: `data` changes again once the mutation's own
+// success invalidates `keys.timezoneSetting` and it refetches, which would
+// otherwise re-run this effect against briefly-stale data and double-fire.
+export function useSyncBrowserTimezone(): void {
+  const { data } = useTimezoneSetting()
+  const { mutate } = useSetTimezoneSetting()
+  const attempted = useRef(false)
+
+  useEffect(() => {
+    if (!data || attempted.current) return
+    attempted.current = true
+    const detected = Intl.DateTimeFormat().resolvedOptions().timeZone
+    if (data.local_zone !== detected) mutate({ local_zone: detected })
+  }, [data, mutate])
+}

@@ -1,8 +1,8 @@
 import { AlertTriangle, Clock } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { formatRelativeTime } from '@/lib/format'
-import { useOverview } from '@/hooks/usePortfolioData'
 import { useSyncStatus } from '@/hooks/useAccountingData'
+import { useOverview } from '@/hooks/usePortfolioData'
+import { formatRelativeTime } from '@/lib/format'
 
 // Neither threshold comes from config — this is a UI nudge, not a
 // correctness rule, so a rough "does this look neglected" cutoff is

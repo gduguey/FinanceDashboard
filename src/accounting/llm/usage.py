@@ -14,17 +14,19 @@ guess at the cap itself.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from accounting.db.llm import LLMUsage as LLMUsageRow
 from accounting.llm.provider import LLMProviderError
-from accounting.utils.io_utils import write_json_atomic
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    import uuid
+
+    from sqlalchemy.orm import Session
 
     from accounting.llm.provider import LLMProvider
 
@@ -45,17 +47,31 @@ class ProviderUsage(BaseModel):
 
 
 def _current_period_start(period: ResetPeriod, now: datetime) -> datetime:
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    """Return the start of `now`'s current tracking period — midnight for daily, the 1st for monthly.
+
+    Returns
+    -------
+    datetime.datetime
+    """
+    # Naive, like every other timestamp this app stores in Postgres (see
+    # `trades.config.TimezoneConfig`'s own docstring on the same
+    # convention) — `period_start` round-trips through a plain (non-tz)
+    # `DateTime` column, so it must be compared against a naive value too,
+    # regardless of whether the caller passed an aware `now`.
+    naive_now = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    start_of_day = naive_now.replace(hour=0, minute=0, second=0, microsecond=0)
     return start_of_day if period == "daily" else start_of_day.replace(day=1)
 
 
-def load_usage(path: Path, now: datetime | None = None) -> dict[str, ProviderUsage]:
-    """Read every provider's usage, rolling each one over to a fresh period if its own has elapsed.
+def load_usage(session: Session, user_id: uuid.UUID, now: datetime | None = None) -> dict[str, ProviderUsage]:
+    """Read this user's usage for every known provider, rolling each one over to a fresh period if its own has elapsed.
 
     Parameters
     ----------
-    path
-        Where usage is persisted; treated as empty if it doesn't exist yet.
+    session
+        An active database session.
+    user_id
+        Whose usage to read.
     now
         The current time, for computing each provider's period boundary — overridable for tests.
 
@@ -65,41 +81,64 @@ def load_usage(path: Path, now: datetime | None = None) -> dict[str, ProviderUsa
         Every known provider (see `RESET_PERIOD`), keyed by name.
     """
     now = now or datetime.now(UTC)
-    raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     usage: dict[str, ProviderUsage] = {}
     for provider, period in RESET_PERIOD.items():
         current_start = _current_period_start(period, now)
-        stored = raw.get(provider)
-        entry = None
-        if stored is not None:
-            try:
-                entry = ProviderUsage.model_validate(stored)
-            except ValidationError:
-                # A corrupted entry (e.g. from a schema change) should reset
-                # that one provider's usage, not brick every future call.
-                entry = None
-        usage[provider] = (
-            entry
-            if entry is not None and entry.period_start >= current_start
-            else ProviderUsage(period_start=current_start)
+        row = session.get(LLMUsageRow, (user_id, provider))
+        entry = (
+            ProviderUsage(
+                period_start=row.period_start,
+                used_count=row.used_count,
+                is_limited=row.is_limited,
+                last_error=row.last_error,
+            )
+            if row is not None
+            else None
         )
+        is_current = entry is not None and entry.period_start >= current_start
+        usage[provider] = entry if is_current and entry is not None else ProviderUsage(period_start=current_start)
     return usage
 
 
-def save_usage(usage: dict[str, ProviderUsage], path: Path) -> None:
-    """Persist every provider's usage, overwriting whatever was saved before."""
-    write_json_atomic({provider: entry.model_dump(mode="json") for provider, entry in usage.items()}, path)
+def save_usage(usage: dict[str, ProviderUsage], session: Session, user_id: uuid.UUID) -> None:
+    """Persist this user's usage for every provider, overwriting whatever was saved before.
+
+    Parameters
+    ----------
+    usage
+        Every provider's usage to persist.
+    session
+        An active database session.
+    user_id
+        Whose usage this is.
+    """
+    for provider, entry in usage.items():
+        # One atomic upsert per provider instead of get-then-add: two concurrent
+        # saves for the same (user_id, provider) would otherwise both see no row
+        # and both INSERT, tripping the composite primary key.
+        columns = {
+            "period_start": entry.period_start,
+            "used_count": entry.used_count,
+            "is_limited": entry.is_limited,
+            "last_error": entry.last_error,
+        }
+        statement = pg_insert(LLMUsageRow).values(user_id=user_id, provider=provider, **columns)
+        statement = statement.on_conflict_do_update(index_elements=["user_id", "provider"], set_=columns)
+        session.execute(statement)
+    session.commit()
 
 
-def record_call(provider: str, path: Path, error: str | None) -> None:
-    """Record one attempted call to `provider`: increment counter on success, freeze on failure.
+def record_call(provider: str, session: Session, user_id: uuid.UUID, error: str | None) -> None:
+    """Record one attempted call to `provider` for this user: increment counter on success, freeze on failure.
 
     Parameters
     ----------
     provider
         The provider name that was called (see `RESET_PERIOD`).
-    path
-        Where usage is persisted.
+    session
+        An active database session.
+    user_id
+        Who made the call.
     error
         The provider's own error text if the call failed, `None` if it succeeded.
 
@@ -108,7 +147,7 @@ def record_call(provider: str, path: Path, error: str | None) -> None:
         - On failure: counter frozen, flag sets
         - On success after failure: counter resets to 0, flag clears
     """
-    usage = load_usage(path)
+    usage = load_usage(session, user_id)
     current = usage[provider]
 
     if error is None:
@@ -123,16 +162,18 @@ def record_call(provider: str, path: Path, error: str | None) -> None:
     usage[provider] = current.model_copy(
         update={"used_count": new_count, "is_limited": new_limited, "last_error": error}
     )
-    save_usage(usage, path)
+    save_usage(usage, session, user_id)
 
 
 class TrackedProvider:
-    """Wraps an `LLMProvider`, recording every call's outcome to `usage.json` before returning/re-raising."""
+    """Wraps an `LLMProvider`, recording every call's outcome to the `llm_usage` table before returning/re-raising."""
 
-    def __init__(self, inner: LLMProvider, name: str, usage_path: Path) -> None:
+    def __init__(self, inner: LLMProvider, name: str, session: Session, user_id: uuid.UUID) -> None:
+        """Wrap `inner`, tracking its calls under `name` for `user_id`."""
         self._inner = inner
         self._name = name
-        self._usage_path = usage_path
+        self._session = session
+        self._user_id = user_id
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         """See `LLMProvider.complete` — identical behavior, with a usage record written on the way out.
@@ -150,7 +191,7 @@ class TrackedProvider:
         try:
             result = self._inner.complete(system_prompt, user_prompt)
         except LLMProviderError as error:
-            record_call(self._name, self._usage_path, str(error))
+            record_call(self._name, self._session, self._user_id, str(error))
             raise
-        record_call(self._name, self._usage_path, None)
+        record_call(self._name, self._session, self._user_id, None)
         return result

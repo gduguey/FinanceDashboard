@@ -1,18 +1,15 @@
 import { useMemo } from 'react'
-import { Skeleton } from '@/components/ui/skeleton'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { PageHeader } from '@/components/layout/PageHeader'
 import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
 import { GoalsBalanceBarChart } from '@/components/goals/GoalsOverviewCharts'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { AlertsPanel } from '@/components/overview/AlertsPanel'
 import { FinancialHealthStrip } from '@/components/overview/FinancialHealthStrip'
 import { SyncStatusBar } from '@/components/overview/SyncStatusBar'
 import { WhatChangedCard } from '@/components/overview/WhatChangedCard'
-import { hasAnyRealAccount } from '@/lib/postingClassification'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   useAccountingStore,
   useCategoryTotals,
@@ -21,7 +18,9 @@ import {
   useNetWorth,
   useRatesToBase,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useMonthlyPnl } from '@/hooks/usePortfolioData'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 
 // A color of its own — distinct from every goal's own color, from "Saved"
 // (emerald), and from "Unallocated" (pale green) — so money that left
@@ -96,7 +95,6 @@ export function OverviewPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />

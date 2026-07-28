@@ -1,38 +1,43 @@
-# IBKR Portfolio
+# Finance Dashboard
 
-A personal portfolio dashboard built around one idea: store what happened,
-replay everything else. The `trades` package syncs account history from
-IBKR, caches market reference data (prices, CPI, HYSA rates), replays an
-append-only ledger into positions and gains, and compares performance
-against benchmarks and counterfactuals.
+A personal finance app built around one idea: store what happened, replay
+everything else. Two independent modules share the same backend/database:
 
-The same logic is exposed two ways today:
+- **`trades`** — syncs brokerage account history (IBKR today;
+  `trades.broker_credentials` is generic over broker, so a second one
+  later reuses the same storage/UI), replays an append-only ledger into
+  positions and gains, and compares performance against benchmarks and
+  counterfactuals.
+- **`accounting`** — tracks day-to-day cash accounts (checking, savings,
+  credit cards), imported from bank exports and statement PDFs,
+  categorized, and rolled up into net worth, an income statement, budgets,
+  and goals.
 
-- **Jupyter notebooks** (`notebooks/`) — sync and analysis notebooks;
-  good for one-off, exploratory analysis;
-- a **local web dashboard** (`src/trades/api.py` + `web/`) — a FastAPI
-  backend and a React frontend, good for day-to-day glancing.
+Both are exposed through the same FastAPI backend and React frontend, and
+both persist to the same Postgres database (see
+[docs/architecture.md](docs/architecture.md) for how the two modules and
+the one API app fit together) — but neither depends on the other, and
+`accounting` works fully without ever connecting a broker.
 
-Both read the same on-disk cache under `data/` and call the same
-`trades.*` modules; neither owns the actual logic (see
-[docs/trades/architecture.md](docs/trades/architecture.md)).
-
-Alongside it, the `accounting` package tracks day-to-day cash accounts —
-checking, savings, credit cards — imported from bank exports and statement
-PDFs, categorized, and rolled up into net worth, an income statement,
-budgets, and goals (see
-[docs/accounting/architecture.md](docs/accounting/architecture.md)). It
-shares the same web dashboard and API process as `trades` but is otherwise
-independent.
+- **Jupyter notebooks** (`notebooks/`) — good for one-off, exploratory
+  analysis.
+- **Web dashboard** (`src/trades/api/` + `src/accounting/api/` + `web/`)
+  — a FastAPI backend and React frontend, good for day-to-day glancing,
+  and the only place broker credentials are entered.
 
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) (manages the Python install and
   virtualenv — you don't need Python or pip set up yourself first)
 - [Node.js](https://nodejs.org/) 20+ and npm — only needed for the web
-  dashboard, not the notebook
-- IBKR Flex Web Service credentials — only needed to *sync*; skip this if
-  you're just poking around with whatever's already in `data/`
+  dashboard, not the notebooks
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) —
+  the easiest way to get a Postgres database running locally (see
+  "Setting up Postgres" below). Everything in this app — the trade/cash
+  ledger, every `accounting` table — is stored in Postgres.
+- A broker's API credentials (IBKR's Flex Web Service today) — entered
+  through the web dashboard's Settings page once it's running, stored
+  encrypted in Postgres. See "Setting up Postgres" first.
 
 ## Setup
 
@@ -42,50 +47,129 @@ Clone the repo, then install the Python side:
 uv sync --extra api
 ```
 
-This installs the runtime deps, the dev tools (pytest, ruff, jupyter), and
-FastAPI/uvicorn for the web dashboard's API server, all in one go. If you
-only ever intend to use the notebook (Option A below) you can drop
-`--extra api`, but then skip Option B entirely — without it, `trades.api`
-can't import and `tests/test_api.py` will fail to collect. `uv sync --no-dev`
-additionally skips the dev tools, for a runtime-only install.
+This installs the runtime deps, the dev tools (pytest, ruff, mypy,
+jupyter), and FastAPI/uvicorn for the web dashboard's API server, all in
+one go. `uv sync --no-dev` additionally skips the dev tools, for a
+runtime-only install.
 
-If you'll be syncing from IBKR, create a `.env` in the repo root (gitignored):
+### Setting up Postgres
+
+Follow these steps in order, from the repo root.
+
+**1. Start Postgres.** This downloads and starts a Postgres database
+running in the background on your machine, listening on `localhost:5432`:
+
+```bash
+docker run -d \
+  --name finance-postgres \
+  -e POSTGRES_USER=finance \
+  -e POSTGRES_PASSWORD=changeme123 \
+  -e POSTGRES_DB=finance \
+  -p 5432:5432 \
+  -v financedashboard_pgdata:/var/lib/postgresql/data \
+  postgres:16-alpine
+```
+
+Replace `changeme123` with any password you like — just reuse the exact
+same one in step 2 below. (If this is the first time you're running it,
+Docker downloads the Postgres image first, which can take a minute.)
+
+**2. Create a `.env` file** in the repo root (a plain text file — plenty
+of text editors, or `nano .env` from a terminal) with this line, using the
+same password you picked in step 1:
 
 ```
-IBKR_FLEX_WEB_SERVICE_TOKEN=...
-IBKR_QUERY_ID=...
+DATABASE_URL=postgresql+psycopg://finance:changeme123@localhost:5432/finance
 ```
 
-These come from a Flex Query you configure in IBKR's Account Management UI
-("Trade History API", exposing Trades + Cash Transactions) — see
-[docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) for exactly how
-to set that query up and where to find the token/query ID. Without a `.env`,
-everything still works against whatever's already cached in `data/` — you
-just can't pull anything new.
+**3. Add a second line to that same `.env` file** — a second, more
+restricted database user the running app actually connects as day to day
+(this user doesn't exist yet; step 5 below creates it automatically).
+Pick any password for it, different from step 1's:
+
+```
+DATABASE_URL_APP=postgresql+psycopg://app_runtime:another-password-here@localhost:5432/finance
+```
+
+**4. Generate an encryption key** (encrypts broker/API credentials before
+they're stored) and add it as a third line in `.env`:
+
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Copy what that command prints, and add it to `.env` as:
+
+```
+APP_SECRETS_ENCRYPTION_KEY=paste-what-the-command-printed-here
+```
+
+**5. Build the database schema:**
+
+```bash
+uv run alembic upgrade head
+```
+
+This creates every table the app needs, plus the restricted
+`app_runtime` database user from step 3.
+
+At the end of this, `.env` has three lines
+(`DATABASE_URL`/`DATABASE_URL_APP`/`APP_SECRETS_ENCRYPTION_KEY`) and a
+Postgres database is running and ready — everything either option below
+needs. See [src/db/README.md](src/db/README.md) for more detail on what
+each of these three values actually does.
+
+Once the app is running (Option A or B below), add a broker connection
+from the web dashboard's Settings page — see
+[docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) for exactly
+where to find IBKR's token/query ID.
+
+### Archiving raw statements to S3-compatible storage (optional)
+
+Every raw broker/bank statement ever imported gets archived verbatim
+(never overwritten) before anything derives data from it. By default —
+with no further setup — this is written to local disk, under `data/`.
+
+Optionally, set these five in `.env`/`.env.docker` to archive to an
+S3-compatible bucket instead:
+
+```
+R2_ACCOUNT_ID=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET_NAME=...
+R2_ENDPOINT_URL=...
+```
+
+These are named `R2_*` because this project's own deployment uses
+Cloudflare R2, but the code underneath just talks plain S3 — point
+`R2_ENDPOINT_URL` at any S3-compatible provider (AWS S3 itself, MinIO,
+Backblaze B2, ...) with that provider's own access key/secret, and it
+works the same way; nothing about the code is Cloudflare-specific. If any
+of the five are left unset, archiving falls back to local disk under
+`data/` automatically — no error, no extra step required.
 
 ## Keeping the data fresh
 
-Whichever front end you use, the numbers come from on-disk caches:
+- **Trade/cash ledger** — lives in Postgres, per user, refreshed by
+  clicking **Sync** in the web dashboard, which pulls that user's latest
+  IBKR history. This is the only manually-triggered piece.
+- `data/trades/prices/` — daily close prices per symbol, pulled from
+  Yahoo Finance, cached on disk. Shared across every user, refreshed by a
+  standalone cron job (`trades.market_data.price_sync`) several times a
+  day — not by clicking Sync.
+- `data/trades/cpi/` — CPI index from FRED, cached on disk. Shared,
+  refreshed daily by a standalone cron job (`trades.market_data.daily_sync`).
+- `data/trades/hysa_rates/` — HYSA APY history from apyarchives.com,
+  cached on disk. Shared, refreshed by that same daily cron job.
 
-- `data/trades/brokers/ibkr/` — your trade/cash history, pulled from IBKR's
-  Flex Web Service
-- `data/trades/prices/` — daily close prices per symbol, pulled from Yahoo
-  Finance
-- `data/trades/cpi/` — CPI index from FRED
-- `data/trades/hysa_rates/` — HYSA APY history from apyarchives.com
-
-All are safe to refresh as often as you like (deduped/idempotent — see
-[docs/trades/architecture.md](docs/trades/architecture.md)). Do it either by:
-
-- running the individual sync notebooks (`ibkr_sync.ipynb`,
-  `prices_sync.ipynb`, `cpi_sync.ipynb`, `hysa_sync.ipynb`), or
-- clicking **Sync** in the web dashboard, which refreshes all four in one
-  action.
-
-Run this regularly if you're actively trading — IBKR's Flex Query is scoped
-to a rolling window on their side, so a sync you skip for too long can leave
-a permanent gap ([docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md)
-covers backfilling one if it happens).
+Clicking **Sync** in the web dashboard only pulls that one signed-in
+user's IBKR history — the three cache refreshes above run on their own
+schedule regardless of whether anyone clicks Sync. Run Sync regularly if
+you're actively trading — IBKR's Flex Query is scoped to a rolling window
+on their side, so a sync you skip for too long can leave a permanent gap
+([docs/trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) covers
+backfilling one if it happens).
 
 ## Option A: the notebooks
 
@@ -93,10 +177,12 @@ covers backfilling one if it happens).
 uv run jupyter lab
 ```
 
-Run the sync notebooks first (`ibkr_sync.ipynb`, `prices_sync.ipynb`,
-`cpi_sync.ipynb`, `hysa_sync.ipynb`), then open `portfolio.ipynb` for
-analysis. Each sync notebook is independent — run only the ones whose
-caches are stale.
+**Currently broken.** `portfolio.ipynb`/`prices_sync.ipynb` still call
+`trades.brokers.ibkr.main.load_ledger(config)`, a single-argument,
+config-based signature from before this app's Postgres/multi-user
+migration — `load_ledger` now takes `(session, user_id)` instead. These
+notebooks need updating to open a session and pass a real user id before
+Option A is usable again; until then, use Option B.
 
 ## Option B: the web dashboard
 
@@ -113,14 +199,15 @@ npm run dev
 ```
 
 Open **http://localhost:5173**. The dev server proxies `/api/*` to the
-FastAPI server on :8000, so no CORS setup is needed. The one **Sync** button
-in the page header pulls the latest IBKR history and refreshes every
-symbol's price cache plus CPI and HYSA rates, then the whole page refreshes
-with the new numbers.
-
-Everything you see reads from the same local caches as the notebook — the
-API layer never fetches anything on its own except when you click Sync
-(see `src/trades/api.py`'s docstring for why that split matters).
+FastAPI server on :8000, so no CORS setup is needed. Every route is
+gated behind Clerk sign-in (`CLERK_PUBLISHABLE_KEY`/`CLERK_SECRET_KEY` —
+see [docs/architecture.md](docs/architecture.md)); sign-up is invite-only,
+so the first account has to be created directly in the Clerk Dashboard. Once signed in, the **Settings** page is where you
+add/verify/delete your own broker credentials; the **Sync** button in the
+page header pulls your latest IBKR history into Postgres, then the whole
+page refreshes with the new numbers. Price/CPI/HYSA-rate caches are
+shared across every user and refresh on their own cron schedule, not from
+this button — see "Keeping the data fresh" above.
 
 To kill a running API server:
 
@@ -131,25 +218,50 @@ lsof -i :8000
 kill <PID>
 ```
 
+## Deploying
+
+Three scripts under `deploy/` drive the production/staging VM, alongside
+the `Dockerfile` and `docker-compose*.yml`/`Caddyfile*` they use; all of
+it is committed (they contain no credentials — real secrets live in the
+gitignored `.env.docker`/`.env.staging` files they reference, still kept
+at the repo root):
+
+- **`deploy/deploy.sh <ssh-host>`** — deploys `main` to production:
+  `git pull`, rebuild, `docker compose -f deploy/docker-compose.yml up -d
+  --build` (which itself runs `alembic upgrade head` before starting the
+  app — see `deploy/Dockerfile`).
+- **`deploy/deploy-staging.sh <ssh-host> [branch]`** — same idea, but to a
+  separate staging stack/clone on the same VM, for a branch that isn't
+  `main` yet.
+- **`deploy/reset-staging.sh <ssh-host>`** — wipes staging's
+  database/volumes back to empty and rebuilds; never touches production.
+
 ## Repo layout
 
 ```
 src/trades/
   config.py           every tunable parameter, as fields on frozen config objects
   models.py           pydantic schemas — canonical column names live here once
-  dashboard/          API-facing aggregation (composes ledger + market_data)
-  ledger/             replay, lots, metrics, NAV, counterfactuals, taxes
-  market_data/        prices, CPI, HYSA rates, symbol search
-  brokers/ibkr/       IBKR Flex Web Service → ledger
-  api.py              JSON endpoints for the web dashboard (needs `api` extra)
-  visualization.py    Plotly charts for the notebook
+  api/                the one FastAPI app; auth.py/webhooks.py (Clerk session
+                      verification and invite provisioning) plus routers/
+                      (dashboard, market_data, settings, sync)
+  dashboard/           API-facing aggregation (composes ledger + market_data)
+  ledger/              replay, lots, metrics, NAV, counterfactuals, taxes
+  market_data/         prices, CPI, HYSA rates, symbol search
+  brokers/ibkr/        IBKR Flex Web Service -> ledger
+  broker_credentials.py  per-user, per-broker credentials, encrypted in Postgres
+  db/                  SQLAlchemy models/queries for the `trades` schema
 src/accounting/
   config.py           accounting-specific tunables (store/ledger/overrides paths)
   models.py           pydantic schemas — Account, Posting, Category, TransferRule, …
-  dashboard/          net worth and income-statement aggregation
-  ledger/             replay, categorization, currency conversion, transfers
-  importers/          bank CSV/PDF → canonical postings (Chase, SoFi, canonical/ fallback)
-  api.py              JSON endpoints, mounted onto the same FastAPI app as trades
+  api/                 FastAPI app + routers, mounted onto the same app as trades
+  dashboard/           net worth and income-statement aggregation
+  ledger/              replay, categorization, currency conversion, transfers
+  importers/           bank CSV/PDF -> canonical postings (Chase, SoFi, canonical/ fallback)
+  db/                  SQLAlchemy models/queries for the `accounting` schema
+src/db/               shared Postgres layer: connection/session, users/secrets,
+                      Row-Level Security, encryption, backups — see src/db/README.md
+src/migration/        Alembic migrations (schema, RLS policies, role setup)
 notebooks/
   trades/
     portfolio.ipynb     analysis notebook (assumes syncing already done)
@@ -159,7 +271,7 @@ notebooks/
     hysa_sync.ipynb     sync HYSA rate history
   accounting/            (empty for now)
 web/                  React frontend
-data/                 gitignored — caches live here, under data/trades/ and data/accounting/
+data/                 gitignored — market-data caches, under data/trades/{prices,cpi,hysa_rates}/
 docs/                 architecture deep-dives (see below), under docs/trades/ and docs/accounting/
 ```
 
@@ -167,10 +279,12 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 
 | Doc | What it covers |
 |-----|----------------|
+| [architecture.md](docs/architecture.md) | How `trades`, `accounting`, and `db` fit into the one FastAPI app |
 | [trades/architecture.md](docs/trades/architecture.md) | Module map, conventions, data layout |
 | [trades/ledger.md](docs/trades/ledger.md) | Event types, replay, lots, cashflows |
 | [trades/metrics_and_benchmarks.md](docs/trades/metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
 | [trades/market_data.md](docs/trades/market_data.md) | Yahoo prices, FRED CPI, HYSA rates |
+| [trades/cash_sitting.md](docs/trades/cash_sitting.md) | Idle-cash detection and suggestions |
 | [trades/ibkr_flex_api.md](docs/trades/ibkr_flex_api.md) | Syncing from Interactive Brokers |
 | [trades/glossary.md](docs/trades/glossary.md) | Plain-language definitions of dashboard terms |
 | [accounting/architecture.md](docs/accounting/architecture.md) | Module map, canonical ledger schema, core conventions |
@@ -179,17 +293,20 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | [accounting/currency-handling.md](docs/accounting/currency-handling.md) | Multi-currency conversion, adding a new supported currency |
 | [accounting/adding-accounts.md](docs/accounting/adding-accounts.md) | Teaching the app a new bank's export format |
 | [accounting/canonical-csv-import.md](docs/accounting/canonical-csv-import.md) | The no-code fallback CSV importer for a bank with no dedicated standardizer |
+| [db/README.md](src/db/README.md) | The shared Postgres layer: roles, RLS, encryption, backups |
 
-Start with [trades/architecture.md](docs/trades/architecture.md) or
+Start with [architecture.md](docs/architecture.md), then
+[trades/architecture.md](docs/trades/architecture.md) or
 [accounting/architecture.md](docs/accounting/architecture.md) if you're
 adding a new data source or broker.
 
 ## Dev
 
 ```bash
-uv run pytest              # requires the `api` extra installed (see Setup) for tests/test_api.py
+uv run pytest              # requires the `api` extra installed (see Setup) for tests/*/api/test_api.py
 uv run ruff check .
-uv run --with mypy mypy src/accounting   # accounting is fully typed and mypy-clean
+uv run ruff format .
+uv run mypy                # trades, accounting, and db are fully typed and mypy-clean (see pyproject.toml)
 
 cd web && npm run build    # typechecks + production-builds the frontend
 cd web && npm run lint

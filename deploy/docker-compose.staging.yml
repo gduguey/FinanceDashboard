@@ -1,0 +1,144 @@
+# A second, fully independent stack — separate containers, separate named
+# volumes (Postgres data, Caddy certs), separate secrets file. Nothing here
+# is shared with docker-compose.yml (production) except the same Dockerfile
+# and the same VM's spare capacity.
+#
+# Meant to run from its own separate clone directory on the VM
+# (~/FinanceDashboard-staging), so it can track a different branch/commit
+# than production without the two ever fighting over the same checked-out
+# files. Always invoke with an explicit project name so container/volume
+# names can never collide with production's, even by mistake:
+#   docker compose -p staging -f docker-compose.staging.yml up -d --build
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      # Same gotcha and same fix as production's docker-compose.yml —
+      # deploy-staging.sh exports this from .env.staging before `--build`.
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+        # Optional (see the Dockerfile) — empty is fine if LANDING_PAGE isn't
+        # set in .env.staging.
+        VITE_LANDING_PAGE: ${VITE_LANDING_PAGE:-}
+    # Same convention as production (tagged with the app's own version, not
+    # `latest`), a distinct image name so the two stacks never share a tag.
+    image: financedashboard-api-staging:${APP_VERSION:-dev}
+
+    container_name: staging-finance-dashboard
+    restart: unless-stopped
+
+    env_file:
+      - ../.env.staging
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # Same rule as production: never published to the host directly, only
+    # reachable from staging's own Caddy over this compose network.
+    expose:
+      - "8000"
+
+    volumes:
+      # Disposable on purpose — staging data is meant to be wiped and
+      # reseeded with fake accounts, never a copy of anyone's real numbers.
+      - ../data:/app/data
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 768M
+        reservations:
+          # Lower than production's own reservation — if the VM is ever
+          # under real contention, the scheduler should favor production.
+          cpus: "0.25"
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: staging-finance-postgres
+    restart: unless-stopped
+
+    # env_file alone is enough — same gotcha already caught in production's
+    # docker-compose.yml: an explicit `environment:` block referencing
+    # ${POSTGRES_DB} here would resolve to blank, since Compose's own
+    # interpolation only reads a file literally named `.env`, not
+    # `.env.staging`. Let env_file inject these directly instead.
+    env_file:
+      - ../.env.staging
+
+    # Loopback-only — reachable from processes on the VM itself (an SSH
+    # tunnel from your Mac, e.g. TablePlus/VS Code's Postgres extension),
+    # but bound to 127.0.0.1 specifically, so still unreachable from the
+    # internet or anywhere else on the VM's network. Not the same as
+    # production's own Postgres, which has no `ports:` entry at all.
+    ports:
+      - "127.0.0.1:5433:5432"
+
+    volumes:
+      - staging_pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    # Custom build (deploy/Dockerfile.caddy), not the stock caddy:2-alpine —
+    # bundles the caddy-dns/duckdns module so Caddyfile.staging can get a
+    # real Let's Encrypt cert via DNS-01 instead of a self-signed one, which
+    # is what actually lets Clerk's webhook sender (Svix) reach this
+    # endpoint at all (it rejects self-signed certs outright).
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: staging-finance-caddy
+    restart: unless-stopped
+
+    depends_on:
+      - api
+
+    env_file:
+      - ../.env.staging
+
+    # Different host ports than production's 80/443 — both stacks run on
+    # the same VM/IP, so they can't both claim the standard ports. A DNS-01
+    # challenge (unlike HTTP-01) never touches port 80 at all, so this is
+    # safe even on a non-standard port — the whole reason DNS-01 is worth
+    # the custom build here.
+    ports:
+      - "8080:80"
+      - "8443:443"
+
+    volumes:
+      - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - staging_caddy_data:/data
+      - staging_caddy_config:/config
+
+volumes:
+  staging_pgdata:
+  staging_caddy_data:
+  staging_caddy_config:

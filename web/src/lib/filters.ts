@@ -1,0 +1,18 @@
+export const FILTER_ALL = '__all__'
+
+// A filter value paired with an "Is"/"Not" toggle — the "show everything
+// but this one" mode every equality filter in this app shares. `undefined`/
+// unset values from a filter state persisted before this field existed are
+// treated as "no filter", never as "matches nothing".
+export function matchesFilter(actual: boolean, filterValue: string | undefined, exclude: boolean | undefined): boolean {
+  if (!filterValue || filterValue === FILTER_ALL) return true
+  return exclude ? !actual : actual
+}
+
+// The multi-select counterpart to `matchesFilter` — "no values picked" is
+// the multi-select's own "no restriction" state, playing the same role
+// `FILTER_ALL` plays for a single-select filter.
+export function matchesMultiFilter(actual: boolean, selectedCount: number, exclude: boolean | undefined): boolean {
+  if (selectedCount === 0) return true
+  return exclude ? !actual : actual
+}

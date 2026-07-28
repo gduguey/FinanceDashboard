@@ -1,0 +1,66 @@
+name: openapi-types
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'web/src/types/schema.ts'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - '.github/workflows/openapi-types.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'web/src/types/schema.ts'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - '.github/workflows/openapi-types.yml'
+
+jobs:
+  check-drift:
+    name: Check generated types match the API schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install backend dependencies
+        run: uv sync --all-extras
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Export OpenAPI schema
+        run: uv run python -m trades.api.export_openapi
+
+      - name: Generate web/src/types/schema.ts from the schema
+        working-directory: web
+        run: npm run generate:schema
+
+      - name: Format generated file to match the repo's style
+        working-directory: web
+        run: npx biome format --write src/types/schema.ts
+
+      - name: Fail if committed types have drifted from the live API schema
+        run: git diff --exit-code -- web/src/types/schema.ts

@@ -1,10 +1,12 @@
 import { useSearchParams } from 'react-router-dom'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { PageHeader } from '@/components/layout/PageHeader'
+import { ExcludedFromRulesTab } from '@/components/accounting/ExcludedFromRulesTab'
+import { ManualTransfersTab } from '@/components/accounting/ManualTransfersTab'
 import { TransferRulesTab } from '@/components/accounting/TransferRulesTab'
 import { TransferSuggestionsPanel } from '@/components/accounting/TransferSuggestionsPanel'
-import { useAccountingStore } from '@/hooks/useAccountingData'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
 
 // Was the "Transfer rules" tab inside the old combined Accounting page,
 // promoted to its own top-level page under Setup. The transfer-suggestions
@@ -13,6 +15,7 @@ import { useAccountingStore } from '@/hooks/useAccountingData'
 // not reviewing a transaction.
 export function RulesPage() {
   const { data: store, isLoading } = useAccountingStore()
+  const { data: postings } = usePostings()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = searchParams.get('tab') ?? 'rules'
 
@@ -28,12 +31,33 @@ export function RulesPage() {
             <TabsList>
               <TabsTrigger value="rules">Rules</TabsTrigger>
               <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
+              <TabsTrigger value="manual">Manually added transfers</TabsTrigger>
+              <TabsTrigger value="excluded">Excluded from rules</TabsTrigger>
             </TabsList>
             <TabsContent value="rules">
-              <TransferRulesTab rules={store.transfer_rules} accounts={store.accounts} />
+              <TransferRulesTab
+                rules={store.transfer_rules}
+                accounts={store.accounts}
+                postings={postings ?? []}
+                transferLinks={store.transfer_links}
+              />
             </TabsContent>
             <TabsContent value="suggestions">
-              <TransferSuggestionsPanel accounts={store.accounts} rules={store.transfer_rules} />
+              <TransferSuggestionsPanel
+                accounts={store.accounts}
+                rules={store.transfer_rules}
+                postings={postings ?? []}
+              />
+            </TabsContent>
+            <TabsContent value="manual">
+              <ManualTransfersTab
+                transferLinks={store.transfer_links}
+                accounts={store.accounts}
+                postings={postings ?? []}
+              />
+            </TabsContent>
+            <TabsContent value="excluded">
+              <ExcludedFromRulesTab rules={store.transfer_rules} accounts={store.accounts} postings={postings ?? []} />
             </TabsContent>
           </Tabs>
         )}

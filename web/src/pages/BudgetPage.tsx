@@ -1,30 +1,32 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
+import { MonthSelect } from '@/components/accounting/MonthSelect'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
-import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
-import { withAlpha } from '@/lib/colors'
-import { formatCurrency } from '@/lib/format'
-import { hasAnyRealAccount } from '@/lib/postingClassification'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
-import { usePersistedState } from '@/hooks/usePersistedState'
 import {
   useAccountingStore,
   useCategoryTotals,
   usePostings,
-  useSetBudgets,
-  useSetGeneralBudgets,
+  useRemoveBudget,
+  useRemoveGeneralBudget,
+  useSetBudget,
+  useSetGeneralBudget,
   useSuggestedBudgetAmount,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { withAlpha } from '@/lib/colors'
+import { formatCurrency } from '@/lib/format'
+import { availableMonths } from '@/lib/months'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Category, CategoryTotalRow, CurrencyCode } from '@/types/accounting'
 
 type BudgetMode = 'general' | 'per_month'
@@ -196,8 +198,10 @@ export function BudgetPage() {
 
   const { data: store, isLoading: storeLoading } = useAccountingStore()
   const { data: postings } = usePostings()
-  const setBudgets = useSetBudgets()
-  const setGeneralBudgets = useSetGeneralBudgets()
+  const setBudget = useSetBudget()
+  const removeBudget = useRemoveBudget()
+  const setGeneralBudget = useSetGeneralBudget()
+  const removeGeneralBudget = useRemoveGeneralBudget()
 
   const { start, end } = monthBounds(month)
   const { data: actualCategoryTotals } = useCategoryTotals(start, end, undefined, undefined, displayCurrency)
@@ -254,47 +258,65 @@ export function BudgetPage() {
     return perMonth ? String(perMonth.amount) : ''
   }
 
+  // Each edit only sends the one budget that changed, not the user's
+  // whole budget history — see accounting.api.routers.store.post_budget/
+  // post_general_budget.
   function commitAmount(categoryId: string, subcategoryId: string | null, rawValue: string) {
     const amount = Number.parseFloat(rawValue)
     const isValid = rawValue.trim() !== '' && !Number.isNaN(amount)
     if (mode === 'general') {
       const key = subcategoryId ?? categoryId
-      const next = { ...(store?.general_budgets ?? {}) }
-      if (isValid)
-        next[key] = { category_id: categoryId, subcategory_id: subcategoryId, amount, currency: displayCurrency }
-      else delete next[key]
-      setGeneralBudgets.mutate(next)
+      if (isValid) {
+        setGeneralBudget.mutate({
+          category_id: categoryId,
+          subcategory_id: subcategoryId,
+          amount,
+          currency: displayCurrency,
+        })
+      } else if (store?.general_budgets[key]) {
+        removeGeneralBudget.mutate(key)
+      }
       return
     }
-    const otherEntries = (store?.budgets ?? []).filter(
-      (budget) =>
-        !(
-          budget.month === month &&
-          budget.category_id === categoryId &&
-          (budget.subcategory_id ?? null) === subcategoryId
-        ),
-    )
     const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
-    const thisEntry = isValid
-      ? [
-          {
-            budget_id: budgetId,
-            month,
-            category_id: categoryId,
-            subcategory_id: subcategoryId,
-            amount,
-            currency: displayCurrency,
-          },
-        ]
-      : []
-    setBudgets.mutate([...otherEntries, ...thisEntry])
+    if (isValid) {
+      setBudget.mutate({
+        month,
+        category_id: categoryId,
+        subcategory_id: subcategoryId,
+        amount,
+        currency: displayCurrency,
+      })
+    } else if ((store?.budgets ?? []).some((budget) => budget.budget_id === budgetId)) {
+      removeBudget.mutate(budgetId)
+    }
   }
 
   const comparison = expenseCategories
     .map((category) => {
-      const budgetedText = budgetedAmountFor(category.category_id, null)
-      const budgeted = Number.parseFloat(budgetedText)
-      if (budgetedText.trim() === '' || Number.isNaN(budgeted)) return null
+      const parentText = budgetedAmountFor(category.category_id, null)
+      const parentBudget = Number.parseFloat(parentText)
+      let budgeted: number
+      if (parentText.trim() !== '' && !Number.isNaN(parentBudget)) {
+        budgeted = parentBudget
+      } else {
+        // No top-level budget: fall back to the sum of this category's
+        // subcategory budgets, so a category budgeted only on its
+        // subcategories still counts toward the totals (and the Sankey),
+        // matching how the hierarchy renders it below.
+        let childTotal = 0
+        let hasChildBudget = false
+        for (const sub of subcategoriesByParent.get(category.category_id) ?? []) {
+          const childText = budgetedAmountFor(category.category_id, sub.category_id)
+          const childBudget = Number.parseFloat(childText)
+          if (childText.trim() !== '' && !Number.isNaN(childBudget)) {
+            childTotal += childBudget
+            hasChildBudget = true
+          }
+        }
+        if (!hasChildBudget) return null
+        budgeted = childTotal
+      }
       return {
         category_id: category.category_id,
         category_name: category.name,
@@ -340,7 +362,6 @@ export function BudgetPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />
@@ -445,6 +466,23 @@ export function BudgetPage() {
                       </Fragment>
                     )
                   })}
+                  {comparison.length > 0 && (
+                    <TableRow className="border-t-2 font-semibold">
+                      <TableCell>Total</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(budgetedTotal, displayCurrency)}
+                      </TableCell>
+                      <TableCell className="text-right">—</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {formatCurrency(actualTotal, displayCurrency)}
+                      </TableCell>
+                      <TableCell
+                        className={`text-right tabular-nums ${budgetedTotal - actualTotal < 0 ? 'text-destructive' : ''}`}
+                      >
+                        {formatCurrency(budgetedTotal - actualTotal, displayCurrency)}
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             )}
@@ -467,14 +505,6 @@ export function BudgetPage() {
               title="Budgeted cash flow"
             />
           </div>
-        )}
-
-        {comparison.length > 0 && (
-          <p className="text-center text-xs text-muted-foreground">
-            Budgeted {formatCurrency(budgetedTotal, displayCurrency)} vs. actual{' '}
-            {formatCurrency(actualTotal, displayCurrency)} across {comparison.length} budgeted categor
-            {comparison.length === 1 ? 'y' : 'ies'} this month.
-          </p>
         )}
       </div>
     </div>

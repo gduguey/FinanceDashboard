@@ -1,21 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Archive, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
+import { FilterSelect } from '@/components/shared/FilterSelect'
+import { IncludeExcludeToggle } from '@/components/shared/IncludeExcludeToggle'
+import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { FILTER_ALL, FilterSelect, matchesFilter } from '@/components/shared/FilterSelect'
-import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
-import { formatCurrency, formatDate } from '@/lib/format'
-import { hasAnyRealAccount } from '@/lib/postingClassification'
+import { useCreatePostingMerge, useDismissSuggestion, useDuplicateSuggestions } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useDismissSuggestion, useDuplicateSuggestions, useSetPostingMerges } from '@/hooks/useAccountingData'
-import type { Account, DuplicateGroup, PostingMerge } from '@/types/accounting'
+import { FILTER_ALL, matchesFilter } from '@/lib/filters'
+import { formatCurrency, formatDate } from '@/lib/format'
+import { hasAnyRealAccount } from '@/lib/postingClassification'
+import type { Account, DuplicateGroup, PostingMergeUpsert } from '@/types/accounting'
 
 const ESTIMATED_ROW_HEIGHT = 44
 const CHECKED = '__checked__'
@@ -101,7 +103,7 @@ function MergeReviewDialog({
   hasPrevious: boolean
   hasNext: boolean
   onClose: () => void
-  onConfirm: (merge: PostingMerge) => void
+  onConfirm: (merge: PostingMergeUpsert) => void
   onPrevious: () => void
   onNext: () => void
   isSubmitting: boolean
@@ -136,7 +138,6 @@ function MergeReviewDialog({
 
   function handleConfirm() {
     onConfirm({
-      merge_id: `merge:${group.group_key}`,
       kept_transaction_id: keptTransactionId,
       duplicate_transaction_ids: group.postings
         .filter((posting) => posting.transaction_id !== keptTransactionId)
@@ -238,20 +239,14 @@ function MergeReviewDialog({
 // Checking a row is just a "reviewed" marker to filter by, independent of
 // the actual merge decision, which always goes through the review dialog
 // so the kept transaction and its description are chosen deliberately.
-export function DuplicateSuggestionsPanel({
-  accounts,
-  existingMerges,
-}: {
-  accounts: Record<string, Account>
-  existingMerges: Record<string, PostingMerge>
-}) {
+export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<string, Account> }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.duplicate-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
   const { data, isLoading, isError, error } = useDuplicateSuggestions(windowDays)
   const [filters, setFilters] = useState<FilterState>(defaultFilterState())
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set())
   const [reviewingIndex, setReviewingIndex] = useState<number | null>(null)
-  const setMerges = useSetPostingMerges()
+  const createMerge = useCreatePostingMerge()
   const dismissSuggestion = useDismissSuggestion()
 
   function dismiss(row: DuplicateGroupRow) {
@@ -336,30 +331,36 @@ export function DuplicateSuggestionsPanel({
   const paddingBottom =
     virtualRows.length > 0 ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end : 0
 
-  function handleConfirmMerge(merge: PostingMerge) {
-    setMerges.mutate({ ...existingMerges, [merge.merge_id]: merge }, { onSuccess: () => setReviewingIndex(null) })
+  function handleConfirmMerge(merge: PostingMergeUpsert) {
+    createMerge.mutate(merge, { onSuccess: () => setReviewingIndex(null) })
   }
 
   // Skips the per-group review dialog entirely — each checked group is
   // merged using the same "longest description wins" default the dialog
   // itself pre-selects, so this is exactly what confirming every checked
-  // group one-by-one without changes would have produced.
-  function handleBulkAccept() {
-    const additions = Object.fromEntries(
-      checkedRows.map((row) => {
-        const kept = pickDefaultKeptPosting(row)
-        const merge: PostingMerge = {
-          merge_id: `merge:${row.group_key}`,
-          kept_transaction_id: kept.transaction_id,
-          duplicate_transaction_ids: row.postings
-            .filter((posting) => posting.transaction_id !== kept.transaction_id)
-            .map((posting) => posting.transaction_id),
-          description: null,
-        }
-        return [merge.merge_id, merge]
-      }),
-    )
-    setMerges.mutate({ ...existingMerges, ...additions }, { onSuccess: () => setCheckedKeys(new Set()) })
+  // group one-by-one without changes would have produced. Each group is
+  // its own independent POST rather than one batched request — there's no
+  // single endpoint left that accepts more than one merge at a time.
+  // Sequential, not `Promise.all` — each request snapshots the store's
+  // last-known version (see `accountingApi.ts`'s `request`), which only
+  // advances once its own mutation's `onSuccess` invalidation has refetched
+  // the store. Firing every merge in the batch at once would have them all
+  // race the same stale version, so only the first to land would succeed
+  // and every other would spuriously 409 against its own sibling's bump
+  // (same bug class fixed once already in commit 704abe9).
+  async function handleBulkAccept() {
+    for (const row of checkedRows) {
+      const kept = pickDefaultKeptPosting(row)
+      const merge: PostingMergeUpsert = {
+        kept_transaction_id: kept.transaction_id,
+        duplicate_transaction_ids: row.postings
+          .filter((posting) => posting.transaction_id !== kept.transaction_id)
+          .map((posting) => posting.transaction_id),
+        description: null,
+      }
+      await createMerge.mutateAsync(merge)
+    }
+    setCheckedKeys(new Set())
   }
 
   if (isLoading) return null
@@ -428,15 +429,10 @@ export function DuplicateSuggestionsPanel({
               className="w-36"
             />
             {filters.dateFilter && (
-              <Button
-                type="button"
-                variant={filters.dateExclude ? 'default' : 'outline'}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setFilters({ ...filters, dateExclude: !filters.dateExclude })}
-              >
-                {filters.dateExclude ? 'Not' : 'Is'}
-              </Button>
+              <IncludeExcludeToggle
+                exclude={filters.dateExclude}
+                onChange={(dateExclude) => setFilters({ ...filters, dateExclude })}
+              />
             )}
           </div>
           <FilterSelect
@@ -456,7 +452,7 @@ export function DuplicateSuggestionsPanel({
       <CardContent>
         {checkedRows.length > 0 && (
           <div className="mb-3 flex justify-end">
-            <Button size="sm" onClick={handleBulkAccept} disabled={setMerges.isPending}>
+            <Button size="sm" onClick={handleBulkAccept} disabled={createMerge.isPending}>
               Accept merging {checkedPostingsCount} transactions into {checkedRows.length} transactions (
               {checkedRows.length}/{rows.length})
             </Button>
@@ -604,7 +600,7 @@ export function DuplicateSuggestionsPanel({
           onConfirm={handleConfirmMerge}
           onPrevious={() => setReviewingIndex((index) => (index !== null ? Math.max(0, index - 1) : index))}
           onNext={() => setReviewingIndex((index) => (index !== null ? Math.min(sorted.length - 1, index + 1) : index))}
-          isSubmitting={setMerges.isPending}
+          isSubmitting={createMerge.isPending}
         />
       )}
     </Card>

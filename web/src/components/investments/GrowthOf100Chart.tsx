@@ -1,8 +1,6 @@
 import { Brush, CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/shared/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
-import { formatDate } from '@/lib/format'
-import { benchmarkLabel, hysaLabel } from '@/lib/labels'
 import {
   useBenchmarkSetting,
   useGrowthOf100Chart,
@@ -10,7 +8,9 @@ import {
   useHysaSettings,
   useTaxSettings,
 } from '@/hooks/usePortfolioData'
+import { formatDate } from '@/lib/format'
 import type { GlossaryTerm } from '@/lib/glossary'
+import { benchmarkLabel, hysaLabel } from '@/lib/labels'
 import type { GrowthOf100Point } from '@/types/portfolio'
 
 function buildLegend(benchmarkName: string, hysaName: string, taxAdjusted: boolean) {

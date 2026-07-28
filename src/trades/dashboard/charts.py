@@ -21,16 +21,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from trades.config import AppConfig
+    from trades.dashboard.settings import DashboardSettings
 
 
 def reallocation_markers(ledger: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame:
     """Find dates where a sell funded a same-day buy of a different symbol.
 
     The ledger has no explicit "this sell and that buy were one
-    reallocation decision" link (see `counterfactuals.decision_counterfactual_value`,
-    which instead takes explicit event IDs from the caller); for chart
-    markers, a same-day `SELL` + `BUY` is a reasonable heuristic for "this
-    was a reallocation, not independent trades."
+    reallocation decision" link — an id-based approach would need the
+    caller to supply explicit event IDs; for chart markers, a same-day
+    `SELL` + `BUY` is a reasonable heuristic for "this was a
+    reallocation, not independent trades."
 
     Parameters
     ----------
@@ -99,18 +100,27 @@ def _series_from_lookup(dates: pl.Series, lookup: Callable[[date], float | None]
     return pl.DataFrame({"date": dates, value_column: values}).drop_nulls(value_column)
 
 
-def _hysa_rate_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
+def _hysa_rate_series(dates: pl.Series, config: AppConfig, settings: DashboardSettings) -> pl.DataFrame:
     """Sample the resolved HYSA rate (as a percentage) over a set of dates.
 
     Lets the dollar and growth-of-100 charts show the actual rate in
     effect at each point, not just the dollar/index value it produced.
+
+    Parameters
+    ----------
+    dates
+        The dates to sample the rate at.
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
 
     Returns
     -------
     polars.DataFrame
         Columns `date`, `hysa_rate_pct`.
     """
-    rate_lookup = hysa_rate_lookup(config)
+    rate_lookup = hysa_rate_lookup(config, settings)
     return _series_from_lookup(dates, lambda day: rate_lookup(day) * 100, "hysa_rate_pct")
 
 
@@ -126,7 +136,9 @@ def _cpi_series(dates: pl.Series, config: AppConfig) -> pl.DataFrame:
     return _series_from_lookup(dates, lambda day: cpi_module.cpi_as_of(history, day), "value")
 
 
-def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
+def dollar_chart_series(
+    ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, start: date, end: date
+) -> pl.DataFrame:
     """Build the three/four-line dollar chart series.
 
     Parameters
@@ -135,6 +147,8 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
         The full ledger, in chronological order.
     config
         Application configuration; `config.returns.benchmark_symbol` is read.
+    settings
+        This user's persisted dashboard settings.
     start
         First day of the chart, inclusive.
     end
@@ -148,18 +162,18 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     """
     raw_lookup = make_price_lookup(config)
     adjusted_lookup = make_price_lookup(config, adjusted=True)
-    benchmark_symbol = resolved_benchmark_symbol(config)
+    benchmark_symbol = resolved_benchmark_symbol(config, settings)
 
     daily_values = collect_if_lazy(daily_portfolio_values(ledger, raw_lookup, start, end, config))
     flows = collect_if_lazy(external_cashflows(ledger))
     contributions = _cumulative_contributions(flows, daily_values["date"])
     hysa_series = collect_if_lazy(
-        hysa_counterfactual_series(flows, end, hysa_rate_lookup(config), config.returns.days_per_year)
+        hysa_counterfactual_series(flows, end, hysa_rate_lookup(config, settings), config.returns.days_per_year)
     )
     benchmark_series = collect_if_lazy(
         benchmark_counterfactual_series(flows, end, lambda day: adjusted_lookup(benchmark_symbol, day))
     )
-    hysa_rate = _hysa_rate_series(daily_values["date"], config)
+    hysa_rate = _hysa_rate_series(daily_values["date"], config, settings)
 
     return (
         daily_values
@@ -173,7 +187,9 @@ def dollar_chart_series(ledger: pl.DataFrame, config: AppConfig, start: date, en
     )
 
 
-def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, end: date) -> pl.DataFrame:
+def growth_of_100_chart(
+    ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, start: date, end: date
+) -> pl.DataFrame:
     """Build the growth-of-$100 chart: your NAV plus every benchmark, indexed to a common start.
 
     Unlike the dollar chart's counterfactuals, these benchmark/HYSA series
@@ -193,6 +209,8 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
         The full ledger, in chronological order.
     config
         Application configuration; `config.returns.benchmark_symbol` is read.
+    settings
+        This user's persisted dashboard settings.
     start
         First day of the chart, inclusive.
     end
@@ -206,7 +224,7 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
     """
     raw_lookup = make_price_lookup(config)
     adjusted_lookup = make_price_lookup(config, adjusted=True)
-    benchmark_symbol = resolved_benchmark_symbol(config)
+    benchmark_symbol = resolved_benchmark_symbol(config, settings)
 
     daily_values = collect_if_lazy(daily_portfolio_values(ledger, raw_lookup, start, end, config))
     flows = collect_if_lazy(external_cashflows(ledger))
@@ -222,9 +240,11 @@ def growth_of_100_chart(ledger: pl.DataFrame, config: AppConfig, start: date, en
         "amount": [-100.0],
     })
     hysa_series = collect_if_lazy(
-        hysa_counterfactual_series(hysa_principal, end, hysa_rate_lookup(config), config.returns.days_per_year)
+        hysa_counterfactual_series(
+            hysa_principal, end, hysa_rate_lookup(config, settings), config.returns.days_per_year
+        )
     )
-    hysa_rate = _hysa_rate_series(daily_values["date"], config)
+    hysa_rate = _hysa_rate_series(daily_values["date"], config, settings)
 
     cpi_index = cast("pl.DataFrame", growth_of_100(_cpi_series(daily_values["date"], config), "value"))
 

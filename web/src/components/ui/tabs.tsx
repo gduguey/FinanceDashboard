@@ -68,4 +68,5 @@ function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
   )
 }
 
-export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+// biome-ignore lint/style/useComponentExportOnlyModules: shadcn/ui generated file — component + its cva variants is the standard shape
+export { Tabs, TabsContent, TabsList, TabsTrigger, tabsListVariants }

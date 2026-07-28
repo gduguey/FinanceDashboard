@@ -1,12 +1,16 @@
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
+import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { ChartCard } from '@/components/shared/ChartCard'
-import { MonthSelect, availableMonths } from '@/components/accounting/MonthSelect'
-import { formatCurrency } from '@/lib/format'
-import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSpendCurve } from '@/hooks/useAccountingData'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { formatCurrency } from '@/lib/format'
+import { availableMonths } from '@/lib/months'
 import type { CurrencyCode, Posting } from '@/types/accounting'
 
-const CURRENT_MONTH = new Date().toISOString().slice(0, 7)
+// Local calendar, not UTC `toISOString()` — a user near a month boundary in a
+// negative-UTC timezone should default to their own current month.
+const _now = new Date()
+const CURRENT_MONTH = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}`
 
 export function SpendCurveChart({ displayCurrency, postings }: { displayCurrency: CurrencyCode; postings: Posting[] }) {
   const [month, setMonth] = usePersistedState('accounting.spend-curve-month', CURRENT_MONTH)
@@ -31,7 +35,9 @@ export function SpendCurveChart({ displayCurrency, postings }: { displayCurrency
           width={72}
         />
         <Tooltip
-          formatter={(value) => formatCurrency(Number(value), displayCurrency)}
+          formatter={(value) =>
+            value == null ? 'Not enough history yet' : formatCurrency(Number(value), displayCurrency)
+          }
           labelFormatter={(label) => `Day ${label}`}
         />
         <Line

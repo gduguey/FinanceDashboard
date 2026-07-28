@@ -370,6 +370,17 @@ def cash_received_counterfactual(
     start, end = dates[0], dates[-1]
 
     def _benchmark_index(day: date) -> float:
+        """Look up the benchmark's price on `day`, raising if none is available.
+
+        Returns
+        -------
+        float
+
+        Raises
+        ------
+        ValueError
+            If no benchmark price is available for `day`.
+        """
         price = benchmark_price_lookup(day)
         if price is None:
             message = f"No price available for {day}."

@@ -133,13 +133,22 @@ and (optionally) recording where the balance went happen atomically via
 
 ```
 src/accounting/
-  config.py             AccountingConfig — every on-disk path, derived from one data_dir
+  config.py             AccountingConfig — every on-disk path (raw statement/exchange-rate
+                         archives only — everything else lives in Postgres), derived from
+                         one data_dir
   models.py             pydantic schemas — Account, Posting, Category, Tag, TransferRule,
                          CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
                          ManualTransfer, PostingMerge, DismissedSuggestion, Currency —
                          canonical, declared once
-  store.py              persisted accounts/categories/tags/rules/goals/budgets/etc.
-                         (store.json) — seeded defaults, not fetched data
+  store.py              load_store/save_store — persisted accounts/categories/tags/rules/
+                         goals/budgets/etc., in Postgres (see db/ below); seeded defaults,
+                         not fetched data
+  db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
+                         core.py (accounts/categories/tags/postings/transactions),
+                         budgets.py, goals.py, automation.py (recurring additions,
+                         withdrawal priorities), corrections.py (manual overrides,
+                         splits, merges, dismissed suggestions), simulator.py, llm.py
+                         (per-provider usage tracking)
 
   ledger/               pure domain logic, no I/O
     replay.py             postings -> account balances as of any date
@@ -192,17 +201,25 @@ src/accounting/
     settings.py              provider credentials
     usage.py                 per-provider call-count/rate-limit tracking
 
-  api.py                 FastAPI JSON layer, mounted onto trades.api's app
+  api/                   FastAPI JSON layer, mounted onto trades.api's app
+    api.py                  router registration
+    dependencies.py          shared per-request helpers (config, resolved postings)
+    api_models.py            request/response pydantic models
+    routers/                 dashboard.py, store.py, postings.py, imports.py,
+                              goals.py, llm.py, exchange_rates.py — one file per
+                              concern, each Depends(get_current_user_id)-scoped
 
-data/accounting/         (gitignored)
+data/accounting/         (gitignored) — raw archives only; every derived/persisted
+                          fact (ledger, store, overrides, goals, budgets, LLM usage,
+                          ...) lives in Postgres instead, per-user, RLS-scoped
   raw_statements/{institution}/{account_id}/{timestamp}.csv   verbatim, never overwritten
   raw_statements/SoFi/statement_pdf/{timestamp}.pdf            verbatim, never overwritten
   exchange_rates/raw/{timestamp}.json                          verbatim, never overwritten
-  exchange_rates/rates.csv                                     disposable cache, rebuildable
-  ledger.csv                                                    disposable cache, rebuildable
-  store.json                accounts, categories, tags, rules, patterns, goals, budgets, ...
-  manual_overrides.json     per-posting user edits, always applied after rules
-  llm_usage.json            per-provider call-count / rate-limit state
+  exchange_rates/rates.csv                                     disposable cache, rebuildable;
+                                                                shared across every user, not
+                                                                per-user (see market_data/
+                                                                below) — the one thing under
+                                                                data/accounting/ that isn't
 ```
 
 ## Categorization, planning, and everything past the ledger
@@ -240,8 +257,9 @@ like any other — from its own postings and opening balance. A manually-
 tracked `external_investment` account (a friend-managed fund, a brokerage
 this app doesn't sync with) never reaches into `trades` at all.
 
-When it does pull, `api._external_investment_values_usd` reads the value
-live from the *running* `trades.api` app's own `app.state.config`, via
+When it does pull, `api.routers.dashboard._external_investment_values_usd`
+reads the value live from the *running* `trades.api` app's own
+`app.state.config`, via
 `trades.dashboard.valuation.daily_portfolio_values` (one batched
 computation across every requested date, rather than replaying the whole
 ledger once per date — net worth history can ask for a year of daily
@@ -265,7 +283,10 @@ Two standing rules shape almost every change to this module:
 - **Cache raw, derive everything else.** Every uploaded CSV or PDF, and
   every fetched exchange-rate response, is archived verbatim and
   timestamped — never overwritten — before anything is parsed from it.
-  `ledger.csv`, `exchange_rates/rates.csv`, and `store.json`'s
-  auto-registered accounts are all disposable caches, rebuildable from
-  those raw archives (`importers.ingest.rebuild_from_raw_statements`),
-  never the only copy of anything that happened.
+  The imported postings in the Postgres ledger, and `exchange_rates/rates.csv`,
+  are disposable caches — rebuildable from those raw archives
+  (`importers.ingest.rebuild_from_raw_statements`), never the only copy of
+  anything that happened. Account metadata and user corrections (overrides,
+  splits, merges, transfer links) are durable records the rebuild *reads* and
+  re-applies onto the rebuilt postings, not themselves reconstructed from
+  statements.

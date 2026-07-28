@@ -1,11 +1,11 @@
-import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
-import { formatCurrency } from '@/lib/format'
 import { useSetPostingSplit } from '@/hooks/useAccountingData'
+import { formatCurrency } from '@/lib/format'
 import type { Category, Posting } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
@@ -33,8 +33,8 @@ export function PostingSplitDialog({
   const [legs, setLegs] = useState<DraftLeg[]>([
     {
       amount: String(posting.amount),
-      categoryId: posting.category_id,
-      subcategoryId: posting.subcategory_id,
+      categoryId: posting.category_id ?? null,
+      subcategoryId: posting.subcategory_id ?? null,
       description: posting.description,
     },
     { amount: '0', categoryId: null, subcategoryId: null, description: '' },
@@ -59,16 +59,22 @@ export function PostingSplitDialog({
   }
 
   async function handleSave() {
-    await setSplit.mutateAsync({
-      postingId: posting.posting_id,
-      legs: legs.map((leg) => ({
-        amount: Number.parseFloat(leg.amount) || 0,
-        category_id: leg.categoryId,
-        subcategory_id: leg.subcategoryId,
-        description: leg.description,
-      })),
-    })
-    onClose()
+    try {
+      await setSplit.mutateAsync({
+        postingId: posting.posting_id,
+        legs: legs.map((leg) => ({
+          amount: Number.parseFloat(leg.amount) || 0,
+          category_id: leg.categoryId,
+          subcategory_id: leg.subcategoryId,
+          description: leg.description,
+        })),
+      })
+      onClose()
+    } catch {
+      // Already surfaced via the global mutation-error toast (see App.tsx) —
+      // caught here only so a failed save doesn't also close the dialog or
+      // throw as an unhandled promise rejection.
+    }
   }
 
   return (

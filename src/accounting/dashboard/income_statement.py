@@ -54,14 +54,26 @@ def real_income_expense_legs(
     itself a public function that continues the lazy chain and only
     collects at its own final boundary (see e.g. `category_totals`).
 
+    Also excludes any transaction `ledger.transfers.apply_transfer_links`
+    marked `is_linked_transfer` — a confirmed pairing (manual, or a
+    `TransferRule` safely resolved via `ledger.transfers.reconcile_rule_links`)
+    between two independently-real transactions, same as an
+    unresolved-placeholder transfer is already excluded above. `postings`
+    not carrying that column at all (every caller that resolves through
+    the full pipeline does; a caller testing this function directly
+    against a raw fixture may not) is treated as "nothing is linked" —
+    this is the sole chokepoint for that exclusion, so every dashboard
+    aggregation below inherits it with no signature change of its own.
+
     Returns
     -------
     polars.LazyFrame
         The subset of `postings` on a real account whose transaction has
-        at least one virtual-counterparty leg, with `amount` replaced by
-        its `display.code`-converted value.
+        at least one virtual-counterparty leg and isn't a confirmed
+        transfer link, with `amount` replaced by its `display.code`-converted value.
     """
     lazy = postings.lazy()
+    has_link_column = "is_linked_transfer" in lazy.collect_schema().names()
     virtual_ids = [account.account_id for account in accounts.values() if account.kind in _VIRTUAL_KINDS]
     sibling_flags = (
         lazy
@@ -81,10 +93,13 @@ def real_income_expense_legs(
         {"account_currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
         schema={"account_currency": pl.Utf8, "rate_to_base": pl.Float64},
     )
+    real_leg_filter = pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids)
+    if has_link_column:
+        real_leg_filter &= ~pl.col("is_linked_transfer")
     legs = (
         lazy
         .join(sibling_flags, on="transaction_id", how="left")
-        .filter(pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids))
+        .filter(real_leg_filter)
         .drop("any_virtual_sibling")
         .join(real_currencies, on="account_id", how="left")
         .join(rate_table, on="account_currency", how="left")
@@ -296,6 +311,33 @@ def net_income_expense_total(
     return float(total)
 
 
+def spend_curve_window(month: date, lookback_months: int) -> tuple[date, date]:
+    """Compute the exact date range `spend_curve_vs_average` needs `postings` filtered to.
+
+    Lets a caller (e.g. an API endpoint scoping its own `load_ledger`
+    call) query only that range instead of the full history, before
+    calling `spend_curve_vs_average` itself. Mirrors that function's own
+    month-window computation exactly — see its docstring for what `month`
+    and `lookback_months` mean.
+
+    Returns
+    -------
+    tuple[datetime.date, datetime.date]
+        `(since, until)`, both inclusive: `since` is the first day of the
+        earliest lookback month, `until` is the last day of `month` itself.
+    """
+    month_start = month.replace(day=1)
+    next_month_start = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    until = next_month_start - timedelta(days=1)
+    since = month_start
+    cursor_end = month_start - timedelta(days=1)
+    for _ in range(lookback_months):
+        cursor_start = cursor_end.replace(day=1)
+        since = cursor_start
+        cursor_end = cursor_start - timedelta(days=1)
+    return since, until
+
+
 def spend_curve_vs_average(
     postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
@@ -327,12 +369,24 @@ def spend_curve_vs_average(
         `trades.dashboard.cash_sitting.daily_cash_balances`'s own
         event-replay walk) and collects internally regardless of
         `postings`'s type — only the final result's type is chosen to match it.
+        A lookback month that starts before the ledger's very first real
+        expense is left out of the average entirely, rather than averaged
+        in as a flat 0 — otherwise a new user with only 1-2 months of
+        imported history sees the average line dragged down near zero by
+        months that were never actually theirs to spend nothing in.
     """
     was_eager = isinstance(postings, pl.DataFrame)
     legs = real_income_expense_legs(postings, accounts, display).filter(pl.col("amount") < 0)
+    earliest_expense_date = legs.select(pl.col("posted_at").dt.date().min()).collect().item()
     month_start = month.replace(day=1)
 
     def _cumulative_by_day(period_start: date, period_end: date) -> dict[int, float]:
+        """Sum this period's spend day by day, keyed by day-of-month, running-total-so-far.
+
+        Returns
+        -------
+        dict[int, float]
+        """
         daily = (
             legs
             .filter((pl.col("posted_at").dt.date() >= period_start) & (pl.col("posted_at").dt.date() <= period_end))
@@ -355,6 +409,9 @@ def spend_curve_vs_average(
     cursor_end = month_start - timedelta(days=1)
     for _ in range(lookback_months):
         cursor_start = cursor_end.replace(day=1)
+        if earliest_expense_date is None or cursor_end < earliest_expense_date:
+            cursor_end = cursor_start - timedelta(days=1)
+            continue
         previous_daily.append(_cumulative_by_day(cursor_start, cursor_end))
         cursor_end = cursor_start - timedelta(days=1)
 
@@ -372,7 +429,11 @@ def spend_curve_vs_average(
         rows.append({
             "day": day,
             "current_month_cumulative": running_current,
-            "average_previous_months_cumulative": (sum(averages) / len(averages)) if averages else 0.0,
+            # `None`, not 0.0, when no prior month has real history to
+            # average — a flat 0 line would misleadingly look like "you
+            # usually spend nothing," rather than "there's nothing to
+            # compare against yet."
+            "average_previous_months_cumulative": (sum(averages) / len(averages)) if previous_daily else None,
         })
     result = pl.DataFrame(
         rows,

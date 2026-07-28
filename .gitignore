@@ -18,6 +18,7 @@ data/
 .env
 .env.*
 !.env.*.example
+!.env.example
 
 # Virtual environments
 .venv
@@ -28,10 +29,6 @@ data/
 .claude/
 .ipynb_checkpoints/
 
-AGENTS.md
-CLAUDE.md
-
-info/
 
 # Personal server-setup notes
 docs/server-setup/
@@ -40,6 +37,18 @@ docs/server-setup/
 docs/app-stack/
 
 # Personal planning notes, never meant to be committed
-NEW_TASKS.md
-NEXT_STEPS.md
-ACCOUNTING_PLAN.md
+archive/
+info/
+
+# Hardcodes a real personal Clerk id/email — never meant to be committed
+deploy/seed_owner_user.py
+
+# Generated OpenAPI schema (CI regenerates it to check web/src/types/schema.ts drift)
+openapi.json
+
+# Agents and their skills
+.agents/
+skills-lock.json
+AGENTS.md
+CLAUDE.md
+VISION*.md

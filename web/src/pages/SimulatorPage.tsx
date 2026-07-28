@@ -1,23 +1,23 @@
-import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
+  useCreateSimulatorScenario,
+  useDeleteSimulatorScenario,
   useNetWorth,
-  useSetSimulatorScenarios,
   useSimulatorProjection,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
 import type { CompoundingFrequency, SimulatorScenario } from '@/types/accounting'
 
 const FREQUENCY_ITEMS: Record<CompoundingFrequency, string> = {
@@ -67,7 +67,8 @@ export function SimulatorPage() {
 
   const { data: netWorth } = useNetWorth(undefined, displayCurrency)
   const { data: store } = useAccountingStore()
-  const setScenarios = useSetSimulatorScenarios()
+  const deleteScenarioMutation = useDeleteSimulatorScenario()
+  const createScenario = useCreateSimulatorScenario()
 
   const initialCapital = Number.parseFloat(inputs.initialCapital) || 0
   const monthlyContribution = Number.parseFloat(inputs.monthlyContribution) || 0
@@ -100,8 +101,7 @@ export function SimulatorPage() {
 
   async function saveScenario() {
     if (!scenarioName.trim() || !store) return
-    const scenario: SimulatorScenario = {
-      scenario_id: `${Date.now()}-${scenarioName.trim().toLowerCase().replace(/\s+/g, '-')}`,
+    await createScenario.mutateAsync({
       name: scenarioName.trim(),
       initial_capital: initialCapital,
       monthly_contribution: monthlyContribution,
@@ -109,14 +109,12 @@ export function SimulatorPage() {
       annual_rate_pct: annualRatePct,
       compounding_frequency: inputs.compoundingFrequency,
       currency: displayCurrency,
-    }
-    await setScenarios.mutateAsync([...store.simulator_scenarios, scenario])
+    })
     setScenarioName('')
   }
 
   async function deleteScenario(scenarioId: string) {
-    if (!store) return
-    await setScenarios.mutateAsync(store.simulator_scenarios.filter((s) => s.scenario_id !== scenarioId))
+    await deleteScenarioMutation.mutateAsync(scenarioId)
   }
 
   return (
@@ -126,7 +124,6 @@ export function SimulatorPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />
@@ -282,7 +279,7 @@ export function SimulatorPage() {
                 value={scenarioName}
                 onChange={(e) => setScenarioName(e.target.value)}
               />
-              <Button size="sm" onClick={saveScenario} disabled={!scenarioName.trim() || setScenarios.isPending}>
+              <Button size="sm" onClick={saveScenario} disabled={!scenarioName.trim() || createScenario.isPending}>
                 Save as scenario
               </Button>
             </div>

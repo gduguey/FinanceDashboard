@@ -1,8 +1,8 @@
 import { AlertTriangle, TrendingDown } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { formatCurrency } from '@/lib/format'
 import { useBudgetComparison, useGoalsSummary } from '@/hooks/useAccountingData'
 import { useCashSitting } from '@/hooks/usePortfolioData'
+import { formatCurrency } from '@/lib/format'
 import type { BudgetComparisonRow, CurrencyCode } from '@/types/accounting'
 import type { CashSitting } from '@/types/portfolio'
 

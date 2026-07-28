@@ -1,27 +1,32 @@
-import { useState, type ReactNode } from 'react'
 import { Trash2, TrendingDown, TrendingUp } from 'lucide-react'
+import { type ReactNode, useState } from 'react'
+import { AccountCompositionBar } from '@/components/accounting/AccountCompositionBar'
+import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
+import { InterestTrackingPanel } from '@/components/accounting/InterestTrackingPanel'
+import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
+import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
+import { PageHeader, type PageHeaderSection } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
-import { PageHeader, type PageHeaderSection } from '@/components/layout/PageHeader'
-import { AccountCompositionBar } from '@/components/accounting/AccountCompositionBar'
-import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
-import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
-import { InterestTrackingPanel } from '@/components/accounting/InterestTrackingPanel'
-import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
+import {
+  useCreateOtherAsset,
+  useCurrencies,
+  useDeleteOtherAsset,
+  useNetWorth,
+  useRatesToBase,
+} from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { useSortableRows } from '@/hooks/useSortableRows'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { formatCurrency, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import { useSortableRows } from '@/hooks/useSortableRows'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
-import { useCurrencies, useNetWorth, useRatesToBase, useSetOtherAssets } from '@/hooks/useAccountingData'
 import type { AccountKind, CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
 
 function StatCard({
@@ -63,14 +68,17 @@ function NetWorthChangeSubline({
   displayCurrency: CurrencyCode
 }) {
   const delta = current - past
-  const pct = past !== 0 ? (delta / Math.abs(past)) * 100 : 0
+  // A percent-of-zero is undefined, not "0.0%" — going from nothing to
+  // something (a brand-new account's first 30 days) isn't a "no change"
+  // move, so the percent is omitted entirely rather than shown as 0%.
+  const pct = past !== 0 ? (delta / Math.abs(past)) * 100 : null
   const isUp = delta >= 0
   const Icon = isUp ? TrendingUp : TrendingDown
   return (
     <div className={`mt-1 flex items-center gap-1 text-xs ${isUp ? 'text-emerald-600' : 'text-destructive'}`}>
       <Icon className="size-3.5" />
-      {formatCurrency(Math.abs(delta), displayCurrency)} ({isUp ? '+' : '-'}
-      {Math.abs(pct).toFixed(1)}%) past 30 days
+      {formatCurrency(Math.abs(delta), displayCurrency)}
+      {pct !== null && ` (${isUp ? '+' : '-'}${Math.abs(pct).toFixed(1)}%)`} past 30 days
     </div>
   )
 }
@@ -137,7 +145,8 @@ function AccountsTable({
     })),
   ]
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'balance')
-  const displayRows = sort.key === 'balance' && sort.desc ? orderedRows(rows) : sorted.map((row) => ({ row, depth: 0 }))
+  const displayRows =
+    sort.key === 'balance' && sort.desc ? orderedRows(sorted) : sorted.map((row) => ({ row, depth: 0 }))
 
   if (!rows.length) {
     return (
@@ -193,8 +202,8 @@ function AccountsTable({
   )
 }
 
-function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
-  const setOtherAssets = useSetOtherAssets()
+function AddOtherAssetForm() {
+  const createOtherAsset = useCreateOtherAsset()
   const [draft, setDraft] = useState<{ name: string; value: string; currency: CurrencyCode; note: string }>({
     name: '',
     value: '',
@@ -203,15 +212,14 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
   })
 
   function addAsset() {
-    if (!draft.name || !draft.value) return
-    const asset: OtherAsset = {
-      asset_id: `manual:${draft.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
+    const value = Number(draft.value)
+    if (!draft.name.trim() || !Number.isFinite(value)) return
+    createOtherAsset.mutate({
       name: draft.name,
-      value: Number(draft.value),
+      value,
       currency: draft.currency,
       note: draft.note,
-    }
-    setOtherAssets.mutate([...otherAssets, asset])
+    })
     setDraft({ name: '', value: '', currency: draft.currency, note: '' })
   }
 
@@ -263,7 +271,7 @@ function AddOtherAssetForm({ otherAssets }: { otherAssets: OtherAsset[] }) {
               onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
             />
           </label>
-          <Button size="sm" onClick={addAsset}>
+          <Button size="sm" onClick={addAsset} disabled={createOtherAsset.isPending}>
             Add
           </Button>
         </div>
@@ -298,11 +306,10 @@ export function NetWorthPage() {
   const { data: currencies } = useCurrencies()
   const nonBaseCurrencies = (currencies ?? []).map((currency) => currency.code).filter((code) => code !== 'USD')
   const ratesToBase = useRatesToBase(nonBaseCurrencies)
-  const setOtherAssets = useSetOtherAssets()
+  const deleteOtherAsset = useDeleteOtherAsset()
 
   function removeOtherAsset(assetId: string) {
-    if (!data) return
-    setOtherAssets.mutate(data.other_assets.filter((asset) => asset.asset_id !== assetId))
+    deleteOtherAsset.mutate(assetId)
   }
 
   // Jumping to History/Allocation/Interest/etc. is meaningless when there's
@@ -317,7 +324,6 @@ export function NetWorthPage() {
         actions={
           <>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
         sections={hasData ? SECTIONS : undefined}
@@ -388,7 +394,7 @@ export function NetWorthPage() {
             </section>
 
             <section id="other-assets" className="scroll-section">
-              <AddOtherAssetForm otherAssets={data.other_assets} />
+              <AddOtherAssetForm />
             </section>
 
             <section id="interest" className="scroll-section">

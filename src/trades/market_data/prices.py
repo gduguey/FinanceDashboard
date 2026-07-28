@@ -7,6 +7,18 @@ all-VOO comparison) — mixing the two silently corrupts every return, so
 they are separate cache files, selected by the `adjusted` flag every
 function here takes. Both come from the same Yahoo chart API response,
 just a different field.
+
+The raw close is cached incrementally (`update_price_cache` only fetches
+what's genuinely missing) — except for the trailing `_SETTLEMENT_BUFFER_DAYS`
+days, which are always re-fetched on every call regardless of what's
+already cached. A fetch made while the market is still open can get a
+live, still-moving close for the current day back from Yahoo; without the
+buffer, that value would be cached as final and never revisited once the
+day's real close is known. The adjusted close is never cached
+incrementally at all (`refresh_adjusted_price_history`) — Yahoo
+retroactively recalculates `adjclose` for a symbol's entire history every
+time it pays a new dividend or splits, so even a date fetched and cached
+long ago can silently go stale.
 """
 
 from __future__ import annotations
@@ -18,21 +30,54 @@ import polars as pl
 import requests
 
 from trades.models import PriceObservation
+from trades.utils.cache_backup import backup_cache_file
 from trades.utils.frames import collect_if_lazy
-from trades.utils.io_utils import write_csv_atomic
+from trades.utils.io_utils import read_csv_recovering_from_corruption, write_csv_atomic
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from trades.config import AppConfig
 
+_SETTLEMENT_BUFFER_DAYS = 2
+"""Trailing days always re-fetched and overwritten by `update_price_cache`, even if already cached.
+
+A fetch made before the market closes for the day can get a live,
+still-moving close back from Yahoo for that day; the next call within this
+many days re-requests it so the eventual settled close overwrites it. Kept
+well short of a week so ordinary incremental efficiency is barely affected.
+"""
+
 
 def _cache_path(symbol: str, cache_dir: Path, *, adjusted: bool) -> Path:
+    """Where `symbol`'s cached price CSV lives on disk (a separate file for raw vs. adjusted).
+
+    Returns
+    -------
+    Path
+    """
     suffix = ".adjusted" if adjusted else ""
     return cache_dir / f"{symbol.upper()}{suffix}.csv"
 
 
+def _backup_key(symbol: str, *, adjusted: bool) -> str:
+    """`symbol`'s cache-backup key, matching `_cache_path`'s own raw-vs-adjusted naming.
+
+    Returns
+    -------
+    str
+    """
+    suffix = ".adjusted" if adjusted else ""
+    return f"prices/{symbol.upper()}{suffix}.csv"
+
+
 def _to_unix_seconds(value: date) -> int:
+    """Convert a date (midnight UTC) to Unix seconds, for Yahoo Finance's chart API.
+
+    Returns
+    -------
+    int
+    """
     return int(datetime.combine(value, datetime.min.time(), tzinfo=UTC).timestamp())
 
 
@@ -56,7 +101,7 @@ def load_price_cache(symbol: str, config: AppConfig, *, adjusted: bool = False) 
     path = _cache_path(symbol, config.prices.cache_dir, adjusted=adjusted)
     if not path.exists():
         return pl.DataFrame(schema=PriceObservation.polars_schema)
-    return pl.read_csv(path, try_parse_dates=True).sort("price_date")
+    return read_csv_recovering_from_corruption(path, _backup_key(symbol, adjusted=adjusted)).sort("price_date")
 
 
 def fetch_price_history(
@@ -170,7 +215,16 @@ def update_price_cache(
     adjusted: bool = False,
     session: requests.Session | None = None,
 ) -> pl.DataFrame:
-    """Ensure the on-disk cache for a symbol covers [since, as_of], fetching only what's missing.
+    """Ensure the on-disk cache for a symbol covers [since, as_of], fetching what's missing or unsettled.
+
+    "Missing" is computed against the cache with its trailing
+    `_SETTLEMENT_BUFFER_DAYS` days hidden — those days always look
+    missing and get re-requested, even if already cached, since a close
+    fetched before market close can be live and still-moving (see the
+    module docstring). The full, unfiltered cache is still merged back in
+    afterwards, so if the fresh fetch legitimately has nothing for a date
+    in that buffer window (a weekend, a holiday, a transient gap), the old
+    cached value for that date is kept as a fallback rather than lost.
 
     Parameters
     ----------
@@ -193,7 +247,9 @@ def update_price_cache(
         The full cached history after the update.
     """
     existing = load_price_cache(symbol, config, adjusted=adjusted)
-    gaps = _missing_ranges(existing, since, as_of)
+    settlement_cutoff = as_of - timedelta(days=_SETTLEMENT_BUFFER_DAYS)
+    settled = existing.filter(pl.col("price_date") <= settlement_cutoff)
+    gaps = _missing_ranges(settled, since, as_of)
     if not gaps:
         return existing
 
@@ -205,7 +261,9 @@ def update_price_cache(
         return existing
 
     merged = pl.concat([existing, *fetched]).unique(subset="price_date", keep="last").sort("price_date")
-    write_csv_atomic(merged, _cache_path(symbol, config.prices.cache_dir, adjusted=adjusted))
+    path = _cache_path(symbol, config.prices.cache_dir, adjusted=adjusted)
+    write_csv_atomic(merged, path)
+    backup_cache_file(path, _backup_key(symbol, adjusted=adjusted))
     return merged
 
 
@@ -244,6 +302,81 @@ def update_price_caches(
         symbol: update_price_cache(symbol, since, as_of, config, adjusted=adjusted, session=session)
         for symbol in symbols
     }
+
+
+def refresh_adjusted_price_history(
+    symbol: str,
+    since: date,
+    as_of: date,
+    config: AppConfig,
+    *,
+    session: requests.Session | None = None,
+) -> pl.DataFrame:
+    """Fully re-fetch a symbol's adjusted-close series and overwrite its cache with it.
+
+    Deliberately not incremental, unlike `update_price_cache`: Yahoo
+    retroactively recalculates `adjclose` for every historical date
+    whenever `symbol` pays a new dividend or splits, so an incremental
+    cache that only fetches new dates would let its already-cached dates
+    silently drift out of date forever. This re-fetches and overwrites the
+    whole [since, as_of] window every time — the same "always full
+    rewrite" shape `cpi.update_cpi_cache` uses, for the same kind of
+    reason (see that module's docstring).
+
+    Parameters
+    ----------
+    symbol
+        The ticker symbol.
+    since
+        Start of the window to fetch, inclusive.
+    as_of
+        End of the window to fetch, inclusive.
+    config
+        Application configuration; `config.prices` is read.
+    session
+        HTTP session to use instead of the top-level `requests` module.
+
+    Returns
+    -------
+    polars.DataFrame
+        The freshly fetched adjusted-close series.
+    """
+    series = fetch_price_history(symbol, since, as_of, config, adjusted=True, session=session)
+    path = _cache_path(symbol, config.prices.cache_dir, adjusted=True)
+    write_csv_atomic(series.sort("price_date"), path)
+    backup_cache_file(path, _backup_key(symbol, adjusted=True))
+    return series
+
+
+def refresh_adjusted_price_histories(
+    symbols: list[str],
+    since: date,
+    as_of: date,
+    config: AppConfig,
+    *,
+    session: requests.Session | None = None,
+) -> dict[str, pl.DataFrame]:
+    """Fully re-fetch and overwrite the adjusted-close cache for every symbol in `symbols`.
+
+    Parameters
+    ----------
+    symbols
+        The ticker symbols to refresh.
+    since
+        Start of the window to fetch, inclusive.
+    as_of
+        End of the window to fetch, inclusive.
+    config
+        Application configuration; `config.prices` is read.
+    session
+        HTTP session to use instead of the top-level `requests` module.
+
+    Returns
+    -------
+    dict[str, polars.DataFrame]
+        Each symbol's freshly fetched adjusted-close series.
+    """
+    return {symbol: refresh_adjusted_price_history(symbol, since, as_of, config, session=session) for symbol in symbols}
 
 
 def price_as_of(history: pl.DataFrame | pl.LazyFrame, target_date: date) -> float | None:

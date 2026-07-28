@@ -1,6 +1,6 @@
-import { Skeleton } from '@/components/ui/skeleton'
-import { PageHeader } from '@/components/layout/PageHeader'
 import { CategoriesTab } from '@/components/accounting/CategoriesTab'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 
 // Was the "Categories" tab inside the old combined Accounting page,

@@ -3,8 +3,9 @@
 Every configurable value is a field on one of the frozen models below.
 `AppConfig` composes all of them into a single object that gets passed to
 every function that needs configuration. `IbkrFlexCredentials` is kept
-separate because it is a secret read from the environment, not a tunable
-with a sensible default.
+separate because it's a per-user secret resolved from Postgres (see
+`trades.broker_credentials`), never a tunable with a sensible default and
+never read from `.env`.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -156,6 +156,32 @@ class HysaRatesConfig(BaseModel):
     default_bank_id: str = Field(default="ally-bank", min_length=1)
 
 
+def validate_iana_zone_name(value: str) -> str:
+    """Reject a zone name that isn't a real IANA timezone.
+
+    Shared by `TimezoneConfig.local_zone` (the code-level default) and
+    `trades.api.api_models.TimezoneSettingUpdate.local_zone` (the
+    browser-reported per-user override) — both need the exact same check,
+    since either one ends up passed straight to `zoneinfo.ZoneInfo` in
+    `trades.api.dependencies._to_display_zone`.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    ValueError
+        If `value` isn't a known IANA timezone name.
+    """
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as error:
+        message = f"{value!r} is not a known IANA timezone name."
+        raise ValueError(message) from error
+    return value
+
+
 class TimezoneConfig(BaseModel):
     """The timezone timestamps are displayed in.
 
@@ -172,12 +198,13 @@ class TimezoneConfig(BaseModel):
     @field_validator("local_zone")
     @classmethod
     def _validate_zone_name(cls, value: str) -> str:
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as error:
-            message = f"{value!r} is not a known IANA timezone name."
-            raise ValueError(message) from error
-        return value
+        """Reject a `local_zone` that isn't a real IANA timezone name.
+
+        Returns
+        -------
+        str
+        """
+        return validate_iana_zone_name(value)
 
 
 class ReturnsConfig(BaseModel):
@@ -214,18 +241,20 @@ class ReturnsConfig(BaseModel):
     )
 
 
-class IbkrFlexCredentials(BaseSettings):
-    """The IBKR Flex Web Service token and query ID, read from `.env` or the environment."""
+class IbkrFlexCredentials(BaseModel):
+    """The IBKR Flex Web Service token and query ID for one user, resolved from Postgres.
 
-    model_config = SettingsConfigDict(
-        env_file=str(_REPO_ROOT / ".env"),
-        env_file_encoding="utf-8",
-        extra="ignore",
-        populate_by_name=True,
-    )
+    Never `.env`-backed — see `trades.broker_credentials.resolve_ibkr_credentials`,
+    the only place this gets constructed. Both fields are required because
+    a partial credential (a query id with no token, or vice versa) can't
+    call the Flex Web Service at all; `resolve_ibkr_credentials` is what
+    turns "nothing saved yet" into a clear error before this model is ever built.
+    """
 
-    token: SecretStr = Field(validation_alias="IBKR_FLEX_WEB_SERVICE_TOKEN")
-    query_id: str = Field(validation_alias="IBKR_QUERY_ID")
+    model_config = ConfigDict(frozen=True)
+
+    token: SecretStr
+    query_id: str = Field(min_length=1)
 
 
 class IbkrFlexApiConfig(BaseModel):
@@ -253,28 +282,9 @@ class IbkrFlexApiConfig(BaseModel):
     )
 
     @property
-    def ledger_csv_path(self) -> Path:
-        """Where the derived ledger CSV is cached, under `cache_dir`."""
-        return self.cache_dir / "ledger.csv"
-
-    @property
     def raw_statement_dir(self) -> Path:
         """Where every raw Flex statement is archived, under `cache_dir`."""
         return self.cache_dir / "raw_statements"
-
-
-class DashboardConfig(BaseModel):
-    """Where dashboard-only, user-editable settings (e.g. a target allocation) are persisted.
-
-    These aren't fetched data (see `docs/trades/architecture.md`'s caching rule)
-    and aren't a code-level tunable either — they're settings a user
-    changes from the frontend, so `dashboard.py` reads/writes a small JSON
-    file here instead of holding them as a hardcoded default.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    settings_path: Path = _REPO_ROOT / "data" / "trades" / "dashboard_settings.json"
 
 
 class CashSittingConfig(BaseModel):
@@ -293,19 +303,6 @@ class CashSittingConfig(BaseModel):
     heavy_warning_days: int = Field(default=14, gt=0, description="Days sitting before the heavy warning shows.")
 
 
-class CredentialOverridesConfig(BaseModel):
-    """Where credentials entered via the Settings page are persisted, instead of `.env`.
-
-    See `credentials.resolve_ibkr_credentials` — an override here takes
-    precedence over `.env` field-by-field, so entering just a query id
-    still lets a token already in `.env` resolve normally.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    ibkr_credentials_path: Path = _REPO_ROOT / "data" / "trades" / "credentials.json"
-
-
 class AppConfig(BaseModel):
     """Every sub-config for the application, composed into one object."""
 
@@ -320,6 +317,4 @@ class AppConfig(BaseModel):
     tax: TaxConfig = Field(default_factory=TaxConfig)
     ibkr: IbkrFlexApiConfig = Field(default_factory=IbkrFlexApiConfig)
     timezone: TimezoneConfig = Field(default_factory=TimezoneConfig)
-    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
-    credentials: CredentialOverridesConfig = Field(default_factory=CredentialOverridesConfig)
     cash_sitting: CashSittingConfig = Field(default_factory=CashSittingConfig)

@@ -26,8 +26,19 @@ investment market data). Every raw response is archived to disk, verbatim
 and timestamped, before anything is parsed from it, matching the same
 archive-raw-first convention every other fetched-and-cached data source in
 this repo follows. The parsed history is cached as a small CSV
-(`date`, `currency`, `rate_to_base`) that a "Sync exchange rates" action
-refreshes on demand.
+(`date`, `currency`, `rate_to_base`). There is no manual "Sync exchange
+rates" button anymore — `accounting.market_data.fx_sync.run_fx_sync`
+refreshes this cache automatically via cron, a few times a day in a short
+window around the ECB's ~16:00 CET daily publication rather than
+continuously (14:00, 14:45, and 15:30 UTC — spanning the fixing's 16:00
+CET publish time across both CEST/summer and CET/winter clocks).
+`update_rate_history_cache` is incremental: it only requests the
+range from the day after the cache's current latest date through today,
+so a run that finds the cache already current makes no network call at
+all — cheap enough to check more than once a day without cost. The cache
+file is also backed up to R2 (or local disk) after every successful
+write, and transparently restored from that backup if it's ever found
+corrupted on disk (see `accounting.utils.cache_backup`).
 
 A single day's exchange rate is noisy — pricing net worth off yesterday's
 tick would make it swing on pure currency-market noise that has nothing to
@@ -94,8 +105,9 @@ value for a typed `currency` field.
 
 - `market_data.exchange_rates.fetch_rate_history` builds its currency list
   as "every code in `SUPPORTED_CURRENCIES` except the base," so the very
-  next "Sync exchange rates" click fetches MXN's history alongside
-  USD/EUR's with no code change.
+  next cron-scheduled sync fetches MXN's history alongside EUR's with no
+  code change (USD is the base currency — its rate is always 1 and is never
+  fetched).
 - `ledger.currency.convert`/`DisplayCurrency`, `dashboard.net_worth`,
   `dashboard.income_statement`, budgets, and goals are all already
   written generically over whatever currencies show up in the rate table
@@ -107,11 +119,11 @@ value for a typed `currency` field.
 **Would it automatically convert USD and EUR accounts into pesos?** Yes —
 as long as Frankfurter (the ECB-sourced rate source this app fetches
 from) actually publishes a rate for the new code, which it does for MXN
-and for the large majority of actively-traded currencies. The moment
-someone clicks "Sync exchange rates" after the two required edits above,
-history for MXN gets fetched and cached alongside everything else, and
-every net-worth/income-statement/budget/goal total involving a peso
-account converts correctly from that point on.
+and for the large majority of actively-traded currencies. After the two
+required edits above, the next cron-scheduled sync fetches and caches
+MXN's history alongside everything else, and every net-worth/income-statement/
+budget/goal total involving a peso account converts correctly from that
+point on.
 
 The one genuine limit: if a hypothetical new currency code isn't covered
 by Frankfurter/ECB rates at all, the two required model edits above would

@@ -1,17 +1,17 @@
-import { useState, type ReactNode } from 'react'
 import { Landmark } from 'lucide-react'
+import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import { TermCard } from '@/components/shared/TermCard'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
-import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { TermCard } from '@/components/shared/TermCard'
-import { formatUsd, signColor } from '@/lib/format'
 import { useSetTaxSettings, useTaxReport, useTaxSettings } from '@/hooks/usePortfolioData'
+import { formatUsd, signColor } from '@/lib/format'
 import type {
   AnnualTaxRow,
   SalePreviewRow,
@@ -88,10 +88,6 @@ export function RulesCard({ regime, w8benClaimed }: { regime: TaxRegime; w8benCl
   )
 }
 
-// Uncontrolled-with-a-touched-flag input: `draft` starts `null` (untouched)
-// so tabbing through the bar without typing anything can never overwrite a
-// saved override with an empty value — only committed once the user has
-// actually typed something and then leaves the field.
 function RateField({
   label,
   override,
@@ -103,23 +99,10 @@ function RateField({
   resolvedPct: number
   onCommit: (pct: number | null) => void
 }) {
-  const [draft, setDraft] = useState<string | null>(null)
   return (
     <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
       {label}
-      <Input
-        type="number"
-        className="w-16"
-        defaultValue={override ?? undefined}
-        placeholder={resolvedPct.toFixed(0)}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={() => {
-          if (draft === null) return
-          onCommit(draft.trim() === '' ? null : Number(draft))
-          setDraft(null)
-        }}
-      />
-      %
+      <NumberInput className="w-16" value={override} placeholder={resolvedPct.toFixed(0)} onCommit={onCommit} />%
     </label>
   )
 }

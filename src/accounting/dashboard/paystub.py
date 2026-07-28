@@ -1,10 +1,9 @@
 """Match a parsed paystub's deposits against the real bank postings that arrived on/near pay day.
 
 Never forces a split that doesn't add up — an unmatched deposit is
-reported, not silently guessed at, per `ACCOUNTING_PLAN.md` Phase 9: the
-whole point of reconciling is to catch a paystub whose numbers don't
-actually correspond to what landed in the bank, not to paper over that
-with an assumption.
+reported, not silently guessed at: the whole point of reconciling is to
+catch a paystub whose numbers don't actually correspond to what landed in
+the bank, not to paper over that with an assumption.
 """
 
 from __future__ import annotations
@@ -62,7 +61,7 @@ def reconcile_earnings_statement(
         The full, resolved posting ledger.
     accounts
         Every known account, keyed by `account_id` — used to match a
-        deposit's `account_last4` against an account's own trailing digits.
+        deposit's `account_last4` against an account's own `last_four`.
     tolerance_days
         How many days before/after `statement.pay_date` to look for a matching deposit.
 
@@ -89,7 +88,11 @@ def reconcile_earnings_statement(
             if abs(row["amount"] - deposit.amount) > _AMOUNT_TOLERANCE:
                 continue
             account = accounts.get(row["account_id"])
-            if deposit.account_last4 and account and not account.account_id.endswith(f":{deposit.account_last4}"):
+            # When the deposit names a last-4, skip any candidate we can't
+            # positively confirm it against — both a mismatch AND an account we
+            # can't find at all (previously `and account` let the unverifiable
+            # case fall through and match).
+            if deposit.account_last4 and (account is None or account.last_four != deposit.account_last4):
                 continue
             matched_row = row
             break

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    import polars as pl
+import polars as pl
 
+from trades.utils.cache_backup import restore_cache_file
 from trades.utils.frames import collect_if_lazy
 
 
@@ -48,33 +46,42 @@ def write_csv_atomic(frame: pl.DataFrame | pl.LazyFrame, path: Path) -> None:
             tmp_path.unlink()
 
 
-def write_json_atomic(data: dict[str, Any], path: Path) -> None:
-    """Write a JSON-serializable dict to a file atomically.
+def read_csv_recovering_from_corruption(path: Path, backup_key: str, *, try_parse_dates: bool = True) -> pl.DataFrame:
+    """Read a cached CSV, transparently repairing it from its one-slot backup if it's corrupted.
 
-    Writes to a temporary file with a unique name in the same directory, then
-    replaces the destination in one filesystem operation. A try/finally ensures
-    temp files are cleaned up even if the write fails. Used for user-editable
-    settings (e.g., a target allocation) that are read back on the next request,
-    so a half-written or stale temp file would corrupt the dashboard's config,
-    not just a data cache.
+    This handles *file corruption* — a bad file already sitting on disk
+    (e.g. a botched write outside the app's control, a Docker volume
+    issue) — not a failed fetch. A failed fetch never gets this far: it
+    never overwrites a cache file in the first place (see
+    `trades.utils.cache_backup`'s own docstring), so the existing file a
+    caller reads is always either genuinely valid or genuinely corrupted,
+    never "corrupted because a fetch failed."
 
     Parameters
     ----------
-    data
-        The data to write.
     path
-        The destination JSON path. Its parent directory is created if missing.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
+        The cache file to read.
+    backup_key
+        This file's key in `trades.utils.cache_backup`'s one-slot backup
+        store (e.g. `"prices/AAPL.csv"`, `"cpi.csv"`, `"hysa_rates.csv"`).
+    try_parse_dates
+        Forwarded to `polars.read_csv`.
 
-    # Use mkstemp for a unique temp filename
-    fd, tmp_path_str = tempfile.mkstemp(suffix=".json", dir=str(path.parent))
-    tmp_path = path.parent / Path(tmp_path_str).name
+    Returns
+    -------
+    polars.DataFrame
+
+    Raises
+    ------
+    polars.exceptions.ComputeError
+        If `path` can't be parsed and either no backup exists to restore
+        it from, or the restored copy is itself unparseable — surfaced
+        loudly rather than silently treated as an empty cache, so a human
+        notices instead of the app quietly losing history.
+    """
     try:
-        os.close(fd)  # Close the FD opened by mkstemp; we'll write via write_text
-        tmp_path.write_text(json.dumps(data, indent=2))
-        tmp_path.replace(path)
-    finally:
-        # Clean up temp file if it still exists (e.g., if write_text failed)
-        if tmp_path.exists():
-            tmp_path.unlink()
+        return pl.read_csv(path, try_parse_dates=try_parse_dates)
+    except pl.exceptions.ComputeError:
+        if not restore_cache_file(path, backup_key):
+            raise
+        return pl.read_csv(path, try_parse_dates=try_parse_dates)

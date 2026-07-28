@@ -5,16 +5,17 @@ immutable row of an append-only record, field names doubling as column
 names. Where the investing ledger's rows are self-contained facts about one
 symbol, a posting is only ever half of an economic event — it always has at
 least one sibling posting (sharing `transaction_id`) whose amounts, once
-converted to a common currency, sum to zero. See `ACCOUNTING_PLAN.md` for
-why that invariant is enforced by callers rather than by a single-row model,
-and why a transaction can have more than two postings (a paycheck landing in
-two accounts at once, split further into wage and reimbursement legs).
+converted to a common currency, sum to zero. That invariant is enforced by
+callers (see `docs/accounting/architecture.md`'s "Invariant" section), not
+by a single-row model, since a transaction can have more than two postings
+(a paycheck landing in two accounts at once, split further into wage and
+reimbursement legs).
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, assert_never, get_args
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -41,6 +42,45 @@ another account you hold. `external_investment` is a placeholder whose
 balance is deliberately never computed here — see `dashboard.net_worth`.
 `other_asset` is a manually-entered net-worth line (property, etc.) with no
 transaction history at all.
+"""
+
+
+def _is_importable_account_kind(kind: AccountKind) -> bool:
+    """Classify one `AccountKind` as importable (has its own CSV standardizer) or not.
+
+    Deliberately exhaustive rather than a bare frozenset literal: every
+    branch below names every `AccountKind` value explicitly, so adding a
+    new one to that `Literal` without updating this function fails the
+    `assert_never` type check at build time — a bare `frozenset` would
+    have silently classified an unhandled new kind as "not importable"
+    forever, with nothing ever flagging that no one actually decided that.
+
+    Returns
+    -------
+    bool
+    """
+    match kind:
+        case "checking" | "savings" | "credit_card" | "vault":
+            return True
+        case "cash" | "loan" | "income_source" | "expense_payee" | "external_investment" | "other_asset":
+            return False
+    assert_never(kind)
+
+
+IMPORTABLE_ACCOUNT_KINDS: frozenset[AccountKind] = frozenset(
+    kind for kind in get_args(AccountKind) if _is_importable_account_kind(kind)
+)
+"""Every `AccountKind` with a registered CSV standardizer (see `importers.ingest.supported_import_kinds`).
+
+An account of one of these kinds might already have its own,
+independently-imported transaction for the same real-world event as some
+other posting's placeholder counterparty — so a `TransferRule` may never
+repoint a placeholder directly onto one of these (see
+`ledger.categorization.apply_rules`); doing so risks the same posting being
+counted twice, once from each side's own import. Repointing straight onto
+any other kind (a virtual `income_source`/`expense_payee`, or a real
+account nothing is ever independently imported for) stays safe, since
+nothing else will ever independently post to it.
 """
 
 CategoryClassification = Literal["income", "expense"]
@@ -103,7 +143,10 @@ class Account(BaseModel):
     a single transaction. `closed` marks a real-world account that no
     longer exists at its institution — its transaction history stays
     exactly as imported (never deleted), it just stops being offered as a
-    destination for new imports or transfers.
+    destination for new imports or transfers. `last_four` is the real
+    trailing digits the institution shows for this account, when it shows
+    any at all — `None` for vaults, cash, loans, and virtual counterparties,
+    which have none.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -113,6 +156,7 @@ class Account(BaseModel):
     kind: AccountKind
     institution: str = Field(min_length=1)
     currency: CurrencyCode
+    last_four: str | None = None
     parent_account_id: str | None = None
     external_ref: str | None = None
     meta: dict[str, str] = Field(default_factory=dict)
@@ -154,12 +198,16 @@ class Tag(BaseModel):
 
 
 class TransferRule(BaseModel):
-    """A user-maintained trigger/action pair for automatically resolving a posting's counterparty and category.
+    """A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
 
     Named specifically for what it's for — linking two of your own
     accounts together as an internal transfer — to avoid reading as the
     same thing as a `CategoryPattern` below, which only ever suggests a
-    category and never resolves a counterparty.
+    category and never resolves a counterparty. Resolving a counterparty
+    into a real account you hold makes the transaction an internal
+    transfer, which is never categorizable in the first place (see
+    `dashboard.income_statement.real_income_expense_legs`) — so unlike
+    `CategoryPattern`, this has no category fields of its own to set.
 
     Every field on the trigger side must match for the rule to apply
     (`description_contains` is a case-insensitive substring check;
@@ -177,6 +225,10 @@ class TransferRule(BaseModel):
     later, never read by the matching logic. `active` lets a rule be
     switched off without deleting it — an inactive rule is skipped by
     matching entirely, as if it weren't in the list at all.
+    `excluded_transaction_ids` opts specific, otherwise-matching
+    transactions out of this one rule, without disabling it for anything
+    else it correctly resolves — the excluded transaction simply falls
+    back to whatever the next-matching rule (or no rule) would have done.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -184,12 +236,48 @@ class TransferRule(BaseModel):
     rule_id: str = Field(min_length=1)
     description_contains: str = Field(min_length=1)
     account_id: str | None = None
-    category_id: str | None = None
-    subcategory_id: str | None = None
     counterparty_account_id: str | None = None
     priority: int = 0
     description: str = ""
     active: bool = True
+    excluded_transaction_ids: list[str] = Field(default_factory=list)
+    version: int = 1
+
+
+TransferLinkSource = Literal["manual", "rule"]
+"""Which mechanism confirmed a `TransferLink` — display-only, never read by resolution itself."""
+
+
+class TransferLink(BaseModel):
+    """A confirmed pairing of two transactions as the two sides of one real-world transfer.
+
+    Neither transaction's own postings are ever changed to create this —
+    each side's real leg (already on its own real account from import)
+    stays exactly as it was; the link only changes classification, via
+    `ledger.transfers.apply_transfer_links`: both transactions are excluded
+    from income/expense regardless of what account either placeholder leg
+    still points at. `link_id` is always derived from the two transaction
+    ids sorted once (see `ledger.transfers.make_transfer_link`) — the same
+    real-world pair links (and unlinks) under the same id no matter which
+    side a caller names first. `source` is `"manual"` for a user's own
+    "flag as transfer"/suggestion-panel pick, `"rule"` for one a
+    `TransferRule` found a safe, unique match for at write time (see
+    `ledger.transfers.reconcile_rule_links`) — display-only, never read by
+    resolution itself. `rule_id`, set only when `source == "rule"`, names
+    *which* rule found it — a plain historical label, not a foreign key
+    enforced anywhere: if that rule is later deleted, this link keeps
+    remembering which one originally created it rather than the id turning
+    meaningless, the same way a bank statement keeps a routing number that
+    later stops being valid.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    link_id: str = Field(min_length=1)
+    transaction_id_a: str = Field(min_length=1)
+    transaction_id_b: str = Field(min_length=1)
+    source: TransferLinkSource = "manual"
+    rule_id: str | None = None
 
 
 class CategoryPattern(BaseModel):
@@ -215,6 +303,7 @@ class CategoryPattern(BaseModel):
     subcategory_id: str | None = None
     priority: int = 0
     active: bool = True
+    version: int = 1
 
 
 class OtherAsset(BaseModel):
@@ -327,6 +416,9 @@ class GeneralBudget(BaseModel):
     currency: CurrencyCode = "USD"
 
 
+CompoundingFrequency = Literal["annually", "monthly", "daily"]
+
+
 class SimulatorScenario(BaseModel):
     """A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`).
 
@@ -343,14 +435,14 @@ class SimulatorScenario(BaseModel):
     monthly_contribution: float
     horizon_years: float
     annual_rate_pct: float
-    compounding_frequency: Literal["annually", "monthly", "daily"] = "monthly"
+    compounding_frequency: CompoundingFrequency = "monthly"
     currency: CurrencyCode = "USD"
 
 
 class Goal(BaseModel):
     """A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
 
-    See `dashboard.goals.goal_balance`: the balance at any point in time
+    See `dashboard.goals.all_goal_balances`: the balance at any point in time
     is always the running sum of contributions up to that date, computed
     fresh, the same way an account's balance is never a cached figure
     (see `Budget`'s own docstring for the same reasoning applied to
@@ -366,6 +458,7 @@ class Goal(BaseModel):
     target_date: datetime
     color: str = Field(min_length=1)
     created_at: datetime
+    version: int = 1
 
 
 GoalContributionOrigin = Literal["manual", "automation"]
@@ -482,8 +575,7 @@ class EarningsDeposit(BaseModel):
 
     `account_last4` is the bank account digits the paystub itself prints
     next to a deposit line, when it prints one at all — used to match
-    against a real `Account.account_id`'s own trailing digits (see the
-    `{institution}:{kind}:{last4}` convention) during reconciliation.
+    against a real `Account.last_four` during reconciliation.
     """
 
     model_config = ConfigDict(frozen=True)

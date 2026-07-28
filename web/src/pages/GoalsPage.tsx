@@ -1,32 +1,33 @@
-import { Fragment, useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { MonthSelect } from '@/components/accounting/MonthSelect'
+import { ContributionLedgerTable } from '@/components/goals/ContributionLedgerTable'
+import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
+import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
+import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
+import { PageHeader } from '@/components/layout/PageHeader'
+import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { MonthSelect } from '@/components/accounting/MonthSelect'
-import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
-import { ExchangeRateSyncButton } from '@/components/shared/ExchangeRateSyncButton'
-import { PageHeader } from '@/components/layout/PageHeader'
-import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
-import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
-import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
-import { ContributionLedgerTable } from '@/components/goals/ContributionLedgerTable'
-import { colorForIndex } from '@/lib/colors'
-import { formatCurrency, formatDate } from '@/lib/format'
-import { usePersistedState } from '@/hooks/usePersistedState'
-import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import {
   useAccountingStore,
+  useCreateGoal,
   useCurrencies,
+  useDeleteGoal,
   useGoalsSummary,
+  usePatchGoal,
   useRunRecurringAdditions,
   useRunWithdrawalAutomation,
-  useSetGoals,
 } from '@/hooks/useAccountingData'
+import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { formatCurrency, formatDate } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
 type ViewMode = 'all_time' | 'per_month'
@@ -60,36 +61,45 @@ function GoalListSection({
   selectedGoalId: string | null
   onSelectGoal: (goalId: string | null) => void
 }) {
-  const setGoals = useSetGoals()
+  const patchGoal = usePatchGoal()
+  const deleteGoal = useDeleteGoal()
+  const createGoal = useCreateGoal()
   const { data: currencies } = useCurrencies()
   const currencyItems = Object.fromEntries((currencies ?? []).map((currency) => [currency.code, currency.code]))
   const goalList = Object.values(goals).sort((a, b) => a.created_at.localeCompare(b.created_at))
 
   function update(goalId: string, patch: Partial<import('@/types/accounting').Goal>) {
-    setGoals.mutate({ ...goals, [goalId]: { ...goals[goalId], ...patch } })
-  }
-  function remove(goalId: string) {
-    const { [goalId]: _removed, ...rest } = goals
-    setGoals.mutate(rest)
-    if (selectedGoalId === goalId) onSelectGoal(null)
-  }
-  function add() {
-    const goalId = `goal:${Date.now()}`
-    const targetDate = new Date()
-    targetDate.setFullYear(targetDate.getFullYear() + 1)
-    setGoals.mutate({
-      ...goals,
-      [goalId]: {
-        goal_id: goalId,
-        name: 'New goal',
-        target_amount: 1000,
-        target_currency: defaultCurrency,
-        target_date: targetDate.toISOString(),
-        color: colorForIndex(goalList.length),
-        created_at: new Date().toISOString(),
+    const goal = goals[goalId]
+    // The row may have been deleted in another tab/session while its edit
+    // fields were still open — bail rather than dereference `.version` below.
+    if (!goal) return
+    const merged = { ...goal, ...patch }
+    patchGoal.mutate({
+      goalId,
+      update: {
+        name: merged.name,
+        target_amount: merged.target_amount,
+        target_currency: merged.target_currency,
+        target_date: merged.target_date,
+        color: merged.color,
+        expected_version: goal.version,
       },
     })
-    onSelectGoal(goalId)
+  }
+  function remove(goalId: string) {
+    deleteGoal.mutate(goalId)
+    if (selectedGoalId === goalId) onSelectGoal(null)
+  }
+  async function add() {
+    const targetDate = new Date()
+    targetDate.setFullYear(targetDate.getFullYear() + 1)
+    const goal = await createGoal.mutateAsync({
+      name: 'New goal',
+      target_amount: 1000,
+      target_currency: defaultCurrency,
+      target_date: targetDate.toISOString(),
+    })
+    onSelectGoal(goal.goal_id)
   }
 
   return (
@@ -97,7 +107,7 @@ function GoalListSection({
       <CardHeader>
         <CardTitle>Goals</CardTitle>
         <CardAction>
-          <Button variant="outline" size="icon" onClick={add} title="Add goal">
+          <Button variant="outline" size="icon" onClick={add} disabled={createGoal.isPending} title="Add goal">
             <Plus className="size-4" />
           </Button>
         </CardAction>
@@ -174,11 +184,10 @@ function GoalListSection({
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                               Target amount
-                              <Input
-                                type="number"
+                              <NumberInput
                                 className="h-7 w-28 text-xs"
-                                defaultValue={goal.target_amount}
-                                onBlur={(event) => update(goal.goal_id, { target_amount: Number(event.target.value) })}
+                                value={goal.target_amount}
+                                onCommit={(value) => update(goal.goal_id, { target_amount: value ?? 0 })}
                               />
                             </label>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -249,10 +258,19 @@ export function GoalsPage() {
   // No background scheduler exists in this app — recurring additions and
   // the withdrawal automation are instead "caught up" every time this
   // page loads, which is the natural moment a user would notice a change
-  // anyway (see api.post_run_recurring_additions's own docstring).
+  // anyway (see api.post_run_recurring_additions's own docstring). Run in
+  // sequence, not fired together: each request snapshots the last-known
+  // store version, which only advances once its own mutation's `onSuccess`
+  // invalidation has refetched the store — firing both at once would have
+  // the second spuriously 409 against the version the first just bumped.
+  // Sequencing also means the withdrawal check sees whatever the recurring
+  // addition just contributed, not a stale pre-addition balance.
   useEffect(() => {
-    runRecurringAdditions.mutate(undefined)
-    runWithdrawalAutomation.mutate(undefined)
+    async function catchUpAutomations() {
+      await runRecurringAdditions.mutateAsync(undefined)
+      await runWithdrawalAutomation.mutateAsync(undefined)
+    }
+    catchUpAutomations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -320,7 +338,6 @@ export function GoalsPage() {
               <span className="font-medium text-foreground">{formatCurrency(unallocatedNow, displayCurrency)}</span>
             </span>
             <DisplayCurrencyToggle />
-            <ExchangeRateSyncButton />
           </>
         }
       />

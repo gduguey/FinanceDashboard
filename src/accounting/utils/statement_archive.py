@@ -31,19 +31,6 @@ if TYPE_CHECKING:
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-DEFAULT_USER_ID = "8f14e45f-ceea-467e-bb1c-a2e2f7cbc09e"
-"""Placeholder owner id prefixed onto every R2 object key (`statements/<user_id>/...`).
-
-There is no auth/Postgres users table yet, so every statement in this
-single-user deployment is archived under one fixed id. Once real users
-exist, every call site that constructs a `StatementArchive` is the thing
-that needs to start passing the authenticated request's actual
-`current_user.id` here instead — the key layout already assumes that
-shape, so nothing about where objects live in the bucket has to change.
-Deliberately the same literal value as `trades.utils.statement_archive`'s
-constant of the same name — both packages archive one person's data.
-"""
-
 
 @dataclass(frozen=True)
 class _ResolvedR2Credentials:
@@ -141,8 +128,9 @@ class StatementArchive:
         local_root
             Where files live on disk when R2 isn't configured.
         remote_prefix
-            The R2 key prefix files live under when it is (see
-            `DEFAULT_USER_ID` — always starts with `statements/<user_id>`).
+            The R2 key prefix files live under when it is — always starts
+            with `statements/<user_id>`, the real acting user's id (see
+            callers in `accounting.importers.ingest`).
         credentials
             R2 credentials to use; defaults to `get_r2_credentials()`.
         """
@@ -200,6 +188,12 @@ class StatementArchive:
         return self._boto_client
 
     def _key(self, relative_path: str) -> str:
+        """Build `relative_path`'s full R2 object key, under this archive's own prefix.
+
+        Returns
+        -------
+        str
+        """
         return f"{self.remote_prefix}/{relative_path}"
 
     def exists(self, relative_path: str) -> bool:

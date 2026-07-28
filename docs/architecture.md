@@ -58,14 +58,16 @@ whichever `/api/...` path it needs.
 ## The one coupling between the modules
 
 `accounting` is allowed to read from `trades`; `trades` never reads from
-`accounting`. Concretely, this is exactly one function
-(`accounting.api._external_investment_values_usd`) doing exactly one
-thing: reading the *running* `trades.api` app's own `app.state.config`
-and replaying its ledger to answer "what is the tracked portfolio worth
-as of this date" — used only for an `Account` of `kind="external_investment"`
-whose `external_ref` field is set to `"trades"` (a choice made once, when
-that account is created — see the in-app Guide's Investments tab). An
-`external_investment` account left as `external_ref=None` is tracked
+`accounting`. Concretely, this is exactly two functions in
+`accounting/api/routers/dashboard.py` —
+`_external_investment_values_usd` and `_benchmark_apy_pct` — doing exactly
+two things: reading the *running* `trades.api` app's own `app.state.config`
+to (1) replay its ledger and answer "what is the tracked portfolio worth
+as of this date" (used only for an `Account` of `kind="external_investment"`
+whose `external_ref` field is set to `"trades"` — a choice made once, when
+that account is created, see the in-app Guide's Investments tab), and (2)
+look up its published HYSA benchmark rate for the interest-summary view.
+An `external_investment` account left as `external_ref=None` is tracked
 manually instead, exactly like any other account, and never touches
 `trades` at all.
 
@@ -74,6 +76,50 @@ were deleted entirely, `accounting` would still run, still pass its own
 tests, and still be fully usable — any `external_investment` account
 would just fall back to being valued from its own postings, the same as
 a manually-tracked one already is.
+
+## Local (function-level) imports: when they're justified
+
+`ruff`'s `PLC0415` (`import-outside-top-level`) is enabled repo-wide via
+`select = ["ALL"]` in `pyproject.toml`, with no per-file exemption — every
+`import`/`from` statement that isn't at module scope has to carry its own
+`# noqa: PLC0415`, and each one is expected to have a real reason.
+"Slightly faster" is explicitly not one: Python caches every module in
+`sys.modules` after its first import, so a second `import` of the same
+module — top-of-file or inside a function, doesn't matter — is a cache
+hit either way. For a long-lived server process (this app's actual shape:
+one Docker container staying up, not a CLI tool or serverless function
+restarting per invocation), moving an import into a function doesn't
+avoid the one-time cost of that first import, it only defers *when* it's
+paid — and if the function runs on most requests anyway, that's not a
+real saving. As of this writing there are exactly 11 local imports in the
+whole repo (`src/` and `tests/` combined, verified via
+`ruff check . --select PLC0415 --ignore-noqa`, which bypasses every
+`# noqa` to catch anything that might otherwise hide from a plain
+`ruff check`), and each falls into one of two legitimate categories:
+
+- **Enforcing the module boundary above** — the six `from trades import
+  ...` lines inside `_external_investment_values_usd`/`_benchmark_apy_pct`.
+  A top-level import here would make `accounting.api.routers.dashboard`
+  (and therefore all of `accounting.api`, since every router is imported
+  at app-construction time) hard-fail if `trades` isn't installed —
+  exactly the dependency this doc's whole point is that `accounting`
+  shouldn't have.
+- **Making a third-party SDK gracefully optional** — the four imports in
+  `accounting/llm/gemini.py`/`mistral.py` (`from google import genai`,
+  `from mistralai.client import Mistral`), each inside a
+  `try: ... except ImportError: raise LLMProviderError(...)`. This is a
+  structural requirement, not a preference: a top-level import can't be
+  caught the same way, since a missing package would raise at *module*
+  import time (crashing the whole app at startup) rather than only when
+  that specific provider is actually used.
+
+A local import with neither reason — e.g. one existed for
+`accounting.importers.paystub.extract_paystub_pdf_text`'s `import
+pdfplumber`, with no error handling and no boundary to enforce — gets
+moved to the top of its file. The bar for a new one: if the reason isn't
+"this specific module must not become a hard, unconditional dependency"
+or "this specific `ImportError` needs to become a different, catchable
+exception," it belongs at the top.
 
 ## Where to look next
 

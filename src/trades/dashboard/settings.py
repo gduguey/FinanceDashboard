@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.orm import Session
 
+from db.base import check_and_bump_version, get_version
 from trades.config import TaxRegime
+from trades.db.models import DashboardSettings as DashboardSettingsRow
 from trades.ledger.taxes import after_tax_rate_lookup
 from trades.market_data import hysa_rates as hysa_rates_module
-from trades.utils.io_utils import write_json_atomic
+
+_DASHBOARD_SETTINGS_VERSION_TABLE = "trades.dashboard_settings_versions"
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,6 +40,11 @@ class DashboardSettings(BaseModel):
     and `w8ben_claimed` is set — it does not change any historical figure
     (real withholding already happened at whatever rate the broker
     actually applied); it only feeds the forward-looking tax-owed estimate.
+    `local_zone` left unset falls back to `config.timezone.local_zone` —
+    normally never unset for long, since the frontend reports the
+    browser's own IANA zone (`Intl.DateTimeFormat().resolvedOptions().timeZone`)
+    the first time it loads, the same way it's the source of truth for
+    every other per-user preference here.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -43,6 +53,7 @@ class DashboardSettings(BaseModel):
     hysa_bank_id: str | None = None
     hysa_fixed_rate_pct: float | None = None
     benchmark_symbol_override: str | None = None
+    local_zone: str | None = None
     tax_enabled: bool = False
     tax_regime: TaxRegime | None = None
     residency_status_change_date: date | None = None
@@ -52,38 +63,108 @@ class DashboardSettings(BaseModel):
     qualified_ltcg_rate_pct: float | None = None
 
 
-def load_settings(config: AppConfig) -> DashboardSettings:
-    """Read the persisted dashboard settings, or the defaults if none have been saved yet.
+def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
+    """Read this user's persisted dashboard settings, or the defaults if none have been saved yet.
 
     Parameters
     ----------
-    config
-        Application configuration; `config.dashboard.settings_path` is read.
+    session
+        An active database session.
+    user_id
+        Whose settings to read.
 
     Returns
     -------
     DashboardSettings
-        The persisted settings, or `DashboardSettings()` if `settings_path` doesn't exist yet.
     """
-    if not config.dashboard.settings_path.exists():
+    row = session.get(DashboardSettingsRow, user_id)
+    if row is None:
         return DashboardSettings()
-    return DashboardSettings.model_validate_json(config.dashboard.settings_path.read_text())
+    return DashboardSettings(
+        target_allocation_pct=row.target_allocation_pct,
+        hysa_bank_id=row.hysa_bank_id,
+        hysa_fixed_rate_pct=row.hysa_fixed_rate_pct,
+        benchmark_symbol_override=row.benchmark_symbol_override,
+        local_zone=row.local_zone,
+        tax_enabled=row.tax_enabled,
+        tax_regime=cast("TaxRegime | None", row.tax_regime),
+        residency_status_change_date=row.residency_status_change_date,
+        w8ben_claimed=row.w8ben_claimed,
+        w8ben_treaty_rate_pct=row.w8ben_treaty_rate_pct,
+        marginal_ordinary_rate_pct=row.marginal_ordinary_rate_pct,
+        qualified_ltcg_rate_pct=row.qualified_ltcg_rate_pct,
+    )
 
 
-def save_settings(settings: DashboardSettings, config: AppConfig) -> None:
-    """Persist dashboard settings, overwriting whatever was saved before.
+def get_dashboard_settings_version(session: Session, user_id: uuid.UUID) -> int:
+    """Read this user's current dashboard-settings save-version counter.
+
+    Parameters
+    ----------
+    session
+        An active database session.
+    user_id
+        Whose counter to read.
+
+    Returns
+    -------
+    int
+        `0` if this user has never saved settings yet (no row exists).
+    """
+    return get_version(session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id)
+
+
+def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.UUID) -> None:
+    """Persist this user's dashboard settings, overwriting whatever was saved before.
+
+    Reads an expected version from `session.info["expected_dashboard_settings_version"]`
+    — stashed once per request by `trades.api.dependencies`'s
+    `_stash_expected_dashboard_settings_version`, from the client's own
+    `X-Expected-Dashboard-Settings-Version` header — the same optimistic-
+    concurrency mechanism `accounting.store.save_store` uses (see
+    `db.base.check_and_bump_version`), since every one of this module's
+    five settings endpoints reads-modifies-writes the same one shared row.
+    Re-stashes the freshly-bumped version back into `session.info` after a
+    successful check, the same defensive reason
+    `accounting.store._check_and_bump_store_version` does — so that if any
+    endpoint here ever calls `save_settings` more than once in one request,
+    a later call checks against the version this call just bumped to,
+    not the stale one the client originally submitted.
 
     Parameters
     ----------
     settings
         The settings to persist.
-    config
-        Application configuration; `config.dashboard.settings_path` is written to.
+    session
+        An active database session.
+    user_id
+        Whose settings this is.
     """
-    write_json_atomic(settings.model_dump(mode="json"), config.dashboard.settings_path)
+    expected_version = session.info.get("expected_dashboard_settings_version")
+    session.info["expected_dashboard_settings_version"] = check_and_bump_version(
+        session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id, expected_version
+    )
+
+    row = session.get(DashboardSettingsRow, user_id)
+    if row is None:
+        row = DashboardSettingsRow(user_id=user_id)
+        session.add(row)
+    row.target_allocation_pct = settings.target_allocation_pct
+    row.hysa_bank_id = settings.hysa_bank_id
+    row.hysa_fixed_rate_pct = settings.hysa_fixed_rate_pct
+    row.benchmark_symbol_override = settings.benchmark_symbol_override
+    row.local_zone = settings.local_zone
+    row.tax_enabled = settings.tax_enabled
+    row.tax_regime = settings.tax_regime
+    row.residency_status_change_date = settings.residency_status_change_date
+    row.w8ben_claimed = settings.w8ben_claimed
+    row.w8ben_treaty_rate_pct = settings.w8ben_treaty_rate_pct
+    row.marginal_ordinary_rate_pct = settings.marginal_ordinary_rate_pct
+    row.qualified_ltcg_rate_pct = settings.qualified_ltcg_rate_pct
+    session.commit()
 
 
-def raw_hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
+def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Callable[[date], float]:
     """Build the published-rate HYSA lookup, before any after-tax adjustment.
 
     Priority: an explicit fixed-rate override, then the selected (or
@@ -91,16 +172,28 @@ def raw_hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
     `config.returns.hysa_annual_rate` for any day that bank has no
     published rate for yet (e.g. before its history starts).
 
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
+
     Returns
     -------
     Callable[[datetime.date], float]
         The rate (as a fraction, e.g. `0.04`) as of a given date.
     """
-    settings = load_settings(config)
     if settings.hysa_fixed_rate_pct is not None:
         fixed_rate = settings.hysa_fixed_rate_pct / 100
 
         def fixed(_day: date) -> float:
+            """Return the user's configured fixed override rate.
+
+            Returns
+            -------
+            float
+            """
             return fixed_rate
 
         return fixed
@@ -109,13 +202,19 @@ def raw_hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
     history = hysa_rates_module.load_hysa_rates_cache(config)
 
     def rate(day: date) -> float:
+        """Return the chosen bank's published rate on `day`, falling back to the configured default.
+
+        Returns
+        -------
+        float
+        """
         apy_pct = hysa_rates_module.rate_as_of(history, bank_id, day)
         return apy_pct / 100 if apy_pct is not None else config.returns.hysa_annual_rate
 
     return rate
 
 
-def hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
+def hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Callable[[date], float]:
     """Build the HYSA rate lookup every HYSA counterfactual on the dashboard shares.
 
     Because the overview's dollar-alpha card, the dollar chart, and the
@@ -127,36 +226,72 @@ def hysa_rate_lookup(config: AppConfig) -> Callable[[date], float]:
     returns the published rate unchanged, exactly as before tax support
     existed.
 
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
+
     Returns
     -------
     Callable[[datetime.date], float]
         The rate (as a fraction, e.g. `0.04`) as of a given date.
     """
-    settings = load_settings(config)
-    raw_rate = raw_hysa_rate_lookup(config)
+    raw_rate = raw_hysa_rate_lookup(config, settings)
     if not settings.tax_enabled:
         return raw_rate
     return after_tax_rate_lookup(
         raw_rate,
-        resolved_marginal_ordinary_rate(config),
-        resolved_tax_regime(config),
+        resolved_marginal_ordinary_rate(config, settings),
+        resolved_tax_regime(settings),
         settings.residency_status_change_date,
     )
 
 
-def resolved_benchmark_symbol(config: AppConfig) -> str:
+def resolved_benchmark_symbol(config: AppConfig, settings: DashboardSettings) -> str:
     """Resolve the benchmark symbol to use: the user's override if set, else `config.returns.benchmark_symbol`.
+
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
 
     Returns
     -------
     str
         The ticker symbol to benchmark against.
     """
-    return load_settings(config).benchmark_symbol_override or config.returns.benchmark_symbol
+    return settings.benchmark_symbol_override or config.returns.benchmark_symbol
 
 
-def resolved_tax_regime(config: AppConfig) -> TaxRegime:
+def resolved_local_zone(config: AppConfig, settings: DashboardSettings) -> str:
+    """Resolve the display timezone to use: the browser-reported zone, or `config.timezone.local_zone`.
+
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
+
+    Returns
+    -------
+    str
+        An IANA zone name (e.g. `"America/New_York"`).
+    """
+    return settings.local_zone or config.timezone.local_zone
+
+
+def resolved_tax_regime(settings: DashboardSettings) -> TaxRegime:
     """Resolve the tax regime to use: the user's selection, or the fully taxed default if never made.
+
+    Parameters
+    ----------
+    settings
+        This user's persisted dashboard settings.
 
     Returns
     -------
@@ -165,34 +300,48 @@ def resolved_tax_regime(config: AppConfig) -> TaxRegime:
         dashboard never assumes the more favorable nonresident-alien
         treatment on the user's behalf.
     """
-    return load_settings(config).tax_regime or "RESIDENT"
+    return settings.tax_regime or "RESIDENT"
 
 
-def resolved_marginal_ordinary_rate(config: AppConfig) -> float:
+def resolved_marginal_ordinary_rate(config: AppConfig, settings: DashboardSettings) -> float:
     """Resolve the ordinary-income tax rate to use: the user's override, or the code default.
+
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
 
     Returns
     -------
     float
         `config.tax.marginal_ordinary_rate` unless the user has entered their own rate.
     """
-    override = load_settings(config).marginal_ordinary_rate_pct
+    override = settings.marginal_ordinary_rate_pct
     return override / 100 if override is not None else config.tax.marginal_ordinary_rate
 
 
-def resolved_qualified_ltcg_rate(config: AppConfig) -> float:
+def resolved_qualified_ltcg_rate(config: AppConfig, settings: DashboardSettings) -> float:
     """Resolve the long-term-capital-gains/qualified-dividend rate to use: the user's override, or the code default.
+
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
 
     Returns
     -------
     float
         `config.tax.qualified_ltcg_rate` unless the user has entered their own rate.
     """
-    override = load_settings(config).qualified_ltcg_rate_pct
+    override = settings.qualified_ltcg_rate_pct
     return override / 100 if override is not None else config.tax.qualified_ltcg_rate
 
 
-def resolved_nra_dividend_tax_rate(config: AppConfig) -> float:
+def resolved_nra_dividend_tax_rate(config: AppConfig, settings: DashboardSettings) -> float:
     """Resolve the flat rate a nonresident alien's dividends are taxed at.
 
     A tax treaty only lowers the rate below the default statutory
@@ -201,12 +350,18 @@ def resolved_nra_dividend_tax_rate(config: AppConfig) -> float:
     giving a rate is treated the same as not claiming it at all, since the
     statutory rate is the safe assumption absent a known number.
 
+    Parameters
+    ----------
+    config
+        Application configuration.
+    settings
+        This user's persisted dashboard settings.
+
     Returns
     -------
     float
         The claimed treaty rate, or `config.tax.nra_statutory_dividend_withholding_rate`.
     """
-    settings = load_settings(config)
     if settings.w8ben_claimed and settings.w8ben_treaty_rate_pct is not None:
         return settings.w8ben_treaty_rate_pct / 100
     return config.tax.nra_statutory_dividend_withholding_rate

@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Intermediate artifact for `npm run generate:schema` — regenerated from
+# the FastAPI app by scripts/export_openapi_schema.py, never hand-edited.
+# src/types/schema.ts (its actual output) IS committed, so the frontend
+# typechecks without needing Python installed.
+openapi.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -17,6 +17,8 @@ import io
 import re
 from datetime import datetime
 
+import pdfplumber
+
 from accounting.models import EarningsDeposit, EarningsLineItem, EarningsStatement
 
 _GROSS_PAY = re.compile(r"Gross (?:Pay|Earnings)[:\s]+\$?([\d,]+\.\d{2})", re.IGNORECASE)
@@ -48,6 +50,12 @@ _LINE_ITEM = re.compile(r"^(?P<label>.+?)\s+\$(?P<current>[\d,]+\.\d{2})\s+\$(?P
 
 
 def _to_float(text: str) -> float:
+    """Parse a comma-grouped dollar amount string (e.g. `"2,000.00"`) into a float.
+
+    Returns
+    -------
+    float
+    """
     return float(text.replace(",", ""))
 
 
@@ -67,13 +75,17 @@ def extract_paystub_pdf_text(pdf_bytes: bytes) -> str:
     str
         Every page's extracted text, joined with newlines.
     """
-    import pdfplumber  # noqa: PLC0415
-
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         return "\n".join(page.extract_text() or "" for page in pdf.pages)
 
 
 def _parse_pay_date(text: str) -> datetime | None:
+    """Find the pay date in either its numeric (`Pay Date: 6/15/2026`) or textual (`Pay Day: Jun 15, 2026`) form.
+
+    Returns
+    -------
+    datetime.datetime or None
+    """
     numeric = _PAY_DATE_NUMERIC.search(text)
     if numeric is not None:
         return datetime.strptime(numeric[1], "%m/%d/%Y")  # noqa: DTZ007  (a paystub's pay date has no timezone)
@@ -85,6 +97,12 @@ def _parse_pay_date(text: str) -> datetime | None:
 
 
 def _parse_deposits(text: str) -> list[EarningsDeposit]:
+    """Find every deposit line, trying the dotted account-number phrasing before the "ending in" one.
+
+    Returns
+    -------
+    list[EarningsDeposit]
+    """
     matches = list(_DEPOSIT_LINE_DOTTED.finditer(text)) or list(_DEPOSIT_LINE_LABELED.finditer(text))
     return [
         EarningsDeposit(label=match["label"].strip(), account_last4=match["last4"], amount=_to_float(match["amount"]))

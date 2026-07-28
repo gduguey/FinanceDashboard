@@ -121,8 +121,11 @@ ReplayResult:
 ```
 
 The walk is a **sequential fold** — each event's effect depends on lots
-left open by every prior event. This is a deliberate `for` loop, not a
-vectorized expression (see AGENTS.md).
+left open by every prior event. This repo otherwise prefers vectorized
+polars/numpy expressions over explicit loops, but that convention assumes
+each row's computation is independent; here it deliberately isn't, so a
+`for` loop is the honest shape for this one function rather than forcing
+a vectorized expression to fake sequential state.
 
 Per event type:
 
@@ -228,12 +231,13 @@ the same.
 ```
 data/brokers/ibkr/
   raw_statements/{timestamp}.xml   source of truth — every fetch, verbatim
-  ledger.csv                       rebuildable cache — deduplicated events
 ```
 
-`ledger.csv` is derived from the raw archive. If it's ever wrong,
+The deduplicated ledger itself is a Postgres cache (`ledger_events`, one
+row per event, per user — `brokers.ibkr.main.load_ledger`/`_write_ledger`),
+derived from the raw archive above, not a flat file. If it's ever wrong,
 `rebuild_from_raw_statements()` re-parses every archived statement from
-scratch.
+scratch and rewrites it.
 
 ---
 

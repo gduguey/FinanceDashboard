@@ -128,6 +128,8 @@ class _Columns:
 
 @dataclass(frozen=True)
 class _ParsedRow:
+    """One successfully parsed input row, before its category names are resolved against the store."""
+
     posted_at: datetime
     amount: float
     description: str
@@ -137,6 +139,17 @@ class _ParsedRow:
 
 
 def _detect_separator(csv_text: str) -> str:
+    """Guess `csv_text`'s column separator via `csv.Sniffer`, falling back to counting candidates in the header.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    CanonicalCsvSeparatorUnknownError
+        If no candidate separator appears in the header at all.
+    """
     sample = csv_text[:8192]
     try:
         return csv_module.Sniffer().sniff(sample, delimiters="".join(_CANDIDATE_SEPARATORS)).delimiter
@@ -153,6 +166,17 @@ def _detect_separator(csv_text: str) -> str:
 
 
 def _resolve_columns(header: list[str]) -> _Columns:
+    """Match `header` against every known column alias, raising if a required column can't be found.
+
+    Returns
+    -------
+    _Columns
+
+    Raises
+    ------
+    CanonicalCsvError
+        If a date, description, or amount column can't be found.
+    """
     date_col = find_column(header, _DATE_ALIASES)
     description_col = find_column(header, _DESCRIPTION_ALIASES)
     amount_col = find_column(header, _AMOUNT_ALIASES)
@@ -177,6 +201,12 @@ def _resolve_columns(header: list[str]) -> _Columns:
 
 
 def _row_amount(row_cell: dict[str, str], columns: _Columns) -> float | None:
+    """Read one row's signed amount from either its Amount column or its Debit/Credit pair.
+
+    Returns
+    -------
+    float or None
+    """
     if columns.amount is not None:
         return parse_amount_flexible(row_cell[columns.amount])
     debit = parse_amount_flexible(row_cell[columns.debit]) if columns.debit else None
@@ -189,10 +219,27 @@ def _row_amount(row_cell: dict[str, str], columns: _Columns) -> float | None:
 def _parse_rows(
     data_rows: list[list[str]], header: list[str], columns: _Columns, date_order: DateOrder = "MDY"
 ) -> tuple[list[_ParsedRow], SkippedRowsInfo | None]:
+    """Parse every data row into a `_ParsedRow`, reporting which (if any) were skipped and why.
+
+    Returns
+    -------
+    tuple[list[_ParsedRow], SkippedRowsInfo or None]
+
+    Raises
+    ------
+    CanonicalCsvError
+        If too large a fraction of rows fail to parse.
+    """
     index = {name: position for position, name in enumerate(header)}
     dayfirst = date_order == "DMY"
 
     def cell(row: list[str], column: str) -> str:
+        """Read `column`'s value from `row`, or `""` if the row is short that column.
+
+        Returns
+        -------
+        str
+        """
         position = index[column]
         return row[position] if position < len(row) else ""
 
@@ -254,6 +301,12 @@ def _parse_rows(
 
 
 def _match_existing_category(name: str, parent_id: str | None, categories: dict[str, Category]) -> Category | None:
+    """Find an existing category under `parent_id` whose name matches `name`, case/whitespace-insensitively.
+
+    Returns
+    -------
+    Category or None
+    """
     lowered = name.strip().lower()
     for category in categories.values():
         if category.parent_category_id == parent_id and category.name.strip().lower() == lowered:
@@ -262,6 +315,12 @@ def _match_existing_category(name: str, parent_id: str | None, categories: dict[
 
 
 def _unique_category_id(base_id: str, existing: dict[str, Category], created: dict[str, Category]) -> str:
+    """Return `base_id`, or `base_id-2`/`base_id-3`/... if it already collides with an existing or new category.
+
+    Returns
+    -------
+    str
+    """
     if base_id not in existing and base_id not in created:
         return base_id
     suffix = 2
@@ -271,6 +330,12 @@ def _unique_category_id(base_id: str, existing: dict[str, Category], created: di
 
 
 def _classification_for(amounts: list[float]) -> CategoryClassification:
+    """Infer a new category's classification from the majority sign of the amounts filed under it.
+
+    Returns
+    -------
+    CategoryClassification
+    """
     negative = sum(1 for amount in amounts if amount < 0)
     return "expense" if negative >= len(amounts) - negative else "income"
 
@@ -338,6 +403,12 @@ class _SubcategoryGroups:
 def _group_rows_by_resolved_subcategory(
     parsed_rows: list[_ParsedRow], top_category_ids: dict[str, str], overrides: dict[str, dict[str, str]]
 ) -> _SubcategoryGroups:
+    """Bucket every row's raw subcategory name by its resolved (parent id, effective name) key, applying renames.
+
+    Returns
+    -------
+    _SubcategoryGroups
+    """
     groups = _SubcategoryGroups({}, {}, {})
     for row in parsed_rows:
         if not (row.category_name and row.subcategory_name):
@@ -540,6 +611,12 @@ def _build_postings(
     top_category_ids: dict[str, str],
     subcategory_ids: dict[tuple[str, str], str],
 ) -> list[Posting]:
+    """Build each parsed row's two-posting pair against `account_id` and its resolved category/subcategory.
+
+    Returns
+    -------
+    list[Posting]
+    """
     postings: list[Posting] = []
     for row in parsed_rows:
         top_key = row.category_name.strip().lower() if row.category_name else None
@@ -591,6 +668,12 @@ def _standardize_rows(
     date_order: DateOrder,
     category_overrides: CategoryOverrides | None = None,
 ) -> CanonicalImportResult:
+    """Shared standardization pipeline behind `standardize_canonical_csv`/`_excel`, given already-split rows.
+
+    Returns
+    -------
+    CanonicalImportResult
+    """
     columns = _resolve_columns(header)
     parsed_rows, skip_info = _parse_rows(data_rows, header, columns, date_order)
     overrides = category_overrides or CategoryOverrides()
@@ -689,6 +772,12 @@ def _read_excel_sheets(file_bytes: bytes) -> dict[str, tuple[list[str], list[lis
     sheets = pl.read_excel(io.BytesIO(file_bytes), sheet_id=0, infer_schema_length=0)
 
     def rows_as_strings(frame: pl.DataFrame) -> list[list[str]]:
+        """Render every cell as a string (`""` for null), matching the CSV path's own row shape.
+
+        Returns
+        -------
+        list[list[str]]
+        """
         return [["" if value is None else str(value) for value in row] for row in frame.iter_rows()]
 
     return {name: (list(frame.columns), rows_as_strings(frame)) for name, frame in sheets.items()}

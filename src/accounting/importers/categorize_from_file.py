@@ -29,13 +29,15 @@ from accounting.importers.canonical.csv import (
     resolve_categorization_rows,
 )
 from accounting.models import ManualOverride
-from accounting.store import load_overrides, save_overrides
+from accounting.store import load_overrides_for_postings, save_overrides_for_postings
 
 if TYPE_CHECKING:
+    import uuid
     from datetime import datetime
     from typing import Any
 
-    from accounting.config import AccountingConfig
+    from sqlalchemy.orm import Session
+
     from accounting.importers.canonical.csv import DateOrder, SkippedRowsInfo
     from accounting.models import Category
 
@@ -55,10 +57,22 @@ _WORD_MATCH_THRESHOLD = 0.7
 
 
 def _tokenize(description: str) -> list[str]:
+    """Split a description into lowercase words.
+
+    Returns
+    -------
+    list[str]
+    """
     return _WORD_PATTERN.findall(description.lower())
 
 
 def _words_match(word: str, other: str) -> bool:
+    """Whether two words are the same, or close enough (fuzzy ratio) to count as the same.
+
+    Returns
+    -------
+    bool
+    """
     return word == other or SequenceMatcher(None, word, other).ratio() >= _WORD_MATCH_THRESHOLD
 
 
@@ -89,10 +103,22 @@ def _description_containment(file_description: str, posting_description: str) ->
 
 
 def _date_closeness(days_apart: float, window_days: int) -> float:
+    """Score how close two dates are, from `1.0` (same day) to `0.0` (at or beyond `window_days` apart).
+
+    Returns
+    -------
+    float
+    """
     return max(0.0, 1 - abs(days_apart) / window_days)
 
 
 def _category_name(category_id: str | None, categories: dict[str, Category]) -> str | None:
+    """Look up `category_id`'s display name, or `None` if it's unset or unknown.
+
+    Returns
+    -------
+    str or None
+    """
     if category_id is None:
         return None
     category = categories.get(category_id)
@@ -275,7 +301,7 @@ class ConfirmedCategorization:
     subcategory_id: str | None
 
 
-def apply_categorize_from_file(config: AccountingConfig, confirmed: list[ConfirmedCategorization]) -> int:
+def apply_categorize_from_file(session: Session, confirmed: list[ConfirmedCategorization], user_id: uuid.UUID) -> int:
     """Set category/subcategory on every confirmed posting, through the same override a hand edit would make.
 
     Uses `ManualOverride`'s usual field-level merge (see `api.put_posting_override`) — an entry with only
@@ -284,11 +310,13 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
 
     Parameters
     ----------
-    config
-        Application configuration; `config.overrides_path` is read and written.
+    session
+        An open database session.
     confirmed
         Every match the caller has reviewed and wants applied — typically a subset of
         `CategorizeFromFilePreview.matches`, with unmatched or rejected rows filtered out first.
+    user_id
+        Whose overrides these are.
 
     Returns
     -------
@@ -299,7 +327,8 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
     if not applicable:
         return 0
 
-    overrides = load_overrides(config)
+    posting_ids = [entry.posting_id for entry in applicable]
+    overrides = load_overrides_for_postings(session, user_id, posting_ids)
     for entry in applicable:
         patch: dict[str, str] = {}
         if entry.category_id is not None:
@@ -313,5 +342,5 @@ def apply_categorize_from_file(config: AccountingConfig, confirmed: list[Confirm
             overrides[entry.posting_id] = ManualOverride(
                 category_id=patch.get("category_id"), subcategory_id=patch.get("subcategory_id")
             )
-    save_overrides(overrides, config)
+    save_overrides_for_postings(posting_ids, overrides, session, user_id=user_id)
     return len(applicable)

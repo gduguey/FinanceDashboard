@@ -1,3 +1,4 @@
+import { Truncate } from '@/components/shared/Truncate'
 import { formatCurrency } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
 
@@ -43,7 +44,7 @@ export function PieChartLegend<T extends PieLegendSlice>({
               className="flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left enabled:hover:bg-muted enabled:cursor-pointer"
             >
               <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
-              <span className="flex-1 truncate">{slice.name}</span>
+              <Truncate text={slice.name} className="flex-1" />
               <span className="shrink-0 tabular-nums text-muted-foreground">
                 {showPercent && total
                   ? `${((slice.value / total) * 100).toFixed(1)}%`

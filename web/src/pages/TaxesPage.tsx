@@ -1,9 +1,9 @@
 import { useSearchParams } from 'react-router-dom'
 import { InvestmentsEmptyState } from '@/components/investments/InvestmentsEmptyState'
 import { RulesCard, TaxRegimeSelector, TaxReportTab } from '@/components/investments/TaxPanel'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { PageHeader } from '@/components/layout/PageHeader'
 import { useTaxSettings } from '@/hooks/usePortfolioData'
 
 // Was a conditionally-shown section at the bottom of the old Investments

@@ -22,6 +22,12 @@ _MAX_DAY_OF_MONTH = 28
 
 
 def _monthly_occurrence_on_or_before(start_date: date, as_of: date) -> date | None:
+    """Find this monthly schedule's most recent occurrence on or before `as_of`, or `None` if it hasn't started yet.
+
+    Returns
+    -------
+    datetime.date or None
+    """
     day = min(start_date.day, _MAX_DAY_OF_MONTH)
     year, month = as_of.year, as_of.month
     if as_of.day < day:

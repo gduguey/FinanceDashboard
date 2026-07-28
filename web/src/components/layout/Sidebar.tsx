@@ -1,4 +1,3 @@
-import { useEffect, useState, type ComponentType } from 'react'
 import {
   ArrowRightLeft,
   BarChart3,
@@ -7,8 +6,8 @@ import {
   FlaskConical,
   Home,
   Landmark,
-  LineChart,
   Library,
+  LineChart,
   Percent,
   PieChart,
   Receipt,
@@ -20,10 +19,12 @@ import {
   Upload,
   Wallet,
 } from 'lucide-react'
+import { type ComponentType, useEffect, useState } from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
+import { SidebarAccountMenu } from '@/components/layout/SidebarAccountMenu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useIbkrConnectionStatus } from '@/hooks/usePortfolioData'
 import { useOnboardingProgress } from '@/hooks/useOnboardingProgress'
+import { useIbkrConnectionStatus } from '@/hooks/usePortfolioData'
 import { cn } from '@/lib/utils'
 
 interface NavItem {
@@ -245,6 +246,10 @@ export function Sidebar() {
       <nav className="flex flex-col gap-0.5 border-t border-border px-3 py-3">
         <NavLinks items={BOTTOM_ITEMS} />
       </nav>
+
+      <div className="border-t border-border p-2">
+        <SidebarAccountMenu />
+      </div>
     </aside>
   )
 }

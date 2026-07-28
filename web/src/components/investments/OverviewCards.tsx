@@ -2,8 +2,8 @@ import { TrendingDown, TrendingUp } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatPercent, formatUsd, signColor } from '@/lib/format'
 import { useOverview, useRisk, useTaxSettings } from '@/hooks/usePortfolioData'
+import { formatPercent, formatUsd, signColor } from '@/lib/format'
 import type { GlossaryTerm } from '@/lib/glossary'
 
 function MiniStat({ label, value }: { label: string; value: string }) {

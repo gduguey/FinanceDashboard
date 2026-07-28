@@ -11,15 +11,25 @@ in the store (see `TransferRule`). Nothing here mutates the ledger cache on disk
 it is applied fresh every time postings are read, so a manual correction
 (see `ManualOverride`) applied afterward is never at risk of being
 clobbered by re-running a rule.
+
+A rule matching a counterparty of an `IMPORTABLE_ACCOUNT_KINDS` kind
+(`checking`/`savings`/`credit_card`/`vault`) is the one case `apply_rules`
+never repoints directly: that account might already have its own,
+independently-imported posting for the same event, so repointing here
+could double-count it. Resolving those safely (finding a unique matching
+transaction, or leaving it uncategorized) is `ledger.transfers.reconcile_rule_links`'s
+job instead, which — unlike everything else in this module — does need to
+persist what it finds, since a live candidate search can't safely run
+fresh on every date-scoped dashboard read (see its own docstring).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
 import polars as pl
 
-from accounting.models import Account, ManualOverride, Posting, PostingMerge, PostingSplit
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, Posting, PostingMerge, PostingSplit
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
@@ -29,21 +39,135 @@ _PLACEHOLDER_ACCOUNT_IDS = {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCO
 _TWO_LEG_TRANSACTION = 2  # Phase 1 always produces exactly two postings per transaction
 
 
-def _matching_rule(rules: list[TransferRule], description: str, account_id: str) -> TransferRule | None:
-    lowered = description.lower()
-    for rule in sorted(rules, key=lambda r: r.priority):
-        if not rule.active:
-            continue
-        if rule.description_contains.lower() not in lowered:
-            continue
-        if rule.account_id is not None and rule.account_id != account_id:
-            continue
-        return rule
-    return None
+_RULE_MATCH_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
+    "transaction_id": pl.Utf8,
+    "rule_id": pl.Utf8,
+    "counterparty_account_id": pl.Utf8,
+}
 
 
-def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dict[str, Account]) -> pl.DataFrame:
-    """Repoint every placeholder counterparty a matching rule resolves, and set categories.
+def real_legs_of_two_leg_transactions(postings: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
+    """Return just the real leg of every transaction with exactly one placeholder + one real posting.
+
+    Everything else (an already-resolved transaction, or a future
+    3+-posting paycheck split) is excluded — computed as a vectorized
+    group-by count instead of a Python per-transaction loop. Shared with
+    `ledger.transfers.reconcile_rule_links`, which needs the exact same
+    eligibility check before it can even ask whether a rule matches (and
+    also needs `amount`/`posted_at` for its own candidate-matching, hence
+    both riding along here too even though rule-matching itself only reads
+    `account_id`/`description`).
+
+    Returns
+    -------
+    polars.LazyFrame
+        Columns `transaction_id`, `account_id`, `posting_id`, `description`,
+        `amount`, `posted_at` — just what rule/candidate-matching needs,
+        not the full posting shape.
+    """
+    lf = postings.lazy() if isinstance(postings, pl.DataFrame) else postings
+    counts = lf.group_by("transaction_id").agg(
+        pl.len().alias("_n_legs"),
+        pl.col("account_id").is_in(_PLACEHOLDER_ACCOUNT_IDS).sum().alias("_n_placeholder"),
+    )
+    eligible = counts.filter((pl.col("_n_legs") == _TWO_LEG_TRANSACTION) & (pl.col("_n_placeholder") == 1)).select(
+        "transaction_id"
+    )
+    return (
+        lf
+        .join(eligible, on="transaction_id", how="inner")
+        .filter(~pl.col("account_id").is_in(_PLACEHOLDER_ACCOUNT_IDS))
+        .select("transaction_id", "account_id", "posting_id", "description", "amount", "posted_at")
+    )
+
+
+def rule_matches_by_transaction(postings: pl.DataFrame | pl.LazyFrame, rules: list[TransferRule]) -> pl.LazyFrame:
+    """Return every transaction resolved by its own highest-priority active matching rule, vectorized in one pass.
+
+    Mirrors `ledger.patterns.match_patterns_bulk`'s exact shape (cross-join
+    every real leg against every active rule, filter, lowest-priority-wins
+    tiebreak) for `TransferRule` instead of `CategoryPattern` — see that
+    function's own docstring for why this beats a per-posting Python loop.
+    Deliberately unfiltered by counterparty kind: `apply_rules`/
+    `resolved_transfer_rule_ids_by_transaction` below only ever act on a
+    safe match, `ledger.transfers.reconcile_rule_links` only ever acts on
+    the opposite (`IMPORTABLE_ACCOUNT_KINDS`) one — each applies its own
+    kind filter on top of this one shared pass, so it's never duplicated.
+
+    Returns
+    -------
+    polars.LazyFrame
+        Columns `transaction_id`, `rule_id`, `counterparty_account_id` —
+        one row per transaction a rule matches; unmatched transactions are
+        simply absent.
+    """
+    active_rules = [rule for rule in rules if rule.active]
+    if not active_rules:
+        return pl.LazyFrame(schema=_RULE_MATCH_SCHEMA)
+
+    real_legs = real_legs_of_two_leg_transactions(postings)
+    rules_lf = pl.LazyFrame({
+        "rule_id": [rule.rule_id for rule in active_rules],
+        "_description_contains": [rule.description_contains.lower() for rule in active_rules],
+        "_rule_account_id": [rule.account_id for rule in active_rules],
+        "counterparty_account_id": [rule.counterparty_account_id for rule in active_rules],
+        "_priority": [rule.priority for rule in active_rules],
+        "_excluded_transaction_ids": [rule.excluded_transaction_ids for rule in active_rules],
+    })
+    return (
+        real_legs
+        .with_columns(_description_lower=pl.col("description").str.to_lowercase())
+        .join(rules_lf, how="cross")
+        .filter(
+            pl.col("_description_lower").str.contains(pl.col("_description_contains"), literal=True)
+            & (pl.col("_rule_account_id").is_null() | (pl.col("_rule_account_id") == pl.col("account_id")))
+            & ~pl.col("_excluded_transaction_ids").list.contains(pl.col("transaction_id"))
+        )
+        # `rule_id` as a secondary key makes ties deterministic — without it,
+        # two equal-priority rules resolve by whatever order the non-stable sort
+        # happens to yield.
+        .sort(["_priority", "rule_id"])
+        .group_by("transaction_id", maintain_order=True)
+        .first()
+        .select("transaction_id", "rule_id", "counterparty_account_id")
+    )
+
+
+def _safe_rule_matches(
+    postings: pl.DataFrame | pl.LazyFrame, rules: list[TransferRule], accounts: dict[str, Account]
+) -> pl.LazyFrame:
+    """Return every transaction a rule resolves, restricted to a safe (non-`IMPORTABLE_ACCOUNT_KINDS`) counterparty.
+
+    The one place `apply_rules`'s and `resolved_transfer_rule_ids_by_transaction`'s
+    otherwise-identical matching logic lives, so it's never maintained twice.
+
+    Returns
+    -------
+    polars.LazyFrame
+        Columns `transaction_id`, `rule_id`, `counterparty_account_id`.
+    """
+    matches = rule_matches_by_transaction(postings, rules)
+
+    # An importable-kind counterparty (checking/savings/credit_card/vault)
+    # might already have its own, independently-imported transaction for this
+    # same event — repointing here could double-count it, so it's excluded
+    # here rather than left for the caller to filter out. A rule naming an
+    # account that doesn't exist at all is excluded the same way, since it's
+    # simply absent from `safe_account_ids` below.
+    safe_account_ids = [
+        account_id for account_id, account in accounts.items() if account.kind not in IMPORTABLE_ACCOUNT_KINDS
+    ]
+    return matches.filter(pl.col("counterparty_account_id").is_in(safe_account_ids))
+
+
+@overload
+def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dict[str, Account]) -> pl.DataFrame: ...
+@overload
+def apply_rules(postings: pl.LazyFrame, rules: list[TransferRule], accounts: dict[str, Account]) -> pl.LazyFrame: ...
+def apply_rules(
+    postings: pl.DataFrame | pl.LazyFrame, rules: list[TransferRule], accounts: dict[str, Account]
+) -> pl.DataFrame | pl.LazyFrame:
+    """Repoint every placeholder counterparty a matching rule resolves.
 
     Only ever touches a transaction with exactly two postings, one of
     which is still on a placeholder account — anything else (an
@@ -64,56 +188,46 @@ def apply_rules(postings: pl.DataFrame, rules: list[TransferRule], accounts: dic
 
     Returns
     -------
-    polars.DataFrame
-        The postings with resolved counterparties/categories where a rule matched.
+    polars.DataFrame or polars.LazyFrame
+        The postings with resolved counterparties where a rule matched,
+        rebuilt through `Posting.polars_schema` exactly like every other
+        step in this resolution chain — same type (lazy or eager) as `postings`.
     """
-    rows = postings.to_dicts()
-    by_transaction: dict[str, list[dict[str, object]]] = {}
-    for row in rows:
-        by_transaction.setdefault(row["transaction_id"], []).append(row)
+    lf = postings.lazy() if isinstance(postings, pl.DataFrame) else postings
+    matches = _safe_rule_matches(lf, rules, accounts).select("transaction_id", "counterparty_account_id")
 
-    for legs in by_transaction.values():
-        if len(legs) != _TWO_LEG_TRANSACTION:
-            continue
-        placeholder_legs = [leg for leg in legs if leg["account_id"] in _PLACEHOLDER_ACCOUNT_IDS]
-        real_legs = [leg for leg in legs if leg["account_id"] not in _PLACEHOLDER_ACCOUNT_IDS]
-        if len(placeholder_legs) != 1 or len(real_legs) != 1:
-            continue
-        placeholder_leg, real_leg = placeholder_legs[0], real_legs[0]
-
-        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]))
-        if rule is None or rule.counterparty_account_id is None:
-            continue
-        counterparty_account = accounts.get(rule.counterparty_account_id)
-        if counterparty_account is None:
-            continue
-
-        placeholder_leg["account_id"] = counterparty_account.account_id
-        if rule.category_id is not None:
-            real_leg["category_id"] = rule.category_id
-        if rule.subcategory_id is not None:
-            real_leg["subcategory_id"] = rule.subcategory_id
-
-    return (
-        pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
-        if rows
-        else pl.DataFrame(schema=Posting.polars_schema)
+    result = (
+        lf
+        .join(matches, on="transaction_id", how="left")
+        .with_columns(
+            pl
+            .when(
+                pl.col("account_id").is_in(_PLACEHOLDER_ACCOUNT_IDS) & pl.col("counterparty_account_id").is_not_null()
+            )
+            .then(pl.col("counterparty_account_id"))
+            .otherwise(pl.col("account_id"))
+            .alias("account_id")
+        )
+        .select(*Posting.polars_schema)
+        .sort("posted_at", "posting_id")
     )
+    return result.collect() if isinstance(postings, pl.DataFrame) else result
 
 
 def resolved_transfer_rule_ids_by_transaction(
-    postings: pl.DataFrame, rules: list[TransferRule], accounts: dict[str, Account]
+    postings: pl.DataFrame | pl.LazyFrame, rules: list[TransferRule], accounts: dict[str, Account]
 ) -> dict[str, str]:
     """Report which rule (if any) would resolve each transaction's placeholder counterparty — for traceability only.
 
-    Mirrors `apply_rules`'s own matching exactly, without mutating
-    anything, so a posting can show *which* rule set its counterparty and
-    category (see `api.get_postings`'s `resolved_by_transfer_rule_id` field). A
-    rule is applied fresh from the raw ledger every time postings are
-    read (see this module's docstring) — so if that rule is later
-    deleted, the transaction reverts to its unresolved, placeholder-counterparty
-    state the very next time postings are read. There is nothing to undo
-    here; this function only exists to make that already-live resolution visible.
+    Mirrors `apply_rules`'s own matching exactly (see the shared
+    `_safe_rule_matches`), without mutating anything, so a posting can show
+    *which* rule set its counterparty and category (see `api.get_postings`'s
+    `resolved_by_transfer_rule_id` field). A rule is applied fresh from the
+    raw ledger every time postings are read (see this module's docstring) —
+    so if that rule is later deleted, the transaction reverts to its
+    unresolved, placeholder-counterparty state the very next time postings
+    are read. There is nothing to undo here; this function only exists to
+    make that already-live resolution visible.
 
     Parameters
     ----------
@@ -131,28 +245,8 @@ def resolved_transfer_rule_ids_by_transaction(
     dict[str, str]
         `transaction_id -> rule_id`, only for transactions a rule actually resolves.
     """
-    rows = postings.to_dicts()
-    by_transaction: dict[str, list[dict[str, object]]] = {}
-    for row in rows:
-        by_transaction.setdefault(row["transaction_id"], []).append(row)
-
-    resolved_by: dict[str, str] = {}
-    for transaction_id, legs in by_transaction.items():
-        if len(legs) != _TWO_LEG_TRANSACTION:
-            continue
-        placeholder_legs = [leg for leg in legs if leg["account_id"] in _PLACEHOLDER_ACCOUNT_IDS]
-        real_legs = [leg for leg in legs if leg["account_id"] not in _PLACEHOLDER_ACCOUNT_IDS]
-        if len(placeholder_legs) != 1 or len(real_legs) != 1:
-            continue
-        real_leg = real_legs[0]
-
-        rule = _matching_rule(rules, str(real_leg["description"]), str(real_leg["account_id"]))
-        if rule is None or rule.counterparty_account_id is None:
-            continue
-        if accounts.get(rule.counterparty_account_id) is None:
-            continue
-        resolved_by[transaction_id] = rule.rule_id
-    return resolved_by
+    matches = _safe_rule_matches(postings, rules, accounts).select("transaction_id", "rule_id").collect()
+    return dict(zip(matches["transaction_id"].to_list(), matches["rule_id"].to_list(), strict=True))
 
 
 def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]) -> pl.DataFrame:

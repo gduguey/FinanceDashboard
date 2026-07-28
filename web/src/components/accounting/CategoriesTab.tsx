@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { NumberInput } from '@/components/ui/number-input'
 import {
   Select,
   SelectContent,
@@ -16,12 +18,23 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { Table, TableBody, TableCell, TableHeader, TableRow, TableHead } from '@/components/ui/table'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import {
+  useCategoryDeletePreview,
+  useCategoryRenamePreview,
+  useCreateCategory,
+  useCreateCategoryPattern,
+  useCreateSubcategory,
+  useDeleteCategory,
+  useDeleteCategoryPattern,
+  usePatchCategoryPattern,
+  useRenameCategory,
+} from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import { useRenameCategory, useSetCategories, useSetCategoryPatterns } from '@/hooks/useAccountingData'
+import type { BudgetToDeletePreview } from '@/lib/accountingApi'
 import { nextAvailableColor } from '@/lib/colors'
+import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { Category, CategoryClassification, CategoryPattern } from '@/types/accounting'
 
@@ -29,7 +42,8 @@ import type { Category, CategoryClassification, CategoryPattern } from '@/types/
 // which point it grows to fit what's typed (`field-sizing-content`) rather
 // than reflowing the row around a fixed-width box. Commits on blur/Enter,
 // reverts on Escape or an empty result (a category always needs a name).
-function InlineNameInput({
+// Exported so `TagsTab` can reuse the exact same rename affordance.
+export function InlineNameInput({
   value,
   onCommit,
   className,
@@ -138,14 +152,6 @@ function TaxonomyIdeasSection() {
   )
 }
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-}
-
 function ClassificationSection({
   classification,
   categories,
@@ -153,10 +159,36 @@ function ClassificationSection({
   classification: CategoryClassification
   categories: Record<string, Category>
 }) {
-  const setCategories = useSetCategories()
+  const createCategory = useCreateCategory()
+  const createSubcategory = useCreateSubcategory()
+  const renamePreview = useCategoryRenamePreview()
   const renameCategoryMutation = useRenameCategory()
+  const deletePreview = useCategoryDeletePreview()
+  const deleteCategoryMutation = useDeleteCategory()
   const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryError, setNewCategoryError] = useState<string | null>(null)
   const [subcategoryDrafts, setSubcategoryDrafts] = useState<Record<string, string>>({})
+  const [subcategoryErrors, setSubcategoryErrors] = useState<Record<string, string>>({})
+  // A merging rename needs the user's confirmation (see
+  // `useCategoryRenamePreview`) before it commits — while that's pending,
+  // `renameResetTick` forces the `InlineNameInput` that triggered it to
+  // remount (via its `key`), which is what actually reverts its draft text
+  // back to the category's real name on Decline.
+  const [pendingRename, setPendingRename] = useState<{
+    categoryId: string
+    name: string
+    targetName: string
+    budgetsToDelete: BudgetToDeletePreview[]
+  } | null>(null)
+  const [renameResetTick, setRenameResetTick] = useState(0)
+  // A delete that would uncategorize at least one real posting needs the
+  // user's confirmation first (see `useCategoryDeletePreview`) — deleting
+  // one with no postings at all just happens immediately, no popup.
+  const [pendingDelete, setPendingDelete] = useState<{
+    categoryId: string
+    categoryName: string
+    postingCount: number
+  } | null>(null)
 
   const topLevel = Object.values(categories)
     .filter((category) => category.classification === classification && category.parent_category_id === null)
@@ -164,38 +196,81 @@ function ClassificationSection({
 
   function addCategory() {
     if (!newCategoryName) return
-    const id = `${classification}:${slugify(newCategoryName)}`
     const color = nextAvailableColor(Object.values(categories).map((category) => category.color))
-    setCategories.mutate({
-      ...categories,
-      [id]: { category_id: id, name: newCategoryName, classification, parent_category_id: null, color },
-    })
-    setNewCategoryName('')
+    createCategory.mutate(
+      { name: newCategoryName, classification, color },
+      {
+        onSuccess: () => {
+          setNewCategoryName('')
+          setNewCategoryError(null)
+        },
+        onError: () => setNewCategoryError('This category already exists'),
+      },
+    )
   }
 
-  function removeCategory(categoryId: string) {
-    const next = { ...categories }
-    delete next[categoryId]
-    for (const [id, category] of Object.entries(next)) {
-      if (category.parent_category_id === categoryId) delete next[id]
+  async function removeCategory(categoryId: string, categoryName: string) {
+    const preview = await deletePreview.mutateAsync(categoryId)
+    if (preview.posting_count > 0) {
+      setPendingDelete({ categoryId, categoryName, postingCount: preview.posting_count })
+      return
     }
-    setCategories.mutate(next)
+    deleteCategoryMutation.mutate(categoryId)
   }
 
-  function renameCategory(categoryId: string, name: string) {
+  function acceptPendingDelete() {
+    if (!pendingDelete) return
+    deleteCategoryMutation.mutate(pendingDelete.categoryId)
+    setPendingDelete(null)
+  }
+
+  function declinePendingDelete() {
+    setPendingDelete(null)
+  }
+
+  async function renameCategory(categoryId: string, name: string) {
+    const preview = await renamePreview.mutateAsync({ categoryId, name })
+    if (preview.will_merge) {
+      setPendingRename({
+        categoryId,
+        name,
+        targetName: preview.target_name ?? name,
+        budgetsToDelete: preview.budgets_to_delete,
+      })
+      return
+    }
     renameCategoryMutation.mutate({ categoryId, name })
+  }
+
+  function acceptPendingRename() {
+    if (!pendingRename) return
+    renameCategoryMutation.mutate({ categoryId: pendingRename.categoryId, name: pendingRename.name })
+    setPendingRename(null)
+  }
+
+  function declinePendingRename() {
+    setPendingRename(null)
+    setRenameResetTick((tick) => tick + 1)
   }
 
   function addSubcategory(parent: Category) {
     const name = subcategoryDrafts[parent.category_id]?.trim()
     if (!name) return
-    const id = `${parent.category_id}:${slugify(name)}`
     const color = nextAvailableColor(Object.values(categories).map((category) => category.color))
-    setCategories.mutate({
-      ...categories,
-      [id]: { category_id: id, name, classification, parent_category_id: parent.category_id, color },
-    })
-    setSubcategoryDrafts((prev) => ({ ...prev, [parent.category_id]: '' }))
+    createSubcategory.mutate(
+      { parentId: parent.category_id, subcategory: { name, color } },
+      {
+        onSuccess: () => {
+          setSubcategoryDrafts((prev) => ({ ...prev, [parent.category_id]: '' }))
+          setSubcategoryErrors((prev) => ({ ...prev, [parent.category_id]: '' }))
+        },
+        onError: () =>
+          setSubcategoryErrors((prev) => ({
+            ...prev,
+            [parent.category_id]: 'This subcategory already exists in this category',
+          })),
+      },
+    )
   }
 
   return (
@@ -214,13 +289,14 @@ function ClassificationSection({
                 <span className="flex min-w-0 items-center gap-1.5 text-sm font-medium">
                   <span className="inline-block size-2 shrink-0 rounded-full" style={{ background: category.color }} />
                   <InlineNameInput
+                    key={`${category.category_id}:${renameResetTick}`}
                     value={category.name}
                     onCommit={(name) => renameCategory(category.category_id, name)}
                     className="text-sm font-medium"
                   />
                 </span>
                 <button
-                  onClick={() => removeCategory(category.category_id)}
+                  onClick={() => removeCategory(category.category_id, category.name)}
                   className="text-muted-foreground/60 hover:text-destructive"
                 >
                   <Trash2 className="size-3.5" />
@@ -240,6 +316,7 @@ function ClassificationSection({
                         child.name
                       ) : (
                         <InlineNameInput
+                          key={`${child.category_id}:${renameResetTick}`}
                           value={child.name}
                           onCommit={(name) => renameCategory(child.category_id, name)}
                           className="h-4 text-xs"
@@ -247,7 +324,7 @@ function ClassificationSection({
                       )}
                       {!isOther && (
                         <button
-                          onClick={() => removeCategory(child.category_id)}
+                          onClick={() => removeCategory(child.category_id, child.name)}
                           className="text-muted-foreground/60 hover:text-destructive"
                         >
                           <Trash2 className="size-2.5" />
@@ -256,32 +333,100 @@ function ClassificationSection({
                     </Badge>
                   )
                 })}
-                <Input
-                  className="h-6 w-32 text-xs"
-                  placeholder="+ subcategory"
-                  value={subcategoryDrafts[category.category_id] ?? ''}
-                  onChange={(event) =>
-                    setSubcategoryDrafts((prev) => ({ ...prev, [category.category_id]: event.target.value }))
-                  }
-                  onKeyDown={(event) => event.key === 'Enter' && addSubcategory(category)}
-                />
+                <div className="flex flex-col gap-0.5">
+                  <Input
+                    className="h-6 w-32 text-xs"
+                    placeholder="+ subcategory"
+                    value={subcategoryDrafts[category.category_id] ?? ''}
+                    onChange={(event) => {
+                      setSubcategoryDrafts((prev) => ({ ...prev, [category.category_id]: event.target.value }))
+                      setSubcategoryErrors((prev) => ({ ...prev, [category.category_id]: '' }))
+                    }}
+                    onKeyDown={(event) => event.key === 'Enter' && addSubcategory(category)}
+                  />
+                  {subcategoryErrors[category.category_id] && (
+                    <span className="text-xs text-destructive">{subcategoryErrors[category.category_id]}</span>
+                  )}
+                </div>
               </div>
             </div>
           )
         })}
         <div className="flex items-end gap-2">
-          <Input
-            className="w-48"
-            placeholder="New category name"
-            value={newCategoryName}
-            onChange={(event) => setNewCategoryName(event.target.value)}
-            onKeyDown={(event) => event.key === 'Enter' && addCategory()}
-          />
+          <div className="flex flex-col gap-0.5">
+            <Input
+              className="w-48"
+              placeholder="New category name"
+              value={newCategoryName}
+              onChange={(event) => {
+                setNewCategoryName(event.target.value)
+                setNewCategoryError(null)
+              }}
+              onKeyDown={(event) => event.key === 'Enter' && addCategory()}
+            />
+            {newCategoryError && <span className="text-xs text-destructive">{newCategoryError}</span>}
+          </div>
           <Button size="sm" onClick={addCategory}>
             Add category
           </Button>
         </div>
       </CardContent>
+      {pendingRename && (
+        <Dialog open onOpenChange={(open) => !open && declinePendingRename()}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Merge categories?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Renaming to '{pendingRename.name}' will merge into the existing category '{pendingRename.targetName}' —
+              this can't be undone.
+            </p>
+            {pendingRename.budgetsToDelete.length > 0 && (
+              <p className="text-sm text-destructive">
+                '{pendingRename.targetName}' already has a budget for the same month
+                {pendingRename.budgetsToDelete.length > 1 ? 's' : ''} — the following will be fully deleted:{' '}
+                {pendingRename.budgetsToDelete
+                  .map((budget) =>
+                    budget.month
+                      ? `${formatCurrency(budget.amount, budget.currency)} (${budget.month})`
+                      : `${formatCurrency(budget.amount, budget.currency)} (every month)`,
+                  )
+                  .join(', ')}
+                .
+              </p>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={declinePendingRename}>
+                Decline
+              </Button>
+              <Button onClick={acceptPendingRename}>Accept</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+      {pendingDelete && (
+        <Dialog open onOpenChange={(open) => !open && declinePendingDelete()}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete '{pendingDelete.categoryName}'?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-destructive">
+              {pendingDelete.postingCount} transaction{pendingDelete.postingCount === 1 ? '' : 's'} currently{' '}
+              {pendingDelete.postingCount === 1 ? 'has' : 'have'} this category — deleting it will make{' '}
+              {pendingDelete.postingCount === 1 ? 'that transaction' : 'those transactions'} uncategorized. This can't
+              be undone.
+            </p>
+            <DialogFooter>
+              <Button variant="outline" onClick={declinePendingDelete}>
+                Decline
+              </Button>
+              <Button variant="destructive" onClick={acceptPendingDelete}>
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </Card>
   )
 }
@@ -291,7 +436,7 @@ function ClassificationSection({
 function categoriesWithSubcategories(categories: Record<string, Category>): Set<string> {
   const withSubcategories = new Set<string>()
   for (const category of Object.values(categories)) {
-    if (category.parent_category_id !== null) withSubcategories.add(category.parent_category_id)
+    if (category.parent_category_id != null) withSubcategories.add(category.parent_category_id)
   }
   return withSubcategories
 }
@@ -426,17 +571,16 @@ function PatternEditDialog({
               <PatternSubcategorySelect
                 categories={categories}
                 categoryId={draft.category_id}
-                value={draft.subcategory_id}
+                value={draft.subcategory_id ?? null}
                 onChange={(subcategoryId) => setDraft((prev) => ({ ...prev, subcategory_id: subcategoryId }))}
               />
             </label>
           )}
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Priority (lower wins ties)
-            <Input
-              type="number"
+            <NumberInput
               value={draft.priority}
-              onChange={(event) => setDraft((prev) => ({ ...prev, priority: Number(event.target.value) }))}
+              onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? 0 }))}
             />
           </label>
         </div>
@@ -471,7 +615,9 @@ function CategoryPatternsSection({
   patterns: Record<string, CategoryPattern>
   categories: Record<string, Category>
 }) {
-  const setPatterns = useSetCategoryPatterns()
+  const patchPattern = usePatchCategoryPattern()
+  const deletePattern = useDeleteCategoryPattern()
+  const createPattern = useCreateCategoryPattern()
   const [editing, setEditing] = useState<CategoryPattern | null>(null)
   const [draft, setDraft] = useState<{
     descriptionContains: string
@@ -493,32 +639,53 @@ function CategoryPatternsSection({
 
   function addPattern() {
     if (!canAdd || !draft.categoryId) return
-    const patternId = `pattern:${Date.now()}`
-    const pattern: CategoryPattern = {
-      pattern_id: patternId,
+    createPattern.mutate({
       description_contains: draft.descriptionContains,
       category_id: draft.categoryId,
       subcategory_id: draft.subcategoryId,
       priority: 100,
-      active: true,
-    }
-    setPatterns.mutate({ ...patterns, [patternId]: pattern })
+    })
     setDraft({ descriptionContains: '', categoryId: null, subcategoryId: null })
   }
 
   function removePattern(patternId: string) {
-    const { [patternId]: _removed, ...rest } = patterns
-    setPatterns.mutate(rest)
+    deletePattern.mutate(patternId)
   }
 
   function savePattern(updated: CategoryPattern) {
-    setPatterns.mutate({ ...patterns, [updated.pattern_id]: updated })
+    const existing = patterns[updated.pattern_id]
+    // Guard the same way `togglePatternActive` does: the pattern may have been
+    // deleted elsewhere while this row was open — don't read `.version` off it.
+    if (!existing) return
+    patchPattern.mutate({
+      patternId: updated.pattern_id,
+      update: {
+        description_contains: updated.description_contains,
+        category_id: updated.category_id,
+        subcategory_id: updated.subcategory_id,
+        priority: updated.priority,
+        active: updated.active,
+        expected_version: existing.version,
+      },
+    })
   }
 
   function togglePatternActive(patternId: string, active: boolean) {
     const existing = patterns[patternId]
     if (!existing) return
-    setPatterns.mutate({ ...patterns, [patternId]: { ...existing, active } })
+    patchPattern.mutate({
+      patternId,
+      update: {
+        description_contains: existing.description_contains,
+        category_id: existing.category_id,
+        subcategory_id: existing.subcategory_id,
+        priority: existing.priority,
+        active,
+        // Last-write-wins on a fast on/off/on toggle (see the versioning doc); `savePattern` above
+        // keeps the real version check for destructive field edits.
+        expected_version: null,
+      },
+    })
   }
 
   return (

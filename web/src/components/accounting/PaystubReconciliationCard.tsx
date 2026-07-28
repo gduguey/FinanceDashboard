@@ -1,18 +1,19 @@
-import { useState } from 'react'
 import { CheckCircle2, Trash2, Upload, XCircle } from 'lucide-react'
+import { useState } from 'react'
+import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
+import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
+import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { LoadingProgressBar } from '@/components/shared/LoadingProgressBar'
-import { CategorySelect, SubcategorySelect } from '@/components/accounting/CategorySelect'
-import { cn } from '@/lib/utils'
-import { formatCurrency } from '@/lib/format'
 import {
   useAccountingStore,
   useImportPaystub,
   useSetPostingOverride,
   useSetPostingSplit,
 } from '@/hooks/useAccountingData'
+import { formatCurrency } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import type { PaystubReconciliationResult, ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
@@ -27,8 +28,8 @@ interface DraftLeg {
 function toDraftLegs(legs: ProposedSplitLeg[]): DraftLeg[] {
   return legs.map((leg) => ({
     amount: String(leg.amount),
-    categoryId: leg.category_id,
-    subcategoryId: leg.subcategory_id,
+    categoryId: leg.category_id ?? null,
+    subcategoryId: leg.subcategory_id ?? null,
     description: leg.description,
   }))
 }
@@ -293,7 +294,7 @@ export function PaystubReconciliationCard() {
             <div className="flex items-center gap-2 text-sm font-medium">
               {entry.status === 'done' && <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />}
               {entry.status === 'error' && <XCircle className="size-3.5 shrink-0 text-destructive" />}
-              <span className="truncate">{entry.fileName}</span>
+              <Truncate text={entry.fileName} />
             </div>
             {entry.status === 'pending' && (
               <LoadingProgressBar step="Extracting the paystub's text and matching it against the ledger…" />

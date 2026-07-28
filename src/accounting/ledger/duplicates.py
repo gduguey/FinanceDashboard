@@ -31,10 +31,22 @@ _CERTAINTY_DESCRIPTION_WEIGHT = 0.6
 
 
 def _tokenize(description: str) -> list[str]:
+    """Split a description into lowercase words.
+
+    Returns
+    -------
+    list[str]
+    """
     return _WORD_PATTERN.findall(description.lower())
 
 
 def _words_match(word: str, other: str) -> bool:
+    """Whether two words are the same, or close enough (fuzzy ratio) to count as the same.
+
+    Returns
+    -------
+    bool
+    """
     return word == other or SequenceMatcher(None, word, other).ratio() >= _WORD_MATCH_THRESHOLD
 
 
@@ -72,6 +84,12 @@ def description_similarity(a: str, b: str) -> float:
 
 
 def _date_closeness(days_apart: float, window_days: int) -> float:
+    """Score how close two dates are, from `1.0` (same day) to `0.0` (at or beyond `window_days` apart).
+
+    Returns
+    -------
+    float
+    """
     return max(0.0, 1 - abs(days_apart) / window_days)
 
 
@@ -100,9 +118,16 @@ class _UnionFind:
     """Standard union-find over string keys, path-compressing on lookup."""
 
     def __init__(self) -> None:
+        """Start with every node as its own, unconnected group."""
         self._parent: dict[str, str] = {}
 
     def find(self, node: str) -> str:
+        """Return `node`'s group's representative, flattening the path to it along the way.
+
+        Returns
+        -------
+        str
+        """
         root = node
         while self._parent.get(root, root) != root:
             root = self._parent[root]
@@ -111,6 +136,7 @@ class _UnionFind:
         return root
 
     def union(self, a: str, b: str) -> None:
+        """Merge `a`'s and `b`'s groups into one."""
         root_a, root_b = self.find(a), self.find(b)
         if root_a != root_b:
             self._parent[root_a] = root_b

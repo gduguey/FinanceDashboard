@@ -1,15 +1,12 @@
+import { Lock, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
 import { useState } from 'react'
-import { AlertTriangle, Lock, Pencil, Plus, Trash2, Unlock } from 'lucide-react'
+import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
+import { CloseAccountDialog } from '@/components/accounting/CloseAccountDialog'
+import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { SortableTableHead } from '@/components/shared/SortableTableHead'
-import { AccountForm, type AccountFormValue } from '@/components/accounting/AccountForm'
-import { CloseAccountDialog } from '@/components/accounting/CloseAccountDialog'
-import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
-import { useSortableRows } from '@/hooks/useSortableRows'
 import {
   useCloseAccount,
   useCreateAccount,
@@ -17,9 +14,10 @@ import {
   useNetWorth,
   useReopenAccount,
   useSetOpeningBalance,
-  useSupportedImportKinds,
   useUpdateAccount,
 } from '@/hooks/useAccountingData'
+import { useSortableRows } from '@/hooks/useSortableRows'
+import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, ManualTransfer } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see
@@ -36,7 +34,6 @@ function emptyDraft(): AccountFormValue {
     kind: 'checking',
     currency: 'USD',
     last4: '',
-    accountId: '',
     name: '',
     parentAccountId: null,
     openingBalance: '',
@@ -64,7 +61,7 @@ function AccountDialog({
   onSave: (value: AccountFormValue) => void
 }) {
   const [draft, setDraft] = useState(initial)
-  const canSave = locked ? draft.name.length > 0 : draft.institution && draft.kind && draft.last4 && draft.name
+  const canSave = locked ? draft.name.length > 0 : draft.institution && draft.kind && draft.name
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -113,7 +110,6 @@ export function AccountsManagementTable({
   const closeAccount = useCloseAccount()
   const reopenAccount = useReopenAccount()
   const { data: netWorth } = useNetWorth()
-  const { data: supportedImportKinds } = useSupportedImportKinds()
   const [adding, setAdding] = useState(false)
   const [editing, setEditing] = useState<Account | null>(null)
   const [closing, setClosing] = useState<Account | null>(null)
@@ -123,35 +119,27 @@ export function AccountsManagementTable({
   const parentAccountOptions = rows.filter((account) => account.kind !== 'vault')
   const { sorted, sort, toggleSort } = useSortableRows(rows, 'name')
   const knownInstitutions = [...new Set(rows.map((account) => account.institution))].sort()
-  const supportedKinds = new Set(
-    (supportedImportKinds ?? []).map((entry) => `${entry.institution}:${entry.account_kind}`),
-  )
   const isCounterpartyKind = (kind: Account['kind']) => kind === 'income_source' || kind === 'expense_payee'
-  // A counterparty (employer, payee) is never imported into, so it never
-  // needs a CSV parsing rule — only real, importable accounts do.
-  const hasNoImporter = (account: Account) =>
-    !isCounterpartyKind(account.kind) && !supportedKinds.has(`${account.institution}:${account.kind}`)
 
   async function handleCreate(value: AccountFormValue) {
     setError(null)
     try {
-      await createAccount.mutateAsync({
-        account_id: value.accountId,
+      const created = await createAccount.mutateAsync({
         name: value.name,
         kind: value.kind,
         institution: value.institution,
         currency: value.currency,
+        last_four: value.last4 || null,
         parent_account_id: value.parentAccountId,
         external_ref: value.externalRef,
         meta: {},
-        closed: false,
       })
       const amount = Number.parseFloat(value.openingBalance)
       if (value.openingBalance.trim() && !Number.isNaN(amount)) {
         await setOpeningBalance.mutateAsync({
-          accountId: value.accountId,
+          accountId: created.account_id,
           openingBalance: {
-            account_id: value.accountId,
+            account_id: created.account_id,
             amount,
             as_of_date: new Date().toISOString(),
           },
@@ -172,6 +160,7 @@ export function AccountsManagementTable({
           institution: value.institution,
           kind: value.kind,
           currency: value.currency,
+          last_four: value.last4 || null,
           external_ref: value.externalRef,
           meta: {},
         },
@@ -268,18 +257,6 @@ export function AccountsManagementTable({
                             Closed
                           </span>
                         )}
-                        {hasNoImporter(account) && (
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <AlertTriangle className="size-3.5 text-amber-500" />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              No CSV parsing rule registered for {account.institution}{' '}
-                              {ACCOUNT_KIND_LABELS[account.kind]} — imports for this account must be added to the
-                              codebase first.
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
                       </span>
                     </TableCell>
                     <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[account.kind]}</TableCell>
@@ -342,12 +319,11 @@ export function AccountsManagementTable({
             institution: editing.institution,
             kind: editing.kind,
             currency: editing.currency,
-            last4: editing.account_id.split(':').pop() ?? '',
-            accountId: editing.account_id,
+            last4: editing.last_four ?? '',
             name: editing.name,
-            parentAccountId: editing.parent_account_id,
+            parentAccountId: editing.parent_account_id ?? null,
             openingBalance: '',
-            externalRef: editing.external_ref,
+            externalRef: editing.external_ref ?? null,
           }}
           locked={accountIdsWithPostings.has(editing.account_id)}
           knownInstitutions={knownInstitutions}

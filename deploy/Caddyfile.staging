@@ -1,0 +1,16 @@
+# DNS-01 challenge via DuckDNS (caddy-dns/duckdns, built into this stack's
+# custom Caddy image — see deploy/Dockerfile.caddy), not `tls internal`.
+# A DNS-01 challenge proves domain ownership by setting a TXT record
+# through DuckDNS's own API, never touching port 80 at all — unlike the
+# default HTTP-01 challenge, which always targets port 80 of the domain
+# being validated and would conflict with production already holding that
+# port on this VM. The payoff: a real, trusted Let's Encrypt certificate on
+# a non-standard port (8443), which self-signed `tls internal` couldn't
+# give us — and a real cert is what actually lets Clerk's webhook sender
+# (Svix) reach this endpoint, since it rejects self-signed certs outright.
+{$PUBLIC_DOMAIN} {
+	tls {
+		dns duckdns {env.DUCKDNS_API_TOKEN}
+	}
+	reverse_proxy api:8000
+}

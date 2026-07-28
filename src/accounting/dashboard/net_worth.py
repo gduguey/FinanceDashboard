@@ -1,11 +1,11 @@
 """Net worth: every real account's balance, grouped into assets and liabilities, plus manually-added assets.
 
-Mirrors Maybe's `BalanceSheet` (see `ACCOUNTING_PLAN.md` Part 1) without
-copying its code: accounts are grouped by classification rather than kept
-as one flat list, and the one figure this module cannot compute itself —
-what the tracked investment portfolio is worth — is passed in by the
-caller rather than fetched here, keeping the only coupling between the two
-packages one-directional and explicit (see `api.py`).
+Mirrors Maybe's `BalanceSheet` without copying its code: accounts are
+grouped by classification rather than kept as one flat list, and the one
+figure this module cannot compute itself — what the tracked investment
+portfolio is worth — is passed in by the caller rather than fetched here,
+keeping the only coupling between the two packages one-directional and
+explicit (see `api/routers/dashboard.py`).
 
 Every account and manually-added asset keeps its own native currency in
 `AccountBalanceRow`/`OtherAsset` — only the aggregate totals convert into
@@ -69,7 +69,7 @@ def net_worth_summary(
     other_assets: list[OtherAsset],
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
-    external_investment_value_usd: float | None = None,
+    external_investment_value: float | None = None,
     opening_balances: dict[str, OpeningBalance] | None = None,
 ) -> NetWorthSummary:
     """Assemble the full net-worth view: every real account's balance, grouped, plus manually-added assets.
@@ -79,11 +79,11 @@ def net_worth_summary(
     their "balance" is just how much has passed through categorization,
     never money that is anywhere. An `external_investment` account whose
     `external_ref` is `"trades"` never gets its balance from `postings` at
-    all; it comes from `external_investment_value_usd`, sourced by the
-    caller from `trades.dashboard.overview_cards` (see `api.py`) since this
-    module has no way to compute it and no business trying to — always
-    treated as USD, since `trades` has no multi-currency concept of its
-    own. An `external_investment` account with no `external_ref` is a
+    all; it comes from `external_investment_value`, sourced by the caller
+    from `trades.dashboard.overview_cards` (see `api.py`) since this module
+    has no way to compute it and no business trying to — denominated in
+    the account's own `currency`, converted like any other account. An
+    `external_investment` account with no `external_ref` is a
     manually-tracked one instead, and is valued the same way as any other
     account — from its postings plus its opening balance.
 
@@ -99,11 +99,12 @@ def net_worth_summary(
         The date to value every account as of.
     display
         The currency (and rate table) the four aggregate totals are converted into.
-    external_investment_value_usd
-        The tracked investment portfolio's current value, or `None` if it
-        isn't available (e.g. `trades` has never been synced) — treated as
-        zero rather than raised on, since a missing investment value
-        shouldn't block seeing the rest of net worth.
+    external_investment_value
+        The tracked investment portfolio's current value, in the account's
+        own `currency`, or `None` if it isn't available (e.g. `trades` has
+        never been synced) — treated as zero rather than raised on, since a
+        missing investment value shouldn't block seeing the rest of net
+        worth.
     opening_balances
         Manually-entered starting balances for accounts that already held
         money before their first posting (see `models.OpeningBalance`),
@@ -120,11 +121,23 @@ def net_worth_summary(
     opening_balances = opening_balances or {}
 
     def is_trades_linked(account: Account) -> bool:
+        """Whether this account's value is pulled live from the tracked `trades` portfolio.
+
+        Returns
+        -------
+        bool
+        """
         return account.kind == "external_investment" and account.external_ref == "trades"
 
     def base_balance(account: Account) -> float:
+        """Return this account's balance in its own native currency, before display-currency conversion.
+
+        Returns
+        -------
+        float
+        """
         if is_trades_linked(account):
-            return external_investment_value_usd or 0.0
+            return external_investment_value or 0.0
         balance = balance_by_account.get(account.account_id, 0.0)
         opening = opening_balances.get(account.account_id)
         if opening is not None and as_of >= opening.as_of_date.date():
@@ -138,17 +151,19 @@ def net_worth_summary(
             kind=account.kind,
             parent_account_id=account.parent_account_id,
             balance=base_balance(account),
-            # `external_investment_value_usd` is always USD (see this function's
-            # docstring) regardless of what currency the account itself is set
-            # to — trusting `account.currency` here would silently run it
-            # through an FX conversion it never needs.
-            currency="USD" if is_trades_linked(account) else account.currency,
+            currency=account.currency,
         )
         for account in accounts.values()
         if account.kind not in _VIRTUAL_KINDS
     ]
 
     def to_display(amount: float, currency: CurrencyCode) -> float:
+        """Convert `amount` from `currency` into the requested display currency.
+
+        Returns
+        -------
+        float
+        """
         return convert(amount, currency, display.code, display.rates_to_base)
 
     assets = sum(to_display(row.balance, row.currency) for row in rows if row.kind not in _LIABILITY_KINDS)
