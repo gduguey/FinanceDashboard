@@ -65,7 +65,7 @@ def _db_for_api(db_session):
     default, so the one `User` row FK-satisfying `ledger_events`/
     `broker_connections` has to exist under that exact id.
     """
-    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com"))
     db_session.commit()
 
     def _override_get_db():

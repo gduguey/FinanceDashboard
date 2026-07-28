@@ -238,7 +238,7 @@ def test_load_store_backfills_a_missing_placeholder_account(db_session: Session,
 
 def test_store_data_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
     other_user_id = uuid.uuid4()
-    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
     db_session.commit()
 
     mine = load_store(db_session, user_id=test_user_id)
@@ -750,7 +750,7 @@ def test_dismiss_then_check_ids_finds_only_the_dismissed_ones(db_session: Sessio
 
 def test_dismiss_suggestion_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
     other_user_id = uuid.uuid4()
-    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
     db_session.commit()
     dismiss_suggestion(
         db_session,

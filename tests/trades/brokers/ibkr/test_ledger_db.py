@@ -106,7 +106,7 @@ def test_write_ledger_dropping_an_event_deletes_it(db_session: Session, test_use
 
 def test_ledger_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
     other_user_id = uuid.uuid4()
-    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
     db_session.commit()
 
     _write_ledger(_frame(_event("ibkr:9001")), db_session, user_id=test_user_id)

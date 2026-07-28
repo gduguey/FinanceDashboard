@@ -26,7 +26,7 @@ def test_lookup_returns_none_when_nothing_is_linked(db_session: Session) -> None
 
 def test_link_then_lookup_roundtrips(db_session: Session) -> None:
     user_id = uuid.uuid4()
-    db_session.add(User(id=user_id, email=f"{user_id}@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(User(id=user_id, email=f"{user_id}@example.com"))
     db_session.commit()
 
     link_identity(db_session, user_id, "clerk", "user_abc123")
@@ -37,7 +37,7 @@ def test_link_then_lookup_roundtrips(db_session: Session) -> None:
 
 def test_link_is_idempotent_for_a_repeated_delivery(db_session: Session) -> None:
     user_id = uuid.uuid4()
-    db_session.add(User(id=user_id, email=f"{user_id}@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(User(id=user_id, email=f"{user_id}@example.com"))
     db_session.commit()
 
     link_identity(db_session, user_id, "clerk", "user_redelivered")
@@ -51,8 +51,8 @@ def test_different_providers_with_the_same_external_id_are_independent(db_sessio
     user_a = uuid.uuid4()
     user_b = uuid.uuid4()
     db_session.add_all([
-        User(id=user_a, email=f"{user_a}@example.com", hashed_password="unset"),  # noqa: S106
-        User(id=user_b, email=f"{user_b}@example.com", hashed_password="unset"),  # noqa: S106
+        User(id=user_a, email=f"{user_a}@example.com"),
+        User(id=user_b, email=f"{user_b}@example.com"),
     ])
     db_session.commit()
 
@@ -67,9 +67,7 @@ def test_different_providers_with_the_same_external_id_are_independent(db_sessio
 def test_reassigning_an_external_id_to_a_different_user_is_a_one_row_update(db_session: Session) -> None:
     """The whole point of this table: reconnecting someone after a delete/re-invite touches one row, not 31 tables."""
     original_user_id = uuid.uuid4()
-    db_session.add(
-        User(id=original_user_id, email=f"{original_user_id}@example.com", hashed_password="unset")  # noqa: S106
-    )
+    db_session.add(User(id=original_user_id, email=f"{original_user_id}@example.com"))
     db_session.commit()
     link_identity(db_session, original_user_id, "clerk", "user_original_signup")
     db_session.commit()

@@ -20,7 +20,7 @@ On `user.deleted`, marks the linked `users` row `is_active=False` —
 fired by Clerk regardless of whether the person deleted their own
 account or an admin removed them, so one handler covers both. Note this
 is metadata only today: nothing else in this app currently reads
-`is_active` (see `db.models.User`'s own docstring) — a deleted Clerk
+`is_active` (a soft-delete marker) — a deleted Clerk
 account already can't produce a valid session token at all, so access is
 already cut off the moment Clerk itself deletes it; this just records
 that it happened, for anyone looking at the `users` table directly.
@@ -116,10 +116,7 @@ def _provision_user(clerk_user_id: str, email: str) -> None:
             User(
                 id=new_user_id,
                 email=email,
-                hashed_password="unset",  # noqa: S106 — vestigial column, see db.models.User's own docstring
                 is_active=True,
-                is_superuser=False,
-                is_verified=True,
             )
         )
         link_identity(session, new_user_id, "clerk", clerk_user_id)

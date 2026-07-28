@@ -132,7 +132,7 @@ def test_write_ledger_dropping_a_posting_deletes_it_when_nothing_references_it(
 
 def test_ledger_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
     other_user_id = uuid.uuid4()
-    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
     db_session.commit()
 
     _register_account(db_session, test_user_id)

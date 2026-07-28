@@ -37,7 +37,7 @@ def _db_for_api(db_session):
     """See `test_accounting_api.py`'s fixture of the same name — routes every request through
     this test's own rolled-back session instead of the real (shared, never-rolled-back) one.
     """
-    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com"))
     db_session.commit()
 
     def _override_get_db():

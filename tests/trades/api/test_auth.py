@@ -148,7 +148,7 @@ class TestResolveCurrentUserId:
     @staticmethod
     def _provision(user_id: uuid.UUID, clerk_user_id: str) -> None:
         with session_module.session_scope(user_id) as session:
-            session.add(User(id=user_id, email=f"{user_id}@example.com", hashed_password="unset"))  # noqa: S106
+            session.add(User(id=user_id, email=f"{user_id}@example.com"))
             link_identity(session, user_id, "clerk", clerk_user_id)
             session.commit()
 

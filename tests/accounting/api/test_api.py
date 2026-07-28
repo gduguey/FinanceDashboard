@@ -50,7 +50,7 @@ def _db_for_api(db_session):
     `get_current_user_id` again locally — see
     `test_accounts_are_isolated_between_users`.
     """
-    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com"))
     db_session.commit()
 
     def _override_get_db():
@@ -2986,7 +2986,7 @@ def test_accounts_are_isolated_between_users(client, db_session) -> None:
     this router had no way to keep two users' accounts apart at all.
     """
     other_user_id = uuid.uuid4()
-    db_session.add(dbm.User(id=other_user_id, email="other@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=other_user_id, email="other@example.com"))
     db_session.commit()
 
     account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")

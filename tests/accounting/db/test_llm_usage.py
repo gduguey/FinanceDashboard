@@ -51,7 +51,7 @@ def test_record_call_marks_limited_on_failure_and_keeps_the_error(db_session: Se
 
 def test_load_usage_does_not_leak_between_users(db_session: Session, test_user_id: uuid.UUID) -> None:
     other_user_id = uuid.uuid4()
-    db_session.add(dbm.User(id=other_user_id, email=f"{other_user_id}@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=other_user_id, email=f"{other_user_id}@example.com"))
     db_session.commit()
 
     record_call("gemini", db_session, test_user_id, error=None)

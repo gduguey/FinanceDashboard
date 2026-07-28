@@ -22,10 +22,9 @@ class User(Base):
     Knows nothing about Clerk, or any other identity provider, on purpose
     — see `db.external_identities` for where that mapping actually lives,
     and its own docstring for why it's a separate table rather than a
-    column here. `hashed_password`/`is_active`/`is_superuser`/`is_verified`
-    are vestigial, kept only because this table was originally shaped to
-    match what a different auth library expected, from before Clerk became
-    this app's real identity provider — nothing reads them anymore.
+    column here. `is_active` is a soft-delete marker: `trades.api.webhooks`
+    clears it when Clerk reports the account deleted, so the row survives
+    as a record rather than cascading every table away.
 
     `email` is deliberately **not** unique: it's display information, not
     a lookup key (`external_identities` is the real identity link) —
@@ -38,10 +37,7 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str]
-    hashed_password: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True)
-    is_superuser: Mapped[bool] = mapped_column(default=False)
-    is_verified: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

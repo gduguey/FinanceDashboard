@@ -1,89 +1,66 @@
-"""redesign accounting and trades schema with surrogate uuid keys
+"""Baseline schema: every table, the restricted app role, and Row-Level Security.
 
-Revision ID: 8e280c1518e8
-Revises: 817ace9deb09
-Create Date: 2026-07-11 04:32:16.396631
+This is the whole schema history. The project is pre-launch with no data to
+preserve, so the previous 28-migration chain — which included a
+drop-and-recreate of both schemas partway through, and hand-copied
+Row-Level Security into six separate revisions — was collapsed into this
+single revision rather than carried forward. Any existing database is
+recreated from empty.
 
-Replaces every `(user_id, ..._id)` composite primary key in the
-`accounting`/`trades` schemas with a surrogate `id` (see `db.base.derive_id`),
-splits `manual_overrides` into `posting_overrides` (persistent corrections)
-and `posting_pending_suggestions` (transient, deleted once resolved), and
-adds `trades.ledger_event_trade_details` (the `shares`/`price` pair,
-present only for `BUY`/`SELL` events, database-enforced instead of only by
-a pydantic validator).
+Row-Level Security is applied from `db.tenant.tenant_tables`, the same
+function the coverage test asserts against, so the policy set is derived
+from the models rather than transcribed into a list here. That is what
+makes "has `user_id`" structurally imply "has a FORCED policy" — the gap
+that let three tables ship with no policy at all cannot reopen.
 
-This is a from-scratch rebuild of both schemas, not an in-place ALTER:
-every table here is genuinely new (a different primary key, a different
-set of foreign keys) rather than one that could sensibly be migrated
-column-by-column, and neither schema held real production data at the
-time this shipped — there's nothing to preserve across the rebuild.
-`downgrade()` is destructive by the same logic: it drops both schemas
-outright rather than trying to reconstruct the old composite-key shape.
+Revision ID: 000000000001
+Revises:
+Create Date: 2026-07-28
+
 """
+
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
+import db.base
+from db.base import Base
+from db.tenant import POLICY_NAME, enable_rls_statements, tenant_tables
+from migration.app_role import grant_app_runtime, revoke_app_runtime
+
 # revision identifiers, used by Alembic.
-revision: str = '8e280c1518e8'
-down_revision: Union[str, Sequence[str], None] = '817ace9deb09'
+revision: str = '000000000001'
+down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-_APP_RUNTIME_ROLE = "app_runtime"
-
-# Every (schema, table, ownership_column) scoped to one user in the redesigned
-# accounting/trades schemas — mirrors migration 817ace9deb09's own list, updated
-# for tables renamed/added/removed by this rebuild.
-_USER_SCOPED_TABLES: list[tuple[str, str, str]] = [
-    ("accounting", "accounts", "user_id"),
-    ("accounting", "categories", "user_id"),
-    ("accounting", "dismissed_suggestions", "user_id"),
-    ("accounting", "goals", "user_id"),
-    ("accounting", "other_assets", "user_id"),
-    ("accounting", "simulator_scenarios", "user_id"),
-    ("accounting", "tags", "user_id"),
-    ("accounting", "transactions", "user_id"),
-    ("accounting", "budgets", "user_id"),
-    ("accounting", "category_patterns", "user_id"),
-    ("accounting", "general_budgets", "user_id"),
-    ("accounting", "manual_transfers", "user_id"),
-    ("accounting", "opening_balances", "user_id"),
-    ("accounting", "posting_merges", "user_id"),
-    ("accounting", "postings", "user_id"),
-    ("accounting", "recurring_additions", "user_id"),
-    ("accounting", "transfer_rules", "user_id"),
-    ("accounting", "withdrawal_priority_entries", "user_id"),
-    ("accounting", "goal_contributions", "user_id"),
-    ("accounting", "posting_overrides", "user_id"),
-    ("accounting", "posting_pending_suggestions", "user_id"),
-    ("accounting", "posting_merge_duplicates", "user_id"),
-    ("accounting", "posting_splits", "user_id"),
-    ("accounting", "posting_tags", "user_id"),
-    ("accounting", "posting_split_legs", "user_id"),
-    ("trades", "broker_connections", "user_id"),
-    ("trades", "ledger_events", "user_id"),
-    ("trades", "ledger_event_trade_details", "user_id"),
-]
+_SCHEMAS = ("accounting", "trades")
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    # Both schemas are dropped and recreated wholesale rather than ALTERed in
-    # place — see this module's own docstring for why. This also drops every
-    # RLS policy/FORCE flag *and* the app_runtime GRANT USAGE/ALTER DEFAULT
-    # PRIVILEGES migration 817ace9deb09 attached to the old schema objects —
-    # a schema's grants don't survive DROP SCHEMA, even one recreated under
-    # the same name, since it's a genuinely new object. Both are recreated
-    # below, once the new tables exist, against the new table set.
-    op.execute("DROP SCHEMA IF EXISTS accounting CASCADE")
-    op.execute("DROP SCHEMA IF EXISTS trades CASCADE")
-    op.execute("CREATE SCHEMA accounting")
-    op.execute("CREATE SCHEMA trades")
+    """Create every schema, table, index, the app_runtime role, and the RLS policies."""
+    for schema in _SCHEMAS:
+        op.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
 
+    _create_tables()
+    grant_app_runtime(op, schemas=("public", *_SCHEMAS))
+    for tenant in tenant_tables(Base.metadata):
+        for statement in enable_rls_statements(tenant):
+            op.execute(statement)
+
+
+def _create_tables() -> None:
+    """Create every table and index, exactly as autogenerated from the models."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table('users',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('email', sa.String(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_users'))
+    )
     op.create_table('accounts',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -92,6 +69,7 @@ def upgrade() -> None:
     sa.Column('kind', sa.String(), nullable=False),
     sa.Column('institution', sa.String(), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
+    sa.Column('last_four', sa.String(), nullable=True),
     sa.Column('parent_account_id', sa.UUID(), nullable=True),
     sa.Column('external_ref', sa.String(), nullable=True),
     sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
@@ -125,7 +103,7 @@ def upgrade() -> None:
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('kind', sa.String(), nullable=False),
     sa.Column('description', sa.String(), nullable=False),
-    sa.Column('dismissed_at', sa.DateTime(), nullable=False),
+    sa.Column('dismissed_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dismissed_suggestions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_dismissed_suggestions')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_dismissed_suggestions_user_natural_key'),
@@ -136,15 +114,27 @@ def upgrade() -> None:
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
-    sa.Column('target_amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('target_amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('target_currency', sa.String(), nullable=False),
     sa.Column('target_date', sa.DateTime(), nullable=False),
     sa.Column('color', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('version', sa.Integer(), nullable=False),
     sa.CheckConstraint("target_currency IN ('USD', 'EUR')", name=op.f('ck_goals_target_currency')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_goals_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_goals')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_goals_user_natural_key'),
+    schema='accounting'
+    )
+    op.create_table('llm_usage',
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('provider', sa.String(), nullable=False),
+    sa.Column('period_start', sa.DateTime(), nullable=False),
+    sa.Column('used_count', sa.Integer(), nullable=False),
+    sa.Column('is_limited', sa.Boolean(), nullable=False),
+    sa.Column('last_error', sa.String(), nullable=True),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_llm_usage_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('user_id', 'provider', name=op.f('pk_llm_usage')),
     schema='accounting'
     )
     op.create_table('other_assets',
@@ -152,7 +142,7 @@ def upgrade() -> None:
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
-    sa.Column('value', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('value', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('note', sa.String(), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_other_assets_currency')),
@@ -161,35 +151,15 @@ def upgrade() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_other_assets_user_natural_key'),
     schema='accounting'
     )
-    op.create_table('recurring_additions',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('natural_key', sa.String(), nullable=False),
-    sa.Column('goal_id', sa.String(), nullable=False),
-    sa.Column('start_date', sa.Date(), nullable=False),
-    sa.Column('frequency', sa.String(), nullable=False),
-    sa.Column('end_date', sa.Date(), nullable=True),
-    sa.Column('mode', sa.String(), nullable=False),
-    sa.Column('value', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
-    sa.Column('currency', sa.String(), nullable=False),
-    sa.Column('priority', sa.Integer(), nullable=False),
-    sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_recurring_additions_currency')),
-    sa.CheckConstraint("frequency IN ('daily', 'weekly', 'biweekly', 'monthly')", name=op.f('ck_recurring_additions_frequency')),
-    sa.CheckConstraint("mode IN ('fixed_amount', 'percent_of_unallocated', 'remainder')", name=op.f('ck_recurring_additions_mode')),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_recurring_additions_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_recurring_additions')),
-    sa.UniqueConstraint('user_id', 'natural_key', name='uq_recurring_additions_user_natural_key'),
-    schema='accounting'
-    )
     op.create_table('simulator_scenarios',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
-    sa.Column('initial_capital', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
-    sa.Column('monthly_contribution', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
-    sa.Column('horizon_years', sa.Float(), nullable=False),
-    sa.Column('annual_rate_pct', sa.Float(), nullable=False),
+    sa.Column('initial_capital', sa.Numeric(precision=18, scale=4), nullable=False),
+    sa.Column('monthly_contribution', sa.Numeric(precision=18, scale=4), nullable=False),
+    sa.Column('horizon_years', sa.Numeric(precision=12, scale=6), nullable=False),
+    sa.Column('annual_rate_pct', sa.Numeric(precision=12, scale=6), nullable=False),
     sa.Column('compounding_frequency', sa.String(), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.CheckConstraint("compounding_frequency IN ('annually', 'monthly', 'daily')", name=op.f('ck_simulator_scenarios_compounding_frequency')),
@@ -197,6 +167,13 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_simulator_scenarios_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_simulator_scenarios')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_simulator_scenarios_user_natural_key'),
+    schema='accounting'
+    )
+    op.create_table('store_versions',
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('version', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_store_versions_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('user_id', name=op.f('pk_store_versions')),
     schema='accounting'
     )
     op.create_table('tags',
@@ -213,33 +190,79 @@ def upgrade() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transactions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_transactions')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_transactions_user_natural_key'),
     schema='accounting'
     )
-    op.create_table('withdrawal_priority_entries',
+    op.create_table('transfer_links',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('goal_id', sa.String(), nullable=False),
-    sa.Column('priority', sa.Integer(), nullable=False),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_withdrawal_priority_entries_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_withdrawal_priority_entries')),
-    sa.UniqueConstraint('user_id', 'goal_id', name='uq_withdrawal_priority_entries_user_goal'),
+    sa.Column('natural_key', sa.String(), nullable=False),
+    sa.Column('source', sa.String(), nullable=False),
+    sa.Column('rule_id', sa.String(), nullable=True),
+    sa.CheckConstraint("source IN ('manual', 'rule')", name=op.f('ck_transfer_links_source')),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_links_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_transfer_links')),
+    sa.UniqueConstraint('user_id', 'natural_key', name='uq_transfer_links_user_natural_key'),
     schema='accounting'
+    )
+    op.create_table('external_identities',
+    sa.Column('provider', sa.String(), nullable=False),
+    sa.Column('external_id', sa.String(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_external_identities_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('provider', 'external_id', name=op.f('pk_external_identities'))
     )
     op.create_table('broker_connections',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('broker', sa.String(), nullable=False),
-    sa.Column('external_account_id', sa.String(), nullable=True),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_broker_connections_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_broker_connections')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_broker_connections_user_natural_key'),
     schema='trades'
+    )
+    op.create_table('dashboard_settings',
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('target_allocation_pct', db.base.RateMap(), nullable=False),
+    sa.Column('hysa_bank_id', sa.String(), nullable=True),
+    sa.Column('hysa_fixed_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
+    sa.Column('benchmark_symbol_override', sa.String(), nullable=True),
+    sa.Column('local_zone', sa.String(), nullable=True),
+    sa.Column('tax_enabled', sa.Boolean(), nullable=False),
+    sa.Column('tax_regime', sa.String(), nullable=True),
+    sa.Column('residency_status_change_date', sa.Date(), nullable=True),
+    sa.Column('w8ben_claimed', sa.Boolean(), nullable=False),
+    sa.Column('w8ben_treaty_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
+    sa.Column('marginal_ordinary_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
+    sa.Column('qualified_ltcg_rate_pct', sa.Numeric(precision=12, scale=6), nullable=True),
+    sa.CheckConstraint("tax_regime IN ('NRA', 'RESIDENT')", name=op.f('ck_dashboard_settings_tax_regime')),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dashboard_settings_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('user_id', name=op.f('pk_dashboard_settings')),
+    schema='trades'
+    )
+    op.create_table('dashboard_settings_versions',
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('version', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dashboard_settings_versions_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('user_id', name=op.f('pk_dashboard_settings_versions')),
+    schema='trades'
+    )
+    op.create_table('user_secrets',
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('key', sa.String(), nullable=False),
+    sa.Column('kind', sa.String(), nullable=False),
+    sa.Column('ciphertext', sa.String(), nullable=False),
+    sa.Column('encryption_key_version', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_user_secrets_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('user_id', 'key', name=op.f('pk_user_secrets'))
     )
     op.create_table('budgets',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -248,7 +271,7 @@ def upgrade() -> None:
     sa.Column('month', sa.String(), nullable=False),
     sa.Column('category_id', sa.UUID(), nullable=False),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_budgets_currency')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_budgets_category_id_categories')),
@@ -268,6 +291,7 @@ def upgrade() -> None:
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('priority', sa.Integer(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
+    sa.Column('version', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_category_patterns_category_id_categories')),
     sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_category_patterns_subcategory_id_categories')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_category_patterns_user_id_users'), ondelete='CASCADE'),
@@ -280,7 +304,7 @@ def upgrade() -> None:
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('category_id', sa.UUID(), nullable=False),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_general_budgets_currency')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_general_budgets_category_id_categories')),
@@ -297,8 +321,8 @@ def upgrade() -> None:
     sa.Column('date', sa.DateTime(), nullable=False),
     sa.Column('from_account_id', sa.UUID(), nullable=False),
     sa.Column('to_account_id', sa.UUID(), nullable=False),
-    sa.Column('from_amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
-    sa.Column('to_amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('from_amount', sa.Numeric(precision=18, scale=4), nullable=False),
+    sa.Column('to_amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('description', sa.String(), nullable=False),
     sa.ForeignKeyConstraint(['from_account_id'], ['accounting.accounts.id'], name=op.f('fk_manual_transfers_from_account_id_accounts')),
     sa.ForeignKeyConstraint(['to_account_id'], ['accounting.accounts.id'], name=op.f('fk_manual_transfers_to_account_id_accounts')),
@@ -311,7 +335,7 @@ def upgrade() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('account_id', sa.UUID(), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('as_of_date', sa.DateTime(), nullable=False),
     sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_opening_balances_account_id_accounts'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_opening_balances_user_id_users'), ondelete='CASCADE'),
@@ -325,34 +349,43 @@ def upgrade() -> None:
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('kept_transaction_id', sa.UUID(), nullable=False),
     sa.Column('description', sa.String(), nullable=True),
-    sa.ForeignKeyConstraint(['kept_transaction_id'], ['accounting.transactions.id'], name=op.f('fk_posting_merges_kept_transaction_id_transactions')),
+    sa.ForeignKeyConstraint(['kept_transaction_id'], ['accounting.transactions.id'], name=op.f('fk_posting_merges_kept_transaction_id_transactions'), ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_merges_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_merges')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_posting_merges_user_natural_key'),
     schema='accounting'
     )
-    op.create_table('postings',
+    op.create_table('recurring_additions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
-    sa.Column('transaction_id', sa.UUID(), nullable=False),
-    sa.Column('account_id', sa.UUID(), nullable=False),
-    sa.Column('posted_at', sa.DateTime(), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('goal_id', sa.UUID(), nullable=False),
+    sa.Column('start_date', sa.Date(), nullable=False),
+    sa.Column('frequency', sa.String(), nullable=False),
+    sa.Column('end_date', sa.Date(), nullable=True),
+    sa.Column('mode', sa.String(), nullable=False),
+    sa.Column('value', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
-    sa.Column('category_id', sa.UUID(), nullable=True),
-    sa.Column('subcategory_id', sa.UUID(), nullable=True),
-    sa.Column('budget_id', sa.String(), nullable=True),
-    sa.Column('description', sa.String(), nullable=False),
-    sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_postings_currency')),
-    sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_postings_account_id_accounts')),
-    sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_postings_category_id_categories')),
-    sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_postings_subcategory_id_categories')),
-    sa.ForeignKeyConstraint(['transaction_id'], ['accounting.transactions.id'], name=op.f('fk_postings_transaction_id_transactions'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_postings_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_postings')),
-    sa.UniqueConstraint('user_id', 'natural_key', name='uq_postings_user_natural_key'),
+    sa.Column('priority', sa.Integer(), nullable=False),
+    sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_recurring_additions_currency')),
+    sa.CheckConstraint("frequency IN ('daily', 'weekly', 'biweekly', 'monthly')", name=op.f('ck_recurring_additions_frequency')),
+    sa.CheckConstraint("mode IN ('fixed_amount', 'percent_of_unallocated', 'remainder')", name=op.f('ck_recurring_additions_mode')),
+    sa.ForeignKeyConstraint(['goal_id'], ['accounting.goals.id'], name=op.f('fk_recurring_additions_goal_id_goals')),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_recurring_additions_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_recurring_additions')),
+    sa.UniqueConstraint('user_id', 'natural_key', name='uq_recurring_additions_user_natural_key'),
+    schema='accounting'
+    )
+    op.create_table('transfer_linked_transactions',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('link_id', sa.UUID(), nullable=False),
+    sa.Column('transaction_id', sa.UUID(), nullable=False),
+    sa.ForeignKeyConstraint(['link_id'], ['accounting.transfer_links.id'], name=op.f('fk_transfer_linked_transactions_link_id_transfer_links'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['transaction_id'], ['accounting.transactions.id'], name=op.f('fk_transfer_linked_transactions_transaction_id_transactions')),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_linked_transactions_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_transfer_linked_transactions')),
+    sa.UniqueConstraint('user_id', 'transaction_id', name='uq_transfer_linked_transactions_user_transaction'),
     schema='accounting'
     )
     op.create_table('transfer_rules',
@@ -360,18 +393,28 @@ def upgrade() -> None:
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('description_contains', sa.String(), nullable=False),
-    sa.Column('account_id', sa.String(), nullable=True),
-    sa.Column('category_id', sa.UUID(), nullable=True),
-    sa.Column('subcategory_id', sa.UUID(), nullable=True),
-    sa.Column('counterparty_account_id', sa.String(), nullable=True),
+    sa.Column('account_id', sa.UUID(), nullable=True),
+    sa.Column('counterparty_account_id', sa.UUID(), nullable=True),
     sa.Column('priority', sa.Integer(), nullable=False),
     sa.Column('description', sa.String(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
-    sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_transfer_rules_category_id_categories')),
-    sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_transfer_rules_subcategory_id_categories')),
+    sa.Column('version', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_transfer_rules_account_id_accounts')),
+    sa.ForeignKeyConstraint(['counterparty_account_id'], ['accounting.accounts.id'], name=op.f('fk_transfer_rules_counterparty_account_id_accounts')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_rules_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_transfer_rules')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_transfer_rules_user_natural_key'),
+    schema='accounting'
+    )
+    op.create_table('withdrawal_priority_entries',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('goal_id', sa.UUID(), nullable=False),
+    sa.Column('priority', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['goal_id'], ['accounting.goals.id'], name=op.f('fk_withdrawal_priority_entries_goal_id_goals')),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_withdrawal_priority_entries_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_withdrawal_priority_entries')),
+    sa.UniqueConstraint('user_id', 'goal_id', name='uq_withdrawal_priority_entries_user_goal'),
     schema='accounting'
     )
     op.create_table('ledger_events',
@@ -382,7 +425,7 @@ def upgrade() -> None:
     sa.Column('event_datetime', sa.DateTime(), nullable=False),
     sa.Column('symbol', sa.String(), nullable=False),
     sa.Column('event_type', sa.String(), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.CheckConstraint("event_type IN ('DEPOSIT', 'WITHDRAWAL', 'BUY', 'SELL', 'DIVIDEND', 'WITHHOLDING', 'FEE', 'SPLIT')", name=op.f('ck_ledger_events_event_type')),
@@ -392,13 +435,73 @@ def upgrade() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_ledger_events_user_natural_key'),
     schema='trades'
     )
+    op.create_table('posting_merge_duplicates',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('merge_id', sa.UUID(), nullable=False),
+    sa.Column('duplicate_transaction_id', sa.UUID(), nullable=False),
+    sa.ForeignKeyConstraint(['duplicate_transaction_id'], ['accounting.transactions.id'], name=op.f('fk_posting_merge_duplicates_duplicate_transaction_id_transactions'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['merge_id'], ['accounting.posting_merges.id'], name=op.f('fk_posting_merge_duplicates_merge_id_posting_merges'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_merge_duplicates_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_merge_duplicates')),
+    sa.UniqueConstraint('user_id', 'merge_id', 'duplicate_transaction_id', name='uq_posting_merge_duplicates_user_merge_txn'),
+    schema='accounting'
+    )
+    op.create_table('postings',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('natural_key', sa.String(), nullable=False),
+    sa.Column('transaction_id', sa.UUID(), nullable=False),
+    sa.Column('account_id', sa.UUID(), nullable=False),
+    sa.Column('posted_at', sa.DateTime(), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
+    sa.Column('currency', sa.String(), nullable=False),
+    sa.Column('category_id', sa.UUID(), nullable=True),
+    sa.Column('subcategory_id', sa.UUID(), nullable=True),
+    sa.Column('budget_id', sa.UUID(), nullable=True),
+    sa.Column('description', sa.String(), nullable=False),
+    sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_postings_currency')),
+    sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_postings_account_id_accounts')),
+    sa.ForeignKeyConstraint(['budget_id'], ['accounting.budgets.id'], name=op.f('fk_postings_budget_id_budgets')),
+    sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_postings_category_id_categories')),
+    sa.ForeignKeyConstraint(['subcategory_id'], ['accounting.categories.id'], name=op.f('fk_postings_subcategory_id_categories')),
+    sa.ForeignKeyConstraint(['transaction_id'], ['accounting.transactions.id'], name=op.f('fk_postings_transaction_id_transactions'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_postings_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_postings')),
+    sa.UniqueConstraint('user_id', 'natural_key', name='uq_postings_user_natural_key'),
+    schema='accounting'
+    )
+    op.create_index('ix_postings_user_posted_at', 'postings', ['user_id', 'posted_at'], unique=False, schema='accounting')
+    op.create_table('transfer_rule_exclusions',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('rule_id', sa.UUID(), nullable=False),
+    sa.Column('transaction_id', sa.UUID(), nullable=False),
+    sa.ForeignKeyConstraint(['rule_id'], ['accounting.transfer_rules.id'], name=op.f('fk_transfer_rule_exclusions_rule_id_transfer_rules'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['transaction_id'], ['accounting.transactions.id'], name=op.f('fk_transfer_rule_exclusions_transaction_id_transactions'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transfer_rule_exclusions_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_transfer_rule_exclusions')),
+    sa.UniqueConstraint('user_id', 'rule_id', 'transaction_id', name='uq_transfer_rule_exclusions_user_rule_txn'),
+    schema='accounting'
+    )
+    op.create_table('ledger_event_trade_details',
+    sa.Column('ledger_event_id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('shares', sa.Numeric(precision=20, scale=8), nullable=False),
+    sa.Column('price', sa.Numeric(precision=18, scale=4), nullable=False),
+    sa.ForeignKeyConstraint(['ledger_event_id'], ['trades.ledger_events.id'], name=op.f('fk_ledger_event_trade_details_ledger_event_id_ledger_events'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_ledger_event_trade_details_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('ledger_event_id', name=op.f('pk_ledger_event_trade_details')),
+    schema='trades'
+    )
     op.create_table('goal_contributions',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
-    sa.Column('goal_id', sa.String(), nullable=False),
+    sa.Column('goal_id', sa.UUID(), nullable=False),
     sa.Column('date', sa.DateTime(), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('note', sa.String(), nullable=False),
     sa.Column('source_posting_id', sa.UUID(), nullable=True),
@@ -406,22 +509,11 @@ def upgrade() -> None:
     sa.Column('edited', sa.Boolean(), nullable=False),
     sa.CheckConstraint("currency IN ('USD', 'EUR')", name=op.f('ck_goal_contributions_currency')),
     sa.CheckConstraint("origin IN ('manual', 'automation')", name=op.f('ck_goal_contributions_origin')),
-    sa.ForeignKeyConstraint(['source_posting_id'], ['accounting.postings.id'], name=op.f('fk_goal_contributions_source_posting_id_postings')),
+    sa.ForeignKeyConstraint(['goal_id'], ['accounting.goals.id'], name=op.f('fk_goal_contributions_goal_id_goals')),
+    sa.ForeignKeyConstraint(['source_posting_id'], ['accounting.postings.id'], name=op.f('fk_goal_contributions_source_posting_id_postings'), ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_goal_contributions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_goal_contributions')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_goal_contributions_user_natural_key'),
-    schema='accounting'
-    )
-    op.create_table('posting_merge_duplicates',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('merge_id', sa.UUID(), nullable=False),
-    sa.Column('duplicate_transaction_id', sa.UUID(), nullable=False),
-    sa.ForeignKeyConstraint(['duplicate_transaction_id'], ['accounting.transactions.id'], name=op.f('fk_posting_merge_duplicates_duplicate_transaction_id_transactions')),
-    sa.ForeignKeyConstraint(['merge_id'], ['accounting.posting_merges.id'], name=op.f('fk_posting_merge_duplicates_merge_id_posting_merges'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_merge_duplicates_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_merge_duplicates')),
-    sa.UniqueConstraint('user_id', 'merge_id', 'duplicate_transaction_id', name='uq_posting_merge_duplicates_user_merge_txn'),
     schema='accounting'
     )
     op.create_table('posting_overrides',
@@ -431,7 +523,7 @@ def upgrade() -> None:
     sa.Column('account_id', sa.UUID(), nullable=True),
     sa.Column('category_id', sa.UUID(), nullable=True),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
-    sa.Column('tag_ids_override', sa.ARRAY(sa.String()), nullable=True),
+    sa.Column('tags_overridden', sa.Boolean(), nullable=False),
     sa.ForeignKeyConstraint(['account_id'], ['accounting.accounts.id'], name=op.f('fk_posting_overrides_account_id_accounts')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_posting_overrides_category_id_categories')),
     sa.ForeignKeyConstraint(['posting_id'], ['accounting.postings.id'], name=op.f('fk_posting_overrides_posting_id_postings'), ondelete='CASCADE'),
@@ -480,22 +572,24 @@ def upgrade() -> None:
     sa.UniqueConstraint('user_id', 'posting_id', 'tag_id', name='uq_posting_tags_user_posting_tag'),
     schema='accounting'
     )
-    op.create_table('ledger_event_trade_details',
-    sa.Column('ledger_event_id', sa.UUID(), nullable=False),
+    op.create_table('posting_override_tags',
+    sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('shares', sa.Numeric(precision=20, scale=8, asdecimal=False), nullable=False),
-    sa.Column('price', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
-    sa.ForeignKeyConstraint(['ledger_event_id'], ['trades.ledger_events.id'], name=op.f('fk_ledger_event_trade_details_ledger_event_id_ledger_events'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_ledger_event_trade_details_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('ledger_event_id', name=op.f('pk_ledger_event_trade_details')),
-    schema='trades'
+    sa.Column('override_id', sa.UUID(), nullable=False),
+    sa.Column('tag_id', sa.UUID(), nullable=False),
+    sa.ForeignKeyConstraint(['override_id'], ['accounting.posting_overrides.id'], name=op.f('fk_posting_override_tags_override_id_posting_overrides'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['tag_id'], ['accounting.tags.id'], name=op.f('fk_posting_override_tags_tag_id_tags'), ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_posting_override_tags_user_id_users'), ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_posting_override_tags')),
+    sa.UniqueConstraint('user_id', 'override_id', 'tag_id', name='uq_posting_override_tags_user_override_tag'),
+    schema='accounting'
     )
     op.create_table('posting_split_legs',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('posting_split_id', sa.UUID(), nullable=False),
     sa.Column('ordinal', sa.Integer(), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=18, scale=4, asdecimal=False), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('category_id', sa.UUID(), nullable=True),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('description', sa.String(), nullable=False),
@@ -508,41 +602,60 @@ def upgrade() -> None:
     )
     # ### end Alembic commands ###
 
-    for schema, table, column in _USER_SCOPED_TABLES:
-        op.execute(f'ALTER TABLE "{schema}"."{table}" ENABLE ROW LEVEL SECURITY')
-        op.execute(f'ALTER TABLE "{schema}"."{table}" FORCE ROW LEVEL SECURITY')
-        op.execute(
-            f'CREATE POLICY user_isolation ON "{schema}"."{table}" '
-            f"USING ({column} = current_setting('app.current_user_id', true)::uuid) "
-            f"WITH CHECK ({column} = current_setting('app.current_user_id', true)::uuid)"
-        )
-
-    # A schema's grants don't survive its own DROP — re-grant app_runtime
-    # exactly what migration 817ace9deb09 originally gave it, scoped to the
-    # two schemas this migration actually recreated (public/users/user_secrets
-    # were untouched, so no need to repeat those grants here).
-    for schema in ("accounting", "trades"):
-        op.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO "{_APP_RUNTIME_ROLE}"')
-        op.execute(f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{schema}" TO "{_APP_RUNTIME_ROLE}"')
-        op.execute(f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA "{schema}" TO "{_APP_RUNTIME_ROLE}"')
-        op.execute(
-            f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" '
-            f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{_APP_RUNTIME_ROLE}"'
-        )
-        op.execute(
-            f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" GRANT USAGE ON SEQUENCES TO "{_APP_RUNTIME_ROLE}"'
-        )
-
 
 def downgrade() -> None:
-    """Downgrade schema.
+    """Drop every policy, table, and schema, and revoke the app_runtime role."""
+    for tenant in tenant_tables(Base.metadata):
+        op.execute(f'DROP POLICY IF EXISTS {POLICY_NAME} ON "{tenant.schema}"."{tenant.table}"')
+    _drop_tables()
+    revoke_app_runtime(op, schemas=("public", *_SCHEMAS))
+    for schema in _SCHEMAS:
+        op.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
-    Drops both schemas outright (`CASCADE` handles per-table drop
-    ordering) rather than reconstructing the pre-redesign composite-key
-    shape — see this module's own docstring for why nothing here is
-    meant to be restorable.
-    """
-    op.execute("DROP SCHEMA IF EXISTS accounting CASCADE")
-    op.execute("DROP SCHEMA IF EXISTS trades CASCADE")
-    op.execute("CREATE SCHEMA accounting")
-    op.execute("CREATE SCHEMA trades")
+
+def _drop_tables() -> None:
+    """Drop every table and index, exactly as autogenerated from the models."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_table('posting_split_legs', schema='accounting')
+    op.drop_table('posting_override_tags', schema='accounting')
+    op.drop_table('posting_tags', schema='accounting')
+    op.drop_table('posting_splits', schema='accounting')
+    op.drop_table('posting_pending_suggestions', schema='accounting')
+    op.drop_table('posting_overrides', schema='accounting')
+    op.drop_table('goal_contributions', schema='accounting')
+    op.drop_table('ledger_event_trade_details', schema='trades')
+    op.drop_table('transfer_rule_exclusions', schema='accounting')
+    op.drop_index('ix_postings_user_posted_at', table_name='postings', schema='accounting')
+    op.drop_table('postings', schema='accounting')
+    op.drop_table('posting_merge_duplicates', schema='accounting')
+    op.drop_table('ledger_events', schema='trades')
+    op.drop_table('withdrawal_priority_entries', schema='accounting')
+    op.drop_table('transfer_rules', schema='accounting')
+    op.drop_table('transfer_linked_transactions', schema='accounting')
+    op.drop_table('recurring_additions', schema='accounting')
+    op.drop_table('posting_merges', schema='accounting')
+    op.drop_table('opening_balances', schema='accounting')
+    op.drop_table('manual_transfers', schema='accounting')
+    op.drop_index('uq_general_budgets_user_category_subcategory', table_name='general_budgets', schema='accounting')
+    op.drop_table('general_budgets', schema='accounting')
+    op.drop_table('category_patterns', schema='accounting')
+    op.drop_index('uq_budgets_user_month_category', table_name='budgets', schema='accounting')
+    op.drop_table('budgets', schema='accounting')
+    op.drop_table('user_secrets')
+    op.drop_table('dashboard_settings_versions', schema='trades')
+    op.drop_table('dashboard_settings', schema='trades')
+    op.drop_table('broker_connections', schema='trades')
+    op.drop_table('external_identities')
+    op.drop_table('transfer_links', schema='accounting')
+    op.drop_table('transactions', schema='accounting')
+    op.drop_table('tags', schema='accounting')
+    op.drop_table('store_versions', schema='accounting')
+    op.drop_table('simulator_scenarios', schema='accounting')
+    op.drop_table('other_assets', schema='accounting')
+    op.drop_table('llm_usage', schema='accounting')
+    op.drop_table('goals', schema='accounting')
+    op.drop_table('dismissed_suggestions', schema='accounting')
+    op.drop_table('categories', schema='accounting')
+    op.drop_table('accounts', schema='accounting')
+    op.drop_table('users')
+    # ### end Alembic commands ###
