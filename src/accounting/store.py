@@ -2297,7 +2297,6 @@ def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_
         if override.pending_source is not None
     )
     session.commit()
-    session.commit()
 
 
 def save_overrides_for_postings(
