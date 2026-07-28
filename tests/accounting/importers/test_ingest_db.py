@@ -25,6 +25,7 @@ from accounting.importers.ingest import (
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import make_transfer_link
 from accounting.models import Account, Goal, GoalContribution, Posting, PostingMerge, Tag, TransferRule
+from accounting.repositories.planning import insert_goal, load_goal_contributions, upsert_goal_contribution
 from accounting.store import load_store, save_store
 
 if TYPE_CHECKING:
@@ -319,20 +320,29 @@ def test_write_ledger_dropping_a_posting_a_goal_contribution_traces_back_to_keep
 ) -> None:
     _register_account(db_session, test_user_id)
     _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
-    store = load_store(db_session, user_id=test_user_id)
-    goal = Goal(
-        goal_id="g1",
-        name="Emergency fund",
-        target_amount=1000,
-        target_date=datetime(2027, 1, 1, tzinfo=UTC),
-        color="#abcdef",
-        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    insert_goal(
+        db_session,
+        test_user_id,
+        Goal(
+            goal_id="g1",
+            name="Emergency fund",
+            target_amount=1000,
+            target_date=datetime(2027, 1, 1, tzinfo=UTC),
+            color="#abcdef",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
     )
-    contribution = GoalContribution(
-        contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5, tzinfo=UTC), amount=100, source_posting_id="p1"
+    upsert_goal_contribution(
+        GoalContribution(
+            contribution_id="gc1",
+            goal_id="g1",
+            date=datetime(2026, 1, 5, tzinfo=UTC),
+            amount=100,
+            source_posting_id="p1",
+        ),
+        db_session,
+        test_user_id,
     )
-    store = store.model_copy(update={"goals": {"g1": goal}, "goal_contributions": {"gc1": contribution}})
-    save_store(store, db_session, user_id=test_user_id)
 
     # Dropping the posting the contribution traces back to must not raise —
     # and, unlike TransferLink/PostingMerge, must NOT delete the
@@ -341,6 +351,6 @@ def test_write_ledger_dropping_a_posting_a_goal_contribution_traces_back_to_keep
     # `models.GoalContribution`'s own docstring). Only the link clears.
     _write_ledger(_frame(), db_session, user_id=test_user_id)
 
-    reloaded = load_store(db_session, user_id=test_user_id).goal_contributions["gc1"]
+    reloaded = load_goal_contributions(db_session, test_user_id)["gc1"]
     assert reloaded.amount == 100
     assert reloaded.source_posting_id is None

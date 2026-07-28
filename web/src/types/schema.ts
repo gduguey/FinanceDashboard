@@ -2552,7 +2552,7 @@ export interface paths {
      * Delete Goal Route
      * @description Delete one goal, without touching any other goal already saved.
      *
-     *     No version check — see `accounting.store.delete_goal`'s own
+     *     No version check — see `repositories.planning.delete_goal`'s own
      *     docstring for why deleting an already-gone goal is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
@@ -2573,13 +2573,11 @@ export interface paths {
      * Patch Goal
      * @description Update one existing goal in place, without touching any other goal already saved.
      *
-     *     A true per-resource write — unlike `PUT /goals`, this never
-     *     round-trips through `load_store`/`save_store` (which deletes and
-     *     reinserts every persisted entity for the user); see
-     *     `accounting.store.update_goal`. Guarded by `request.expected_version`
-     *     instead of the whole-store `X-Expected-Store-Version` header, so an
-     *     edit to this one goal can never spuriously conflict with — or be
-     *     silently overwritten by — an unrelated save elsewhere in the store.
+     *     A true per-resource write — see `repositories.planning.update_goal`.
+     *     Guarded by `request.expected_version` instead of the whole-store
+     *     `X-Expected-Store-Version` header, so an edit to this one goal can
+     *     never spuriously conflict with — or be silently overwritten by — an
+     *     unrelated save elsewhere.
      *
      *     Returns
      *     -------
@@ -2759,7 +2757,7 @@ export interface paths {
      *
      *     A single-rule field edit no longer round-trips through the whole-list
      *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-     *     edit to a different one); see `accounting.store.upsert_recurring_addition`.
+     *     edit to a different one); see `repositories.planning.upsert_recurring_addition`.
      *
      *     Returns
      *     -------
@@ -2788,10 +2786,8 @@ export interface paths {
      *
      *     A pure ordering + set-membership operation (no free text or amount
      *     anywhere), so it's last-write-wins by nature — whichever ordering was
-     *     submitted last is the intended one. It opts out of the whole-store
-     *     version check (like the recurring-additions reorder) so re-ordering
-     *     can't spuriously 409 against an unrelated concurrent save elsewhere in
-     *     the store.
+     *     submitted last is the intended one, and the write touches this one
+     *     table alone.
      *
      *     Returns
      *     -------

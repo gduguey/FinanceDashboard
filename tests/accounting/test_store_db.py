@@ -41,6 +41,14 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
+from accounting.repositories.planning import (
+    insert_goal,
+    replace_budgets,
+    replace_general_budgets,
+    replace_goal_contributions,
+    replace_recurring_additions,
+    replace_withdrawal_priorities,
+)
 from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
@@ -414,10 +422,6 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
                     to_amount=50,
                 )
             ],
-            "budgets": [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)],
-            "general_budgets": {
-                "expense:food-drink": GeneralBudget(category_id="expense:food-drink", amount=250),
-            },
             "simulator_scenarios": [
                 SimulatorScenario(
                     scenario_id="s1",
@@ -440,34 +444,53 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
             "posting_merges": {
                 "m1": PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])
             },
-            "goals": {
-                "g1": Goal(
-                    goal_id="g1",
-                    name="Emergency fund",
-                    target_amount=1000,
-                    target_date=datetime(2027, 1, 1),
-                    color="#abcdef",
-                    created_at=datetime(2026, 1, 1),
-                )
-            },
-            "goal_contributions": {
-                "gc1": GoalContribution(contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5), amount=100)
-            },
-            "recurring_additions": [
-                RecurringAddition(
-                    addition_id="ra1",
-                    goal_id="g1",
-                    start_date=datetime(2026, 1, 1).date(),
-                    frequency="monthly",
-                    mode="fixed_amount",
-                    value=50,
-                )
-            ],
-            "withdrawal_priorities": [WithdrawalPriorityEntry(goal_id="g1", priority=1)],
         }
     )
 
     save_store(store, db_session, user_id=test_user_id)
+
+    # The planning aggregate is written by its own repository, never by
+    # `save_store` — see `accounting.repositories.planning`.
+    replace_budgets(
+        db_session,
+        test_user_id,
+        [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)],
+    )
+    replace_general_budgets(db_session, test_user_id, [GeneralBudget(category_id="expense:food-drink", amount=250)])
+    insert_goal(
+        db_session,
+        test_user_id,
+        Goal(
+            goal_id="g1",
+            name="Emergency fund",
+            target_amount=1000,
+            target_date=datetime(2027, 1, 1),
+            color="#abcdef",
+            created_at=datetime(2026, 1, 1),
+        ),
+    )
+    replace_goal_contributions(
+        db_session,
+        test_user_id,
+        [GoalContribution(contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5), amount=100)],
+    )
+    replace_recurring_additions(
+        db_session,
+        test_user_id,
+        [
+            RecurringAddition(
+                addition_id="ra1",
+                goal_id="g1",
+                start_date=datetime(2026, 1, 1).date(),
+                frequency="monthly",
+                mode="fixed_amount",
+                value=50,
+            )
+        ],
+    )
+    replace_withdrawal_priorities(db_session, test_user_id, [WithdrawalPriorityEntry(goal_id="g1", priority=1)])
+    db_session.commit()
+
     reloaded = load_store(db_session, user_id=test_user_id)
 
     assert reloaded.accounts["savings:vault-parent:trip"].parent_account_id == "savings:vault-parent"
@@ -607,56 +630,41 @@ def test_transfer_link_naming_an_already_linked_transaction_raises(
 
 
 def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "goal_contributions": {
-                "gc1": GoalContribution(
-                    contribution_id="gc1", goal_id="does-not-exist", date=datetime(2026, 1, 5), amount=100
-                )
-            }
-        }
+    contribution = GoalContribution(
+        contribution_id="gc1", goal_id="does-not-exist", date=datetime(2026, 1, 5), amount=100
     )
     with pytest.raises(IntegrityError):
-        save_store(store, db_session, user_id=test_user_id)
+        replace_goal_contributions(db_session, test_user_id, [contribution])
 
 
 def test_recurring_addition_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "recurring_additions": [
-                RecurringAddition(
-                    addition_id="ra1",
-                    goal_id="does-not-exist",
-                    start_date=datetime(2026, 1, 1).date(),
-                    frequency="monthly",
-                    mode="fixed_amount",
-                    value=50,
-                )
-            ]
-        }
+    addition = RecurringAddition(
+        addition_id="ra1",
+        goal_id="does-not-exist",
+        start_date=datetime(2026, 1, 1).date(),
+        frequency="monthly",
+        mode="fixed_amount",
+        value=50,
     )
     with pytest.raises(IntegrityError):
-        save_store(store, db_session, user_id=test_user_id)
+        replace_recurring_additions(db_session, test_user_id, [addition])
 
 
 def test_withdrawal_priority_entry_referencing_a_nonexistent_goal_raises(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(update={"withdrawal_priorities": [WithdrawalPriorityEntry(goal_id="does-not-exist")]})
     with pytest.raises(IntegrityError):
-        save_store(store, db_session, user_id=test_user_id)
+        replace_withdrawal_priorities(db_session, test_user_id, [WithdrawalPriorityEntry(goal_id="does-not-exist")])
 
 
 def test_posting_budget_id_round_trips_a_real_budget_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={"budgets": [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)]}
+    replace_budgets(
+        db_session,
+        test_user_id,
+        [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)],
     )
-    save_store(store, db_session, user_id=test_user_id)
+    db_session.commit()
 
     posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
     posting_row.budget_id = derive_id(test_user_id, "budgets", "b1")

@@ -61,6 +61,14 @@ from accounting.models import (
     Tag,
     TransferRule,
 )
+from accounting.repositories.planning import (
+    remove_budget,
+    remove_general_budget,
+    replace_budgets,
+    replace_general_budgets,
+    upsert_budget,
+    upsert_general_budget,
+)
 from accounting.store import (
     category_ids_to_delete,
     delete_category_pattern,
@@ -78,20 +86,17 @@ from accounting.store import (
     remap_category_ids,
     remap_tag_ids,
     remove_account,
-    remove_budget,
-    remove_general_budget,
     remove_opening_balance,
     remove_rule_transfer_links,
     save_overrides_for_postings,
     save_store,
+    seed_new_user_defaults,
     set_account_closed,
     slugify,
     uncategorize_category_ids,
     update_account_fields,
     update_category_pattern,
     update_transfer_rule,
-    upsert_budget,
-    upsert_general_budget,
     upsert_opening_balance,
 )
 from db.current_user import get_current_user_id
@@ -372,6 +377,12 @@ def delete_category(
     store = uncategorize_category_ids(store, ids_to_delete)
     store = store.model_copy(update={"categories": normalize_categories(remaining_categories)})
 
+    # The planning tables reference categories and are written by their own
+    # repository, so their cleared/dropped rows land before `save_store` gets
+    # to the category rows themselves.
+    replace_budgets(session, user_id, store.budgets)
+    replace_general_budgets(session, user_id, store.general_budgets.values())
+
     # Every reference to a deleted category must be cleared *before* `save_store`
     # deletes that category row below — postings and manual overrides both
     # foreign-key into `categories`, so the delete would otherwise fail with a
@@ -506,6 +517,11 @@ def post_category_rename(
 
     categories, id_remap = plan_category_rename(store.categories, category_id, request.name)
     store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
+
+    # Repointed budgets are written by their own repository, before `save_store`
+    # below removes the merged-away category rows they used to reference.
+    replace_budgets(session, user_id, store.budgets)
+    replace_general_budgets(session, user_id, store.general_budgets.values())
 
     # Every reference to a merged-away category must be repointed *before* `save_store`
     # deletes that category row below — postings and manual overrides both foreign-key
@@ -1076,10 +1092,10 @@ def put_budgets(
     list[Budget]
         The budgets just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"budgets": budgets})
-    save_store(store, session, user_id)
-    return store.budgets
+    seed_new_user_defaults(session, user_id)
+    replace_budgets(session, user_id, budgets)
+    session.commit()
+    return budgets
 
 
 def _budget_id(month: str, category_id: str, subcategory_id: str | None) -> str:
@@ -1110,10 +1126,9 @@ def post_budget(
     Budget
         The budget just persisted.
     """
-    # Ensures the default category tree this budget's `category_id` foreign-keys into has been seeded
-    # for a brand-new user (see `load_store` — it persists defaults on first access); a no-op read for
-    # everyone else. The actual write below is scoped to this one budget row, not a whole-store save.
-    load_store(session, user_id)
+    # The default category tree this budget's `category_id` foreign-keys into has to exist first;
+    # a no-op read for everyone but a brand-new user.
+    seed_new_user_defaults(session, user_id)
     budget = Budget(
         budget_id=_budget_id(request.month, request.category_id, request.subcategory_id),
         month=request.month,
@@ -1167,10 +1182,10 @@ def put_general_budgets(
     dict[str, GeneralBudget]
         The general budgets just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"general_budgets": general_budgets})
-    save_store(store, session, user_id)
-    return store.general_budgets
+    seed_new_user_defaults(session, user_id)
+    replace_general_budgets(session, user_id, general_budgets.values())
+    session.commit()
+    return general_budgets
 
 
 def _general_budget_key(category_id: str, subcategory_id: str | None) -> str:
@@ -1199,7 +1214,7 @@ def post_general_budget(
     GeneralBudget
         The general budget just persisted.
     """
-    load_store(session, user_id)  # seed defaults for a new user (see the equivalent note in `post_budget`)
+    seed_new_user_defaults(session, user_id)  # see the equivalent note in `post_budget`
     general_budget = GeneralBudget(
         category_id=request.category_id,
         subcategory_id=request.subcategory_id,

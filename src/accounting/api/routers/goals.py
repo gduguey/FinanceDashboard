@@ -9,7 +9,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-import accounting.db as adb
 from accounting.api.api_models import (
     GoalContributionCreate,
     GoalContributionIdResponse,
@@ -33,18 +32,25 @@ from accounting.ledger.goal_automations import (
     run_withdrawal_automation,
 )
 from accounting.models import CurrencyCode, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
-from accounting.store import (
+from accounting.repositories.planning import (
     delete_goal,
-    load_store,
-    next_available_color,
+    goal_contribution_exists,
+    insert_goal,
+    insert_goal_contributions,
+    load_goals,
+    load_recurring_additions,
+    recurring_addition_exists,
     remove_goal_contribution,
     remove_recurring_addition,
-    save_store,
+    replace_goal_contributions,
+    replace_goals,
+    replace_recurring_additions,
+    replace_withdrawal_priorities,
     update_goal,
     upsert_goal_contribution,
     upsert_recurring_addition,
 )
-from db.base import derive_id
+from accounting.store import next_available_color
 from db.current_user import get_current_user_id
 from db.money import quantize_money
 from db.session import get_db
@@ -71,18 +77,17 @@ def post_goal(
     Goal
         The goal just persisted.
     """
-    store = load_store(session, user_id)
+    existing = load_goals(session, user_id)
     goal = Goal(
         goal_id=f"goal:{uuid.uuid4().hex}",
         name=request.name,
         target_amount=request.target_amount,
         target_currency=request.target_currency,
         target_date=request.target_date,
-        color=next_available_color(goal.color for goal in store.goals.values()),
+        color=next_available_color(goal.color for goal in existing.values()),
         created_at=datetime.now(tz=UTC),
     )
-    store = store.model_copy(update={"goals": {**store.goals, goal.goal_id: goal}})
-    save_store(store, session, user_id)
+    insert_goal(session, user_id, goal)
     return goal
 
 
@@ -99,10 +104,9 @@ def put_goals(
     dict[str, Goal]
         The goals just persisted, keyed by `goal_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"goals": goals})
-    save_store(store, session, user_id)
-    return store.goals
+    replace_goals(session, user_id, goals.values())
+    session.commit()
+    return goals
 
 
 @router.patch("/goals/{goal_id}")
@@ -114,13 +118,11 @@ def patch_goal(
 ) -> Goal:
     """Update one existing goal in place, without touching any other goal already saved.
 
-    A true per-resource write — unlike `PUT /goals`, this never
-    round-trips through `load_store`/`save_store` (which deletes and
-    reinserts every persisted entity for the user); see
-    `accounting.store.update_goal`. Guarded by `request.expected_version`
-    instead of the whole-store `X-Expected-Store-Version` header, so an
-    edit to this one goal can never spuriously conflict with — or be
-    silently overwritten by — an unrelated save elsewhere in the store.
+    A true per-resource write — see `repositories.planning.update_goal`.
+    Guarded by `request.expected_version` instead of the whole-store
+    `X-Expected-Store-Version` header, so an edit to this one goal can
+    never spuriously conflict with — or be silently overwritten by — an
+    unrelated save elsewhere.
 
     Returns
     -------
@@ -158,7 +160,7 @@ def delete_goal_route(
 ) -> GoalIdResponse:
     """Delete one goal, without touching any other goal already saved.
 
-    No version check — see `accounting.store.delete_goal`'s own
+    No version check — see `repositories.planning.delete_goal`'s own
     docstring for why deleting an already-gone goal is a plain 404, not a
     409: there's nothing left to conflict with.
 
@@ -192,38 +194,9 @@ def put_goal_contributions(
     dict[str, GoalContribution]
         The contributions just persisted, keyed by `contribution_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"goal_contributions": contributions})
-    save_store(store, session, user_id)
-    return store.goal_contributions
-
-
-def _goal_contribution_exists(session: Session, user_id: uuid.UUID, contribution_id: str) -> bool:
-    """Whether one contribution row exists, without loading the whole store.
-
-    `PUT /goal-contributions/{id}` needs this because `upsert_goal_contribution` would otherwise happily
-    *create* a row for an unknown id (INSERT ... ON CONFLICT), where the endpoint's contract is a 404.
-
-    Returns
-    -------
-    bool
-    """
-    row_id = derive_id(user_id, "goal_contributions", contribution_id)
-    return session.get(adb.GoalContribution, row_id) is not None
-
-
-def _recurring_addition_exists(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
-    """Whether one recurring-addition row exists, without loading the whole store.
-
-    `PATCH /recurring-additions/{id}` needs this because `upsert_recurring_addition` would otherwise
-    create a row for an unknown id, where the endpoint's contract is a 404.
-
-    Returns
-    -------
-    bool
-    """
-    row_id = derive_id(user_id, "recurring_additions", addition_id)
-    return session.get(adb.RecurringAddition, row_id) is not None
+    replace_goal_contributions(session, user_id, contributions.values())
+    session.commit()
+    return contributions
 
 
 def _validate_remainder_invariant(additions: list[RecurringAddition]) -> None:
@@ -305,7 +278,7 @@ def put_goal_contribution(
     HTTPException
         404 if no contribution with this id exists.
     """
-    if not _goal_contribution_exists(session, user_id, contribution_id):
+    if not goal_contribution_exists(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
     contribution = GoalContribution(
         contribution_id=contribution_id,
@@ -364,7 +337,7 @@ def post_recurring_addition(
     RecurringAddition
         The addition just persisted.
     """
-    store = load_store(session, user_id)
+    existing = load_recurring_additions(session, user_id)
     addition = RecurringAddition(
         addition_id=f"addition:{uuid.uuid4().hex}",
         goal_id=request.goal_id,
@@ -374,10 +347,9 @@ def post_recurring_addition(
         mode=request.mode,
         value=request.value,
         currency=request.currency,
-        priority=len(store.recurring_additions),
+        priority=len(existing),
     )
-    store = store.model_copy(update={"recurring_additions": [*store.recurring_additions, addition]})
-    save_store(store, session, user_id)
+    upsert_recurring_addition(addition, session, user_id)
     return addition
 
 
@@ -399,14 +371,9 @@ def put_recurring_additions(
         The additions just persisted.
     """
     _validate_remainder_invariant(additions)
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"recurring_additions": additions})
-    # Reorder is a pure whole-list ordering operation (last write wins), so opt out of the whole-store
-    # version check — otherwise a reorder would spuriously 409 against an unrelated concurrent save. The
-    # per-rule field edit and delete go through their own scoped endpoints (PATCH/DELETE below).
-    session.info["expected_store_version"] = None
-    save_store(store, session, user_id)
-    return store.recurring_additions
+    replace_recurring_additions(session, user_id, additions)
+    session.commit()
+    return additions
 
 
 @router.patch("/recurring-additions/{addition_id}")
@@ -420,7 +387,7 @@ def patch_recurring_addition(
 
     A single-rule field edit no longer round-trips through the whole-list
     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-    edit to a different one); see `accounting.store.upsert_recurring_addition`.
+    edit to a different one); see `repositories.planning.upsert_recurring_addition`.
 
     Returns
     -------
@@ -432,7 +399,7 @@ def patch_recurring_addition(
     HTTPException
         404 if no rule with `addition_id` exists.
     """
-    if not _recurring_addition_exists(session, user_id, addition_id):
+    if not recurring_addition_exists(session, user_id, addition_id):
         raise HTTPException(status_code=404, detail=f"Recurring addition {addition_id!r} not found")
     addition = RecurringAddition(
         addition_id=addition_id,
@@ -448,8 +415,7 @@ def patch_recurring_addition(
     # Validate against the whole list this edit would produce, not the row in
     # isolation — the single-row PATCH must not be able to reach a state the
     # whole-list PUT would reject (a second `remainder`, or one out of order).
-    store = load_store(session, user_id)
-    effective = [addition if a.addition_id == addition_id else a for a in store.recurring_additions]
+    effective = [addition if a.addition_id == addition_id else a for a in load_recurring_additions(session, user_id)]
     _validate_remainder_invariant(effective)
     upsert_recurring_addition(addition, session, user_id)
     return addition
@@ -489,21 +455,17 @@ def put_withdrawal_priorities(
 
     A pure ordering + set-membership operation (no free text or amount
     anywhere), so it's last-write-wins by nature — whichever ordering was
-    submitted last is the intended one. It opts out of the whole-store
-    version check (like the recurring-additions reorder) so re-ordering
-    can't spuriously 409 against an unrelated concurrent save elsewhere in
-    the store.
+    submitted last is the intended one, and the write touches this one
+    table alone.
 
     Returns
     -------
     list[WithdrawalPriorityEntry]
         The priorities just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"withdrawal_priorities": priorities})
-    session.info["expected_store_version"] = None
-    save_store(store, session, user_id)
-    return store.withdrawal_priorities
+    replace_withdrawal_priorities(session, user_id, priorities)
+    session.commit()
+    return priorities
 
 
 @router.get("/goals/summary")
@@ -609,8 +571,7 @@ def post_run_recurring_additions(
             origin="automation",
         )
 
-    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
-    save_store(store, session, user_id)
+    insert_goal_contributions(session, user_id, new_contributions.values())
     return list(new_contributions.values())
 
 
@@ -662,8 +623,7 @@ def post_run_withdrawal_automation(
             origin="automation",
         )
 
-    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
-    save_store(store, session, user_id)
+    insert_goal_contributions(session, user_id, new_contributions.values())
     remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
     return WithdrawalAutomationResult(
         withdrawals=list(new_contributions.values()), remaining_shortfall=remaining_shortfall
