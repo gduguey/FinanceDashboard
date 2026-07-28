@@ -2927,11 +2927,7 @@ def remove_rule_transfer_links(session: Session, user_id: uuid.UUID, rule_id: st
     int
         How many links were deleted (0 if the rule created none).
     """
-    deleted = (
-        session.query(adb.TransferLink)
-        .filter_by(user_id=user_id, source="rule", rule_id=rule_id)
-        .delete()
-    )
+    deleted = session.query(adb.TransferLink).filter_by(user_id=user_id, source="rule", rule_id=rule_id).delete()
     session.flush()
     return deleted
 

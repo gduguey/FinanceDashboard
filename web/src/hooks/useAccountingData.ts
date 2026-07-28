@@ -1087,9 +1087,7 @@ export function useDeleteRecurringAddition() {
       if (previous) {
         queryClient.setQueryData<AccountingStore>(keys.store, {
           ...previous,
-          recurring_additions: previous.recurring_additions.filter(
-            (addition) => addition.addition_id !== additionId,
-          ),
+          recurring_additions: previous.recurring_additions.filter((addition) => addition.addition_id !== additionId),
         })
       }
       return { previous }
