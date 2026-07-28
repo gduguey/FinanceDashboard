@@ -155,7 +155,7 @@ def test_patch_goal_updates_fields_and_increments_version(client) -> None:
     assert updated["target_amount"] == pytest.approx(20000.0)
     assert updated["color"] == "#123456"
     assert updated["version"] == 2
-    assert updated["created_at"] == "2026-06-01T00:00:00"  # untouched by the update
+    assert updated["created_at"] == "2026-06-01T00:00:00Z"  # untouched by the update; UTC-aware since the tz migration
 
     persisted = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
     assert persisted["name"] == "New Car"
