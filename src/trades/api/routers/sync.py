@@ -120,11 +120,16 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
         sync_result = main.sync_ibkr_account(credentials, config, session, user_id, on_progress=on_progress)
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=True))
     except requests.exceptions.RequestException:
+        # Roll back first: a failure part-way through `sync_ibkr_account`'s
+        # writes leaves the session's transaction aborted, which would make the
+        # `load_ledger`/`load_settings` reads below fail too.
+        session.rollback()
         # Not str(error): a request-level failure's own message includes the
         # full IBKR request URL, which embeds the token as a query param (see
         # trades.brokers.ibkr.api._send_flex_request) — must never reach the client.
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=False, error="Could not reach IBKR"))
     except Exception as error:  # noqa: BLE001 — report the failure as a step, not a 500
+        session.rollback()  # same reason as above — keep the session usable for the fallback reads
         steps.append(SyncStep(label=f"{BROKER_DISPLAY_NAME} data", ok=False, error=str(error)))
 
     if sync_result is not None:
