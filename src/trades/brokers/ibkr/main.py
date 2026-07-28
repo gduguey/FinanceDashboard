@@ -10,6 +10,7 @@ import polars as pl
 
 import trades.db as tdb
 from db.base import derive_id
+from db.money import to_analytics_float
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
 from trades.models import LedgerEvent
@@ -101,9 +102,10 @@ def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
             "event_datetime": event.event_datetime,
             "symbol": event.symbol,
             "event_type": event.event_type,
-            "shares": details.shares if details is not None else None,
-            "price": details.price if details is not None else None,
-            "amount": event.amount,
+            # Crossing into the float analytics projection — see `db.money.to_analytics_float`.
+            "shares": to_analytics_float(details.shares) if details is not None else None,
+            "price": to_analytics_float(details.price) if details is not None else None,
+            "amount": to_analytics_float(event.amount),
             "currency": event.currency,
             "meta": event.meta,
         }

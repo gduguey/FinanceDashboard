@@ -58,6 +58,12 @@ rounding it at the money scale first would push the error into the product.
 RATE_QUANTUM = Decimal("0.000001")
 """`RATE_SCALE` as a quantize target."""
 
+SHARES_SCALE = 8
+"""Decimal places `db.base.SHARES` (`NUMERIC(20, 8)`) stores — brokers report fractional shares this finely."""
+
+SHARES_QUANTUM = Decimal("0.00000001")
+"""`SHARES_SCALE` as a quantize target."""
+
 ROUNDING = ROUND_HALF_UP
 """The single rounding mode. See this module's docstring for why not banker's rounding."""
 
@@ -130,6 +136,47 @@ def quantize_rate(value: Decimal | str | float) -> Decimal:
     return to_decimal(value).quantize(RATE_QUANTUM, rounding=ROUNDING)
 
 
+def quantize_shares(value: Decimal | str | float) -> Decimal:
+    """Round a share count to `SHARES_SCALE`.
+
+    Parameters
+    ----------
+    value
+        The share count to round.
+
+    Returns
+    -------
+    Decimal
+        Quantized to `SHARES_SCALE` using `ROUNDING`.
+    """
+    return to_decimal(value).quantize(SHARES_QUANTUM, rounding=ROUNDING)
+
+
+def to_analytics_float(value: Decimal | float) -> float:
+    """Convert an exact amount into the float representation the analytics layer uses.
+
+    The single sanctioned `Decimal -> float` conversion in this codebase.
+    Both ledgers aggregate with Polars over `Float64` columns, so exactness
+    is deliberately given up at that boundary and nowhere else; see
+    `accounting.ledger.frame` for the full argument. This exists as a named
+    function rather than a bare `float(...)` so every such place is
+    greppable.
+
+    Parameters
+    ----------
+    value
+        An exact amount, straight off a `Money`/`Shares` field or a
+        `NUMERIC` column.
+
+    Returns
+    -------
+    float
+        For aggregation inside an analytics frame only. Never persist this,
+        and never compare it for exact equality.
+    """
+    return float(value)
+
+
 def round_to_currency(value: Decimal | str | float, decimal_places: int) -> Decimal:
     """Round a value to a specific currency's own presentation precision.
 
@@ -169,4 +216,13 @@ Rate = Annotated[Decimal, *_AS_JSON_NUMBER]
 Distinct from `Money` by intent, not by representation — the two quantize at
 different scales (`quantize_rate` vs `quantize_money`), and naming the
 difference at the field keeps a rate from being rounded like a balance.
+"""
+
+Shares = Annotated[Decimal, *_AS_JSON_NUMBER]
+"""A share count: exact `Decimal` in Python, JSON `number` on the wire.
+
+Not money, but held to the same standard for the same reason — a fractional
+share count feeds directly into cost basis and realized gain, so a float
+here lands in someone's tax figure. Stored at `SHARES_SCALE`, wider than
+money because brokers report fractional shares to eight places.
 """

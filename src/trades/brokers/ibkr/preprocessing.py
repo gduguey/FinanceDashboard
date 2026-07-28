@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from db.money import to_analytics_float
 from trades.models import LedgerEvent
 
 if TYPE_CHECKING:
@@ -57,7 +58,17 @@ def _events_to_frame(events: list[LedgerEvent]) -> pl.DataFrame:
     """
     if not events:
         return _empty_ledger()
-    frame = pl.DataFrame([event.model_dump() for event in events], schema=LedgerEvent.polars_schema)
+    # Crossing into the float analytics projection — see `db.money.to_analytics_float`.
+    records = [
+        {
+            **event.model_dump(),
+            "shares": None if event.shares is None else to_analytics_float(event.shares),
+            "price": None if event.price is None else to_analytics_float(event.price),
+            "amount": to_analytics_float(event.amount),
+        }
+        for event in events
+    ]
+    frame = pl.DataFrame(records, schema=LedgerEvent.polars_schema)
     return frame.sort("event_datetime", "symbol", "event_id")
 
 

@@ -19,9 +19,10 @@ So this is a deliberate, single, named boundary rather than a leak:
 - **Exact on the way in.** A value is quantized to the storage scale before
   it is written (`db.money.quantize_money`), so what Postgres holds is
   exactly what the domain layer decided.
-- **Float only inside the projection.** `to_analytics_amount` is the only
-  sanctioned `Decimal -> float` conversion for ledger money. Every frame is
-  built through `LEDGER_FRAME_SCHEMA`, so no other shape can appear.
+- **Float only inside the projection.** `db.money.to_analytics_float` is
+  the only sanctioned `Decimal -> float` conversion, re-exported here as
+  `to_analytics_amount`. Every frame is built through
+  `LEDGER_FRAME_SCHEMA`, so no other shape can appear.
 - **Exact again on the way out.** Anything read out of a frame and then
   persisted, compared for equality, or returned as an authoritative balance
   goes back through `db.money.to_decimal`/`quantize_money`.
@@ -48,9 +49,10 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from db.money import to_analytics_float as to_analytics_amount
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from decimal import Decimal
 
     from accounting.models import Posting
 
@@ -76,28 +78,6 @@ the other invited exactly the confusion this module's docstring exists to
 prevent. `amount` is `Float64` here and `Money` (`Decimal`) on `Posting`;
 those are two different types on purpose.
 """
-
-
-def to_analytics_amount(amount: Decimal | float) -> float:
-    """Convert an exact monetary amount into the projection's float representation.
-
-    The only sanctioned `Decimal -> float` conversion for ledger money. It
-    exists as a named function rather than a bare `float(...)` so the
-    boundary is greppable: every place exactness is intentionally given up
-    is a call to this.
-
-    Parameters
-    ----------
-    amount
-        An exact amount, straight off a `Money` field or a `NUMERIC` column.
-
-    Returns
-    -------
-    float
-        For aggregation inside a `LEDGER_FRAME_SCHEMA` frame only. Never
-        persist this, and never compare it for exact equality.
-    """
-    return float(amount)
 
 
 def empty_ledger_frame() -> pl.DataFrame:
