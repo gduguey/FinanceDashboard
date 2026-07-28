@@ -5,6 +5,5 @@
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
     "python.envFile": "${workspaceFolder}/.env.vscode-disabled",
-    "vitest.rootConfig": "web/vitest.config.ts",
-    "vitest.nodeExecutable": "/opt/homebrew/bin/node"
+    "vitest.rootConfig": "web/vitest.config.ts"
 }

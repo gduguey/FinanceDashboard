@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - 'web/src/types/schema.ts'
       - 'web/package.json'
       - 'web/package-lock.json'
@@ -13,6 +15,8 @@ on:
     branches: [main]
     paths:
       - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - 'web/src/types/schema.ts'
       - 'web/package.json'
       - 'web/package-lock.json'
@@ -24,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
