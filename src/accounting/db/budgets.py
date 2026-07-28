@@ -57,12 +57,13 @@ class Budget(Base):
 class GeneralBudget(Base):
     """A category's (or subcategory's) spending target applied to every month alike.
 
-    Uses a random surrogate `id` rather than deriving one from
-    `(category_id, subcategory_id)`: nothing else ever foreign-keys
-    against a `GeneralBudget` row, so there's no cross-reference that
-    needs it to stay stable across a rewrite — the unique index below
-    (coalescing `subcategory_id` to a fixed sentinel) is what actually
-    enforces "one general budget per category/subcategory".
+    Its `id` is derived deterministically from `(category_id, subcategory_id)`
+    by `store`'s `derive_id` call, not the model's own `uuid.uuid4` default
+    (which is never actually used): `save_store` wipes and reinserts this
+    table on every save, so a stable, content-derived id is what lets a row
+    survive that rewrite unchanged. The unique index below (coalescing
+    `subcategory_id` to a fixed sentinel) still enforces "one general budget
+    per category/subcategory".
     """
 
     __tablename__ = "general_budgets"

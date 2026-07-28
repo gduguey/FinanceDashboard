@@ -283,7 +283,9 @@ Two standing rules shape almost every change to this module:
 - **Cache raw, derive everything else.** Every uploaded CSV or PDF, and
   every fetched exchange-rate response, is archived verbatim and
   timestamped — never overwritten — before anything is parsed from it.
-  The Postgres-backed ledger, `exchange_rates/rates.csv`, and the store's
-  auto-registered accounts are all disposable caches, rebuildable from
-  those raw archives (`importers.ingest.rebuild_from_raw_statements`),
-  never the only copy of anything that happened.
+  The Postgres-backed ledger and `exchange_rates/rates.csv` are disposable
+  caches, rebuildable from those raw archives
+  (`importers.ingest.rebuild_from_raw_statements`), never the only copy of
+  anything that happened. Account metadata is the durable record that
+  rebuild *reads* to attribute postings — it must already exist and is not
+  itself reconstructed from statements.
