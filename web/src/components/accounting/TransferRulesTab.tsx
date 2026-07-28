@@ -81,7 +81,10 @@ function TransferRuleEditDialog({
             Priority (lower wins ties)
             <NumberInput
               value={draft.priority}
-              onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? 0 }))}
+              // Clearing the field leaves the priority unchanged rather than
+              // defaulting to 0 — 0 (lowest wins ties) would silently promote
+              // the rule to the very top, which the user never asked for.
+              onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? prev.priority }))}
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">

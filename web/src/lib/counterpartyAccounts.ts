@@ -20,7 +20,7 @@ const IMPORTABLE_ACCOUNT_KINDS = new Set(['checking', 'savings', 'credit_card', 
 
 export function counterpartyOptions(accounts: Record<string, Account>): Account[] {
   return Object.values(accounts)
-    .filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id))
+    .filter((account) => !PLACEHOLDER_ACCOUNT_IDS.has(account.account_id) && !account.closed)
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 

@@ -136,11 +136,21 @@ export function SynthwaveChaseLanding() {
       <button
         className={`login ${tired ? 'tired' : ''}`}
         style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+        aria-label="Se connecter"
         onMouseEnter={flee}
         onTouchStart={(e) => {
           if (!tired) {
             e.preventDefault()
             flee()
+          }
+        }}
+        onKeyDown={(e) => {
+          // Keyboard / assistive-tech users can't chase a fleeing button, so
+          // Enter or Space signs them in directly rather than playing the
+          // pointer-only catch game — otherwise login is genuinely unreachable.
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            void openSignIn()
           }
         }}
         onClick={(e) => {
