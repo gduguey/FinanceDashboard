@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, UniqueConstraint
@@ -137,7 +138,7 @@ class Posting(Base):
     )
     account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
     posted_at: Mapped[datetime]
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str]
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
@@ -183,7 +184,7 @@ class OpeningBalance(Base):
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id", ondelete="CASCADE")
     )
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     as_of_date: Mapped[datetime]
 
 
@@ -202,8 +203,8 @@ class ManualTransfer(Base):
     date: Mapped[datetime]
     from_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
     to_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
-    from_amount: Mapped[float] = mapped_column(MONEY)
-    to_amount: Mapped[float] = mapped_column(MONEY)
+    from_amount: Mapped[Decimal] = mapped_column(MONEY)
+    to_amount: Mapped[Decimal] = mapped_column(MONEY)
     description: Mapped[str] = mapped_column(default="")
 
 
@@ -221,6 +222,6 @@ class OtherAsset(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
-    value: Mapped[float] = mapped_column(MONEY)
+    value: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")
     note: Mapped[str] = mapped_column(default="")

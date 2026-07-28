@@ -16,10 +16,12 @@ from __future__ import annotations
 import io
 import re
 from datetime import datetime
+from decimal import Decimal
 
 import pdfplumber
 
 from accounting.models import EarningsDeposit, EarningsLineItem, EarningsStatement
+from db.money import ZERO, Money
 
 _GROSS_PAY = re.compile(r"Gross (?:Pay|Earnings)[:\s]+\$?([\d,]+\.\d{2})", re.IGNORECASE)
 _NET_PAY = re.compile(r"Net Pay[:\s]+\$?([\d,]+\.\d{2})", re.IGNORECASE)
@@ -49,14 +51,16 @@ _CHECK_AMOUNT = re.compile(r"Check Amount\s+\$[\d,]+\.\d{2}", re.IGNORECASE)
 _LINE_ITEM = re.compile(r"^(?P<label>.+?)\s+\$(?P<current>[\d,]+\.\d{2})\s+\$(?P<ytd>[\d,]+\.\d{2})\s*$", re.MULTILINE)
 
 
-def _to_float(text: str) -> float:
-    """Parse a comma-grouped dollar amount string (e.g. `"2,000.00"`) into a float.
+def _to_money(text: str) -> Money:
+    """Parse a comma-grouped dollar amount string (e.g. `"2,000.00"`) into an exact amount.
 
     Returns
     -------
-    float
+    Money
+        Exact — the string is a decimal literal off the paystub, so
+        `Decimal` keeps precisely the figure printed on it.
     """
-    return float(text.replace(",", ""))
+    return Decimal(text.replace(",", ""))
 
 
 def extract_paystub_pdf_text(pdf_bytes: bytes) -> str:
@@ -105,7 +109,7 @@ def _parse_deposits(text: str) -> list[EarningsDeposit]:
     """
     matches = list(_DEPOSIT_LINE_DOTTED.finditer(text)) or list(_DEPOSIT_LINE_LABELED.finditer(text))
     return [
-        EarningsDeposit(label=match["label"].strip(), account_last4=match["last4"], amount=_to_float(match["amount"]))
+        EarningsDeposit(label=match["label"].strip(), account_last4=match["last4"], amount=_to_money(match["amount"]))
         for match in matches
     ]
 
@@ -129,9 +133,9 @@ def _parse_reimbursement_lines(text: str) -> list[EarningsLineItem]:
         return []
     section = text[start_match.end() : end_match.start()]
     return [
-        EarningsLineItem(label=match["label"].strip(), amount=_to_float(match["current"]))
+        EarningsLineItem(label=match["label"].strip(), amount=_to_money(match["current"]))
         for match in _LINE_ITEM.finditer(section)
-        if _to_float(match["current"]) > 0
+        if _to_money(match["current"]) > 0
     ]
 
 
@@ -173,9 +177,9 @@ def parse_earnings_statement_text(text: str) -> EarningsStatement:
     taxes_match = _TAXES_WITHHELD.search(text)
     return EarningsStatement(
         pay_date=pay_date,
-        gross_pay=_to_float(gross_match[1]),
-        taxes_withheld=_to_float(taxes_match[1]) if taxes_match else 0.0,
-        net_pay=_to_float(net_match[1]),
+        gross_pay=_to_money(gross_match[1]),
+        taxes_withheld=_to_money(taxes_match[1]) if taxes_match else ZERO,
+        net_pay=_to_money(net_match[1]),
         deposits=deposits,
         reimbursement_lines=_parse_reimbursement_lines(text),
     )

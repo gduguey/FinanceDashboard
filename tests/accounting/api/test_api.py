@@ -15,6 +15,7 @@ from accounting.api.routers import llm as accounting_llm_router
 from accounting.config import AccountingConfig
 from accounting.db.llm import LLMUsage
 from accounting.importers import ingest as ingest_module
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.market_data import exchange_rates
 from accounting.models import Posting
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
@@ -2527,7 +2528,7 @@ def _write_posting_with_tags(
         tag_ids=tag_ids,
         description="test",
     )
-    frame = pl.DataFrame([posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    frame = pl.DataFrame([posting.model_dump(mode="python")], schema=LEDGER_FRAME_SCHEMA)
     ingest_module._write_ledger(frame, db_session, user_id=DEFAULT_USER_ID)
 
 
@@ -3422,7 +3423,7 @@ def test_interest_summary_reports_savings_interest_earned(client, db_session) ->
         description="Interest earned",
         meta={},
     )
-    frame = pl.DataFrame([interest_posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    frame = pl.DataFrame([interest_posting.model_dump(mode="python")], schema=LEDGER_FRAME_SCHEMA)
     ingest_module._write_ledger(frame, db_session, user_id=DEFAULT_USER_ID)
 
     response = client.get("/api/accounting/interest-summary", params={"as_of": "2026-04-30"})

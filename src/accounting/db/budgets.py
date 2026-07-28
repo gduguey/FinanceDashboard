@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, text
@@ -50,7 +51,7 @@ class Budget(Base):
     subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")
 
 
@@ -85,5 +86,5 @@ class GeneralBudget(Base):
     subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")

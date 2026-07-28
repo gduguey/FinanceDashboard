@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
@@ -34,7 +35,7 @@ class Goal(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
-    target_amount: Mapped[float] = mapped_column(MONEY)
+    target_amount: Mapped[Decimal] = mapped_column(MONEY)
     target_currency: Mapped[str] = mapped_column(default="USD")
     target_date: Mapped[datetime]
     color: Mapped[str]
@@ -70,7 +71,7 @@ class GoalContribution(Base):
     natural_key: Mapped[str]
     goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))
     date: Mapped[datetime]
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str] = mapped_column(default="USD")
     note: Mapped[str] = mapped_column(default="")
     # SET NULL, not CASCADE: `amount`/`date` are the real financial record
@@ -110,7 +111,7 @@ class RecurringAddition(Base):
     frequency: Mapped[str]
     end_date: Mapped[date | None] = mapped_column(default=None)
     mode: Mapped[str]
-    value: Mapped[float] = mapped_column(MONEY, default=0)
+    value: Mapped[Decimal] = mapped_column(MONEY, default=0)
     currency: Mapped[str] = mapped_column(default="USD")
     priority: Mapped[int] = mapped_column(default=0)
 

@@ -45,6 +45,7 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
+from db.money import ZERO, Money, Rate
 
 
 class AccountingStoreResponse(BaseModel):
@@ -122,7 +123,7 @@ class BudgetToDeletePreview(BaseModel):
     """
 
     month: str | None
-    amount: float
+    amount: Money
     currency: CurrencyCode
 
 
@@ -141,7 +142,7 @@ class BudgetUpsert(BaseModel):
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
 
 
@@ -154,7 +155,7 @@ class GeneralBudgetUpsert(BaseModel):
 
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
 
 
@@ -247,7 +248,7 @@ class GoalCreate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    target_amount: float
+    target_amount: Money
     target_currency: CurrencyCode = "USD"
     target_date: datetime
 
@@ -265,7 +266,7 @@ class GoalUpdate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    target_amount: float
+    target_amount: Money
     target_currency: CurrencyCode = "USD"
     target_date: datetime
     color: str = Field(min_length=1)
@@ -282,10 +283,10 @@ class SimulatorScenarioCreate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    initial_capital: float
-    monthly_contribution: float
-    horizon_years: float
-    annual_rate_pct: float
+    initial_capital: Money
+    monthly_contribution: Money
+    horizon_years: Rate
+    annual_rate_pct: Rate
     compounding_frequency: CompoundingFrequency = "monthly"
     currency: CurrencyCode = "USD"
 
@@ -306,7 +307,7 @@ class RecurringAdditionCreate(BaseModel):
     frequency: RecurringAdditionFrequency
     end_date: date | None = None
     mode: RecurringAdditionMode
-    value: float = 0.0
+    value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
     currency: CurrencyCode = "USD"
 
 
@@ -326,7 +327,7 @@ class RecurringAdditionUpdate(BaseModel):
     frequency: RecurringAdditionFrequency
     end_date: date | None = None
     mode: RecurringAdditionMode
-    value: float = 0.0
+    value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
     currency: CurrencyCode = "USD"
     priority: int
 
@@ -339,7 +340,7 @@ class OtherAssetCreate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    value: float
+    value: Money
     currency: CurrencyCode = "USD"
     note: str = ""
 
@@ -600,7 +601,7 @@ class CategorizationMatch(BaseModel):
     row_number: int
     posted_at: datetime
     description: str
-    amount: float
+    amount: Money
     proposed_category_id: str | None
     proposed_category_name: str | None
     proposed_subcategory_id: str | None
@@ -631,7 +632,7 @@ class DepositMatch(BaseModel):
     """One paystub deposit, matched (or not) against a real bank posting — see `dashboard.paystub.DepositMatch`."""
 
     label: str
-    amount: float
+    amount: Money
     account_last4: str | None
     posting_id: str | None
     account_id: str | None
@@ -749,7 +750,7 @@ class GoalContributionCreate(BaseModel):
 
     goal_id: str = Field(min_length=1)
     date: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
     note: str = ""
     source_posting_id: str | None = None
@@ -767,7 +768,7 @@ class GoalContributionUpdate(BaseModel):
 
     goal_id: str = Field(min_length=1)
     date: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
     note: str = ""
     source_posting_id: str | None = None
@@ -1006,7 +1007,7 @@ class BudgetComparisonRow(BaseModel):
     subcategory_id: str | None
     subcategory_name: str | None
     color: str
-    budgeted: float
+    budgeted: Money
     actual: float
     currency: CurrencyCode
 

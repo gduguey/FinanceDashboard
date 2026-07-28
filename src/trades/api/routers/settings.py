@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from db.current_user import get_current_user_id
+from db.money import quantize_rate
 from db.session import get_db
 from trades import dashboard
 from trades.api.api_models import (
@@ -250,9 +251,11 @@ def _tax_settings_response(
         w8ben_claimed=settings.w8ben_claimed,
         w8ben_treaty_rate_pct=settings.w8ben_treaty_rate_pct,
         marginal_ordinary_rate_pct=settings.marginal_ordinary_rate_pct,
-        resolved_marginal_ordinary_rate_pct=dashboard.resolved_marginal_ordinary_rate(config, settings) * 100,
+        resolved_marginal_ordinary_rate_pct=quantize_rate(
+            dashboard.resolved_marginal_ordinary_rate(config, settings) * 100
+        ),
         qualified_ltcg_rate_pct=settings.qualified_ltcg_rate_pct,
-        resolved_qualified_ltcg_rate_pct=dashboard.resolved_qualified_ltcg_rate(config, settings) * 100,
+        resolved_qualified_ltcg_rate_pct=quantize_rate(dashboard.resolved_qualified_ltcg_rate(config, settings) * 100),
         version=get_dashboard_settings_version(session, user_id),
     )
 

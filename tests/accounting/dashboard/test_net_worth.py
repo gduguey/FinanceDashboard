@@ -5,9 +5,10 @@ import pytest
 
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import DisplayCurrency
-from accounting.models import Account, OpeningBalance, OtherAsset, Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account, OpeningBalance, OtherAsset
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 
 def _posting(

@@ -4,9 +4,9 @@ import polars as pl
 import pytest
 
 from accounting.ledger.duplicates import description_similarity, find_duplicate_candidates
-from accounting.models import Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 
 def _posting(

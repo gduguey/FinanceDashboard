@@ -25,9 +25,10 @@ from accounting.importers.canonical.csv import (
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.replay import validate_balanced
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
-from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Posting
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS
 from accounting.store import load_store, normalize_categories, save_store
 from accounting.utils.statement_archive import StatementArchive
 from db.base import derive_id, natural_keys_by_id
@@ -111,7 +112,7 @@ def load_ledger(
     Returns
     -------
     polars.DataFrame
-        Shaped exactly like `Posting.polars_schema` — every other ledger
+        Shaped exactly like `LEDGER_FRAME_SCHEMA` — every other ledger
         and dashboard module depends on that shape, not on how it's
         actually stored, so nothing downstream of this function needed to
         change when its own storage moved from `ledger.csv` to Postgres.
@@ -126,7 +127,7 @@ def load_ledger(
         query = query.filter(adb.Posting.posted_at <= datetime.combine(until, time.max))
     rows = query.all()
     if not rows:
-        return pl.DataFrame(schema=Posting.polars_schema)
+        return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
 
     transaction_natural_key_by_id = natural_keys_by_id(
         session, adb.Transaction, user_id, [row.transaction_id for row in rows]
@@ -165,7 +166,7 @@ def load_ledger(
         }
         for row in rows
     ]
-    return pl.DataFrame(records, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return pl.DataFrame(records, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
 
 def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) -> None:
@@ -188,7 +189,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     Parameters
     ----------
     ledger
-        The full ledger to persist, shaped like `Posting.polars_schema`.
+        The full ledger to persist, shaped like `LEDGER_FRAME_SCHEMA`.
     session
         An open database session; `session.commit()` is called on success.
     user_id
@@ -466,7 +467,7 @@ def _reassign_colliding_transaction_ids(existing: pl.DataFrame, new: pl.DataFram
                 rows[counterparty_index]["transaction_id"] = final_id
                 rows[counterparty_index]["posting_id"] = f"{final_id}:1"
 
-    return pl.DataFrame(rows, schema=Posting.polars_schema)
+    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA)
 
 
 def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
@@ -863,7 +864,7 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
         raise FileNotFoundError(message)
 
     store = load_store(session, user_id=user_id)
-    frames = [pl.DataFrame(schema=Posting.polars_schema)]
+    frames = [pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)]
     for relative_path in csv_relative_paths:
         institution, account_id, _filename = relative_path.split("/")
         # An archived-but-now-missing account is an invariant violation, not a

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from accounting.importers.ingest import _write_ledger, load_ledger
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import Account, Posting, TransferRule
 from accounting.store import load_store, save_store
@@ -80,7 +81,7 @@ def _seed_transfer_pair(session: Session, user_id: uuid.UUID) -> None:
         _placeholder_posting("card:1:0", "card:1", "chase:credit_card:8235", 70.0, card_at, "Payment Thank You"),
         _placeholder_posting("card:1:1", "card:1", "uncategorized:income", -70.0, card_at, "Payment Thank You"),
     ]
-    ledger = pl.DataFrame([p.model_dump(mode="python") for p in postings], schema=Posting.polars_schema)
+    ledger = pl.DataFrame([p.model_dump(mode="python") for p in postings], schema=LEDGER_FRAME_SCHEMA)
     _write_ledger(ledger, session, user_id=user_id)
 
 

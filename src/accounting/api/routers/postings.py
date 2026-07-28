@@ -60,6 +60,7 @@ from accounting.store import (
 )
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
+from db.money import ZERO, quantize_money
 from db.session import get_db
 
 router = APIRouter()
@@ -194,9 +195,6 @@ def put_posting_override(
     return override
 
 
-_SPLIT_ZERO_SUM_TOLERANCE = 1e-6
-
-
 def _current_amount_for_split(postings: pl.DataFrame, posting_id: str) -> float | None:
     """Return the amount a split of `posting_id` must sum to — its own amount, or (if already split) its legs' total.
 
@@ -242,8 +240,11 @@ def put_posting_split(
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
-    total = sum(leg.amount for leg in legs)
-    if abs(total - current_amount) > _SPLIT_ZERO_SUM_TOLERANCE:
+    # Both sides are exact `Decimal` now, so this is a true equality check —
+    # no float slack, and a genuinely off-by-a-hundredth split is caught
+    # instead of being absorbed by a tolerance.
+    total = sum((leg.amount for leg in legs), start=ZERO)
+    if total != quantize_money(current_amount):
         raise HTTPException(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )

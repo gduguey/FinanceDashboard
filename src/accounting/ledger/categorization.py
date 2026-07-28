@@ -29,7 +29,8 @@ from typing import TYPE_CHECKING, overload
 
 import polars as pl
 
-from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, Posting, PostingMerge, PostingSplit
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, PostingMerge, PostingSplit
 from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
@@ -190,7 +191,7 @@ def apply_rules(
     -------
     polars.DataFrame or polars.LazyFrame
         The postings with resolved counterparties where a rule matched,
-        rebuilt through `Posting.polars_schema` exactly like every other
+        rebuilt through `LEDGER_FRAME_SCHEMA` exactly like every other
         step in this resolution chain — same type (lazy or eager) as `postings`.
     """
     lf = postings.lazy() if isinstance(postings, pl.DataFrame) else postings
@@ -208,7 +209,7 @@ def apply_rules(
             .otherwise(pl.col("account_id"))
             .alias("account_id")
         )
-        .select(*Posting.polars_schema)
+        .select(*LEDGER_FRAME_SCHEMA)
         .sort("posted_at", "posting_id")
     )
     return result.collect() if isinstance(postings, pl.DataFrame) else result
@@ -288,7 +289,7 @@ def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]
                 "subcategory_id": leg.subcategory_id,
                 "description": leg.description or row["description"],
             })
-    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
 
 def apply_manual_overrides(postings: pl.DataFrame, overrides: dict[str, ManualOverride]) -> pl.DataFrame:
@@ -318,7 +319,7 @@ def apply_manual_overrides(postings: pl.DataFrame, overrides: dict[str, ManualOv
             value = getattr(override, field)
             if value is not None:
                 row[field] = value
-    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
 
 def apply_posting_merges(postings: pl.DataFrame, merges: dict[str, PostingMerge]) -> pl.DataFrame:

@@ -1,3 +1,4 @@
+from decimal import Decimal
 import pytest
 
 from accounting.importers.paystub import parse_earnings_statement_text
@@ -21,9 +22,9 @@ Reimbursement ending in 9579 $200.00
 
 def test_parse_earnings_statement_text_reads_the_totals() -> None:
     statement = parse_earnings_statement_text(SAMPLE_STATEMENT_TEXT)
-    assert statement.gross_pay == pytest.approx(4000.0)
-    assert statement.taxes_withheld == pytest.approx(800.0)
-    assert statement.net_pay == pytest.approx(3200.0)
+    assert statement.gross_pay == Decimal("4000.0")
+    assert statement.taxes_withheld == Decimal("800.0")
+    assert statement.net_pay == Decimal("3200.0")
     assert statement.pay_date.date().isoformat() == "2026-06-30"
 
 
@@ -31,14 +32,14 @@ def test_parse_earnings_statement_text_reads_every_deposit_line() -> None:
     statement = parse_earnings_statement_text(SAMPLE_STATEMENT_TEXT)
     assert len(statement.deposits) == 2
     amounts = sorted(deposit.amount for deposit in statement.deposits)
-    assert amounts == pytest.approx([200.0, 3000.0])
+    assert amounts == [Decimal("200.0"), Decimal("3000.0")]
     assert all(deposit.account_last4 == "9579" for deposit in statement.deposits)
 
 
 def test_parse_earnings_statement_text_defaults_missing_taxes_to_zero() -> None:
     text = "Pay Date: 06/30/2026\nGross Pay: $100.00\nNet Pay: $100.00\nChecking ending in 1234 $100.00\n"
     statement = parse_earnings_statement_text(text)
-    assert statement.taxes_withheld == pytest.approx(0.0)
+    assert statement.taxes_withheld == Decimal("0.0")
 
 
 def test_parse_earnings_statement_text_raises_naming_whats_missing() -> None:
@@ -82,9 +83,9 @@ REAL_PAYSTUB_TEXT = (
 
 def test_parse_earnings_statement_text_reads_a_real_gusto_style_paystub() -> None:
     statement = parse_earnings_statement_text(REAL_PAYSTUB_TEXT)
-    assert statement.gross_pay == pytest.approx(4583.33)
-    assert statement.taxes_withheld == pytest.approx(1056.27)
-    assert statement.net_pay == pytest.approx(3527.06)
+    assert statement.gross_pay == Decimal("4583.33")
+    assert statement.taxes_withheld == Decimal("1056.27")
+    assert statement.net_pay == Decimal("3527.06")
     assert statement.pay_date.date().isoformat() == "2026-06-15"
 
 
@@ -92,9 +93,9 @@ def test_parse_earnings_statement_text_reads_deposits_split_across_two_accounts(
     statement = parse_earnings_statement_text(REAL_PAYSTUB_TEXT)
     assert len(statement.deposits) == 2
     by_last4 = {deposit.account_last4: deposit.amount for deposit in statement.deposits}
-    assert by_last4["3680"] == pytest.approx(2000.0)
-    assert by_last4["9579"] == pytest.approx(2715.82)
-    assert sum(deposit.amount for deposit in statement.deposits) == pytest.approx(4715.82)
+    assert by_last4["3680"] == Decimal("2000.0")
+    assert by_last4["9579"] == Decimal("2715.82")
+    assert sum(deposit.amount for deposit in statement.deposits) == Decimal("4715.82")
 
 
 def test_parse_earnings_statement_text_excludes_zero_current_period_reimbursements() -> None:
@@ -105,11 +106,13 @@ def test_parse_earnings_statement_text_excludes_zero_current_period_reimbursemen
         "Late-night meal reimbursement - 6/3/26",
         "STEM OPT application fees (Reimbursement #19)",
     }
-    assert sum(line.amount for line in statement.reimbursement_lines) == pytest.approx(1188.76)
+    assert sum(line.amount for line in statement.reimbursement_lines) == Decimal("1188.76")
 
 
 def test_parse_earnings_statement_text_deposits_reconcile_against_net_pay_plus_reimbursements() -> None:
     statement = parse_earnings_statement_text(REAL_PAYSTUB_TEXT)
     total_deposited = sum(deposit.amount for deposit in statement.deposits)
     total_owed = statement.net_pay + sum(line.amount for line in statement.reimbursement_lines)
-    assert total_deposited == pytest.approx(total_owed)
+    # Exact, not approximate: both sides are parsed straight off the paystub
+    # as `Decimal`, so a real statement reconciles to the cent or it is wrong.
+    assert total_deposited == total_owed

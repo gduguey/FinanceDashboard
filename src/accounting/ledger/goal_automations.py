@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+from accounting.ledger.frame import to_analytics_amount
+
 if TYPE_CHECKING:
     from accounting.models import RecurringAddition, WithdrawalPriorityEntry
 
@@ -106,9 +108,9 @@ def run_recurring_additions(additions: list[RecurringAddition], unallocated: flo
         if remaining <= 0:
             break
         if addition.mode == "fixed_amount":
-            wanted = addition.value
+            wanted = to_analytics_amount(addition.value)
         elif addition.mode == "percent_of_unallocated":
-            wanted = unallocated * (addition.value / 100.0)
+            wanted = unallocated * (to_analytics_amount(addition.value) / 100.0)
         else:
             wanted = remaining
         amount = min(wanted, remaining)

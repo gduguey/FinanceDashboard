@@ -9,9 +9,10 @@ from accounting.dashboard.budgets import (
     suggested_budget_amount,
     suggested_budget_amount_window,
 )
-from accounting.models import Account, Budget, Category, Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account, Budget, Category
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 
 def _posting(

@@ -10,30 +10,100 @@ their own Postgres schema and never foreign-key into each other directly.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING
+from decimal import Decimal
+from typing import TYPE_CHECKING, override
 
-from sqlalchemy import MetaData, Numeric, text
+from sqlalchemy import MetaData, Numeric, TypeDecorator, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from typing import Any
 
+    from sqlalchemy.engine.interfaces import Dialect
     from sqlalchemy.orm import Session
 
-MONEY = Numeric(18, 4, asdecimal=False)
+MONEY = Numeric(18, 4, asdecimal=True)
 """The column type for every money amount in this schema.
 
-`asdecimal=False` makes psycopg hand back a Python `float`, matching every
-pydantic model's own `amount: float` field — without it, SQLAlchemy's
-default is to return `decimal.Decimal`, silently mismatching the
-`Mapped[float]` annotation every ORM model here declares. Postgres itself
-still stores and computes on the exact `NUMERIC(18, 4)` representation
-either way; this only changes what Python type the driver hands back.
+`asdecimal=True` is the whole point: psycopg hands back an exact
+`decimal.Decimal`, so the exactness Postgres already maintains in its own
+`NUMERIC(18, 4)` representation survives being read into Python instead of
+being discarded at the driver boundary. Every ORM column using this type is
+annotated `Mapped[Decimal]` to match. See `db.money` for the scale and
+rounding policy that goes with it.
 """
 
-SHARES = Numeric(20, 8, asdecimal=False)
+SHARES = Numeric(20, 8, asdecimal=True)
 """Like `MONEY`, but for fractional share counts, which need more decimal places."""
+
+RATE = Numeric(12, 6)
+"""The column type for every rate or percentage.
+
+`NUMERIC`, never `double precision`: a rate is multiplied into a money
+amount, so a float rate reintroduces exactly the drift `MONEY` exists to
+prevent. Six decimal places — wider than money, see `db.money.RATE_SCALE`.
+"""
+
+
+class RateMap(TypeDecorator[dict[str, Decimal]]):
+    """A JSONB map of name to exact rate, e.g. a target allocation per symbol.
+
+    JSON has no decimal type, and psycopg refuses to serialize a `Decimal`
+    outright rather than silently narrowing it. Storing the values as
+    strings is therefore the *exact* representation, not a workaround —
+    `"33.333333"` round-trips to the same `Decimal` it went in as, where a
+    JSON number would land on the nearest double.
+
+    This is only for a genuine map of rates whose keys are open-ended
+    (symbols the user picks). A fixed, known set of rates should be real
+    `RATE` columns instead — see the DB audit's D11.
+    """
+
+    impl = JSONB
+    cache_ok = True
+
+    @override
+    def process_bind_param(self, value: dict[str, Decimal] | None, dialect: Dialect) -> dict[str, str] | None:
+        """Serialize each rate to its exact decimal string.
+
+        Parameters
+        ----------
+        value
+            The map on its way to Postgres, or `None`.
+        dialect
+            Unused; required by the `TypeDecorator` interface.
+
+        Returns
+        -------
+        dict[str, str] or None
+        """
+        del dialect
+        if value is None:
+            return None
+        return {key: str(rate) for key, rate in value.items()}
+
+    @override
+    def process_result_value(self, value: dict[str, str] | None, dialect: Dialect) -> dict[str, Decimal] | None:
+        """Parse each stored string back into an exact `Decimal`.
+
+        Parameters
+        ----------
+        value
+            The map as read from Postgres, or `None`.
+        dialect
+            Unused; required by the `TypeDecorator` interface.
+
+        Returns
+        -------
+        dict[str, Decimal] or None
+        """
+        del dialect
+        if value is None:
+            return None
+        return {key: Decimal(str(rate)) for key, rate in value.items()}
+
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",

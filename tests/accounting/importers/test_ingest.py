@@ -16,6 +16,7 @@ from accounting.importers.ingest import (
     load_ledger,
     rebuild_from_raw_statements,
 )
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Account, Posting
 from accounting.store import load_store, save_store
 
@@ -379,7 +380,7 @@ def _unbalanced_posting_frame(account_id: str) -> pl.DataFrame:
         description="test",
         meta={},
     )
-    return pl.DataFrame([posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    return pl.DataFrame([posting.model_dump(mode="python")], schema=LEDGER_FRAME_SCHEMA)
 
 
 def test_ingest_csv_rejects_a_standardizer_result_that_doesnt_balance(

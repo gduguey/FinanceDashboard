@@ -46,6 +46,7 @@ from accounting.store import (
 )
 from db.base import derive_id
 from db.current_user import get_current_user_id
+from db.money import quantize_money
 from db.session import get_db
 
 router = APIRouter()
@@ -600,7 +601,9 @@ def post_run_recurring_additions(
             contribution_id=contribution_id,
             goal_id=goal_id,
             date=datetime.combine(occurrence, datetime.min.time()),
-            amount=amount,
+            # Computed in the float analytics projection; re-quantized here
+            # because it is about to be stored. See `accounting.ledger.frame`.
+            amount=quantize_money(amount),
             currency=addition.currency,
             note="Recurring addition",
             origin="automation",
@@ -653,7 +656,8 @@ def post_run_withdrawal_automation(
             contribution_id=contribution_id,
             goal_id=goal_id,
             date=datetime(as_of_date.year, as_of_date.month, as_of_date.day),  # noqa: DTZ001  (ledger dates are naive)
-            amount=amount,
+            # Re-quantized on the way into storage, as above.
+            amount=quantize_money(amount),
             note="Withdrawal automation — unallocated went negative",
             origin="automation",
         )

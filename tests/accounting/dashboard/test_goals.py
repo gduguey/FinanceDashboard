@@ -5,9 +5,10 @@ import pytest
 
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.currency import DisplayCurrency
-from accounting.models import Account, GoalContribution, Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account, GoalContribution
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 CHECKING = Account(
     account_id="chase:checking:9579", name="Chase Checking", kind="checking", institution="Chase", currency="USD"

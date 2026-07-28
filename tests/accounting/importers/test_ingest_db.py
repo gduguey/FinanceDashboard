@@ -1,6 +1,6 @@
 """`load_ledger`/`_write_ledger`/`remap_ledger_category_ids` against real Postgres.
 
-`Posting.polars_schema` is the contract every other ledger/dashboard module
+`LEDGER_FRAME_SCHEMA` is the contract every other ledger/dashboard module
 (`ledger.replay`, `dashboard.income_statement`, ...) already depends on —
 these tests exist to pin that the Postgres-backed boundary still returns
 exactly that shape, so none of those downstream modules need to change.
@@ -22,6 +22,7 @@ from accounting.importers.ingest import (
     remap_ledger_category_ids,
     uncategorize_ledger_postings,
 )
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import make_transfer_link
 from accounting.models import Account, Goal, GoalContribution, Posting, PostingMerge, Tag, TransferRule
 from accounting.store import load_store, save_store
@@ -72,9 +73,7 @@ def _register_account(session: Session, user_id: uuid.UUID, account_id: str = "c
 
 def _frame(*postings: Posting) -> pl.DataFrame:
     records = [p.model_dump(mode="python") for p in postings]
-    return (
-        pl.DataFrame(records, schema=Posting.polars_schema) if records else pl.DataFrame(schema=Posting.polars_schema)
-    )
+    return pl.DataFrame(records, schema=LEDGER_FRAME_SCHEMA) if records else pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
 
 
 def test_load_ledger_with_no_postings_yet_is_an_empty_frame_with_the_right_schema(
@@ -82,7 +81,7 @@ def test_load_ledger_with_no_postings_yet_is_an_empty_frame_with_the_right_schem
 ) -> None:
     ledger = load_ledger(db_session, user_id=test_user_id)
     assert ledger.is_empty()
-    assert ledger.schema == Posting.polars_schema
+    assert ledger.schema == LEDGER_FRAME_SCHEMA
 
 
 def test_write_then_load_ledger_round_trips_a_posting(db_session: Session, test_user_id: uuid.UUID) -> None:

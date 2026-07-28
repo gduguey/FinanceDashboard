@@ -15,10 +15,11 @@ reimbursement legs).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import ClassVar, Literal, assert_never, get_args
+from typing import Literal, assert_never, get_args
 
-import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from db.money import ZERO, Money, Rate
 
 AccountKind = Literal[
     "checking",
@@ -321,7 +322,7 @@ class OtherAsset(BaseModel):
 
     asset_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    value: float
+    value: Money
     currency: CurrencyCode = "USD"
     note: str = ""
 
@@ -340,7 +341,7 @@ class OpeningBalance(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     account_id: str = Field(min_length=1)
-    amount: float
+    amount: Money
     as_of_date: datetime
 
 
@@ -364,8 +365,8 @@ class ManualTransfer(BaseModel):
     date: datetime
     from_account_id: str = Field(min_length=1)
     to_account_id: str = Field(min_length=1)
-    from_amount: float = Field(gt=0)
-    to_amount: float = Field(gt=0)
+    from_amount: Money = Field(gt=0)
+    to_amount: Money = Field(gt=0)
     description: str = ""
 
 
@@ -394,7 +395,7 @@ class Budget(BaseModel):
     month: str = Field(pattern=r"^\d{4}-\d{2}$")
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
 
 
@@ -412,7 +413,7 @@ class GeneralBudget(BaseModel):
 
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
 
 
@@ -431,10 +432,10 @@ class SimulatorScenario(BaseModel):
 
     scenario_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    initial_capital: float
-    monthly_contribution: float
-    horizon_years: float
-    annual_rate_pct: float
+    initial_capital: Money
+    monthly_contribution: Money
+    horizon_years: Rate
+    annual_rate_pct: Rate
     compounding_frequency: CompoundingFrequency = "monthly"
     currency: CurrencyCode = "USD"
 
@@ -453,7 +454,7 @@ class Goal(BaseModel):
 
     goal_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    target_amount: float
+    target_amount: Money
     target_currency: CurrencyCode = "USD"
     target_date: datetime
     color: str = Field(min_length=1)
@@ -486,7 +487,7 @@ class GoalContribution(BaseModel):
     contribution_id: str = Field(min_length=1)
     goal_id: str = Field(min_length=1)
     date: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
     note: str = ""
     source_posting_id: str | None = None
@@ -525,7 +526,7 @@ class RecurringAddition(BaseModel):
     frequency: RecurringAdditionFrequency
     end_date: date | None = None
     mode: RecurringAdditionMode
-    value: float = 0.0
+    value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
     currency: CurrencyCode = "USD"
     priority: int = 0
 
@@ -582,7 +583,7 @@ class EarningsDeposit(BaseModel):
 
     label: str = Field(min_length=1)
     account_last4: str | None = None
-    amount: float
+    amount: Money
 
 
 class EarningsLineItem(BaseModel):
@@ -597,7 +598,7 @@ class EarningsLineItem(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     label: str = Field(min_length=1)
-    amount: float
+    amount: Money
 
 
 class EarningsStatement(BaseModel):
@@ -615,9 +616,9 @@ class EarningsStatement(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     pay_date: datetime
-    gross_pay: float
-    taxes_withheld: float
-    net_pay: float
+    gross_pay: Money
+    taxes_withheld: Money
+    net_pay: Money
     deposits: list[EarningsDeposit] = Field(min_length=1)
     reimbursement_lines: list[EarningsLineItem] = Field(default_factory=list)
 
@@ -679,7 +680,7 @@ class PostingSplitLeg(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    amount: float
+    amount: Money
     category_id: str | None = None
     subcategory_id: str | None = None
     description: str = ""
@@ -764,7 +765,7 @@ class Posting(BaseModel):
     transaction_id: str = Field(min_length=1)
     account_id: str = Field(min_length=1)
     posted_at: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode
     category_id: str | None = None
     subcategory_id: str | None = None
@@ -772,18 +773,3 @@ class Posting(BaseModel):
     tag_ids: list[str] = Field(default_factory=list)
     description: str = ""
     meta: dict[str, str] = Field(default_factory=dict)
-
-    polars_schema: ClassVar[dict[str, type[pl.DataType] | pl.DataType]] = {
-        "posting_id": pl.Utf8,
-        "transaction_id": pl.Utf8,
-        "account_id": pl.Utf8,
-        "posted_at": pl.Datetime("us"),
-        "amount": pl.Float64,
-        "currency": pl.Utf8,
-        "category_id": pl.Utf8,
-        "subcategory_id": pl.Utf8,
-        "budget_id": pl.Utf8,
-        "tag_ids": pl.List(pl.Utf8),
-        "description": pl.Utf8,
-        "meta": pl.Object,
-    }

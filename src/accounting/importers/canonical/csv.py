@@ -23,6 +23,7 @@ import polars as pl
 
 from accounting.importers.canonical.parsing import find_column, parse_amount_flexible, parse_date_flexible
 from accounting.importers.common import row_hash
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Category, Posting
 from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
@@ -30,6 +31,7 @@ from accounting.store import (
     next_available_color,
     slugify,
 )
+from db.money import ZERO, Money
 
 if TYPE_CHECKING:
     from datetime import date as date_type
@@ -131,7 +133,7 @@ class _ParsedRow:
     """One successfully parsed input row, before its category names are resolved against the store."""
 
     posted_at: datetime
-    amount: float
+    amount: Money
     description: str
     category_name: str | None
     subcategory_name: str | None
@@ -200,12 +202,12 @@ def _resolve_columns(header: list[str]) -> _Columns:
     )
 
 
-def _row_amount(row_cell: dict[str, str], columns: _Columns) -> float | None:
+def _row_amount(row_cell: dict[str, str], columns: _Columns) -> Money | None:
     """Read one row's signed amount from either its Amount column or its Debit/Credit pair.
 
     Returns
     -------
-    float or None
+    Money or None
     """
     if columns.amount is not None:
         return parse_amount_flexible(row_cell[columns.amount])
@@ -213,7 +215,7 @@ def _row_amount(row_cell: dict[str, str], columns: _Columns) -> float | None:
     credit = parse_amount_flexible(row_cell[columns.credit]) if columns.credit else None
     if debit is None and credit is None:
         return None
-    return (credit or 0.0) - abs(debit or 0.0)
+    return (credit or ZERO) - abs(debit or ZERO)
 
 
 def _parse_rows(
@@ -329,7 +331,7 @@ def _unique_category_id(base_id: str, existing: dict[str, Category], created: di
     return f"{base_id}-{suffix}"
 
 
-def _classification_for(amounts: list[float]) -> CategoryClassification:
+def _classification_for(amounts: list[Money]) -> CategoryClassification:
     """Infer a new category's classification from the majority sign of the amounts filed under it.
 
     Returns
@@ -356,7 +358,7 @@ def _resolve_top_categories(
         share one id here, which is what makes that rename a merge.
     """
     overrides = category_overrides or {}
-    amounts_by_effective_key: dict[str, list[float]] = {}
+    amounts_by_effective_key: dict[str, list[Money]] = {}
     display_name_by_effective_key: dict[str, str] = {}
     raw_keys_by_effective_key: dict[str, set[str]] = {}
     for row in parsed_rows:
@@ -395,7 +397,7 @@ def _resolve_top_categories(
 class _SubcategoryGroups:
     """One row per resolved `(parent_id, effective_subcategory_key)` group, ready to create or match."""
 
-    amounts_by_resolved_key: dict[tuple[str, str], list[float]]
+    amounts_by_resolved_key: dict[tuple[str, str], list[Money]]
     display_name_by_resolved_key: dict[tuple[str, str], str]
     raw_keys_by_resolved_key: dict[tuple[str, str], set[tuple[str, str]]]
 
@@ -482,7 +484,7 @@ class ResolvedCategorizationRow:
     """
 
     posted_at: datetime
-    amount: float
+    amount: Money
     description: str
     category_id: str | None
     subcategory_id: str | None
@@ -685,7 +687,7 @@ def _standardize_rows(
     )
     postings = _build_postings(parsed_rows, account_id, account_currency, top_category_ids, subcategory_ids)
 
-    frame = pl.DataFrame([posting.model_dump() for posting in postings], schema=Posting.polars_schema)
+    frame = pl.DataFrame([posting.model_dump() for posting in postings], schema=LEDGER_FRAME_SCHEMA)
     return CanonicalImportResult(
         postings=frame.sort("posted_at", "posting_id"), new_categories=new_categories, skipped_rows=skip_info
     )

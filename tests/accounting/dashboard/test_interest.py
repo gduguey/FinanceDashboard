@@ -4,9 +4,10 @@ import polars as pl
 import pytest
 
 from accounting.dashboard.interest import interest_summary
-from accounting.models import Account, Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 
 def _posting(

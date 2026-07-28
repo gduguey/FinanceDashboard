@@ -290,7 +290,7 @@ def apply_transfer_links(postings: pl.DataFrame, links: list[TransferLink]) -> p
     The counterpart to `ledger.categorization.apply_posting_merges` in the
     resolution pipeline, and deliberately the *last* step in it (see
     `api.dependencies._resolved_postings_and_store`) — `apply_posting_splits`/
-    `apply_manual_overrides` rebuild the frame through `Posting.polars_schema`,
+    `apply_manual_overrides` rebuild the frame through `LEDGER_FRAME_SCHEMA`,
     which would silently drop a column added any earlier. Neither
     transaction's own posting is ever touched here — only these three new
     columns are added, so `dashboard.net_worth`/`ledger.replay.account_balances`

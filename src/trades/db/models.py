@@ -18,13 +18,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import MONEY, SHARES, Base, check_in_sql
+from db.base import MONEY, RATE, SHARES, Base, RateMap, check_in_sql
 from trades.config import LedgerEventType, TaxRegime
 
 SCHEMA = "trades"
@@ -78,7 +79,7 @@ class LedgerEvent(Base):
     event_datetime: Mapped[datetime]
     symbol: Mapped[str]
     event_type: Mapped[str]
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str]
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
@@ -100,8 +101,8 @@ class LedgerEventTradeDetails(Base):
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.ledger_events.id", ondelete="CASCADE"), primary_key=True
     )
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    shares: Mapped[float] = mapped_column(SHARES)
-    price: Mapped[float] = mapped_column(MONEY)
+    shares: Mapped[Decimal] = mapped_column(SHARES)
+    price: Mapped[Decimal] = mapped_column(MONEY)
 
 
 class DashboardSettings(Base):
@@ -121,18 +122,18 @@ class DashboardSettings(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    target_allocation_pct: Mapped[dict[str, float]] = mapped_column(JSONB, default=dict)
+    target_allocation_pct: Mapped[dict[str, Decimal]] = mapped_column(RateMap, default=dict)
     hysa_bank_id: Mapped[str | None] = mapped_column(default=None)
-    hysa_fixed_rate_pct: Mapped[float | None] = mapped_column(default=None)
+    hysa_fixed_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
     benchmark_symbol_override: Mapped[str | None] = mapped_column(default=None)
     local_zone: Mapped[str | None] = mapped_column(default=None)
     tax_enabled: Mapped[bool] = mapped_column(default=False)
     tax_regime: Mapped[str | None] = mapped_column(default=None)
     residency_status_change_date: Mapped[date | None] = mapped_column(default=None)
     w8ben_claimed: Mapped[bool] = mapped_column(default=False)
-    w8ben_treaty_rate_pct: Mapped[float | None] = mapped_column(default=None)
-    marginal_ordinary_rate_pct: Mapped[float | None] = mapped_column(default=None)
-    qualified_ltcg_rate_pct: Mapped[float | None] = mapped_column(default=None)
+    w8ben_treaty_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
+    marginal_ordinary_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
+    qualified_ltcg_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
 
 
 class DashboardSettingsVersion(Base):

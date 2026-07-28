@@ -10,6 +10,7 @@ the same way a general-purpose spreadsheet import would.
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
 from dateutil import parser as dateutil_parser
@@ -17,6 +18,8 @@ from dateutil import parser as dateutil_parser
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from datetime import date
+
+    from db.money import Money
 
 
 def find_column(header: Iterable[str], aliases: set[str]) -> str | None:
@@ -78,7 +81,7 @@ _NOT_NUMERIC = re.compile(r"[^0-9.,]")
 _THOUSANDS_GROUP_SIZE = 3
 
 
-def parse_amount_flexible(text: str) -> float | None:
+def parse_amount_flexible(text: str) -> Money | None:
     """Parse a money amount written in pretty much any common format.
 
     Handles what a general-purpose parser has to: a currency symbol
@@ -94,8 +97,12 @@ def parse_amount_flexible(text: str) -> float | None:
 
     Returns
     -------
-    float | None
-        The parsed amount, or `None` if nothing recognizable was found.
+    Money | None
+        The parsed amount as an exact `Decimal`, or `None` if nothing
+        recognizable was found. Exact because everything above this point
+        is string manipulation: by the time we get here `normalized` is a
+        clean decimal literal, and `Decimal` preserves exactly the digits
+        the statement actually said.
     """
     cleaned = text.strip()
     if not cleaned:
@@ -142,7 +149,7 @@ def parse_amount_flexible(text: str) -> float | None:
         normalized = digits_only
 
     try:
-        amount = float(normalized)
-    except ValueError:
+        amount = Decimal(normalized)
+    except InvalidOperation:
         return None
     return -amount if negative else amount

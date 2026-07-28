@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+from db.money import Rate
 from trades.config import TaxRegime, validate_iana_zone_name
 from trades.dashboard.cash_sitting import WarningLevel
 
@@ -135,7 +136,7 @@ class HysaSettingsUpdate(BaseModel):
     """Request body for `PUT /api/settings/hysa`."""
 
     bank_id: str | None = None
-    fixed_rate_pct: float | None = None
+    fixed_rate_pct: Rate | None = None
 
 
 class TargetAllocationSetting(BaseModel):
@@ -147,7 +148,7 @@ class TargetAllocationSetting(BaseModel):
     save. Carrying `version` (like every other settings response) closes that.
     """
 
-    target_allocation_pct: dict[str, float]
+    target_allocation_pct: dict[str, Rate]
     version: int
 
 
@@ -155,7 +156,7 @@ class HysaSettings(BaseModel):
     """The persisted HYSA bank selection / fixed-rate override."""
 
     bank_id: str | None
-    fixed_rate_pct: float | None
+    fixed_rate_pct: Rate | None
     version: int
 
 
@@ -211,9 +212,9 @@ class TaxSettingsUpdate(BaseModel):
     tax_regime: TaxRegime | None
     residency_status_change_date: date | None
     w8ben_claimed: bool
-    w8ben_treaty_rate_pct: float | None
-    marginal_ordinary_rate_pct: float | None
-    qualified_ltcg_rate_pct: float | None
+    w8ben_treaty_rate_pct: Rate | None
+    marginal_ordinary_rate_pct: Rate | None
+    qualified_ltcg_rate_pct: Rate | None
 
 
 class TaxSettings(BaseModel):
@@ -224,11 +225,11 @@ class TaxSettings(BaseModel):
     resolved_tax_regime: TaxRegime
     residency_status_change_date: date | None
     w8ben_claimed: bool
-    w8ben_treaty_rate_pct: float | None
-    marginal_ordinary_rate_pct: float | None
-    resolved_marginal_ordinary_rate_pct: float
-    qualified_ltcg_rate_pct: float | None
-    resolved_qualified_ltcg_rate_pct: float
+    w8ben_treaty_rate_pct: Rate | None
+    marginal_ordinary_rate_pct: Rate | None
+    resolved_marginal_ordinary_rate_pct: Rate
+    qualified_ltcg_rate_pct: Rate | None
+    resolved_qualified_ltcg_rate_pct: Rate
     version: int
 
 

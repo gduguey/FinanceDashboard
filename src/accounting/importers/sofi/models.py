@@ -15,6 +15,8 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from db.money import Money
+
 
 class SofiRow(BaseModel):
     """One row of a SoFi checking or savings export, in the older CSV shape."""
@@ -24,7 +26,7 @@ class SofiRow(BaseModel):
     transaction_date: date = Field(alias="Date")
     description: str = Field(alias="Description")
     type: str = Field(alias="Type")
-    amount: float = Field(alias="Amount")
+    amount: Money = Field(alias="Amount")
     current_balance: str = Field(alias="Current balance", default="")
     status: str = Field(alias="Status", default="")
 
@@ -49,4 +51,4 @@ class SofiCsvRow(BaseModel):
     description: str = Field(alias="Description")
     primary_category: str = Field(alias="Primary Category", default="")
     detailed_category: str = Field(alias="Detailed Category", default="")
-    amount: float = Field(alias="Amount")
+    amount: Money = Field(alias="Amount")

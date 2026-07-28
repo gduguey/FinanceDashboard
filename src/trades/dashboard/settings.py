@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from db.base import check_and_bump_version, get_version
+from db.money import Rate
 from trades.config import TaxRegime
 from trades.db.models import DashboardSettings as DashboardSettingsRow
 from trades.ledger.taxes import after_tax_rate_lookup
@@ -49,18 +50,18 @@ class DashboardSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    target_allocation_pct: dict[str, float] = Field(default_factory=dict)
+    target_allocation_pct: dict[str, Rate] = Field(default_factory=dict)
     hysa_bank_id: str | None = None
-    hysa_fixed_rate_pct: float | None = None
+    hysa_fixed_rate_pct: Rate | None = None
     benchmark_symbol_override: str | None = None
     local_zone: str | None = None
     tax_enabled: bool = False
     tax_regime: TaxRegime | None = None
     residency_status_change_date: date | None = None
     w8ben_claimed: bool = False
-    w8ben_treaty_rate_pct: float | None = None
-    marginal_ordinary_rate_pct: float | None = None
-    qualified_ltcg_rate_pct: float | None = None
+    w8ben_treaty_rate_pct: Rate | None = None
+    marginal_ordinary_rate_pct: Rate | None = None
+    qualified_ltcg_rate_pct: Rate | None = None
 
 
 def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
@@ -194,7 +195,7 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
             -------
             float
             """
-            return fixed_rate
+            return float(fixed_rate)
 
         return fixed
 
@@ -319,7 +320,7 @@ def resolved_marginal_ordinary_rate(config: AppConfig, settings: DashboardSettin
         `config.tax.marginal_ordinary_rate` unless the user has entered their own rate.
     """
     override = settings.marginal_ordinary_rate_pct
-    return override / 100 if override is not None else config.tax.marginal_ordinary_rate
+    return float(override / 100) if override is not None else config.tax.marginal_ordinary_rate
 
 
 def resolved_qualified_ltcg_rate(config: AppConfig, settings: DashboardSettings) -> float:
@@ -338,7 +339,7 @@ def resolved_qualified_ltcg_rate(config: AppConfig, settings: DashboardSettings)
         `config.tax.qualified_ltcg_rate` unless the user has entered their own rate.
     """
     override = settings.qualified_ltcg_rate_pct
-    return override / 100 if override is not None else config.tax.qualified_ltcg_rate
+    return float(override / 100) if override is not None else config.tax.qualified_ltcg_rate
 
 
 def resolved_nra_dividend_tax_rate(config: AppConfig, settings: DashboardSettings) -> float:
@@ -363,5 +364,5 @@ def resolved_nra_dividend_tax_rate(config: AppConfig, settings: DashboardSetting
         The claimed treaty rate, or `config.tax.nra_statutory_dividend_withholding_rate`.
     """
     if settings.w8ben_claimed and settings.w8ben_treaty_rate_pct is not None:
-        return settings.w8ben_treaty_rate_pct / 100
+        return float(settings.w8ben_treaty_rate_pct / 100)
     return config.tax.nra_statutory_dividend_withholding_rate

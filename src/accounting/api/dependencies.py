@@ -128,7 +128,7 @@ def _resolved_postings_and_store(
             manual = manual.filter(pl.col("posted_at").dt.date() <= until)
         resolved = pl.concat([resolved, manual], how="vertical")
     # Deliberately the *last* step: `apply_posting_splits`/`apply_manual_overrides`
-    # above rebuild the frame through `Posting.polars_schema`, which would
+    # above rebuild the frame through `LEDGER_FRAME_SCHEMA`, which would
     # silently drop `is_linked_transfer`/`linked_transaction_id`/
     # `transfer_link_source` if they were added any earlier (see
     # `ledger.transfers.apply_transfer_links`'s own docstring).

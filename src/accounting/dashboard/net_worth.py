@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.ledger.frame import to_analytics_amount
 from accounting.ledger.replay import account_balances
 
 if TYPE_CHECKING:
@@ -141,7 +142,7 @@ def net_worth_summary(
         balance = balance_by_account.get(account.account_id, 0.0)
         opening = opening_balances.get(account.account_id)
         if opening is not None and as_of >= opening.as_of_date.date():
-            balance += opening.amount
+            balance += to_analytics_amount(opening.amount)
         return balance
 
     rows = [
@@ -168,7 +169,7 @@ def net_worth_summary(
 
     assets = sum(to_display(row.balance, row.currency) for row in rows if row.kind not in _LIABILITY_KINDS)
     liabilities = sum(-to_display(row.balance, row.currency) for row in rows if row.kind in _LIABILITY_KINDS)
-    other_assets_total = sum(to_display(asset.value, asset.currency) for asset in other_assets)
+    other_assets_total = sum(to_display(to_analytics_amount(asset.value), asset.currency) for asset in other_assets)
 
     return NetWorthSummary(
         as_of=as_of,

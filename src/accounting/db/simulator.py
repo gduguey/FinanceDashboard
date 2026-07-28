@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import CompoundingFrequency, CurrencyCode
-from db.base import MONEY, Base, check_in_sql
+from db.base import MONEY, RATE, Base, check_in_sql
 
 
 class SimulatorScenario(Base):
@@ -32,9 +33,9 @@ class SimulatorScenario(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
-    initial_capital: Mapped[float] = mapped_column(MONEY)
-    monthly_contribution: Mapped[float] = mapped_column(MONEY)
-    horizon_years: Mapped[float]
-    annual_rate_pct: Mapped[float]
+    initial_capital: Mapped[Decimal] = mapped_column(MONEY)
+    monthly_contribution: Mapped[Decimal] = mapped_column(MONEY)
+    horizon_years: Mapped[Decimal] = mapped_column(RATE)
+    annual_rate_pct: Mapped[Decimal] = mapped_column(RATE)
     compounding_frequency: Mapped[str] = mapped_column(default="monthly")
     currency: Mapped[str] = mapped_column(default="USD")

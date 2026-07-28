@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Posting
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from accounting.models import CurrencyCode
+    from db.money import Money
 
 
 def parse_us_date(text: str) -> date:
@@ -43,7 +45,7 @@ class RawLeg:
     """The per-row facts `posting_pair` needs beyond which two accounts are involved."""
 
     posted_at: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode
     description: str
     meta: dict[str, str]
@@ -140,9 +142,9 @@ def postings_to_frame(postings: Sequence[Posting]) -> pl.DataFrame:
     Returns
     -------
     polars.DataFrame
-        Columns matching `Posting.polars_schema`, sorted by date then id.
+        Columns matching `LEDGER_FRAME_SCHEMA`, sorted by date then id.
     """
     if not postings:
-        return pl.DataFrame(schema=Posting.polars_schema)
-    frame = pl.DataFrame([posting.model_dump() for posting in postings], schema=Posting.polars_schema)
+        return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
+    frame = pl.DataFrame([posting.model_dump() for posting in postings], schema=LEDGER_FRAME_SCHEMA)
     return frame.sort("posted_at", "posting_id")

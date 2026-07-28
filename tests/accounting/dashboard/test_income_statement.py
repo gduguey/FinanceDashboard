@@ -14,9 +14,10 @@ from accounting.dashboard.income_statement import (
     spend_curve_window,
 )
 from accounting.ledger.currency import DisplayCurrency
-from accounting.models import Account, Category, Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account, Category
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 
 def _posting(

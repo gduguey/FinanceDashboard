@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import get_args
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
@@ -159,7 +160,7 @@ class PostingSplitLeg(Base):
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_splits.id", ondelete="CASCADE")
     )
     ordinal: Mapped[int]
-    amount: Mapped[float] = mapped_column(MONEY)
+    amount: Mapped[Decimal] = mapped_column(MONEY)
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
