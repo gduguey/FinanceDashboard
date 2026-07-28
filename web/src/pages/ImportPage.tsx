@@ -460,8 +460,12 @@ export function ImportPage() {
     ]),
   ].sort()
   function accountsForInstitution(institution: string): Account[] {
+    // Match case-insensitively, the same normalization detection uses above —
+    // otherwise a candidate whose registered spelling differs only in case from
+    // the stored institution silently drops out of the picker.
+    const normalized = institution.trim().toLowerCase()
     return registeredAccounts
-      .filter((account) => account.institution === institution)
+      .filter((account) => account.institution.trim().toLowerCase() === normalized)
       .sort((a, b) => a.name.localeCompare(b.name))
   }
 

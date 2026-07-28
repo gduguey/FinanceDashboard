@@ -175,7 +175,7 @@ def post_category(
     ------
     HTTPException
         409 if a top-level category of the same classification already
-        has this name (case-insensitive).
+        has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
     """
     store = load_store(session, user_id)
     normalized_name = request.name.strip().lower()
@@ -230,7 +230,7 @@ def post_subcategory(
     ------
     HTTPException
         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
-        already has this name (case-insensitive).
+        already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
     """
     store = load_store(session, user_id)
     parent = store.categories.get(parent_id)
@@ -579,7 +579,8 @@ def post_tag(
     Raises
     ------
     HTTPException
-        409 if a tag with this name (case-insensitive) already exists.
+        409 if a tag with this name (case-insensitive) already exists, or a
+        distinct name collides with an existing tag's slug id.
     """
     store = load_store(session, user_id)
     normalized_name = request.name.strip().lower()

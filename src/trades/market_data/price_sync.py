@@ -22,7 +22,7 @@ mostly no-ops beyond the trailing buffer window. Run via
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, text
@@ -96,21 +96,38 @@ def run_price_sync(config: AppConfig | None = None) -> list[str]:
     held_symbols: set[str] = set()
     benchmark_symbols: set[str] = set()
     first_event = today
+
+    def _inputs_for(user_id: uuid.UUID) -> tuple[str, set[str], date | None]:
+        """Resolve one user's benchmark symbol, held symbols, and earliest event date.
+
+        Returns
+        -------
+        tuple[str, set[str], date | None]
+            The benchmark symbol, the held symbols (empty when the ledger is
+            empty), and the earliest event date (`None` when the ledger is empty).
+        """
+        with session_scope(user_id) as session:
+            raw_ledger = main.load_ledger(session, user_id)
+            settings = dashboard.load_settings(session, user_id)
+        benchmark = dashboard.resolved_benchmark_symbol(config, settings)
+        if raw_ledger.is_empty():
+            return benchmark, set(), None
+        held = set(raw_ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol}
+        return benchmark, held, _first_event_date(raw_ledger)
+
     for user_id in _all_user_ids():
         # Isolate per-user failures: this is a cross-user batch, so one user's
-        # unreadable ledger/settings must not abort the price refresh for
-        # everyone else — log it and move on.
+        # error anywhere in resolving their symbols must not abort the price
+        # refresh for everyone else — log it and move on.
         try:
-            with session_scope(user_id) as session:
-                raw_ledger = main.load_ledger(session, user_id)
-                settings = dashboard.load_settings(session, user_id)
+            benchmark, held, event_date = _inputs_for(user_id)
         except Exception:
             logger.exception("price sync: skipping user %s after an error", user_id)
             continue
-        benchmark_symbols.add(dashboard.resolved_benchmark_symbol(config, settings))
-        if not raw_ledger.is_empty():
-            held_symbols |= set(raw_ledger["symbol"].unique().to_list()) - {config.ledger.cash_symbol}
-            first_event = min(first_event, _first_event_date(raw_ledger))
+        benchmark_symbols.add(benchmark)
+        held_symbols |= held
+        if event_date is not None:
+            first_event = min(first_event, event_date)
 
     raw_symbols = sorted(held_symbols | benchmark_symbols)
 
