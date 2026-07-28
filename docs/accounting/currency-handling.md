@@ -105,8 +105,9 @@ value for a typed `currency` field.
 
 - `market_data.exchange_rates.fetch_rate_history` builds its currency list
   as "every code in `SUPPORTED_CURRENCIES` except the base," so the very
-  next cron-scheduled sync fetches MXN's history alongside USD/EUR's with
-  no code change.
+  next cron-scheduled sync fetches MXN's history alongside EUR's with no
+  code change (USD is the base currency — its rate is always 1 and is never
+  fetched).
 - `ledger.currency.convert`/`DisplayCurrency`, `dashboard.net_worth`,
   `dashboard.income_statement`, budgets, and goals are all already
   written generically over whatever currencies show up in the rate table

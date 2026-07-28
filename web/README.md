@@ -80,7 +80,7 @@ both signed-in and signed-out visitors (real public marketing content).
 Our routing has no nesting/layout concept at all (see above — one file is
 always one flat page), and every page here requires auth, with no public
 content to split out. So instead `AuthGate` (`components/layout/AuthGate.tsx`)
-wraps the *entire* app above `<Routes>`, in `main.tsx` — not a route at
+wraps the *entire* app above `<Routes>`, in `App.tsx` — not a route at
 all, just whatever renders in place of any URL while signed out. Since it
 never touches the URL, a signed-out visit to e.g. `/net-worth` still shows
 that page immediately once signed in, with no redirect-back bookkeeping

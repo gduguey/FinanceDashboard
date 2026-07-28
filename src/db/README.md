@@ -149,8 +149,11 @@ derived: a row deleted and reinserted with the same `natural_key` comes
 back with the *exact same* `id` it had before, so nothing that
 (hypothetically) referenced it would ever see it as "gone," even
 mid-rewrite.
-`save_store` uses this for 17 tables, none of which anything else in the
-schema foreign-keys against:
+`save_store` uses this for 17 tables — several of which *are* foreign-keyed
+against by others in the same wipe-and-reinsert set (e.g. `posting_split_legs`
+→ `posting_splits`, `goal_contributions`/`recurring_additions` → `goals`),
+which is exactly why the derived id must stay stable: a reinserted parent
+keeps its id, so a child's foreign key still resolves across the rewrite:
 
 `posting_split_legs`, `posting_splits`, `posting_merge_duplicates`,
 `posting_merges`, `goal_contributions`, `recurring_additions`,
