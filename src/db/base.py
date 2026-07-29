@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, override
 
 from sqlalchemy import DDL, DateTime, MetaData, Numeric, TypeDecorator, event, func, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 if TYPE_CHECKING:
@@ -484,6 +485,57 @@ def merge_by_natural_key(
         merged.append(session.merge(row))
     session.flush()
     return {row.natural_key: row.id for row in merged}
+
+
+def ensure_reference_rows(
+    session: Session,
+    model: Any,  # noqa: ANN401 — generic helper shared across every single-column reference table
+    keys: Iterable[str | None],
+) -> None:
+    """Create whichever of `keys` has no row yet in a shared reference table — create-or-reference, never fail.
+
+    The write-path counterpart of `db.tenant.is_reference_table`, and the
+    reason two of the three dimension tables need no seed data at all.
+    `accounting.institutions` and `trades.securities` hold *open*
+    vocabularies: the user types the name of their credit union, and the
+    IBKR sync brings back whatever symbols they actually traded. Neither
+    list can be enumerated ahead of time, so the reference has to come into
+    existence as a side effect of the row that names it — otherwise adding a
+    real foreign key would turn "import a statement mentioning a new ticker"
+    into an `IntegrityError`.
+
+    Deliberately not `merge_by_natural_key`: that resolves a natural key to a
+    database-minted `id` because a tenant row has both. A reference row has
+    only its key, which *is* its primary key (see `db.models.Currency`'s
+    docstring on why), so this is one `INSERT ... ON CONFLICT DO NOTHING`
+    over the whole batch — no lookup, no round trip per key, and safe under
+    two concurrent imports naming the same new symbol.
+
+    `ON CONFLICT DO NOTHING` rather than `DO UPDATE`: the key is the entire
+    row's content, so there is nothing an existing row could be missing.
+
+    Parameters
+    ----------
+    session
+        An open database session; flushed here, committed by the caller.
+    model
+        The reference model to fill, e.g. `trades.db.models.Security`. Must
+        have a single-column primary key.
+    keys
+        The keys that must exist. `None` and empty strings are dropped — a
+        caller with a nullable reference (`dashboard_settings.benchmark_symbol_override`)
+        passes it straight through rather than testing it first.
+    """
+    wanted = sorted({key for key in keys if key})
+    if not wanted:
+        return
+    (key_column,) = model.__table__.primary_key.columns
+    session.execute(
+        pg_insert(model.__table__)
+        .values([{key_column.name: key} for key in wanted])
+        .on_conflict_do_nothing(index_elements=[key_column.name])
+    )
+    session.flush()
 
 
 def upsert_and_prune(

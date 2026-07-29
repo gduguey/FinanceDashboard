@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import get_args
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA, child_of_category_columns
-from accounting.models import CurrencyCode
-from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
+from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped
+from db.models import CURRENCY_CODE_COLUMN
 
 _NIL_SUBCATEGORY = "00000000-0000-0000-0000-000000000000"
 """Sentinel `coalesce`d in place of a `NULL` `subcategory_id` in the unique index below.
@@ -43,7 +42,6 @@ class Budget(Base, Timestamped):
 
     __tablename__ = "budgets"
     __table_args__ = (
-        CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         CheckConstraint("amount >= 0", name="amount_is_not_negative"),
         *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_budgets_user_natural_key"),
@@ -67,4 +65,4 @@ class Budget(Base, Timestamped):
     subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     amount: Mapped[Decimal] = mapped_column(MONEY)
     """A spending target, so never negative — a budget of "minus fifty dollars" is not a thing to plan for."""
-    currency: Mapped[str] = mapped_column(default="USD")
+    currency: Mapped[str] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN), default="USD")

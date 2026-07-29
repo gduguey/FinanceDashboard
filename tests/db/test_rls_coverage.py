@@ -37,7 +37,7 @@ import trades.db  # noqa: F401 — registers the trades tables on Base.metadata
 from db.base import Base
 from db.session import create_one_shot_engine
 from db.settings import TestDatabaseSettings
-from db.tenant import POLICY_NAME, RLS_EXEMPT, tenant_tables
+from db.tenant import POLICY_NAME, RLS_EXEMPT, is_reference_table, tenant_tables
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -233,3 +233,53 @@ def test_the_previously_uncovered_transfer_tables_are_covered_now(migrated_engin
     covered = set(_policies(migrated_engine))
     for table in ("transfer_links", "transfer_linked_transactions", "categorization_rule_exclusions"):
         assert ("accounting", table) in covered, f"accounting.{table} lost its policy again"
+
+
+def test_the_dimension_tables_are_absent_from_the_policy_set_without_being_exempted(
+    migrated_engine: Engine,
+) -> None:
+    """Move #3 added three reference tables and needed no new hole in the guarantee.
+
+    `currencies`, `institutions` and `securities` carry no `user_id`, so
+    `tenant_tables` never selects them and there is nothing for a policy to
+    compare against — which is a different fact from an `RLS_EXEMPT` entry.
+    An exemption names a table that *does* carry `user_id` and deliberately
+    has none anyway (`external_identities`, and only that one). Asserting the
+    distinction here is what stops a future reference table from being waved
+    through with an exemption it does not need, and — more importantly — stops
+    a genuinely tenant-scoped table from being mistaken for reference data.
+    """
+    dimensions = [("public", "currencies"), ("accounting", "institutions"), ("trades", "securities")]
+    tenant = {(entry.schema, entry.table) for entry in tenant_tables(Base.metadata)}
+    for key in dimensions:
+        assert key not in tenant, f"{key} was derived as a tenant table"
+        assert key not in RLS_EXEMPT, f"{key} was given an RLS exemption it does not need"
+        assert key not in _policies(migrated_engine), f"{key} has an isolation policy on data belonging to nobody"
+    assert set(RLS_EXEMPT) == {("public", "external_identities")}, (
+        "the exemption list changed — every entry is a documented hole in tenant isolation"
+    )
+
+
+def test_no_table_without_a_policy_is_anything_other_than_reference_data(migrated_engine: Engine) -> None:
+    """The converse coverage: every unprotected table in the live database is one this repo classifies as shared.
+
+    `test_no_table_in_the_database_carries_user_id_without_a_policy` catches a
+    tenant table that lost its policy. This catches the opposite mistake — a
+    table that quietly has no `user_id` (and so no policy) when it should have
+    had one, which the `user_id`-keyed test cannot see by construction.
+    """
+    with migrated_engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT table_schema, table_name FROM information_schema.tables "
+                "WHERE table_type = 'BASE TABLE' AND table_schema IN ('public', 'accounting', 'trades') "
+                "  AND table_name <> 'alembic_version'"
+            )
+        ).all()
+    live = {(row.table_schema, row.table_name) for row in rows}
+    unprotected = live - set(_policies(migrated_engine)) - set(RLS_EXEMPT)
+    modelled = {(table.schema or "public", table.name): table for table in Base.metadata.tables.values()}
+    for key in sorted(unprotected):
+        table = modelled.get(key)
+        assert table is not None, f"{key} exists in Postgres but not in the models"
+        assert is_reference_table(table), f"{key} has no isolation policy and is not reference data"

@@ -34,9 +34,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.models import AccountKind, CategoryClassification, CurrencyCode, TransactionOrigin
+from accounting.models import AccountKind, CategoryClassification, TransactionOrigin
 from accounting.precedence import OverlayStage
 from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
+from db.models import CURRENCY_CODE_COLUMN
 
 SCHEMA = "accounting"
 
@@ -187,7 +188,6 @@ class Account(Base, Timestamped):
     __tablename__ = "accounts"
     __table_args__ = (
         CheckConstraint(check_in_sql("kind", get_args(AccountKind)), name="kind"),
-        CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         CheckConstraint(
             "broker_connection_id IS NULL OR kind = 'external_investment'", name="broker_link_is_an_investment"
         ),
@@ -204,8 +204,13 @@ class Account(Base, Timestamped):
     natural_key: Mapped[str]
     name: Mapped[str]
     kind: Mapped[str]
-    institution: Mapped[str]
-    currency: Mapped[str]
+    institution: Mapped[str] = mapped_column(ForeignKey(f"{SCHEMA}.institutions.code"))
+    """Where this account is held, referencing `institutions` — created on demand by the write path.
+
+    Free text with no constraint at all until move #3, despite selecting
+    which importer runs and being a path segment in the statement archive.
+    See `accounting.db.institutions`."""
+    currency: Mapped[str] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN))
     last_four: Mapped[str | None] = mapped_column(default=None)
     parent_account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     depth: Mapped[int] = mapped_column(SmallInteger, two_level_depth("parent_account_id"))
@@ -456,7 +461,6 @@ class Posting(Base, Timestamped):
 
     __tablename__ = "postings"
     __table_args__ = (
-        CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_postings_user_natural_key"),
         {"schema": SCHEMA},
@@ -470,7 +474,7 @@ class Posting(Base, Timestamped):
     )
     account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
     amount: Mapped[Decimal] = mapped_column(MONEY)
-    currency: Mapped[str]
+    currency: Mapped[str] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN))
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
@@ -539,7 +543,6 @@ class OtherAsset(Base, Timestamped):
 
     __tablename__ = "other_assets"
     __table_args__ = (
-        CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         CheckConstraint("value >= 0", name="value_is_not_negative"),
         UniqueConstraint("user_id", "natural_key", name="uq_other_assets_user_natural_key"),
         {"schema": SCHEMA},
@@ -550,5 +553,5 @@ class OtherAsset(Base, Timestamped):
     natural_key: Mapped[str]
     name: Mapped[str]
     value: Mapped[Decimal] = mapped_column(MONEY)
-    currency: Mapped[str] = mapped_column(default="USD")
+    currency: Mapped[str] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN), default="USD")
     note: Mapped[str] = mapped_column(default="")

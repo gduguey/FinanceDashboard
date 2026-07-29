@@ -30,6 +30,7 @@ from accounting.db.corrections import (
     Suggestion,
 )
 from accounting.db.goals import Goal, GoalAutomation, GoalContribution
+from accounting.db.institutions import Institution
 from accounting.db.llm import LLMUsage
 from accounting.db.simulator import SimulatorScenario
 from accounting.db.transfers import TransferLink, TransferLinkedTransaction
@@ -46,6 +47,7 @@ __all__ = [
     "Goal",
     "GoalAutomation",
     "GoalContribution",
+    "Institution",
     "LLMUsage",
     "OpeningBalance",
     "OtherAsset",

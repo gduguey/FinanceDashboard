@@ -13,13 +13,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import (
-    CurrencyCode,
     GoalAutomationDirection,
     GoalAutomationFrequency,
     GoalAutomationMode,
     GoalContributionOrigin,
 )
 from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
+from db.models import CURRENCY_CODE_COLUMN
 
 
 class Goal(Base, Timestamped):
@@ -27,7 +27,6 @@ class Goal(Base, Timestamped):
 
     __tablename__ = "goals"
     __table_args__ = (
-        CheckConstraint(check_in_sql("target_currency", get_args(CurrencyCode)), name="target_currency"),
         CheckConstraint("target_amount > 0", name="target_amount_is_positive"),
         UniqueConstraint("user_id", "natural_key", name="uq_goals_user_natural_key"),
         {"schema": SCHEMA},
@@ -39,7 +38,11 @@ class Goal(Base, Timestamped):
     name: Mapped[str]
     target_amount: Mapped[Decimal] = mapped_column(MONEY)
     """Strictly positive — a goal of zero (or less) is already met by definition and has nothing to progress towards."""
-    target_currency: Mapped[str] = mapped_column(default="USD")
+    target_currency: Mapped[str] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN), default="USD")
+    """The currency the target is expressed in — the one `currency` column in this schema under another name.
+
+    Its own `CHECK (target_currency IN (...))` was a ninth copy of the same
+    restated list; it is the same `currencies` reference as every other."""
     target_date: Mapped[datetime]
     color: Mapped[str]
     version: Mapped[int] = mapped_column(default=1)
@@ -63,7 +66,6 @@ class GoalContribution(Base, Timestamped):
 
     __tablename__ = "goal_contributions"
     __table_args__ = (
-        CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         CheckConstraint(check_in_sql("origin", get_args(GoalContributionOrigin)), name="origin"),
         UniqueConstraint("user_id", "natural_key", name="uq_goal_contributions_user_natural_key"),
         {"schema": SCHEMA},
@@ -75,7 +77,7 @@ class GoalContribution(Base, Timestamped):
     goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))
     date: Mapped[datetime]
     amount: Mapped[Decimal] = mapped_column(MONEY)
-    currency: Mapped[str] = mapped_column(default="USD")
+    currency: Mapped[str] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN), default="USD")
     note: Mapped[str] = mapped_column(default="")
     account_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"), default=None
@@ -164,7 +166,6 @@ class GoalAutomation(Base, Timestamped):
         CheckConstraint(check_in_sql("direction", get_args(GoalAutomationDirection)), name="direction"),
         CheckConstraint(check_in_sql("frequency", get_args(GoalAutomationFrequency)), name="frequency"),
         CheckConstraint(check_in_sql("mode", get_args(GoalAutomationMode)), name="mode"),
-        CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         CheckConstraint(_SCHEDULE_MATCHES_DIRECTION, name="schedule_matches_direction"),
         UniqueConstraint("user_id", "natural_key", name="uq_goal_automations_user_natural_key"),
         Index(
@@ -194,4 +195,4 @@ class GoalAutomation(Base, Timestamped):
     end_date: Mapped[date | None] = mapped_column(default=None)
     mode: Mapped[str | None] = mapped_column(default=None)
     value: Mapped[Decimal | None] = mapped_column(MONEY, default=None)
-    currency: Mapped[str | None] = mapped_column(default=None)
+    currency: Mapped[str | None] = mapped_column(ForeignKey(CURRENCY_CODE_COLUMN), default=None)

@@ -14,6 +14,7 @@ from trades.db.models import (
     DashboardSettings,
     LedgerEvent,
     LedgerEventTradeDetails,
+    Security,
 )
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "DashboardSettings",
     "LedgerEvent",
     "LedgerEventTradeDetails",
+    "Security",
 ]
 
 

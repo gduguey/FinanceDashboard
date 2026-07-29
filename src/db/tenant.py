@@ -20,6 +20,12 @@ no step anyone can forget.
 Two deliberate special cases, both encoded below rather than left implicit:
 `public.users` is keyed on its own `id`, and `public.external_identities`
 is exempt with its reason recorded in `RLS_EXEMPT`.
+
+The same rule read the other way answers a second question — see
+`is_reference_table`. A table with no `user_id` and no `id` of a user is not
+a tenant table at all, it is shared reference data (`public.currencies`,
+`accounting.institutions`, `trades.securities`), and that is a different
+thing from a tenant table with a documented hole in its isolation.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
-    from sqlalchemy import MetaData
+    from sqlalchemy import MetaData, Table
 
 OWNER_COLUMN = "user_id"
 """The column that makes a table tenant-scoped. Its presence is the whole rule."""
@@ -52,6 +58,43 @@ An entry here is a documented hole in the isolation guarantee, so the
 coverage test requires a non-empty reason: adding a table to this dict has
 to be a sentence someone wrote, never a silent omission.
 """
+
+
+def is_reference_table(table: Table) -> bool:
+    """Whether `table` holds shared reference data rather than one tenant's rows.
+
+    The complement of what `tenant_tables` selects, and computed from the
+    same one fact: a table with no `user_id` column (and which is not
+    `users` itself, whose own `id` is the tenant key) belongs to nobody in
+    particular. `public.currencies`, `accounting.institutions` and
+    `trades.securities` are the three — a currency code, a bank name and a
+    ticker symbol are the same for everyone, so storing one copy per user
+    would be the definition of a dimension table done wrong.
+
+    Two consequences follow, and both are why this predicate exists rather
+    than the fact being restated in each place:
+
+    - **No Row-Level Security, and no exemption either.** `tenant_tables`
+      skips these without being told to, because they have no `user_id` to
+      write a policy against. That is categorically different from an
+      `RLS_EXEMPT` entry, which records a table that *does* carry `user_id`
+      and deliberately has no policy anyway.
+    - **No index behind a foreign key that points here.** See
+      `db.indexes.ensure_foreign_key_indexes`.
+
+    Parameters
+    ----------
+    table
+        The table to classify.
+
+    Returns
+    -------
+    bool
+    """
+    schema = table.schema or "public"
+    if (schema, table.name) == _USERS_TABLE:
+        return False
+    return OWNER_COLUMN not in table.columns
 
 
 class TenantTable(NamedTuple):

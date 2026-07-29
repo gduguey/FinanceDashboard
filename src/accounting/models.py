@@ -20,6 +20,7 @@ from typing import Annotated, Literal, assert_never, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from db.currency import CURRENCY_REFERENCE, CurrencyCode
 from db.money import Money, Rate
 
 AccountKind = Literal[
@@ -93,9 +94,6 @@ and for which categories even make sense to show when categorizing a
 posting whose amount is positive vs. negative.
 """
 
-CurrencyCode = Literal["USD", "EUR"]
-"""Every currency this app knows how to hold money in or convert between."""
-
 TransactionOrigin = Literal["imported", "manual"]
 """Where a transaction came from: a bank statement, or a person typing it in.
 
@@ -120,15 +118,21 @@ class Currency(BaseModel):
 
 
 SUPPORTED_CURRENCIES: dict[CurrencyCode, Currency] = {
-    "USD": Currency(code="USD", symbol="$", decimal_places=2),
-    "EUR": Currency(code="EUR", symbol="€", decimal_places=2),
+    code: Currency(code=code, symbol=reference.symbol, decimal_places=reference.decimal_places)
+    for code, reference in CURRENCY_REFERENCE.items()
 }
 """Every currency a `currency: CurrencyCode` field elsewhere in this package
-can hold — the registry `Currency` is the single record of, so a symbol or
-decimal-places convention is only ever declared once. Adding a currency is
-exactly two edits: a new arm on `CurrencyCode`, and a new entry here; every
-rate lookup, chart, and dropdown is driven by this dict, never a hardcoded
-pair (see `ledger.currency.convert` and `market_data.exchange_rates`).
+can hold — the display registry every rate lookup, chart, and dropdown is
+driven by, never a hardcoded pair (see `ledger.currency.convert` and
+`market_data.exchange_rates`).
+
+A *projection* of `db.currency.CURRENCY_REFERENCE` now, rather than a second
+declaration of the same three facts. That module is where the list lives
+because `trades` needs it too and cannot import this package — which is
+exactly why `trades.ledger_events.currency` used to have no constraint at
+all. The rows of `public.currencies` come from the same place, so a currency
+cannot be renderable here and unstorable there. Adding one is still one
+edit, and it is now in `db.currency`.
 """
 
 BASE_CURRENCY: CurrencyCode = "USD"

@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from db.base import ensure_reference_rows
 from db.money import Rate
 from trades.config import TaxRegime
 from trades.db.models import DashboardSettings as DashboardSettingsRow
+from trades.db.models import Security
 from trades.ledger.taxes import after_tax_rate_lookup
 from trades.market_data import hysa_rates as hysa_rates_module
 
@@ -125,6 +127,12 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     if row is None:
         row = DashboardSettingsRow(user_id=user_id)
         session.add(row)
+    # `benchmark_symbol_override` references `trades.securities` now. The
+    # picker's symbols come from a live Yahoo search (`market_data.symbol_search`),
+    # so the chosen instrument may well be one this database has never seen —
+    # the reference is created here rather than rejecting the save. `None`
+    # (no override) is dropped by the helper, not tested for here.
+    ensure_reference_rows(session, Security, [settings.benchmark_symbol_override])
     row.target_allocation_pct = settings.target_allocation_pct
     row.hysa_bank_id = settings.hysa_bank_id
     row.hysa_fixed_rate_pct = settings.hysa_fixed_rate_pct

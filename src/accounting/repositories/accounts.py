@@ -34,7 +34,13 @@ from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import Account, ManualTransfer, OpeningBalance
-from db.base import ids_by_natural_key, merge_by_natural_key, natural_keys_by_id, upsert_and_prune
+from db.base import (
+    ensure_reference_rows,
+    ids_by_natural_key,
+    merge_by_natural_key,
+    natural_keys_by_id,
+    upsert_and_prune,
+)
 
 if TYPE_CHECKING:
     import uuid
@@ -215,6 +221,11 @@ def replace_accounts(session: Session, user_id: uuid.UUID, accounts: Iterable[Ac
     """
     accounts = list(accounts)
     keep_natural_keys = {account.account_id for account in accounts}
+    # `accounts.institution` is a real reference now, and the vocabulary is
+    # open — an importer names one, or the person types their credit union's
+    # name into the account form — so the reference is created here rather
+    # than requiring it to already exist. See `db.base.ensure_reference_rows`.
+    ensure_reference_rows(session, adb.Institution, [account.institution for account in accounts])
     for has_parent in (False, True):
         batch = [account for account in accounts if (account.parent_account_id is not None) is has_parent]
         # Only the second pass has parents to resolve, and by then the first
@@ -250,6 +261,7 @@ def update_account_fields(session: Session, user_id: uuid.UUID, account: Account
     row = _account_row_by_natural_key(session, user_id, account.account_id)
     if row is None:
         return False
+    ensure_reference_rows(session, adb.Institution, [account.institution])
     row.name = account.name
     row.kind = account.kind
     row.institution = account.institution

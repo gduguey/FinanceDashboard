@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 import accounting.db as adb
 from accounting.models import Posting
+from db.base import ensure_reference_rows
 from db.money import (
     MONEY_QUANTUM,
     ZERO,
@@ -118,6 +119,10 @@ def test_a_money_column_round_trips_exactly(db_session: Session, test_user_id: u
     This is what `asdecimal=False` used to break — the value was stored
     exactly and then handed back to Python as a float on every read.
     """
+    # `accounts.institution` is a real reference now — the app's own write path
+    # creates it (`repositories.accounts.replace_accounts`), and a test writing
+    # the ORM row directly does the same thing rather than skipping the step.
+    ensure_reference_rows(db_session, adb.Institution, ["Test"])
     account = adb.Account(
         id=uuid.uuid4(),
         user_id=test_user_id,

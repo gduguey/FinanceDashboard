@@ -145,3 +145,27 @@ def test_a_buy_event_gets_a_trade_details_row_but_a_deposit_does_not(
     assert buy_details.price == pytest.approx(500.0)
 
     assert db_session.get(tdb.LedgerEventTradeDetails, deposit_event.id) is None
+
+
+def test_write_ledger_creates_the_securities_its_events_name(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ledger_events.symbol` is a real reference now, and symbols arrive from the statement, not from a seed.
+
+    This is the whole reason the new foreign key doesn't break a sync: a user
+    who bought something new since the last pull brings back a ticker this
+    database has never seen, and the write path creates it (see
+    `db.base.ensure_reference_rows`) rather than failing the import.
+    """
+    _write_ledger(_frame(_event("e1", symbol="NVDA"), _event("e2", symbol="SMCI")), db_session, user_id=test_user_id)
+
+    assert db_session.get(tdb.Security, "NVDA") is not None
+    assert db_session.get(tdb.Security, "SMCI") is not None
+
+
+def test_write_ledger_tolerates_a_symbol_that_already_has_a_security(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Two syncs naming the same ticker must not collide on the reference row's primary key."""
+    _write_ledger(_frame(_event("e1", symbol="NVDA")), db_session, user_id=test_user_id)
+    _write_ledger(_frame(_event("e1", symbol="NVDA"), _event("e2", symbol="NVDA")), db_session, user_id=test_user_id)
+
+    assert load_ledger(db_session, user_id=test_user_id).height == 2

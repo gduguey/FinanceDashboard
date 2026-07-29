@@ -41,10 +41,12 @@ from accounting.models import (
 )
 from accounting.repositories.accounts import (
     insert_manual_transfers,
+    load_accounts,
     load_manual_transfers,
     load_opening_balances,
     replace_accounts,
     replace_opening_balances,
+    update_account_fields,
 )
 from accounting.repositories.planning import (
     insert_goal,
@@ -1313,3 +1315,29 @@ def test_restaging_a_pending_suggestion_replaces_the_row_the_posting_already_had
     reloaded = load_overrides_for_postings(db_session, test_user_id, ["p1"])
     assert reloaded["p1"].pending_source == "pattern"
     assert db_session.query(adb.Suggestion).filter_by(user_id=test_user_id).count() == 1
+
+
+def test_moving_an_account_to_an_institution_nobody_has_named_before_creates_it(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The scoped edit path needs the same create-or-reference as the bulk one, and used to have neither.
+
+    `accounts.institution` is a foreign key now (move #3), and this is the one
+    write that changes it without going through `replace_accounts` — so
+    without its own `ensure_reference_rows` call, editing an account to a
+    newly-typed bank name would raise a `ForeignKeyViolation` and surface as a
+    500 rather than saving.
+    """
+    original = Account(
+        account_id="bank:checking", name="Checking", kind="checking", institution="chase", currency="USD"
+    )
+    replace_accounts(db_session, test_user_id, [original], prune=False)
+    db_session.commit()
+
+    assert update_account_fields(
+        db_session, test_user_id, original.model_copy(update={"institution": "A Bank With A New Name"})
+    )
+    db_session.commit()
+
+    assert load_accounts(db_session, test_user_id)["bank:checking"].institution == "A Bank With A New Name"
+    assert db_session.get(adb.Institution, "A Bank With A New Name") is not None

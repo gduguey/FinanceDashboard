@@ -38,6 +38,27 @@ the same argument `db.tenant` makes for policies.
 Indexes that already exist are never duplicated: if a column is already the
 second column of a `(user_id, x)` unique constraint, or already leads an
 explicit index, it is skipped.
+
+One class of foreign key gets no index at all, and the same two access paths
+are the reason. A reference into a shared dimension table
+(`db.tenant.is_reference_table` — `currencies`, `institutions`, `securities`)
+satisfies neither:
+
+- **Cascade and referential checks** never happen. A currency is not
+  deleted; the reference list is seeded once and the rows outlive every row
+  that points at them. Nothing has to scan `postings` for
+  `currency = 'EUR'`, because nothing ever removes `'EUR'`.
+- **Application reads** never filter on it either. `currency` is *rendered*,
+  not searched — every read in this codebase selects a tenant's postings and
+  displays whatever currency each one carries.
+
+What an index there would cost is real, though: `(currency, user_id)` over
+every posting is a second B-tree to maintain on every insert, keyed on a
+column with two distinct values — which no planner would choose anyway.
+That is the textbook useless low-cardinality index, and twelve of them —
+one per column referencing one of the three dimension tables — is what a
+blind walk would have added here. So the walk asks where the foreign key
+*points* before indexing it.
 """
 
 from __future__ import annotations
@@ -46,10 +67,10 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import Index, PrimaryKeyConstraint, UniqueConstraint
 
-from db.tenant import OWNER_COLUMN
+from db.tenant import OWNER_COLUMN, is_reference_table
 
 if TYPE_CHECKING:
-    from sqlalchemy import Table
+    from sqlalchemy import Column, Table
     from sqlalchemy.sql.schema import MetaData
 
 _MAX_IDENTIFIER_LENGTH = 63
@@ -87,6 +108,41 @@ def _existing_leading_columns(table: Table) -> set[tuple[str, ...]]:
     for columns in column_lists:
         prefixes.update(columns[:size] for size in range(1, len(columns) + 1))
     return prefixes
+
+
+def _points_only_at_reference_data(column: Column[object], metadata: MetaData) -> bool:
+    """Whether every foreign key on `column` targets a shared dimension table.
+
+    Read per column rather than per constraint, because a composite foreign
+    key's columns are indexed individually here. A column is only skipped when
+    *none* of its references is to a tenant table, so one reaching reference
+    data and real data both still gets its index.
+
+    The target is looked up by name in `metadata` rather than by resolving
+    `ForeignKey.column`, and that is not an optimisation. Resolving raises
+    `NoReferencedTableError` when the target's module has not been imported
+    yet, and one target legitimately has not: `accounts.broker_connection_id`
+    names `trades.broker_connections`, and this walk runs from
+    `accounting.db.__init__` in a process that may hold only the `accounting`
+    package (see `migration/env.py` on why each is optional). An unresolvable
+    target is therefore treated as *not* reference data — it gets its index,
+    exactly as before this predicate existed — while the three real dimension
+    tables are always loaded by then, since a module declaring the foreign key
+    is what imports them (`db.models.CURRENCY_CODE_COLUMN`).
+
+    Parameters
+    ----------
+    column
+        The column to classify; assumed to have at least one foreign key.
+    metadata
+        The metadata the walk is over, used to resolve each target by name.
+
+    Returns
+    -------
+    bool
+    """
+    targets = [metadata.tables.get(key.target_fullname.rsplit(".", 1)[0]) for key in column.foreign_keys]
+    return all(target is not None and is_reference_table(target) for target in targets)
 
 
 def _index_name(table: Table, columns: tuple[str, ...]) -> str:
@@ -147,6 +203,11 @@ def ensure_foreign_key_indexes(metadata: MetaData, *, schema: str | None = None)
                 # value, so an index led by it is pure write cost — the
                 # selectivity lives in the composite's other column, which
                 # gets its own index on the pass below.
+                continue
+            if column.name != OWNER_COLUMN and _points_only_at_reference_data(column, metadata):
+                # A reference into a shared dimension table — no cascade to
+                # serve and no read that filters on it. See this module's
+                # docstring, and `db.tenant.is_reference_table`.
                 continue
             wanted: tuple[str, ...]
             if column.name == OWNER_COLUMN:

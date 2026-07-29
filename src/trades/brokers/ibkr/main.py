@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 
 import trades.db as tdb
-from db.base import merge_by_natural_key
+from db.base import ensure_reference_rows, merge_by_natural_key
 from db.money import to_analytics_float
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
@@ -144,6 +144,12 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     session.query(tdb.LedgerEvent).filter_by(user_id=user_id).delete()
 
     rows = ledger.to_dicts()
+    # `ledger_events.symbol` references `trades.securities` now, and symbols
+    # arrive dynamically — this statement is the first time this database has
+    # heard of whatever the user bought since the last sync — so the
+    # instrument is created before the events that name it. Whole batch in one
+    # statement, so a thousand-event ledger costs one round trip.
+    ensure_reference_rows(session, tdb.Security, [row["symbol"] for row in rows])
     new_events = [
         tdb.LedgerEvent(
             user_id=user_id,

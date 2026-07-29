@@ -22,13 +22,21 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, get_args
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import CheckConstraint, text
 from sqlalchemy.exc import IntegrityError
 
 import accounting.db as adb
 import trades.db as tdb
-from accounting.db.core import Account, Category
+from accounting.db.core import Account as AccountRow
+from accounting.db.core import Category
+from accounting.models import Account
+from accounting.repositories.accounts import replace_accounts
+from db.base import Base, ensure_reference_rows
+from db.currency import CURRENCY_REFERENCE, CurrencyCode
+from db.models import CURRENCY_CODE_COLUMN
+from db.tenant import is_reference_table, tenant_tables
 from trades.config import LedgerEventType
+from trades.dashboard.settings import DashboardSettings, save_settings
 from trades.ledger.signs import CASH_EFFECT_SIGN
 
 if TYPE_CHECKING:
@@ -77,14 +85,18 @@ def _account(session: Session, user_id: uuid.UUID, key: str, parent: uuid.UUID |
     uuid.UUID
     """
     account_id = uuid.uuid4()
+    # The institution reference the app's own write path creates for itself
+    # (`repositories.accounts.replace_accounts`); these tests write ORM rows
+    # directly, so they create it the same way rather than around it.
+    ensure_reference_rows(session, adb.Institution, ["Test"])
     session.add(
-        Account(
+        AccountRow(
             id=account_id,
             user_id=user_id,
             natural_key=key,
             name=key,
             kind=columns.pop("kind", "savings"),
-            institution="Test",
+            institution=columns.pop("institution", "Test"),
             currency="USD",
             parent_account_id=parent,
             **columns,
@@ -533,7 +545,7 @@ def test_deleting_a_broker_connection_unlinks_the_account_rather_than_orphaning_
     db_session.flush()
     db_session.expire_all()
 
-    assert db_session.get(Account, account_id).broker_connection_id is None
+    assert db_session.get(AccountRow, account_id).broker_connection_id is None
 
 
 # --- A. The unified sign convention ------------------------------------------
@@ -542,3 +554,224 @@ def test_deleting_a_broker_connection_unlinks_the_account_rather_than_orphaning_
 def test_every_ledger_event_type_has_exactly_one_declared_cash_direction() -> None:
     """The single translation point only works if it covers everything — a gap would silently read as zero."""
     assert set(CASH_EFFECT_SIGN) == set(get_args(LedgerEventType))
+
+
+# --- F. Move #3: the three dimension tables ----------------------------------
+#
+# Nine `currency` columns each restated `CHECK (currency IN ('USD', 'EUR'))`,
+# `accounts.institution` was free text, and `ledger_events.symbol` named nothing
+# — and `ledger_events.currency`, the identical column to the other nine, had no
+# constraint at all because the list lived in a package `trades` may not import.
+# Each test below writes the row the replacing foreign key exists to refuse.
+
+
+def _connection(session: Session, user_id: uuid.UUID) -> uuid.UUID:
+    """Insert one broker connection for a ledger event to hang off, and return its id.
+
+    Returns
+    -------
+    uuid.UUID
+    """
+    connection_id = uuid.uuid4()
+    session.add(tdb.BrokerConnection(id=connection_id, user_id=user_id, natural_key="ibkr", broker="ibkr"))
+    session.flush()
+    return connection_id
+
+
+def _ledger_event(
+    session: Session,
+    user_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    *,
+    symbol: str = "VOO",
+    currency: str = "USD",
+) -> None:
+    """Insert one ledger event, flushing so a foreign key violation surfaces here."""
+    session.add(
+        tdb.LedgerEvent(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            natural_key=f"e:{symbol}:{currency}",
+            connection_id=connection_id,
+            event_datetime=datetime(2026, 6, 30, tzinfo=UTC),
+            symbol=symbol,
+            event_type="BUY",
+            amount=Decimal(600),
+            currency=currency,
+        )
+    )
+    session.flush()
+
+
+def test_a_posting_cannot_name_a_currency_that_is_not_in_the_reference_list(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """What the eight copied `CHECK (currency IN (...))` constraints said, now said once by `currencies`."""
+    account_id = _account(db_session, test_user_id, "chase:checking", kind="checking")
+    transaction_id = _transaction(db_session, test_user_id, "t1")
+    with pytest.raises(IntegrityError):
+        _posting(db_session, test_user_id, "p1", transaction_id, account_id, "0", currency="XYZ")
+
+
+def test_a_ledger_event_cannot_name_a_currency_that_is_not_in_the_reference_list(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The gap move #3 closed: this column is identical to the other nine and had no constraint whatsoever.
+
+    It could not have one. The allowed values lived in `accounting.models`,
+    and `trades` may not import `accounting` — so the one currency column
+    nobody validated was the one in the other package. The list is in
+    `db.currency` now, below both.
+    """
+    connection_id = _connection(db_session, test_user_id)
+    with pytest.raises(IntegrityError):
+        _ledger_event(db_session, test_user_id, connection_id, currency="XYZ")
+
+
+def test_every_currency_column_in_both_schemas_references_the_reference_list() -> None:
+    """Coverage, not behaviour: the duplication is only actually gone if no column kept its own copy.
+
+    Derived from the metadata rather than listed here, so a tenth
+    `currency` column added later is checked by this test on the day it
+    appears — the failure mode the copied `CHECK`s had (a new table simply
+    not getting one) cannot recur silently.
+    """
+    currency_columns = [
+        (table, column)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if column.name in {"currency", "target_currency"}
+    ]
+    assert len(currency_columns) == 9, f"expected nine currency columns, found {len(currency_columns)}"
+    for table, column in currency_columns:
+        targets = {key.target_fullname for key in column.foreign_keys}
+        assert targets == {CURRENCY_CODE_COLUMN}, (
+            f"{table.name}.{column.name} does not reference {CURRENCY_CODE_COLUMN}"
+        )
+        restated = [
+            constraint.name
+            for constraint in table.constraints
+            if isinstance(constraint, CheckConstraint) and (constraint.name or "").endswith(("currency",))
+        ]
+        assert not restated, f"{table.name} still restates the currency list in a CHECK: {restated}"
+
+
+def test_the_currency_reference_list_is_seeded_in_a_database_built_by_create_all(db_session: Session) -> None:
+    """The two-path seed: the test suite never runs a migration, so the `after_create` hook has to carry it.
+
+    Without it every one of the ten foreign keys above would be pointing at
+    an empty table and no test could write a `currency` at all.
+    """
+    rows = dict(db_session.execute(text("SELECT code, symbol FROM public.currencies")).all())
+    assert rows == {code: reference.symbol for code, reference in CURRENCY_REFERENCE.items()}
+
+
+def test_the_currency_literal_and_the_reference_rows_are_the_same_list() -> None:
+    """`CurrencyCode` stays the API vocabulary and `currencies` the referential guarantee — of one list.
+
+    `CURRENCY_REFERENCE` being keyed by `CurrencyCode` already stops a row
+    for a currency the Literal doesn't have; mypy cannot check the other
+    direction (a Literal arm with no row), which would ship a currency the
+    API accepts and the database rejects. This is that direction.
+    """
+    assert set(get_args(CurrencyCode)) == set(CURRENCY_REFERENCE), (
+        "CurrencyCode and the seeded currencies table have drifted apart"
+    )
+
+
+def test_an_account_cannot_name_an_institution_that_does_not_exist(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`accounts.institution` had no constraint of any kind, despite selecting which importer runs."""
+    with pytest.raises(IntegrityError):
+        _account(db_session, test_user_id, "nowhere:checking", kind="checking", institution="not-an-institution")
+
+
+def test_writing_an_account_creates_the_institution_it_names(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """Create-or-reference: the vocabulary is open, so a name nobody has used before must not be a failure.
+
+    The counterpart to the test above, and the reason the new foreign key
+    does not break account creation — `replace_accounts` fills the reference
+    list from the accounts it is given (`db.base.ensure_reference_rows`).
+    """
+    replace_accounts(
+        db_session,
+        test_user_id,
+        [
+            Account(
+                account_id="cu:checking",
+                name="Credit Union",
+                kind="checking",
+                institution="Some Credit Union Nobody Has Named Before",
+                currency="USD",
+            )
+        ],
+        prune=False,
+    )
+    db_session.flush()
+    assert db_session.get(adb.Institution, "Some Credit Union Nobody Has Named Before") is not None
+
+
+def test_a_ledger_event_cannot_name_a_symbol_that_is_not_a_known_security(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`ledger_events.symbol` was free text with no instrument table behind it."""
+    connection_id = _connection(db_session, test_user_id)
+    with pytest.raises(IntegrityError):
+        _ledger_event(db_session, test_user_id, connection_id, symbol="NOTATICKER")
+
+
+def test_a_benchmark_override_cannot_name_a_symbol_that_is_not_a_known_security(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The other symbol column, and the one whose failure was silent: a typo produced an empty benchmark."""
+    db_session.add(tdb.DashboardSettings(user_id=test_user_id, benchmark_symbol_override="NOTATICKER"))
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_saving_a_benchmark_override_creates_the_security_it_names(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Create-or-reference again: the picker's symbols come from a live Yahoo search, not from this database."""
+    save_settings(DashboardSettings(benchmark_symbol_override="QQQ"), db_session, test_user_id)
+    assert db_session.get(tdb.Security, "QQQ") is not None
+
+
+def test_the_three_dimension_tables_hold_no_tenant_data() -> None:
+    """What makes them reference tables rather than tenant tables, and so exempt from RLS without an exemption.
+
+    A `user_id` column here would mean one row of `AAPL` per user, which is
+    a dimension table done wrong — and it would also put them in
+    `db.tenant.tenant_tables`, demanding a policy for data that belongs to
+    nobody.
+    """
+    dimensions = [Base.metadata.tables[key] for key in ("currencies", "accounting.institutions", "trades.securities")]
+    for table in dimensions:
+        assert is_reference_table(table), f"{table.name} is not classified as reference data"
+        assert "user_id" not in table.columns, f"{table.name} carries a user_id"
+    tenant_names = {(entry.schema, entry.table) for entry in tenant_tables(Base.metadata)}
+    for table in dimensions:
+        assert (table.schema or "public", table.name) not in tenant_names
+
+
+def test_a_reference_into_a_dimension_table_mints_no_index() -> None:
+    """The derivation's own sanity check: twelve new foreign keys, zero new indexes, on purpose.
+
+    `(currency, user_id)` over every posting is a B-tree keyed on a column
+    with two distinct values, maintained on every insert and chosen by no
+    planner — and there is no cascade to serve either, because a currency is
+    never deleted. See `db.indexes`' module docstring.
+    """
+    for table_key, column_name in (
+        ("accounting.postings", "currency"),
+        ("accounting.accounts", "currency"),
+        ("accounting.accounts", "institution"),
+        ("accounting.goals", "target_currency"),
+        ("trades.ledger_events", "currency"),
+        ("trades.ledger_events", "symbol"),
+        ("trades.dashboard_settings", "benchmark_symbol_override"),
+    ):
+        table = Base.metadata.tables[table_key]
+        leading = {next(iter(index.columns)).name for index in table.indexes}
+        assert column_name not in leading, f"{table_key}.{column_name} minted an index into reference data"
