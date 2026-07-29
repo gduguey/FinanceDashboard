@@ -11,6 +11,7 @@ from typing import Annotated, Any
 
 import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
@@ -60,12 +61,16 @@ from accounting.repositories.interpretation import (
     undismiss_suggestion,
     upsert_posting_merge,
 )
+from accounting.repositories.ledger import transaction_keys_by_posting_key
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
 from db.session import get_db
 
 router = APIRouter()
+
+_LINK_MEMBERSHIP_CONSTRAINT = "uq_transfer_linked_transactions_user_transaction"
+"""The unique index holding "a transaction is in at most one transfer link" — see `accounting.db.transfers`."""
 
 
 @router.get("/postings")
@@ -370,7 +375,13 @@ def post_transfer_link(
     HTTPException
         400 if either transaction names itself, or already has a
         `PostingSplit`; 409 if either transaction is already part of a
-        *different* transfer link.
+        *different* transfer link — whether that was already true when the
+        request arrived, or became true concurrently while it was being
+        served.
+    sqlalchemy.exc.IntegrityError
+        Any constraint violation that is *not* the one-link-per-transaction
+        rule. Re-raised untouched rather than folded into the 409, so a
+        genuinely unexpected violation stays a loud 500.
     """
     if request.transaction_id_a == request.transaction_id_b:
         raise HTTPException(status_code=400, detail="Cannot link a transaction to itself")
@@ -393,22 +404,38 @@ def post_transfer_link(
                 status_code=409, detail=f"Transaction {transaction_id!r} is already part of another transfer link"
             )
 
-    raw = load_ledger(session, user_id)
-    posting_to_transaction = dict(zip(raw["posting_id"].to_list(), raw["transaction_id"].to_list(), strict=True))
-    split_transaction_ids = {
-        posting_to_transaction[posting_id]
-        for posting_id in load_posting_splits(session, user_id)
-        if posting_id in posting_to_transaction
-    }
-    for transaction_id in (link.transaction_id_a, link.transaction_id_b):
-        if transaction_id in split_transaction_ids:
+    # Scoped to the two transactions being linked. This used to load the whole
+    # ledger to build a posting -> transaction map for exactly two ids.
+    pair = (link.transaction_id_a, link.transaction_id_b)
+    transaction_by_posting = transaction_keys_by_posting_key(session, user_id, pair)
+    splits = load_posting_splits(session, user_id)
+    for transaction_id in pair:
+        if any(
+            transaction == transaction_id and posting_id in splits
+            for posting_id, transaction in transaction_by_posting.items()
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"Transaction {transaction_id!r} has already been split and can't be linked",
             )
 
-    insert_transfer_links(session, user_id, [link])
-    session.commit()
+    # Every check above read before writing, so two requests linking the same
+    # transaction to two *different* partners both pass them. The parent rows
+    # they insert have different natural keys, so `insert_transfer_links`'
+    # `ON CONFLICT DO NOTHING` skips neither; the membership rows then collide
+    # on `uq_transfer_linked_transactions_user_transaction`. The database is
+    # what actually holds "a transaction is in at most one link", so the loser
+    # corrupts nothing — it just used to surface as an unhandled
+    # `IntegrityError`, i.e. a 500 where the sequential path gives a 409.
+    try:
+        insert_transfer_links(session, user_id, [link])
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        if _LINK_MEMBERSHIP_CONSTRAINT not in str(error.orig):
+            raise
+        detail = f"One of {link.transaction_id_a!r}, {link.transaction_id_b!r} is already part of another transfer link"
+        raise HTTPException(status_code=409, detail=detail) from error
     return link
 
 

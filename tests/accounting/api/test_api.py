@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import db.models as dbm
 import trades.db as tdb
 from accounting import api as accounting_api
+from accounting.api.routers import postings as postings_router
 from accounting.api.routers import imports as accounting_imports_router
 from accounting.api.routers import llm as accounting_llm_router
 from accounting.config import AccountingConfig
@@ -1589,6 +1590,60 @@ def test_post_transfer_link_rejects_a_transaction_already_in_another_link(client
         "/api/accounting/transfer-links",
         json={"transaction_id_a": checking_transaction_id, "transaction_id_b": other_card_transaction_id},
     )
+    assert response.status_code == 409
+
+
+def test_post_transfer_link_409s_when_the_transaction_was_linked_concurrently(client, monkeypatch) -> None:
+    """The loser of a link race gets the same 409 the sequential path gives, not an unhandled `IntegrityError`.
+
+    Every check in `post_transfer_link` reads before it writes, so two
+    requests linking one transaction to two *different* partners both pass
+    them; the membership insert then collides on
+    `uq_transfer_linked_transactions_user_transaction`. Blinding
+    `load_transfer_links` reproduces that deterministically — returning
+    nothing is exactly what the loser saw, having read before the winner
+    committed.
+    """
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    other_card_id = _create_account(client, name="Other Card", kind="credit_card", institution="Chase")["account_id"]
+    client.post(
+        "/api/accounting/import",
+        files={
+            "file": (
+                "other.csv",
+                "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Also Payment Thank You,,Payment,70.00,\n",
+                "text/csv",
+            )
+        },
+        data={
+            "institution": "Chase",
+            "account_kind": "credit_card",
+            "account_id": other_card_id,
+            "account_name": "Other Card",
+        },
+    )
+    postings = client.get("/api/accounting/postings").json()
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+    other_card_transaction_id = _real_leg_transaction_id(postings, other_card_id)
+    assert (
+        client.post(
+            "/api/accounting/transfer-links",
+            json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+        ).status_code
+        == 200
+    )
+
+    monkeypatch.setattr(postings_router, "load_transfer_links", lambda *_args, **_kwargs: [])
+    response = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": other_card_transaction_id},
+    )
+
     assert response.status_code == 409
 
 

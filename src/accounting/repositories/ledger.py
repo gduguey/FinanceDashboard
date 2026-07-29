@@ -35,14 +35,16 @@ from sqlalchemy.orm import aliased
 
 import accounting.db as adb
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from db.base import any_text
 from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
     from datetime import date
 
     from sqlalchemy import Row
+    from sqlalchemy.orm import Session
 
     from accounting.models import TransactionOrigin
 
@@ -145,6 +147,44 @@ def ledger_statement(
     if until is not None:
         statement = statement.where(adb.Transaction.posted_at <= datetime.combine(until, time.max))
     return statement
+
+
+def transaction_keys_by_posting_key(
+    session: Session, user_id: uuid.UUID, transaction_keys: Iterable[str]
+) -> dict[str, str]:
+    """Map posting natural key to transaction natural key, for the named transactions only.
+
+    What a caller holding a handful of transaction ids needs in order to ask
+    a question about their postings — "has any leg of this transaction been
+    split?" being the one that exists today. The alternative was loading the
+    entire ledger to build the same map for two ids.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose postings to look at.
+    transaction_keys
+        The transactions' natural keys. Passed as one array parameter, so
+        this is safe for any number of them.
+
+    Returns
+    -------
+    dict[str, str]
+        Posting natural key to the natural key of the transaction it belongs
+        to. Empty if none of `transaction_keys` names a transaction.
+    """
+    rows = session.execute(
+        select(adb.Posting.natural_key, adb.Transaction.natural_key)
+        .select_from(adb.Posting)
+        .join(
+            adb.Transaction,
+            (adb.Posting.transaction_id == adb.Transaction.id) & (adb.Transaction.user_id == adb.Posting.user_id),
+        )
+        .where(adb.Posting.user_id == user_id, any_text(adb.Transaction.natural_key, transaction_keys))
+    ).all()
+    return {posting_key: transaction_key for posting_key, transaction_key in rows}  # noqa: C416 — Row is not a tuple
 
 
 def ledger_rows_to_frame(rows: Sequence[Row[Any]]) -> pl.DataFrame:

@@ -332,7 +332,16 @@ def apply_transfer_links(postings: pl.DataFrame, links: list[TransferLink]) -> p
         ],
         schema={"transaction_id": pl.Utf8, "linked_transaction_id": pl.Utf8, "transfer_link_source": pl.Utf8},
     )
-    joined = postings.join(link_lookup, on="transaction_id", how="left")
+    # `unique` on the join key, because this is a left join and a duplicate
+    # key would fan one posting out into two rows — silently inflating every
+    # balance and total downstream of it. "A transaction is in at most one
+    # link" is enforced at the database
+    # (`uq_transfer_linked_transactions_user_transaction`), so a duplicate here
+    # means that constraint was violated or this frame was built from stale
+    # rows; either way the read must not multiply the ledger. `keep="first"`
+    # over a stable input is deterministic, and a dropped duplicate shows the
+    # transaction as linked to one of its partners rather than to none.
+    joined = postings.join(link_lookup.unique(subset="transaction_id", keep="first"), on="transaction_id", how="left")
     return joined.with_columns(is_linked_transfer=pl.col("linked_transaction_id").is_not_null())
 
 
