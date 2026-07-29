@@ -77,6 +77,14 @@ the domain model is exact and this projection is not, so deriving one from
 the other invited exactly the confusion this module's docstring exists to
 prevent. `amount` is `Float64` here and `Money` (`Decimal`) on `Posting`;
 those are two different types on purpose.
+
+This frame is flat, and deliberately wider than the storage under it.
+`posted_at` and `description` are stored once per *transaction* (see
+`accounting.db.core.Transaction`) and appear here once per *leg*:
+`importers.ingest.load_ledger` joins them back on. That keeps the boundary
+this module documents at one place — every ledger, dashboard, and API module
+reads one flat row shape, and none of them has to know, or re-derive, which
+of these columns is a fact about the event rather than about the leg.
 """
 
 

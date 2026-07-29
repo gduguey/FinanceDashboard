@@ -27,6 +27,7 @@ import polars as pl
 import pytest
 from sqlalchemy import text
 
+import accounting.db as adb
 import db.models
 from accounting.importers.ingest import _write_ledger, load_ledger
 from accounting.ledger.categorization import apply_category_redirects
@@ -389,6 +390,74 @@ def test_write_ledger_never_prunes_a_manual_transaction(db_session: Session, tes
     assert [transfer.transfer_id for transfer in load_manual_transfers(db_session, test_user_id)] == ["closing"]
     posting_ids = load_ledger(db_session, user_id=test_user_id)["posting_id"].to_list()
     assert sorted(posting_ids) == ["manual-transfer:closing:from", "manual-transfer:closing:to"]
+
+
+def test_a_transactions_date_and_description_are_stored_once_and_projected_onto_every_leg(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The behavioural half of `tests/db/test_schema_invariants`'s structural claim.
+
+    `posted_at`/`description` live on `transactions` and the frame carries
+    one of each per leg, so this is what proves the join puts the *same* one
+    on both: exactly one row in `transactions` holds them, and the two legs
+    of that transaction come back agreeing, because they are reading the
+    same value rather than two copies that happen to match.
+    """
+    _register_account(db_session, test_user_id)
+    _register_account(db_session, test_user_id, account_id="savings:test")
+    _write_ledger(
+        _frame(
+            _posting("t1:0", "t1", amount=-40.0),
+            _posting("t1:1", "t1", account_id="savings:test", amount=40.0),
+        ),
+        db_session,
+        user_id=test_user_id,
+    )
+
+    stored = db_session.query(adb.Transaction).filter_by(user_id=test_user_id).all()
+    assert [(row.natural_key, row.posted_at, row.description) for row in stored] == [
+        ("t1", datetime(2026, 1, 1), "test")
+    ]
+
+    ledger = load_ledger(db_session, user_id=test_user_id)
+    assert ledger.height == 2
+    assert ledger["posted_at"].unique().to_list() == [datetime(2026, 1, 1)]
+    assert ledger["description"].unique().to_list() == ["test"]
+
+
+def test_re_recording_a_manual_transfer_updates_its_one_date_and_description(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The upsert that used to land on the postings has to land on the transaction now, or an edit is silently lost."""
+    _register_account(db_session, test_user_id)
+    _register_account(db_session, test_user_id, account_id="savings:test")
+
+    def _record(date: datetime, description: str) -> None:
+        insert_manual_transfers(
+            [
+                ManualTransfer(
+                    transfer_id="closing",
+                    date=date,
+                    from_account_id="checking:test",
+                    to_account_id="savings:test",
+                    from_amount=250,
+                    to_amount=250,
+                    description=description,
+                )
+            ],
+            db_session,
+            test_user_id,
+        )
+        db_session.commit()
+
+    _record(datetime(2026, 2, 1, tzinfo=UTC), "Closing balance")
+    _record(datetime(2026, 3, 15, tzinfo=UTC), "Corrected closing balance")
+
+    transfer = load_manual_transfers(db_session, test_user_id)[0]
+    assert transfer.date == datetime(2026, 3, 15)
+    assert transfer.description == "Corrected closing balance"
+    ledger = load_ledger(db_session, user_id=test_user_id, origin="manual")
+    assert ledger["description"].unique().to_list() == ["Corrected closing balance"]
 
 
 def test_load_ledger_restricted_to_imported_hides_the_manual_half(db_session: Session, test_user_id: uuid.UUID) -> None:

@@ -133,33 +133,43 @@ def load_ledger(
         Shaped exactly like `LEDGER_FRAME_SCHEMA` — every other ledger
         and dashboard module depends on that shape, not on how it's
         actually stored, so nothing downstream of this function needed to
-        change when its own storage moved from `ledger.csv` to Postgres.
-        An empty frame if nothing matches.
+        change when its own storage moved from `ledger.csv` to Postgres,
+        nor when `posted_at`/`description` moved off `postings` onto
+        `transactions` and became the join below. An empty frame if nothing
+        matches.
     """
-    # `posted_at` is a naive (timezone-unaware) column — the bounds below
-    # must be naive too, or psycopg rejects the comparison outright.
-    query = session.query(adb.Posting).filter_by(user_id=user_id)
+    # Always joined, not just when `origin` is given: `posted_at` and
+    # `description` are the transaction's (see `db.core.Transaction`), and
+    # the frame carries one of each per *leg* — so this join is what
+    # denormalizes one event's date and text back onto every posting of it,
+    # keeping `LEDGER_FRAME_SCHEMA` the single shape every downstream module
+    # reads. The date bounds filter `transactions` (where the index now
+    # lives) and stay naive to match that naive column, or psycopg rejects
+    # the comparison outright.
+    query = (
+        session
+        .query(adb.Posting, adb.Transaction)
+        .join(adb.Transaction, adb.Posting.transaction_id == adb.Transaction.id)
+        .filter(adb.Posting.user_id == user_id)
+    )
     if origin is not None:
-        query = query.join(adb.Transaction, adb.Posting.transaction_id == adb.Transaction.id).filter(
-            adb.Transaction.origin == origin
-        )
+        query = query.filter(adb.Transaction.origin == origin)
     if since is not None:
-        query = query.filter(adb.Posting.posted_at >= datetime.combine(since, time.min))
+        query = query.filter(adb.Transaction.posted_at >= datetime.combine(since, time.min))
     if until is not None:
-        query = query.filter(adb.Posting.posted_at <= datetime.combine(until, time.max))
+        query = query.filter(adb.Transaction.posted_at <= datetime.combine(until, time.max))
     rows = query.all()
     if not rows:
         return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
 
-    transaction_natural_key_by_id = natural_keys_by_id(
-        session, adb.Transaction, user_id, [row.transaction_id for row in rows]
+    account_natural_key_by_id = natural_keys_by_id(
+        session, adb.Account, user_id, [posting.account_id for posting, _ in rows]
     )
-    account_natural_key_by_id = natural_keys_by_id(session, adb.Account, user_id, [row.account_id for row in rows])
     category_natural_key_by_id = natural_keys_by_id(
         session,
         adb.Category,
         user_id,
-        [row.category_id for row in rows] + [row.subcategory_id for row in rows],
+        [posting.category_id for posting, _ in rows] + [posting.subcategory_id for posting, _ in rows],
     )
     tag_ids_by_posting: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
     tag_ids: set[uuid.UUID] = set()
@@ -167,26 +177,30 @@ def load_ledger(
         tag_ids_by_posting[posting_tag.posting_id].append(posting_tag.tag_id)
         tag_ids.add(posting_tag.tag_id)
     tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, tag_ids)
-    budget_natural_key_by_id = natural_keys_by_id(session, adb.Budget, user_id, [row.budget_id for row in rows])
+    budget_natural_key_by_id = natural_keys_by_id(
+        session, adb.Budget, user_id, [posting.budget_id for posting, _ in rows]
+    )
 
     records = [
         {
-            "posting_id": row.natural_key,
-            "transaction_id": transaction_natural_key_by_id[row.transaction_id],
-            "account_id": account_natural_key_by_id[row.account_id],
-            "posted_at": row.posted_at,
-            "amount": row.amount,
-            "currency": row.currency,
-            "category_id": category_natural_key_by_id.get(row.category_id) if row.category_id is not None else None,
-            "subcategory_id": category_natural_key_by_id.get(row.subcategory_id)
-            if row.subcategory_id is not None
+            "posting_id": posting.natural_key,
+            "transaction_id": transaction.natural_key,
+            "account_id": account_natural_key_by_id[posting.account_id],
+            "posted_at": transaction.posted_at,
+            "amount": posting.amount,
+            "currency": posting.currency,
+            "category_id": category_natural_key_by_id.get(posting.category_id)
+            if posting.category_id is not None
             else None,
-            "budget_id": budget_natural_key_by_id.get(row.budget_id) if row.budget_id is not None else None,
-            "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(row.id, [])],
-            "description": row.description,
-            "meta": row.meta,
+            "subcategory_id": category_natural_key_by_id.get(posting.subcategory_id)
+            if posting.subcategory_id is not None
+            else None,
+            "budget_id": budget_natural_key_by_id.get(posting.budget_id) if posting.budget_id is not None else None,
+            "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(posting.id, [])],
+            "description": transaction.description,
+            "meta": posting.meta,
         }
-        for row in rows
+        for posting, transaction in rows
     ]
     return pl.DataFrame(records, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
@@ -230,12 +244,26 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     """
     rows = ledger.to_dicts()
 
+    # The frame carries one `posted_at`/`description` pair per *leg*; the
+    # storage holds one per event (see `db.core.Transaction`). Collapsing by
+    # `transaction_id` here is where the frame's denormalized copies become
+    # the one row again — and since every path that builds a frame gives
+    # each leg of a transaction the same date and description, "last leg
+    # wins" is not a choice being made, it is the same value written once.
+    transaction_facts = {row["transaction_id"]: (row["posted_at"], row["description"]) for row in rows}
     transaction_ids: set[uuid.UUID] = set()
-    for row in rows:
-        transaction_id = derive_id(user_id, "transactions", row["transaction_id"])
+    for natural_key, (posted_at, description) in transaction_facts.items():
+        transaction_id = derive_id(user_id, "transactions", natural_key)
         transaction_ids.add(transaction_id)
         session.merge(
-            adb.Transaction(id=transaction_id, user_id=user_id, natural_key=row["transaction_id"], origin="imported")
+            adb.Transaction(
+                id=transaction_id,
+                user_id=user_id,
+                natural_key=natural_key,
+                posted_at=posted_at,
+                description=description,
+                origin="imported",
+            )
         )
     session.flush()
 
@@ -250,7 +278,6 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
                 natural_key=row["posting_id"],
                 transaction_id=derive_id(user_id, "transactions", row["transaction_id"]),
                 account_id=derive_id(user_id, "accounts", row["account_id"]),
-                posted_at=row["posted_at"],
                 amount=row["amount"],
                 currency=row["currency"],
                 category_id=derive_id(user_id, "categories", row["category_id"])
@@ -260,7 +287,6 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
                 if row["subcategory_id"] is not None
                 else None,
                 budget_id=derive_id(user_id, "budgets", row["budget_id"]) if row["budget_id"] is not None else None,
-                description=row["description"],
                 meta=row["meta"],
             )
         )

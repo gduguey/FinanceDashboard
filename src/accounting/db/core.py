@@ -343,23 +343,60 @@ class Tag(Base, Timestamped):
 
 
 class Transaction(Base, Timestamped):
-    """One economic event, grouping the postings that are its legs.
+    """One economic event, grouping the postings that are its legs — and owning its date, description, and balance.
 
     Doesn't exist as a pydantic model today — `transaction_id` is just a
     string `Posting`s happen to share. Reified here so it's a real
     foreign-key target instead of an unenforced convention.
+
+    ## The three facts about the event, not about a leg
+
+    `posted_at` and `description` are properties of *what happened*, not of
+    either side of it: one purchase happened on one day and says one thing
+    on the statement, however many legs record it. They used to be columns
+    on `postings`, written identically to every leg of the same transaction
+    by every path that produces one (`importers.common.posting_pair`, the
+    canonical importer, and `repositories.accounts.insert_manual_transfers`
+    all set both legs from the same source row). That made "the two legs of
+    one purchase, dated two days apart" and "one transaction with two
+    different descriptions" states the schema could hold and no reader
+    could mean — the duplication was the bug, not the storage cost.
+
+    Moving them here is the third of the same move `db.triggers` made for
+    the zero-sum rule: the balancing invariant, the date, and the
+    description are all statements about the *set* of postings, so they
+    belong to the row that set is grouped by. A posting is now purely a
+    leg: which account, how much, in what currency, filed under what.
+
+    Nothing per-leg was lost. The one place a leg genuinely carries text of
+    its own is a user's split of one posting into several
+    (`corrections.PostingSplitLeg.description`), which is an overlay row,
+    not a posting — and a merge's own replacement text lives on
+    `corrections.PostingMerge.description`, keyed by the transaction it
+    keeps. Neither was ever written back onto `postings`.
+
+    `ix_transactions_user_posted_at` moved here with the column it indexes.
+    Every date-range read in this package (`importers.ingest.load_ledger`'s
+    `since`/`until`, and every `as_of` filter downstream of it) now filters
+    this table, and it is a strictly better index than the `postings` one
+    it replaces: one entry per event rather than one per leg.
     """
 
     __tablename__ = "transactions"
     __table_args__ = (
         CheckConstraint(check_in_sql("origin", get_args(TransactionOrigin)), name="origin"),
         UniqueConstraint("user_id", "natural_key", name="uq_transactions_user_natural_key"),
+        Index("ix_transactions_user_posted_at", "user_id", "posted_at"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
+    posted_at: Mapped[datetime]
+    """The one day this event happened on — naive, like every other ledger date in this schema."""
+    description: Mapped[str] = mapped_column(default="")
+    """What the statement (or the person) said this event was. See the class docstring."""
     origin: Mapped[str] = mapped_column(default="imported")
     """Where this transaction came from — `imported` from a statement, or `manual`, entered by hand.
 
@@ -383,6 +420,12 @@ class Transaction(Base, Timestamped):
 
 class Posting(Base, Timestamped):
     """One leg of one economic event — one row, like `trades.db.LedgerEvent`.
+
+    Purely a leg: which account, how much, in what currency, filed under
+    what. When the event happened and what it said are on the
+    `Transaction` this leg belongs to, never repeated here — see that
+    class's docstring for why a per-leg copy of either was a state nothing
+    could mean.
 
     Every column here is raw: what the statement said, or what the user
     typed into a manual transfer. Nothing derived or resolved is written
@@ -411,7 +454,6 @@ class Posting(Base, Timestamped):
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
         *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_postings_user_natural_key"),
-        Index("ix_postings_user_posted_at", "user_id", "posted_at"),
         {"schema": SCHEMA},
     )
 
@@ -422,7 +464,6 @@ class Posting(Base, Timestamped):
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
     )
     account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
-    posted_at: Mapped[datetime]
     amount: Mapped[Decimal] = mapped_column(MONEY)
     currency: Mapped[str]
     category_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -432,7 +473,6 @@ class Posting(Base, Timestamped):
     budget_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.budgets.id"), default=None
     )
-    description: Mapped[str] = mapped_column(default="")
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
 
 

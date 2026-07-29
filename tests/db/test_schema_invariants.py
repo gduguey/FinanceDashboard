@@ -94,7 +94,13 @@ def _account(session: Session, user_id: uuid.UUID, key: str, parent: uuid.UUID |
     return account_id
 
 
-def _transaction(session: Session, user_id: uuid.UUID, key: str) -> uuid.UUID:
+def _transaction(
+    session: Session,
+    user_id: uuid.UUID,
+    key: str,
+    posted_at: datetime | None = None,
+    description: str = "",
+) -> uuid.UUID:
     """Insert one transaction and return its id.
 
     Returns
@@ -102,7 +108,15 @@ def _transaction(session: Session, user_id: uuid.UUID, key: str) -> uuid.UUID:
     uuid.UUID
     """
     transaction_id = uuid.uuid4()
-    session.add(adb.Transaction(id=transaction_id, user_id=user_id, natural_key=key))
+    session.add(
+        adb.Transaction(
+            id=transaction_id,
+            user_id=user_id,
+            natural_key=key,
+            posted_at=posted_at or datetime(2026, 1, 1, tzinfo=UTC),
+            description=description,
+        )
+    )
     session.flush()
     return transaction_id
 
@@ -130,7 +144,6 @@ def _posting(
             natural_key=key,
             transaction_id=transaction_id,
             account_id=account_id,
-            posted_at=datetime(2026, 1, 1, tzinfo=UTC),
             amount=Decimal(amount),
             currency=currency,
         )
@@ -193,7 +206,6 @@ def test_a_posting_cannot_name_a_subcategory_of_a_different_category(
             natural_key="p1",
             transaction_id=transaction_id,
             account_id=account_id,
-            posted_at=datetime(2026, 1, 1, tzinfo=UTC),
             amount=Decimal(-10),
             currency="USD",
             category_id=food,
@@ -217,7 +229,6 @@ def test_a_posting_cannot_carry_a_subcategory_with_no_category(db_session: Sessi
             natural_key="p1",
             transaction_id=transaction_id,
             account_id=account_id,
-            posted_at=datetime(2026, 1, 1, tzinfo=UTC),
             amount=Decimal(-10),
             currency="USD",
             category_id=None,
@@ -335,6 +346,34 @@ def test_a_cross_currency_transaction_is_not_checked(db_session: Session, test_u
     _posting(db_session, test_user_id, "p1", transaction_id, usd, "-100", currency="USD")
     _posting(db_session, test_user_id, "p2", transaction_id, eur, "92", currency="EUR")
     _check_deferred_constraints(db_session)
+
+
+def test_one_transaction_has_exactly_one_date_and_one_description() -> None:
+    """The other two per-transaction facts: stored once, on the transaction, with no second copy on a leg.
+
+    `posted_at` and `description` were columns on `postings`, written
+    identically to every leg of the same transaction by every path that
+    produced one — so "two legs of one purchase, dated a week apart" and
+    "one transaction with two different descriptions" were representable
+    and meaningless. There is one of each now, and this asserts the *absence*
+    of the duplicate rather than merely the presence of the original: a
+    future change reintroducing a per-leg date would restore exactly the
+    disagreement the move removed.
+    """
+    assert {"posted_at", "description"} <= set(adb.Transaction.__table__.columns.keys()), (
+        "transactions does not own its own date and description"
+    )
+    assert not {"posted_at", "description"} & set(adb.Posting.__table__.columns.keys()), (
+        "postings carries a second, per-leg copy of a fact about the whole transaction"
+    )
+
+
+def test_the_date_range_index_follows_the_date_onto_transactions() -> None:
+    """Every `since`/`until`/`as_of` read filters the date where it now lives, so the index has to be there too."""
+    assert any(
+        [column.name for column in index.columns] == ["user_id", "posted_at"]
+        for index in adb.Transaction.__table__.indexes
+    ), "transactions has no (user_id, posted_at) index for the date-range reads to use"
 
 
 # --- E. The remaining structural invariants ----------------------------------

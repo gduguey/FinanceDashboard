@@ -126,7 +126,14 @@ def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, pos
         )
         session.commit()
     transaction_uuid = derive_id(user_id, "transactions", transaction_id)
-    session.add(adb.Transaction(id=transaction_uuid, user_id=user_id, natural_key=transaction_id))
+    session.add(
+        adb.Transaction(
+            id=transaction_uuid,
+            user_id=user_id,
+            natural_key=transaction_id,
+            posted_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    )
     session.flush()
     session.add(
         adb.Posting(
@@ -135,7 +142,6 @@ def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, pos
             natural_key=posting_id,
             transaction_id=transaction_uuid,
             account_id=derive_id(user_id, "accounts", "checking:test"),
-            posted_at=datetime(2026, 1, 1, tzinfo=UTC),
             amount=10,
             currency="USD",
         )

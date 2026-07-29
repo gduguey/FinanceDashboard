@@ -387,9 +387,9 @@ _LEG_COUNT = 2
 
 
 def _manual_transfer_from_legs(
-    natural_key: str, legs: list[adb.Posting], account_natural_key_by_id: dict[uuid.UUID, str]
+    transaction: adb.Transaction, legs: list[adb.Posting], account_natural_key_by_id: dict[uuid.UUID, str]
 ) -> ManualTransfer:
-    """Rebuild the `ManualTransfer` shape from the two postings that store it.
+    """Rebuild the `ManualTransfer` shape from the transaction and the two postings that store it.
 
     The signed pair `insert_manual_transfers` wrote is read back the way it
     was written: the more-negative leg is the *from* side, the other the
@@ -398,19 +398,25 @@ def _manual_transfer_from_legs(
     makes that total — the two legs of a real transfer always straddle
     zero, but nothing here has to fall over if one somehow doesn't.
 
+    The date and description come off the `transaction`, not off a leg:
+    there is exactly one of each per transfer, which is the whole of what
+    moving those columns bought (see `db.core.Transaction`). This function
+    used to read them off whichever leg sorted first, with the other leg's
+    identical copy silently ignored.
+
     Returns
     -------
     ManualTransfer
     """
     outgoing, incoming = sorted(legs, key=lambda leg: leg.amount)
     return ManualTransfer(
-        transfer_id=natural_key.removeprefix(_MANUAL_TRANSACTION_PREFIX),
-        date=outgoing.posted_at,
+        transfer_id=transaction.natural_key.removeprefix(_MANUAL_TRANSACTION_PREFIX),
+        date=transaction.posted_at,
         from_account_id=account_natural_key_by_id[outgoing.account_id],
         to_account_id=account_natural_key_by_id[incoming.account_id],
         from_amount=-outgoing.amount,
         to_amount=incoming.amount,
-        description=outgoing.description,
+        description=transaction.description,
     )
 
 
@@ -441,21 +447,18 @@ def load_manual_transfers(session: Session, user_id: uuid.UUID) -> list[ManualTr
     transactions = list(session.query(adb.Transaction).filter_by(user_id=user_id, origin="manual"))
     if not transactions:
         return []
-    natural_key_by_transaction_id = {row.id: row.natural_key for row in transactions}
+    transaction_by_id = {row.id: row for row in transactions}
     legs_by_transaction_id: dict[uuid.UUID, list[adb.Posting]] = defaultdict(list)
     for posting in (
-        session
-        .query(adb.Posting)
-        .filter_by(user_id=user_id)
-        .filter(adb.Posting.transaction_id.in_(natural_key_by_transaction_id))
+        session.query(adb.Posting).filter_by(user_id=user_id).filter(adb.Posting.transaction_id.in_(transaction_by_id))
     ):
         legs_by_transaction_id[posting.transaction_id].append(posting)
     account_natural_key_by_id = natural_keys_by_id(
         session, adb.Account, user_id, [leg.account_id for legs in legs_by_transaction_id.values() for leg in legs]
     )
     transfers = [
-        _manual_transfer_from_legs(natural_key, legs_by_transaction_id[transaction_id], account_natural_key_by_id)
-        for transaction_id, natural_key in natural_key_by_transaction_id.items()
+        _manual_transfer_from_legs(transaction, legs_by_transaction_id[transaction_id], account_natural_key_by_id)
+        for transaction_id, transaction in transaction_by_id.items()
         if len(legs_by_transaction_id[transaction_id]) == _LEG_COUNT
     ]
     return sorted(transfers, key=lambda transfer: transfer.transfer_id)
@@ -497,15 +500,29 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
     for transfer in transfers:
         transaction_natural_key = f"{_MANUAL_TRANSACTION_PREFIX}{transfer.transfer_id}"
         transaction_id = derive_id(user_id, "transactions", transaction_natural_key)
+        # The date and the description are written once, here, rather than
+        # onto each leg below — a transfer happened on one day and says one
+        # thing (see `db.core.Transaction`). `DO UPDATE` rather than the
+        # `DO NOTHING` this used to be: re-recording the same transfer with
+        # an edited date or description has to land, and until those columns
+        # moved it landed on the postings' own upsert instead.
         session.execute(
             text(
                 """
-                INSERT INTO accounting.transactions (id, user_id, natural_key, origin)
-                VALUES (:id, :user_id, :natural_key, 'manual')
-                ON CONFLICT (id) DO NOTHING
+                INSERT INTO accounting.transactions (id, user_id, natural_key, posted_at, description, origin)
+                VALUES (:id, :user_id, :natural_key, :posted_at, :description, 'manual')
+                ON CONFLICT (id) DO UPDATE SET
+                    posted_at = EXCLUDED.posted_at,
+                    description = EXCLUDED.description
                 """
             ),
-            {"id": str(transaction_id), "user_id": str(user_id), "natural_key": transaction_natural_key},
+            {
+                "id": str(transaction_id),
+                "user_id": str(user_id),
+                "natural_key": transaction_natural_key,
+                "posted_at": transfer.date,
+                "description": transfer.description,
+            },
         )
         legs = (
             (f"{transaction_natural_key}:from", transfer.from_account_id, -transfer.from_amount),
@@ -516,17 +533,13 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
                 text(
                     """
                     INSERT INTO accounting.postings
-                        (id, user_id, natural_key, transaction_id, account_id, posted_at,
-                         amount, currency, description, meta)
+                        (id, user_id, natural_key, transaction_id, account_id, amount, currency, meta)
                     VALUES
-                        (:id, :user_id, :natural_key, :transaction_id, :account_id, :posted_at,
-                         :amount, :currency, :description, :meta)
+                        (:id, :user_id, :natural_key, :transaction_id, :account_id, :amount, :currency, :meta)
                     ON CONFLICT (id) DO UPDATE SET
                         account_id = EXCLUDED.account_id,
-                        posted_at = EXCLUDED.posted_at,
                         amount = EXCLUDED.amount,
-                        currency = EXCLUDED.currency,
-                        description = EXCLUDED.description
+                        currency = EXCLUDED.currency
                     """
                 ),
                 {
@@ -535,10 +548,8 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
                     "natural_key": posting_natural_key,
                     "transaction_id": str(transaction_id),
                     "account_id": str(_account_id(user_id, account_id)),
-                    "posted_at": transfer.date,
                     "amount": amount,
                     "currency": currency_by_account_id[account_id],
-                    "description": transfer.description,
                     "meta": json.dumps({"source": "manual_transfer"}),
                 },
             )

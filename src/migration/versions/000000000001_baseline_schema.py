@@ -184,6 +184,8 @@ def _create_tables() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
+    sa.Column('posted_at', sa.DateTime(), nullable=False),
+    sa.Column('description', sa.String(), nullable=False),
     sa.Column('origin', sa.String(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -193,6 +195,7 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_transactions_user_natural_key'),
     schema='accounting'
     )
+    op.create_index('ix_transactions_user_posted_at', 'transactions', ['user_id', 'posted_at'], unique=False, schema='accounting')
     op.create_table('external_identities',
     sa.Column('provider', sa.String(), nullable=False),
     sa.Column('external_id', sa.String(), nullable=False),
@@ -437,13 +440,11 @@ def _create_tables() -> None:
     sa.Column('natural_key', sa.String(), nullable=False),
     sa.Column('transaction_id', sa.UUID(), nullable=False),
     sa.Column('account_id', sa.UUID(), nullable=False),
-    sa.Column('posted_at', sa.DateTime(), nullable=False),
     sa.Column('amount', sa.Numeric(precision=18, scale=4), nullable=False),
     sa.Column('currency', sa.String(), nullable=False),
     sa.Column('category_id', sa.UUID(), nullable=True),
     sa.Column('subcategory_id', sa.UUID(), nullable=True),
     sa.Column('budget_id', sa.UUID(), nullable=True),
-    sa.Column('description', sa.String(), nullable=False),
     sa.Column('meta', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -464,7 +465,6 @@ def _create_tables() -> None:
     op.create_index('ix_postings_category_id_user_id', 'postings', ['category_id', 'user_id'], unique=False, schema='accounting')
     op.create_index('ix_postings_subcategory_id_user_id', 'postings', ['subcategory_id', 'user_id'], unique=False, schema='accounting')
     op.create_index('ix_postings_transaction_id_user_id', 'postings', ['transaction_id', 'user_id'], unique=False, schema='accounting')
-    op.create_index('ix_postings_user_posted_at', 'postings', ['user_id', 'posted_at'], unique=False, schema='accounting')
     op.create_table('ledger_event_trade_details',
     sa.Column('ledger_event_id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -730,7 +730,6 @@ def _drop_tables() -> None:
     op.drop_index('ix_ledger_event_trade_details_user_id', table_name='ledger_event_trade_details', schema='trades')
     op.drop_index('ix_ledger_event_trade_details_ledger_event_id_user_id', table_name='ledger_event_trade_details', schema='trades')
     op.drop_table('ledger_event_trade_details', schema='trades')
-    op.drop_index('ix_postings_user_posted_at', table_name='postings', schema='accounting')
     op.drop_index('ix_postings_transaction_id_user_id', table_name='postings', schema='accounting')
     op.drop_index('ix_postings_subcategory_id_user_id', table_name='postings', schema='accounting')
     op.drop_index('ix_postings_category_id_user_id', table_name='postings', schema='accounting')
@@ -767,6 +766,7 @@ def _drop_tables() -> None:
     op.drop_table('broker_connections', schema='trades')
     op.drop_index('ix_external_identities_user_id', table_name='external_identities')
     op.drop_table('external_identities')
+    op.drop_index('ix_transactions_user_posted_at', table_name='transactions', schema='accounting')
     op.drop_table('transactions', schema='accounting')
     op.drop_table('tags', schema='accounting')
     op.drop_table('simulator_scenarios', schema='accounting')

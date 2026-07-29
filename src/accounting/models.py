@@ -868,6 +868,17 @@ class Posting(BaseModel):
     hash, which bank format produced this row) the same way
     `LedgerEvent.meta` does for IBKR data — never a new typed column for
     something only one source ever needs.
+
+    `posted_at` and `description` are the *transaction's*, not this leg's —
+    they are stored once, on `db.core.Transaction`, and appear on every leg
+    here because this model is the row shape of the analytics projection
+    (`ledger.frame.LEDGER_FRAME_SCHEMA`), which is flat by design. An
+    importer building a pair sets the same value on both legs
+    (`importers.common.posting_pair`), and `importers.ingest.load_ledger`
+    joins the one stored value back onto each leg on the way out. Nothing
+    downstream can therefore observe two legs of one transaction disagreeing
+    about either, which is what the storage move made structural rather than
+    merely conventional.
     """
 
     model_config = ConfigDict(frozen=True)
