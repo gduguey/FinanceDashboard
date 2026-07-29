@@ -43,20 +43,22 @@ from accounting.models import (
     PostingSplitLeg,
     TransferLink,
 )
-from accounting.store import (
+from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     list_dismissed_suggestions,
     load_overrides,
     load_overrides_for_postings,
-    load_store,
     remove_posting_merge,
     remove_transfer_link,
     save_overrides_for_postings,
     save_posting_split,
-    save_store,
     undismiss_suggestion,
+)
+from accounting.store import (
+    load_store,
+    save_store,
 )
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id

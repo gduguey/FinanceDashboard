@@ -33,7 +33,10 @@ from accounting.llm.settings import (
 )
 from accounting.llm.usage import RESET_PERIOD, TrackedProvider, load_usage
 from accounting.models import CategoryClassification, PendingSuggestionSource
-from accounting.store import load_overrides_for_postings, save_overrides_for_postings
+from accounting.repositories.interpretation import (
+    load_overrides_for_postings,
+    save_overrides_for_postings,
+)
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
 from db.session import get_db

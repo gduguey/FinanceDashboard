@@ -49,24 +49,26 @@ from accounting.repositories.planning import (
     replace_recurring_additions,
     replace_withdrawal_priorities,
 )
-from accounting.store import (
-    UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
-    UNCATEGORIZED_INCOME_ACCOUNT_ID,
-    StoreVersionConflictError,
+from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
-    get_store_version,
     list_dismissed_suggestions,
     load_overrides,
     load_overrides_for_postings,
-    load_store,
-    remap_tag_ids,
     save_overrides,
     save_overrides_for_postings,
     save_posting_split,
-    save_store,
     undismiss_suggestion,
+)
+from accounting.store import (
+    StoreVersionConflictError,
+    UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
+    UNCATEGORIZED_INCOME_ACCOUNT_ID,
+    get_store_version,
+    load_store,
+    remap_tag_ids,
+    save_store,
 )
 
 if TYPE_CHECKING:

@@ -30,7 +30,10 @@ from accounting.importers.canonical.csv import (
 )
 from accounting.ledger.frame import to_analytics_amount
 from accounting.models import ManualOverride
-from accounting.store import load_overrides_for_postings, save_overrides_for_postings
+from accounting.repositories.interpretation import (
+    load_overrides_for_postings,
+    save_overrides_for_postings,
+)
 
 if TYPE_CHECKING:
     import uuid
