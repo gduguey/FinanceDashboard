@@ -42,7 +42,7 @@ from trades.config import AppConfig
 router = APIRouter()
 
 
-@router.get("/api/settings/target-allocation")
+@router.get("/settings/target-allocation")
 def get_target_allocation(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -57,7 +57,7 @@ def get_target_allocation(
     return dashboard.load_settings(session, user_id).target_allocation_pct
 
 
-@router.put("/api/settings/target-allocation")
+@router.put("/settings/target-allocation")
 def put_target_allocation(
     # `Rate`, not `float`: `model_copy(update=...)` below skips validation, so a
     # `float` here would leave the frozen `DashboardSettings` holding a double in
@@ -85,7 +85,7 @@ def put_target_allocation(
     return updated.target_allocation_pct
 
 
-@router.get("/api/settings/hysa")
+@router.get("/settings/hysa")
 def get_hysa_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -104,7 +104,7 @@ def get_hysa_settings(
     )
 
 
-@router.put("/api/settings/hysa")
+@router.put("/settings/hysa")
 def put_hysa_settings(
     update: HysaSettingsUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -127,7 +127,7 @@ def put_hysa_settings(
     )
 
 
-@router.get("/api/settings/benchmark")
+@router.get("/settings/benchmark")
 def get_benchmark_setting(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -148,7 +148,7 @@ def get_benchmark_setting(
     )
 
 
-@router.put("/api/settings/benchmark")
+@router.put("/settings/benchmark")
 def put_benchmark_setting(
     update: BenchmarkSettingUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -172,7 +172,7 @@ def put_benchmark_setting(
     )
 
 
-@router.get("/api/settings/timezone")
+@router.get("/settings/timezone")
 def get_timezone_setting(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -193,7 +193,7 @@ def get_timezone_setting(
     )
 
 
-@router.put("/api/settings/timezone")
+@router.put("/settings/timezone")
 def put_timezone_setting(
     update: TimezoneSettingUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -242,7 +242,7 @@ def _tax_settings_response(config: AppConfig, settings: dashboard.DashboardSetti
     )
 
 
-@router.get("/api/settings/tax")
+@router.get("/settings/tax")
 def get_tax_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -264,7 +264,7 @@ def get_tax_settings(
     return _tax_settings_response(_config(), settings)
 
 
-@router.put("/api/settings/tax")
+@router.put("/settings/tax")
 def put_tax_settings(
     update: TaxSettingsUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -293,7 +293,7 @@ def put_tax_settings(
     return _tax_settings_response(config, updated)
 
 
-@router.get("/api/broker-connections")
+@router.get("/broker-connections")
 def get_broker_connections(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -311,7 +311,7 @@ def get_broker_connections(
     return sorted(connections, key=lambda connection: (connection.broker, str(connection.connection_id)))
 
 
-@router.get("/api/settings/ibkr")
+@router.get("/settings/ibkr")
 def get_ibkr_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -333,7 +333,7 @@ def get_ibkr_settings(
     )
 
 
-@router.put("/api/settings/ibkr")
+@router.put("/settings/ibkr")
 def put_ibkr_settings(
     update: IbkrCredentialsUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -355,7 +355,7 @@ def put_ibkr_settings(
     )
 
 
-@router.delete("/api/settings/ibkr")
+@router.delete("/settings/ibkr")
 def delete_ibkr_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -371,7 +371,7 @@ def delete_ibkr_settings(
     return IbkrSettings(configured=False, token_set=False, query_id_set=False)
 
 
-@router.post("/api/settings/ibkr/verify")
+@router.post("/settings/ibkr/verify")
 def verify_ibkr_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],

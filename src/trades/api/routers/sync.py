@@ -53,7 +53,7 @@ def _lock_for_user(user_id: uuid.UUID) -> Lock:
         return _sync_locks[user_id]
 
 
-@router.get("/api/statements/export")
+@router.get("/statements/export")
 def get_statements_export(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Response:
     """Zip every raw Flex statement archived from a sync (verbatim XML, as received) for download.
 
@@ -76,7 +76,7 @@ def get_statements_export(user_id: Annotated[uuid.UUID, Depends(get_current_user
     )
 
 
-@router.get("/api/sync/progress")
+@router.get("/sync/progress")
 def get_sync_progress(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> SyncProgress:
     """Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
 
@@ -167,7 +167,7 @@ def _run_sync(config: AppConfig, session: Session, user_id: uuid.UUID) -> SyncRe
     )
 
 
-@router.post("/api/sync")
+@router.post("/sync")
 def sync(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],

@@ -27,7 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -48,11 +48,21 @@ if TYPE_CHECKING:
 # onto `app`, rather than on each router individually, so a new router can
 # never be mounted unprotected by omission.
 _authenticated = [Depends(require_clerk_session)]
+
+# The URL prefix this module's own routes live under is declared once, here,
+# rather than repeated in every `@router.get(...)` path across
+# `trades.api.routers.*` — the same shape `accounting.api.api` uses for its
+# own routers. A router file therefore spells only the part of the path that
+# is about the resource it serves, and moving the whole module's routes is
+# this one string.
+_trades_router = APIRouter(prefix="/api")
+_trades_router.include_router(dashboard.router)
+_trades_router.include_router(settings.router)
+_trades_router.include_router(market_data.router)
+_trades_router.include_router(sync.router)
+
 app.include_router(accounting_router, dependencies=_authenticated)
-app.include_router(dashboard.router, dependencies=_authenticated)
-app.include_router(settings.router, dependencies=_authenticated)
-app.include_router(market_data.router, dependencies=_authenticated)
-app.include_router(sync.router, dependencies=_authenticated)
+app.include_router(_trades_router, dependencies=_authenticated)
 
 # Deliberately unauthenticated — see trades.api.webhooks' own docstring for
 # why (Clerk's own servers call this, never a signed-in browser).

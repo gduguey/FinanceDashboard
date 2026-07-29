@@ -60,7 +60,7 @@ def _chart_range(ledger: pl.DataFrame, start: date | None, end: date | None) -> 
     return start or _first_event_date(ledger), end or datetime.now(tz=UTC).date()
 
 
-@router.get("/api/overview")
+@router.get("/overview")
 def get_overview(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -89,7 +89,7 @@ def get_overview(
     return Overview(**asdict(cards), last_synced_at=_last_synced_iso(user_id, local_zone))
 
 
-@router.get("/api/chart/dollar")
+@router.get("/chart/dollar")
 def get_dollar_chart(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -122,7 +122,7 @@ def get_dollar_chart(
     )
 
 
-@router.get("/api/chart/growth-of-100")
+@router.get("/chart/growth-of-100")
 def get_growth_of_100_chart(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -151,7 +151,7 @@ def get_growth_of_100_chart(
     return [GrowthOf100Point(**row) for row in series.to_dicts()]
 
 
-@router.get("/api/chart/cash-history")
+@router.get("/chart/cash-history")
 def get_cash_history(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -196,7 +196,7 @@ def get_cash_history(
     return [CashHistoryPoint(**row) for row in combined.to_dicts()]
 
 
-@router.get("/api/cash-sitting")
+@router.get("/cash-sitting")
 def get_cash_sitting(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -227,7 +227,7 @@ def get_cash_sitting(
     return CashSitting(**asdict(summary))
 
 
-@router.get("/api/chart/monthly-pnl")
+@router.get("/chart/monthly-pnl")
 def get_monthly_pnl(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -255,7 +255,7 @@ def get_monthly_pnl(
     return [MonthlyPnlRow(**row) for row in rows.to_dicts()]
 
 
-@router.get("/api/chart/monthly-pnl/by-symbol")
+@router.get("/chart/monthly-pnl/by-symbol")
 def get_monthly_pnl_by_symbol(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -283,7 +283,7 @@ def get_monthly_pnl_by_symbol(
     return [MonthlyPnlBySymbolRow(**row) for row in rows.to_dicts()]
 
 
-@router.get("/api/allocation")
+@router.get("/allocation")
 def get_allocation(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -310,7 +310,7 @@ def get_allocation(
     return [AllocationRow(**row) for row in rows.to_dicts()]
 
 
-@router.get("/api/tax/report")
+@router.get("/tax/report")
 def get_tax_report(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -355,7 +355,7 @@ def get_tax_report(
     )
 
 
-@router.get("/api/lots")
+@router.get("/lots")
 def get_lots(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -386,7 +386,7 @@ def get_lots(
     )
 
 
-@router.get("/api/risk")
+@router.get("/risk")
 def get_risk(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -413,7 +413,7 @@ def get_risk(
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
-@router.get("/api/data-quality")
+@router.get("/data-quality")
 def get_data_quality(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -434,7 +434,7 @@ def get_data_quality(
     return [DataQualityRow(**row) for row in rows.to_dicts()]
 
 
-@router.get("/api/ledger/export")
+@router.get("/ledger/export")
 def get_ledger_export(
     session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
 ) -> list[LedgerEvent]:
