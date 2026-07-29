@@ -59,7 +59,11 @@ def get_target_allocation(
 
 @router.put("/api/settings/target-allocation")
 def put_target_allocation(
-    target_allocation_pct: dict[str, float],
+    # `Rate`, not `float`: `model_copy(update=...)` below skips validation, so a
+    # `float` here would leave the frozen `DashboardSettings` holding a double in
+    # a field that promises `Decimal`. `Rate` pins its own OpenAPI type to
+    # `number`, so the wire contract is unchanged.
+    target_allocation_pct: dict[str, Rate],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> dict[str, Rate]:

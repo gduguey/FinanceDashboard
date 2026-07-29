@@ -94,7 +94,13 @@ export function AccountForm({
     // list — carrying it over silently once the institution changes would
     // point a vault at a parent from the wrong bank.
     const parentAccountId = patch.institution !== undefined ? null : next.parentAccountId
-    onChange({ ...next, name, parentAccountId })
+    // Only an `external_investment` account may carry a broker connection —
+    // `ck_accounts_broker_link_is_an_investment` enforces it, and the API
+    // rejects the pair with a 400. The picker unmounts when the kind changes,
+    // so without this the old id would stay in the draft, be submitted, and
+    // fail on save with no control left on screen to clear it.
+    const brokerConnectionId = next.kind === 'external_investment' ? next.brokerConnectionId : null
+    onChange({ ...next, name, parentAccountId, brokerConnectionId })
   }
 
   return (

@@ -140,7 +140,10 @@ def _standardize_sofi_wide_csv(csv_text: str, account_id: str) -> pl.DataFrame:
         posted_at = datetime.combine(row.posted_date, datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
 
-        transaction_row_id = row_hash(account_id, row.posted_date.isoformat(), str(row.amount), row.description)
+        # `:.4f` at `MONEY_SCALE`, never `str(row.amount)` — see the same line in
+        # `importers.chase.checking` for why the `Decimal`'s own scale must not leak
+        # into a transaction id.
+        transaction_row_id = row_hash(account_id, row.posted_date.isoformat(), f"{row.amount:.4f}", row.description)
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,
@@ -195,7 +198,12 @@ def _standardize_sofi_legacy_csv(csv_text: str, account_id: str, *, source: str)
         row = SofiRow.model_validate(raw)
         posted_at = datetime.combine(row.transaction_date, datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
-        transaction_row_id = row_hash(account_id, row.transaction_date.isoformat(), str(row.amount), row.description)
+        # `:.4f` at `MONEY_SCALE`, never `str(row.amount)` — see the same line in
+        # `importers.chase.checking` for why the `Decimal`'s own scale must not leak
+        # into a transaction id.
+        transaction_row_id = row_hash(
+            account_id, row.transaction_date.isoformat(), f"{row.amount:.4f}", row.description
+        )
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,

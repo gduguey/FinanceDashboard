@@ -347,6 +347,7 @@ def _create_tables() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint('amount >= 0', name=op.f('ck_budgets_amount_is_not_negative')),
+    sa.CheckConstraint("month IS NULL OR month ~ '^\\d{4}-(0[1-9]|1[0-2])$'", name=op.f('ck_budgets_month_is_a_calendar_month')),
     sa.CheckConstraint('subcategory_id IS NULL OR category_id IS NOT NULL', name=op.f('ck_budgets_subcategory_needs_category')),
     sa.ForeignKeyConstraint(['category_id'], ['accounting.categories.id'], name=op.f('fk_budgets_category_id_categories')),
     sa.ForeignKeyConstraint(['currency'], ['currencies.code'], name=op.f('fk_budgets_currency_currencies')),

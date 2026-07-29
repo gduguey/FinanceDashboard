@@ -40,7 +40,12 @@ def standardize_chase_checking(csv_text: str, account_id: str) -> pl.DataFrame:
         row = ChaseCheckingRow.model_validate(raw)
         posted_at = datetime.combine(parse_us_date(row.posting_date), datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
-        transaction_row_id = row_hash(account_id, row.posting_date, str(row.amount), row.description)
+        # `:.4f`, not `str(row.amount)` — `amount` is a `Money` (`Decimal`), and
+        # `str(Decimal)` keeps the source file's own scale, so `1500.0`, `1500.00`
+        # and `1500` would hash to three different transaction ids for one
+        # transaction and re-import would stop deduping. `.4f` is `MONEY_SCALE`,
+        # the scale the amount is stored at, and matches `importers.canonical.csv`.
+        transaction_row_id = row_hash(account_id, row.posting_date, f"{row.amount:.4f}", row.description)
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,

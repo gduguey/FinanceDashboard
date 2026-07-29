@@ -164,23 +164,27 @@ export function TransferRulesTab({
   // Excluding a rule-linked transfer both stops the rule from re-linking it
   // (via `excluded_transaction_ids`, same as the Excluded-from-rules tab's
   // "remove exclusion" is the inverse of) and drops the `TransferLink` it
-  // already made. The two go out together: the patch is governed by this
-  // rule's own row version and the delete names one link by id, so they
-  // touch disjoint rows and can't conflict. Awaited as a pair only so the
-  // success toast fires once both have actually landed (see
-  // `TransactionsTab.tsx`'s `handleExcludeAndUnlinkFromRule`, which this
-  // mirrors for the Rules page's own "linked by this rule" table).
+  // already made. Those are two writes but one intention, so they run in
+  // order rather than in parallel: the exclusion is patched first and the
+  // link is only deleted once that patch has actually landed. Firing both
+  // at once risks the half-applied state where the link is gone but the
+  // rule never learned to skip the pair, so the very next reconciliation
+  // re-links it and silently undoes the exclusion. This way a failed patch
+  // leaves both sides untouched and the whole action is retryable. Errors
+  // are deliberately left to propagate to the caller (each hook rolls its
+  // own optimistic patch back in `onError`) and the success toast only
+  // fires once both writes have landed — mirrors
+  // `TransactionsTab.tsx`'s `handleExcludeAndUnlinkFromRule` for the Rules
+  // page's own "linked by this rule" table.
   async function excludeFromRule(rule: TransferRule, linkId: string, transactionIds: string[]) {
     const ruleLabel = rule.description || rule.description_contains || rule.rule_id
-    await Promise.all([
-      patchRule.mutateAsync({
-        ruleId: rule.rule_id,
-        update: ruleUpdateFromRule(rule, {
-          excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
-        }),
+    await patchRule.mutateAsync({
+      ruleId: rule.rule_id,
+      update: ruleUpdateFromRule(rule, {
+        excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
       }),
-      removeTransferLink.mutateAsync(linkId),
-    ])
+    })
+    await removeTransferLink.mutateAsync(linkId)
     toast.success(`Excluded from "${ruleLabel}" — both transactions are back to being normal transactions.`)
   }
 

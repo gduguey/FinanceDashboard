@@ -43,6 +43,13 @@ class Budget(Base, Timestamped):
     __tablename__ = "budgets"
     __table_args__ = (
         CheckConstraint("amount >= 0", name="amount_is_not_negative"),
+        # `NULL` is the general target; anything else is a real calendar month.
+        # Without the 01-12 bound "2024-13" stores happily and then sorts and
+        # groups as if it were a month that exists.
+        CheckConstraint(
+            r"month IS NULL OR month ~ '^\d{4}-(0[1-9]|1[0-2])$'",
+            name="month_is_a_calendar_month",
+        ),
         *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_budgets_user_natural_key"),
         Index(

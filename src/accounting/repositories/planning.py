@@ -238,7 +238,7 @@ def load_goals(session: Session, user_id: uuid.UUID) -> dict[str, Goal]:
 def _upsert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
     """Insert-or-update one goal row without ever writing its `version` column.
 
-    A raw `INSERT ... ON CONFLICT (id) DO UPDATE` whose `SET` clause simply
+    A raw `INSERT ... ON CONFLICT (user_id, natural_key) DO UPDATE` whose `SET` clause simply
     omits `version` is what keeps `PATCH /goals/{goal_id}`'s per-row
     optimistic concurrency intact: an existing row keeps whatever version
     `check_and_bump_row_version` last left it at, no matter how many times
@@ -801,16 +801,37 @@ def upsert_goal_automation(automation: GoalAutomation, session: Session, user_id
     session.commit()
 
 
-def goal_automation_exists(session: Session, user_id: uuid.UUID, automation_id: str) -> bool:
-    """Whether one goal-automation row exists.
+def goal_automation_exists(
+    session: Session, user_id: uuid.UUID, automation_id: str, *, direction: GoalAutomationDirection | None = None
+) -> bool:
+    """Whether one goal-automation row exists, optionally only in one direction.
+
+    `direction` matters because the two directions are separate resources
+    over one table. An existence check that ignores it lets a caller
+    holding a withdrawal's id reach a contribution-shaped write path and
+    silently flip the row's direction — see `api.routers.goals.patch_goal_automation`.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose automation to look for.
+    automation_id
+        The automation's natural key.
+    direction
+        Restrict the check to automations funding (`"contribution"`) or
+        draining (`"withdrawal"`) a goal. `None` matches either, which is
+        what a direction-agnostic caller such as a delete wants.
 
     Returns
     -------
     bool
     """
-    return (
-        session.query(adb.GoalAutomation.id).filter_by(user_id=user_id, natural_key=automation_id).first() is not None
-    )
+    query = session.query(adb.GoalAutomation.id).filter_by(user_id=user_id, natural_key=automation_id)
+    if direction is not None:
+        query = query.filter_by(direction=direction)
+    return query.first() is not None
 
 
 def remove_goal_automation(session: Session, user_id: uuid.UUID, automation_id: str) -> bool:

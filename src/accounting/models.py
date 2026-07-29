@@ -465,7 +465,10 @@ class Budget(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     budget_id: str = Field(min_length=1)
-    month: Annotated[str, Field(pattern=r"^\d{4}-\d{2}$")] | None = None
+    # The month segment is pinned to 01-12: `^\d{4}-\d{2}$` alone accepts
+    # "2024-13" through "2024-99", which would persist and then sort and group
+    # as if it were a real month.
+    month: Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] | None = None
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
     amount: Money

@@ -227,11 +227,35 @@ def retire_categories(session: Session, user_id: uuid.UUID, successors: Mapping[
     # category is simply skipped below rather than resolved to `None`, which
     # would silently turn "merge A into B" into "delete A".
     category_ids = ids_by_natural_key(session, adb.Category, user_id, [*successors, *successors.values()])
+
+    def _terminal_successor(natural_key: str | None) -> str | None:
+        """Follow `successors` to the key that is not itself being retired.
+
+        Repointing inbound tombstones only fixes rows that *already* point
+        at the row being retired, so a successor that is retired later in
+        this same mapping would leave a tombstone naming a tombstone —
+        making the one-hop guarantee depend on `dict` iteration order.
+        Resolving the chain here instead makes the outcome order-independent.
+        The `seen` set makes a cycle terminate rather than spin.
+
+        Returns
+        -------
+        str or None
+            The natural key to point at, or `None` if the chain ends in a
+            plain delete.
+        """
+        seen: set[str] = set()
+        while natural_key is not None and natural_key in successors and natural_key not in seen:
+            seen.add(natural_key)
+            natural_key = successors[natural_key]
+        return natural_key
+
     for natural_key, successor in successors.items():
         retiring_id = category_ids.get(natural_key)
         if retiring_id is None:
             continue
-        successor_id = category_ids[successor] if successor is not None else None
+        terminal = _terminal_successor(successor)
+        successor_id = category_ids[terminal] if terminal is not None else None
         # Whatever already resolved *to* this category now resolves to
         # whatever this category itself resolves to — one hop, always.
         session.query(adb.Category).filter(

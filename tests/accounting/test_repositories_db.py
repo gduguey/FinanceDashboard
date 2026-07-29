@@ -82,6 +82,7 @@ from accounting.repositories.interpretation import (
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
+    update_transfer_rule,
     upsert_posting_merge,
     upsert_transfer_rule,
 )
@@ -680,6 +681,44 @@ def test_upsert_transfer_rule_leaves_every_other_rule_alone(db_session: Session,
     }
 
 
+def test_update_transfer_rule_echoes_the_bumped_version_even_when_the_row_is_already_loaded(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The version the client is told to send back next time must be the one the database now holds.
+
+    `check_and_bump_row_version` bumps the column with raw SQL, which leaves
+    an already-loaded ORM instance carrying its pre-bump value, so
+    `session.get` hands that stale value straight back. Reading
+    `row.version` after the bump therefore depends on the instance having
+    been evicted from SQLAlchemy's *weakly* referencing identity map —
+    which is why the API path gets away with it today: it discards its ORM
+    rows before updating. Holding one reference is enough to break it, and
+    echoing a stale version makes the client's next PATCH fail with a 409
+    about a conflict that never happened.
+    """
+    upsert_transfer_rule(TransferRule(rule_id="r1", description_contains="uber"), db_session, test_user_id)
+    row_id = ids_by_natural_key(db_session, adb.CategorizationRule, test_user_id, ["r1"])["r1"]
+    # The strong reference is the point: it keeps the instance in the identity
+    # map, so the bump below cannot be observed through it.
+    cached = db_session.get(adb.CategorizationRule, row_id)
+    assert cached.version == 1
+
+    updated = update_transfer_rule(
+        db_session,
+        test_user_id,
+        TransferRule(rule_id="r1", description_contains="uber", priority=7),
+        1,
+    )
+
+    assert updated is not None
+    assert cached.version == 1, "precondition: the cached instance must still be stale"
+    assert updated.version == 2
+    # The cached instance would otherwise serve this read too, so drop its stale
+    # state and confirm the database itself really holds the bumped version.
+    db_session.expire(cached)
+    assert load_transfer_rules(db_session, test_user_id)[0].version == 2
+
+
 def test_upsert_transfer_rule_round_trips_its_own_exclusions(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     upsert_transfer_rule(
@@ -753,6 +792,32 @@ def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID)
 
     assert reloaded == [link]
     assert reloaded[0].rule_id == "chase-card-payoff"
+
+
+def test_inserting_the_same_transfer_link_twice_is_a_no_op_rather_than_an_integrity_error(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Reconciliation derives a canonical `link_id` from the pair, so two callers propose the same link.
+
+    Both read the same pre-state, both see no existing link, and both write.
+    A plain insert made the loser a `unique_violation` on
+    `(user_id, natural_key)` — an `IntegrityError` with no handler above it,
+    so a 500. Two rule saves from two tabs, or a rule save racing an import,
+    reach this. The membership rows must be skipped along with the parent,
+    or they would duplicate what the winner already wrote.
+    """
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    link = TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2", source="rule")
+
+    insert_transfer_links(db_session, test_user_id, [link])
+    db_session.commit()
+    insert_transfer_links(db_session, test_user_id, [link])
+    db_session.commit()
+
+    assert load_transfer_links(db_session, test_user_id) == [link]
+    memberships = db_session.query(adb.TransferLinkedTransaction).filter_by(user_id=test_user_id).count()
+    assert memberships == 2, "one membership per side of the pair, not four"
 
 
 def test_transfer_link_cannot_name_a_rule_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:

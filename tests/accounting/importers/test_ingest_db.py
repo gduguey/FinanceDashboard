@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -71,7 +72,7 @@ def _posting(
     posting_id: str,
     transaction_id: str,
     account_id: str = "checking:test",
-    amount: float = 10.0,
+    amount: Decimal | float = 10.0,
     category_id: str | None = None,
     subcategory_id: str | None = None,
     tag_ids: list[str] | None = None,
@@ -156,6 +157,49 @@ def test_a_bulk_ledger_rewrite_still_satisfies_the_deferred_zero_sum_guard(
     db_session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
 
     assert sorted(load_ledger(db_session, user_id=test_user_id)["posting_id"].to_list()) == ["p3", "p4"]
+
+
+def test_write_ledger_adds_no_precision_loss_of_its_own_beyond_the_float_projection(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """A magnitude a double cannot hold must lose precision exactly once, not twice.
+
+    The round-trip test above uses `42.5` and `pytest.approx`, which a
+    double holds exactly — so it cannot see this. `_write_ledger` reads
+    `amount` off a `LEDGER_FRAME_SCHEMA` frame, where it is `Float64`, and
+    handed that Python `float` straight to a `NUMERIC(18, 4)` column;
+    Postgres then ran a `float8 -> numeric` cast that truncates at 15
+    significant digits, stacking a second loss on the projection's own.
+    `12345678901234.5678` landed as `12345678901234.6000`.
+
+    That matters more here than in `trades`, because these amounts start
+    out genuinely exact — Chase, SoFi, and canonical CSV all parse to
+    `Money` — so the cast was destroying precision that really existed.
+    The projection's `Decimal -> float` rounding is the single loss this
+    repo accepts (`accounting.ledger.frame`, "Exact again on the way
+    out"); the write boundary must contribute none, so the expected values
+    are the float's own shortest round-trip literal at the storage scale.
+    No `approx`, deliberately: `approx` is what hid the bug.
+    """
+    _register_account(db_session, test_user_id)
+    _register_account(db_session, test_user_id, account_id="payee:test")
+    _write_ledger(
+        _frame(
+            _posting("p1", "t1", amount=Decimal("12345678901234.5678")),
+            _posting("p2", "t1", account_id="payee:test", amount=Decimal("-12345678901234.5678")),
+        ),
+        db_session,
+        user_id=test_user_id,
+    )
+
+    amounts = {
+        posting.natural_key: posting.amount
+        for posting in db_session.query(adb.Posting).filter_by(user_id=test_user_id).all()
+    }
+    assert amounts == {
+        "p1": Decimal("12345678901234.5680"),
+        "p2": Decimal("-12345678901234.5680"),
+    }
 
 
 def test_write_then_load_ledger_round_trips_tag_ids(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -336,6 +380,30 @@ def test_retiring_a_successor_collapses_the_earlier_merge_onto_the_new_one(
     redirects = load_category_redirects(db_session, test_user_id)
     assert redirects["expense:food-drink"] == "expense:shopping"
     assert redirects["expense:transport"] == "expense:shopping"
+
+
+def test_collapsing_a_chain_inside_one_mapping_does_not_depend_on_iteration_order(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The one-hop guarantee must hold however the mapping happens to be ordered.
+
+    Repointing inbound tombstones only fixes rows that *already* point at
+    the row being retired. So when a successor is itself retired later in
+    the same mapping, the earlier pass left a tombstone naming a tombstone
+    — and `load_category_redirects` then resolved onto a retired category
+    that appears in no live tree. Which of the two orderings broke was
+    decided purely by `dict` insertion order.
+    """
+    seed_new_user_defaults(db_session, test_user_id)
+    # "transport" is retired outright, and "food-drink" merges into it in the
+    # same call — so food-drink must end up resolving to nothing, not to a
+    # tombstone.
+    retire_categories(db_session, test_user_id, {"expense:transport": None, "expense:food-drink": "expense:transport"})
+    db_session.commit()
+
+    redirects = load_category_redirects(db_session, test_user_id)
+    assert redirects["expense:transport"] is None
+    assert redirects["expense:food-drink"] is None
 
 
 def test_deleting_a_categorys_successor_turns_the_earlier_merge_into_a_delete(

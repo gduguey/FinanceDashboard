@@ -48,8 +48,12 @@ RLS_EXEMPT: dict[tuple[str, str], str] = {
     ("public", "external_identities"): (
         "Looked up before the acting user is known — sign-in resolves a provider identity "
         "to a user_id, so a policy keyed on that user_id could never match and would lock "
-        "every user out. Isolation here comes from the provider-scoped composite primary "
-        "key instead."
+        "every user out. This is a real hole, not a solved problem: the compensating "
+        "controls are that the table holds no financial data (only provider, external_id, "
+        "user_id), that db.external_identities is the only code that touches it and offers "
+        "no listing path — just exact-match lookup on a (provider, external_id) pair the "
+        "caller must already hold from a verified Clerk session or signature-checked "
+        "webhook — and that all it ever returns is an opaque internal id."
     ),
 }
 """Tables that carry `user_id` but deliberately have no policy, each with the reason.

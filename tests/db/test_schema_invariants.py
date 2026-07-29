@@ -775,3 +775,43 @@ def test_a_reference_into_a_dimension_table_mints_no_index() -> None:
         table = Base.metadata.tables[table_key]
         leading = {next(iter(index.columns)).name for index in table.indexes}
         assert column_name not in leading, f"{table_key}.{column_name} minted an index into reference data"
+
+
+@pytest.mark.parametrize("month", ["2024-13", "2024-00", "2024-99", "2024-1", "202401"])
+def test_a_budget_month_that_is_not_a_calendar_month_is_rejected(
+    db_session: Session, test_user_id: uuid.UUID, month: str
+) -> None:
+    """`^\\d{4}-\\d{2}$` accepted "2024-13", which then sorts and groups as if it were a real month."""
+    category_id = _category(db_session, test_user_id, "groceries")
+    db_session.add(
+        adb.Budget(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key=f"b-{month}",
+            month=month,
+            category_id=category_id,
+            amount=Decimal(100),
+            currency="USD",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_null_budget_month_is_the_general_target_and_stays_allowed(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The month CHECK must not catch the general, every-month-alike budget."""
+    category_id = _category(db_session, test_user_id, "groceries")
+    db_session.add(
+        adb.Budget(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="b-general",
+            month=None,
+            category_id=category_id,
+            amount=Decimal(100),
+            currency="USD",
+        )
+    )
+    db_session.flush()

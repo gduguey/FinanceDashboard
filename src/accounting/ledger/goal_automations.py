@@ -1,7 +1,8 @@
 """Decide how much money moves in/out of each goal for one automation run — never writes anything itself.
 
 Both functions here are pure: given the money available and the current
-ordering, they return `(goal_id, amount)` pairs for the caller to persist
+ordering, they return `(id, amount)` pairs — keyed by `automation_id` when
+funding, by `goal_id` when draining — for the caller to persist
 as ordinary `GoalContribution` rows (see `api.post_run_recurring_additions`/
 `api.post_run_withdrawal_automation`) — keeping the decision (how much
 goes where) separate from the effect (writing a dated, signed row),
@@ -105,8 +106,11 @@ def run_recurring_additions(automations: list[GoalAutomation], unallocated: floa
     Returns
     -------
     list[tuple[str, float]]
-        `(goal_id, amount)` pairs, in funding order — only for automations
-        that actually received a nonzero amount.
+        `(automation_id, amount)` pairs, in funding order — only for
+        automations that actually received a nonzero amount. Keyed by the
+        automation rather than its goal because a goal may legitimately have
+        several contribution schedules funding it, so `goal_id` does not
+        identify which schedule was funded.
     """
     remaining = unallocated
     funded: list[tuple[str, float]] = []
@@ -126,7 +130,7 @@ def run_recurring_additions(automations: list[GoalAutomation], unallocated: floa
         amount = min(wanted, remaining)
         if amount <= 0:
             continue
-        funded.append((automation.goal_id, amount))
+        funded.append((automation.automation_id, amount))
         remaining -= amount
     return funded
 

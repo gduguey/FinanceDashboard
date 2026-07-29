@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -28,9 +29,9 @@ def _event(
     event_id: str,
     event_type: str = "BUY",
     symbol: str = "VOO",
-    shares: float | None = 1.0,
-    price: float | None = 600.0,
-    amount: float = 600.0,
+    shares: Decimal | float | None = 1.0,
+    price: Decimal | float | None = 600.0,
+    amount: Decimal | float = 600.0,
 ) -> LedgerEvent:
     return LedgerEvent(
         event_id=event_id,
@@ -145,6 +146,49 @@ def test_a_buy_event_gets_a_trade_details_row_but_a_deposit_does_not(
     assert buy_details.price == pytest.approx(500.0)
 
     assert db_session.get(tdb.LedgerEventTradeDetails, deposit_event.id) is None
+
+
+def test_write_ledger_adds_no_precision_loss_of_its_own_beyond_the_float_projection(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """A magnitude a double cannot hold must lose precision exactly once, not twice.
+
+    Every other test in this file uses double-safe values with
+    `pytest.approx`, so none of them can see this. The ledger frame is the
+    `Float64` analytics projection, and that same frame is what
+    `_write_ledger` persists — so handing psycopg a Python `float` for a
+    `NUMERIC` column made Postgres run a `float8 -> numeric` cast that
+    truncates at 15 significant digits, a *second* loss stacked on the
+    projection's own: `12345678901234.5678` landed as
+    `12345678901234.6000`.
+
+    The projection's `Decimal -> float` rounding is the one loss this repo
+    accepts (`accounting.ledger.frame`, "Exact again on the way out"); the
+    write boundary must contribute none. So the assertions below are the
+    float's own shortest round-trip literal at the storage scale — every
+    digit the projection still had, all the way into the column. No
+    `approx`, deliberately: `approx` is what hid the bug.
+    """
+    _write_ledger(
+        _frame(
+            _event(
+                "ibkr:exact",
+                shares=Decimal("1234567890.12345678"),
+                price=Decimal("11111111111111.1111"),
+                amount=Decimal("12345678901234.5678"),
+            )
+        ),
+        db_session,
+        user_id=test_user_id,
+    )
+
+    event = db_session.query(tdb.LedgerEvent).filter_by(user_id=test_user_id, natural_key="ibkr:exact").one()
+    assert event.amount == Decimal("12345678901234.5680")
+
+    details = db_session.get(tdb.LedgerEventTradeDetails, event.id)
+    assert details is not None
+    assert details.shares == Decimal("1234567890.12345670")
+    assert details.price == Decimal("11111111111111.1110")
 
 
 def test_write_ledger_creates_the_securities_its_events_name(db_session: Session, test_user_id: uuid.UUID) -> None:

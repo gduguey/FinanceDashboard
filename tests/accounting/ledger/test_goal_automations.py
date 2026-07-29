@@ -11,9 +11,16 @@ from accounting.ledger.goal_automations import (
 from accounting.models import GoalAutomation
 
 
-def _addition(goal_id: str, mode: str, value: float, priority: int) -> GoalAutomation:
+def _addition(goal_id: str, mode: str, value: float, priority: int, automation_id: str | None = None) -> GoalAutomation:
+    """One contribution automation.
+
+    `automation_id` is overridable because a goal may legitimately carry
+    several contribution schedules — deriving it from `goal_id` alone made
+    that state inexpressible here, which is why the collision
+    `run_recurring_additions` used to have went unnoticed.
+    """
     return GoalAutomation(
-        automation_id=f"auto:{goal_id}",
+        automation_id=automation_id or f"auto:{goal_id}",
         goal_id=goal_id,
         direction="contribution",
         start_date=date(2000, 1, 1),
@@ -97,7 +104,7 @@ def test_next_recurring_occurrence_is_none_past_the_end_date() -> None:
 def test_run_recurring_additions_funds_a_fixed_amount_addition() -> None:
     additions = [_addition("emergency-fund", "fixed_amount", 500.0, priority=0)]
     funded = run_recurring_additions(additions, unallocated=2000.0)
-    assert funded == [("emergency-fund", 500.0)]
+    assert funded == [("auto:emergency-fund", 500.0)]
 
 
 def test_run_recurring_additions_funds_in_priority_order_top_first() -> None:
@@ -107,7 +114,22 @@ def test_run_recurring_additions_funds_in_priority_order_top_first() -> None:
     ]
     funded = run_recurring_additions(additions, unallocated=1000.0)
     # emergency-fund (priority 0) is funded in full first; vacation only gets what's left.
-    assert funded == [("emergency-fund", 500.0), ("vacation", 500.0)]
+    assert funded == [("auto:emergency-fund", 500.0), ("auto:vacation", 500.0)]
+
+
+def test_run_recurring_additions_reports_two_schedules_on_one_goal_separately() -> None:
+    """Keyed by automation, not by goal — only a *withdrawal* is one-per-goal.
+
+    Returning `goal_id` made the result ambiguous the moment a goal had two
+    contribution schedules, and the caller keyed its contributions off it —
+    so the second funded schedule overwrote the first.
+    """
+    additions = [
+        _addition("emergency-fund", "fixed_amount", 300.0, priority=0, automation_id="auto:a"),
+        _addition("emergency-fund", "fixed_amount", 200.0, priority=1, automation_id="auto:b"),
+    ]
+
+    assert run_recurring_additions(additions, unallocated=2000.0) == [("auto:a", 300.0), ("auto:b", 200.0)]
 
 
 def test_run_recurring_additions_gives_a_lower_priority_addition_nothing_once_funds_run_out() -> None:
@@ -116,13 +138,13 @@ def test_run_recurring_additions_gives_a_lower_priority_addition_nothing_once_fu
         _addition("vacation", "fixed_amount", 800.0, priority=1),
     ]
     funded = run_recurring_additions(additions, unallocated=500.0)
-    assert funded == [("emergency-fund", 500.0)]
+    assert funded == [("auto:emergency-fund", 500.0)]
 
 
 def test_run_recurring_additions_percent_of_unallocated_uses_the_starting_balance() -> None:
     additions = [_addition("emergency-fund", "percent_of_unallocated", 10.0, priority=0)]
     funded = run_recurring_additions(additions, unallocated=2000.0)
-    assert funded == [("emergency-fund", 200.0)]
+    assert funded == [("auto:emergency-fund", 200.0)]
 
 
 def test_run_recurring_additions_remainder_gets_whatever_is_left() -> None:
@@ -131,7 +153,7 @@ def test_run_recurring_additions_remainder_gets_whatever_is_left() -> None:
         _addition("vacation", "remainder", 0.0, priority=1),
     ]
     funded = run_recurring_additions(additions, unallocated=2000.0)
-    assert funded == [("emergency-fund", 500.0), ("vacation", 1500.0)]
+    assert funded == [("auto:emergency-fund", 500.0), ("auto:vacation", 1500.0)]
 
 
 def test_run_recurring_additions_with_no_unallocated_money_funds_nothing() -> None:
@@ -173,7 +195,7 @@ def test_run_recurring_additions_skips_a_withdrawal_automation_that_reached_the_
     # A withdrawal carries no mode/value, so there is nothing for the
     # contribution pass to fund — it must be passed over, not crash.
     automations = [_withdrawal("vacation", priority=0), _addition("emergency-fund", "fixed_amount", 500.0, priority=1)]
-    assert run_recurring_additions(automations, unallocated=2000.0) == [("emergency-fund", 500.0)]
+    assert run_recurring_additions(automations, unallocated=2000.0) == [("auto:emergency-fund", 500.0)]
 
 
 def test_next_recurring_occurrence_is_none_for_a_withdrawal_automation() -> None:

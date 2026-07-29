@@ -2717,7 +2717,7 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if no automation with `automation_id` exists.
+     *         404 if no *contribution* automation with `automation_id` exists.
      */
     patch: operations['patch_goal_automation_api_accounting_goal_automations__automation_id__patch']
     trace?: never

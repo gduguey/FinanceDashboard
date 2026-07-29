@@ -54,11 +54,21 @@ class RawLeg:
 def row_hash(*parts: str) -> str:
     """Build a stable content hash for deduplicating an imported row against what's already ingested.
 
+    Every caller must format a monetary part as `f"{amount:.4f}"`
+    (`db.money.MONEY_SCALE`) rather than `str(amount)`. Amounts are `Money`
+    (`Decimal`), and `str(Decimal)` preserves whatever scale the source file
+    wrote — so `1500.0`, `1500.00` and `1500` would hash to three different
+    ids for one transaction, and a bank changing its export format would
+    quietly stop every re-import from deduping. The rule cannot be enforced
+    here because this takes opaque `*parts: str`; it is normalized at each
+    call site instead.
+
     Parameters
     ----------
     parts
         Whatever identifies a row uniquely for one bank/account —
-        typically (account_id, date, amount, description).
+        typically (account_id, date, amount, description), with any amount
+        already formatted at `MONEY_SCALE`.
 
     Returns
     -------

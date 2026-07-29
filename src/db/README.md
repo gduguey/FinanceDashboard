@@ -545,8 +545,10 @@ are explicit rather than accidental:
   no tenant rows to isolate.
 - **It is in `db.tenant.RLS_EXEMPT`**, a dict keyed by `(schema, table)` whose
   value is a mandatory prose reason. `public.external_identities` is the only
-  entry (see "Why `external_identities` can't have RLS" below): its isolation
-  comes from its provider-scoped composite primary key instead.
+  entry: it must be readable *before* the acting user is known, so a policy
+  keyed on `user_id` could never match. That is an accepted hole rather than a
+  solved problem — see "Why `external_identities` can't have RLS" below for the
+  compensating controls.
 
 `tests/db/test_rls_coverage.py` migrates its own scratch database and asserts
 the live `pg_policies` matches — every tenant table forced, and every
@@ -703,13 +705,26 @@ than something a reader has to infer from a table's absence from a list.
 There's no "turn RLS off" command involved: the baseline simply never emits
 a policy for an exempt table.
 
-The trade-off is acceptable specifically *because* this table holds no
-financial data, only an identity mapping (`provider`, `external_id`,
-`user_id`), and because its isolation comes from somewhere else: the
-composite primary key is provider-scoped, so one external account maps to
-exactly one internal user and there is nothing to leak between tenants.
-Every table that does hold real user data has a forced policy, derived
-from its `user_id` column and asserted by `tests/db/test_rls_coverage.py`.
+This is a genuine hole in the isolation guarantee, not a solved problem, and
+worth being precise about: the `(provider, external_id)` primary key enforces
+*uniqueness*, not access control. It stops one external account mapping to two
+internal users; it does not stop a query reading a row that isn't yours. What
+makes the hole acceptable is the three compensating controls, none of which is
+the primary key:
+
+- **The table holds no financial data** — only `provider`, `external_id`,
+  `user_id`. Reading every row of it reveals who has an account, not what
+  anyone owns.
+- **`db.external_identities` is the only code that touches it**, and it offers
+  no listing or enumeration path — just exact-match lookup on a
+  `(provider, external_id)` pair, returning an opaque internal id.
+- **That pair has to come from somewhere trusted**: a Clerk session JWT this
+  app has already verified (`trades.api.auth`) or a signature-checked webhook
+  (`trades.api.webhooks`). A caller cannot supply another user's pair without
+  first forging one of those.
+
+Every table that does hold real user data has a forced policy, derived from its
+`user_id` column and asserted by `tests/db/test_rls_coverage.py`.
 
 ## Encryption: what's protected, and how
 

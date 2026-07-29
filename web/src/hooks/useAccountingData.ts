@@ -306,8 +306,9 @@ export function useRemoveTransferLink() {
     // responded, never what actually gets written.
     // The updater is a *function* of the current cache, not a spread of the
     // snapshot taken above, so this composes with any other optimistic write
-    // landing in the same tick instead of reverting it — `excludeFromRule`
-    // (TransferRulesTab) fires this and `usePatchTransferRule` concurrently.
+    // still in flight instead of reverting it — `excludeFromRule`
+    // (TransferRulesTab) runs this right after a `usePatchTransferRule` whose
+    // own refetch may not have settled yet.
     onMutate: async (linkId) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)

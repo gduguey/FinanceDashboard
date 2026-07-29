@@ -436,9 +436,16 @@ def patch_goal_automation(
     Raises
     ------
     HTTPException
-        404 if no automation with `automation_id` exists.
+        404 if no *contribution* automation with `automation_id` exists.
     """
-    if not goal_automation_exists(session, user_id, automation_id):
+    # Direction-scoped on purpose. The two directions are separate resources
+    # over one table, and this handler hard-codes `direction="contribution"`
+    # below — so a direction-blind existence check would let a withdrawal's id
+    # through and silently rewrite that row into a contribution, giving it a
+    # funding schedule that moves money the opposite way and dropping it out of
+    # the drawdown order. A withdrawal id names no contribution, so 404 is the
+    # honest answer.
+    if not goal_automation_exists(session, user_id, automation_id, direction="contribution"):
         raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
     automation = GoalAutomation(
         automation_id=automation_id,
@@ -458,7 +465,7 @@ def patch_goal_automation(
     effective = [
         automation if existing.automation_id == automation_id else existing
         for existing in load_goal_automations(session, user_id)
-        if existing.direction == "contribution" or existing.automation_id == automation_id
+        if existing.direction == "contribution"
     ]
     _validate_remainder_invariant(effective)
     upsert_goal_automation(automation, session, user_id)
@@ -604,15 +611,22 @@ def post_run_recurring_additions(
     unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
     funded = run_recurring_additions(due, unallocated)
 
-    by_goal_automation = {automation.goal_id: automation for automation in due}
+    # Keyed by `automation_id`, not `goal_id`: a goal may legitimately have
+    # several contribution schedules (only *withdrawals* are one-per-goal, see
+    # `db.goals`' partial unique index). Keying by goal made the map
+    # non-injective, so two funded schedules on one goal both resolved to
+    # whichever automation came last, minted the same `contribution_id`, and the
+    # second silently overwrote the first here — while `run_recurring_additions`
+    # had already counted both against unallocated.
+    by_automation_id = {automation.automation_id: automation for automation in due}
     new_contributions: dict[str, GoalContribution] = {}
-    for goal_id, amount in funded:
-        automation = by_goal_automation[goal_id]
+    for automation_id, amount in funded:
+        automation = by_automation_id[automation_id]
         occurrence = occurrences[automation.automation_id]
         contribution_id = f"auto:{automation.automation_id}:{occurrence.isoformat()}"
         new_contributions[contribution_id] = GoalContribution(
             contribution_id=contribution_id,
-            goal_id=goal_id,
+            goal_id=automation.goal_id,
             date=datetime.combine(occurrence, datetime.min.time()),
             # Computed in the float analytics projection; re-quantized here
             # because it is about to be stored. See `accounting.ledger.frame`.

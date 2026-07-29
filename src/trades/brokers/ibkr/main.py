@@ -10,7 +10,7 @@ import polars as pl
 
 import trades.db as tdb
 from db.base import ensure_reference_rows, merge_by_natural_key
-from db.money import to_analytics_float
+from db.money import quantize_money, quantize_shares, to_analytics_float
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
 from trades.models import LedgerEvent
@@ -158,7 +158,17 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
             event_datetime=row["event_datetime"],
             symbol=row["symbol"],
             event_type=row["event_type"],
-            amount=row["amount"],
+            # Back out of the float projection before Postgres sees this. `ledger`
+            # is the `Float64` analytics frame (`_events_to_frame`), and `amount`
+            # is a `MONEY` = `NUMERIC(18, 4)` column: handing psycopg a Python
+            # float makes Postgres cast `float8 -> numeric`, which truncates at 15
+            # significant digits — `12345678901234.5678` persisted as
+            # `12345678901234.6000`. That would be a *second* loss stacked on the
+            # projection's own rounding. `quantize_money` routes the float through
+            # `str()`, recovering the shortest round-trip literal, so the only
+            # imprecision left is the one `accounting.ledger.frame` documents
+            # ("Exact again on the way out").
+            amount=quantize_money(row["amount"]),
             currency=row["currency"],
             meta=row["meta"],
         )
@@ -170,7 +180,16 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     # `uuid7()` just minted, read off the flushed instance.
     session.flush()
     session.add_all(
-        tdb.LedgerEventTradeDetails(ledger_event_id=event.id, user_id=user_id, shares=row["shares"], price=row["price"])
+        # Same float-projection exit as `amount` above, at each column's own
+        # scale — `shares` is `SHARES` = `NUMERIC(20, 8)`, `price` is `MONEY`.
+        # Quantizing at the wrong one here would silently drop four decimal
+        # places off a fractional share count, which feeds cost basis.
+        tdb.LedgerEventTradeDetails(
+            ledger_event_id=event.id,
+            user_id=user_id,
+            shares=quantize_shares(row["shares"]),
+            price=quantize_money(row["price"]),
+        )
         for event, row in zip(new_events, rows, strict=True)
         if row["shares"] is not None
     )

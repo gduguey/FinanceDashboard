@@ -54,7 +54,10 @@ def standardize_chase_credit_card(csv_text: str, account_id: str) -> pl.DataFram
         date_text = row.post_date.strip() or row.transaction_date.strip()
         posted_at = datetime.combine(parse_us_date(date_text), datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
-        transaction_row_id = row_hash(account_id, date_text, str(row.amount), row.description)
+        # `:.4f` at `MONEY_SCALE`, never `str(row.amount)` — see the same line in
+        # `importers.chase.checking` for why the `Decimal`'s own scale must not leak
+        # into a transaction id.
+        transaction_row_id = row_hash(account_id, date_text, f"{row.amount:.4f}", row.description)
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,

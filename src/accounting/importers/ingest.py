@@ -34,6 +34,7 @@ from accounting.repositories.taxonomy import replace_categories
 from accounting.taxonomy import normalize_categories, seeded_accounts, seeded_categories
 from accounting.utils.statement_archive import StatementArchive
 from db.base import ids_by_natural_key, natural_keys_by_id
+from db.money import quantize_money
 
 if TYPE_CHECKING:
     import uuid
@@ -324,7 +325,18 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
                 natural_key=row["posting_id"],
                 transaction_id=transaction_rows[row["transaction_id"]].id,
                 account_id=account_ids[row["account_id"]],
-                amount=row["amount"],
+                # Back out of the float projection before Postgres sees this.
+                # `rows` comes off a `LEDGER_FRAME_SCHEMA` frame, where `amount` is
+                # `Float64`, and `postings.amount` is `MONEY` = `NUMERIC(18, 4)`:
+                # handing psycopg a Python float makes Postgres cast
+                # `float8 -> numeric`, which truncates at 15 significant digits, so
+                # `12345678901234.5678` persisted as `12345678901234.6000`. Worse
+                # here than in `trades`, because these amounts arrive genuinely
+                # exact — Chase, SoFi and canonical CSV all parse to `Money` — so
+                # the cast destroyed precision that really existed. `quantize_money`
+                # routes the float through `str()` for its shortest round-trip
+                # literal; see `ledger.frame`, "Exact again on the way out".
+                amount=quantize_money(row["amount"]),
                 currency=row["currency"],
                 category_id=category_ids[row["category_id"]] if row["category_id"] is not None else None,
                 subcategory_id=category_ids[row["subcategory_id"]] if row["subcategory_id"] is not None else None,

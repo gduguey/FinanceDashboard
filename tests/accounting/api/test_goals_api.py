@@ -524,6 +524,53 @@ def test_run_contribution_automations_writes_a_contribution_once_due(client) -> 
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
 
 
+def test_run_contribution_automations_funds_two_schedules_on_one_goal_separately(client) -> None:
+    """A goal may legitimately carry several contribution schedules; only withdrawals are one-per-goal.
+
+    `run_recurring_additions` returns one entry per funded automation, but
+    the handler used to resolve those entries through a `goal_id ->
+    automation` map. With two schedules on one goal that map is
+    non-injective: both entries resolved to whichever automation came last,
+    minted the same `contribution_id`, and the second silently overwrote
+    the first — so one schedule's money vanished even though it had already
+    been counted against the unallocated balance.
+    """
+    _import_checking(client)
+    _create_goal(client)
+    client.put(
+        "/api/accounting/goal-automations/contributions",
+        json=[
+            {
+                "automation_id": f"auto:emergency-fund:{index}",
+                "goal_id": "emergency-fund",
+                "direction": "contribution",
+                "start_date": "2026-01-05",
+                "frequency": "monthly",
+                "mode": "fixed_amount",
+                "value": value,
+                "currency": "USD",
+                "priority": index,
+            }
+            for index, value in enumerate((300.0, 200.0))
+        ],
+    )
+
+    written = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"}).json()
+
+    # One contribution per schedule, each carrying its own automation's amount.
+    assert len(written) == 2
+    assert {row["contribution_id"] for row in written} == {
+        "auto:auto:emergency-fund:0:2026-06-05",
+        "auto:auto:emergency-fund:1:2026-06-05",
+    }
+    by_id = {row["contribution_id"]: row for row in written}
+    assert by_id["auto:auto:emergency-fund:0:2026-06-05"]["amount"] == pytest.approx(300.0)
+    assert by_id["auto:auto:emergency-fund:1:2026-06-05"]["amount"] == pytest.approx(200.0)
+
+    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
+
+
 def test_run_contribution_automations_is_idempotent_within_the_same_month(client) -> None:
     _import_checking(client)
     _create_goal(client)
@@ -751,6 +798,39 @@ def test_patch_goal_automation_404s_for_an_unknown_id(client) -> None:
         },
     )
     assert response.status_code == 404
+
+
+def test_patch_goal_automation_404s_for_a_withdrawal_id(client) -> None:
+    """A withdrawal's id names no contribution, and the PATCH path only writes contributions.
+
+    The handler hard-codes `direction="contribution"`, so a
+    direction-blind existence check let a withdrawal id through and
+    silently rewrote the row: it gained a funding schedule moving money
+    the opposite way, and left the drawdown order it was the only entry in.
+    Withdrawal ids are client-minted and guessable (`withdrawal:{goal_id}`),
+    so this was reachable by anyone holding a goal id.
+    """
+    _create_goal(client)
+    client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+
+    response = client.patch(
+        "/api/accounting/goal-automations/withdrawal:emergency-fund",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-06-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 1.0,
+            "currency": "USD",
+            "priority": 0,
+        },
+    )
+
+    assert response.status_code == 404
+    withdrawals = client.get("/api/accounting/store").json()["goal_automations"]
+    still_a_withdrawal = [a for a in withdrawals if a["automation_id"] == "withdrawal:emergency-fund"]
+    assert len(still_a_withdrawal) == 1
+    assert still_a_withdrawal[0]["direction"] == "withdrawal"
 
 
 def test_delete_goal_automation_removes_only_that_one(client) -> None:

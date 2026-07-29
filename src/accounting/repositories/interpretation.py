@@ -28,6 +28,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 import accounting.db as adb
 from accounting.models import (
@@ -541,7 +542,14 @@ def update_transfer_rule(
     account_natural_key_by_id = natural_keys_by_id(
         session, adb.Account, user_id, [row.account_id, row.counterparty_account_id]
     )
-    return _rule_from_row(row, account_natural_key_by_id, list(dict.fromkeys(rule.excluded_transaction_ids)))
+    persisted = _rule_from_row(row, account_natural_key_by_id, list(dict.fromkeys(rule.excluded_transaction_ids)))
+    # `new_version`, not `row.version`. `check_and_bump_row_version` bumps the
+    # column with raw SQL, which leaves an already-loaded ORM instance untouched
+    # — and this row usually *is* already loaded, because the handler calls
+    # `load_ledger` first. `session.get` would then hand back the identity-map
+    # copy carrying the pre-bump version, and echoing that to the client makes
+    # its next PATCH fail with a conflict that never happened.
+    return persisted.model_copy(update={"version": new_version})
 
 
 def delete_transfer_rule(session: Session, user_id: uuid.UUID, rule_id: str) -> bool:
@@ -1209,6 +1217,17 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
     link is only ever minted by `ledger.transfers.apply_transfer_rules`,
     from rules it has just read back out of that table.
 
+    Idempotent on `(user_id, natural_key)`, because reconciliation derives a
+    *canonical* `link_id` from the pair it links: two callers that read the
+    same pre-state independently propose the identical link. Both reach here,
+    and a plain insert made the loser a `unique_violation` — an
+    `IntegrityError` with no handler above it, so a 500. Two rule saves from
+    two tabs, or a rule save racing an import, are enough (see
+    `ledger.transfers.reconcile_and_persist_rule_links`' six call sites). The
+    conflicting parent is skipped and, crucially, so are its membership rows —
+    inserting those against the winner's link would duplicate a membership the
+    winner already wrote.
+
     Parameters
     ----------
     session
@@ -1219,6 +1238,10 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
         The links to add.
     """
     transfer_links = list(transfer_links)
+    # `pg_insert(...).values([])` is not valid SQL, and every caller reconciling
+    # a ledger with nothing to link reaches here.
+    if not transfer_links:
+        return
     rule_ids = ids_by_natural_key(session, adb.CategorizationRule, user_id, [link.rule_id for link in transfer_links])
     transaction_ids = ids_by_natural_key(
         session,
@@ -1230,26 +1253,35 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
             for transaction_id in (link.transaction_id_a, link.transaction_id_b)
         ],
     )
-    # Parents flushed before their membership rows, so each member's `link_id`
-    # is the id `uuid7()` just minted for its own link.
-    link_rows = {
-        link.link_id: adb.TransferLink(
-            user_id=user_id,
-            natural_key=link.link_id,
-            source=link.source,
-            rule_id=_optional_id(rule_ids, link.rule_id),
-        )
-        for link in transfer_links
-    }
-    session.add_all(link_rows.values())
+    # One conflict-safe insert for every parent, returning only the rows this
+    # statement actually created. `RETURNING` on `ON CONFLICT DO NOTHING` omits
+    # the skipped rows, which is exactly the "which links are mine?" answer the
+    # membership insert below needs — no second read, and no race between the
+    # two statements.
+    inserted = session.execute(
+        pg_insert(adb.TransferLink)
+        .values([
+            {
+                "user_id": user_id,
+                "natural_key": link.link_id,
+                "source": link.source,
+                "rule_id": _optional_id(rule_ids, link.rule_id),
+            }
+            for link in transfer_links
+        ])
+        .on_conflict_do_nothing(index_elements=["user_id", "natural_key"])
+        .returning(adb.TransferLink.id, adb.TransferLink.natural_key)
+    ).all()
+    link_id_by_natural_key = {natural_key: row_id for row_id, natural_key in inserted}
     session.flush()
     session.add_all(
         adb.TransferLinkedTransaction(
             user_id=user_id,
-            link_id=link_rows[link.link_id].id,
+            link_id=link_id_by_natural_key[link.link_id],
             transaction_id=transaction_ids[transaction_id],
         )
         for link in transfer_links
+        if link.link_id in link_id_by_natural_key
         for transaction_id in (link.transaction_id_a, link.transaction_id_b)
     )
     session.flush()

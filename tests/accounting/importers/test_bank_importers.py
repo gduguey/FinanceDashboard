@@ -66,6 +66,70 @@ def test_standardize_chase_checking_is_deterministic_and_dedupable() -> None:
     assert first["posting_id"].to_list() == second["posting_id"].to_list()
 
 
+# The same $1500 deposit, in each importer's own file shape, with the Amount
+# column left as a `{}` slot for the scale variants below. One per `row_hash`
+# call site, so all four are covered rather than one Chase and one SoFi.
+_AMOUNT_SCALE_TEMPLATES = {
+    "chase-checking": (
+        standardize_chase_checking,
+        "chase:checking:1234",
+        (
+            "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+            "CREDIT,06/30/2026,SOME EMPLOYER PAYROLL,{},ACH_CREDIT,4000.00,,\n"
+        ),
+    ),
+    "chase-credit-card": (
+        standardize_chase_credit_card,
+        "chase:credit_card:1234",
+        (
+            "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+            "06/29/2026,06/30/2026,Payment Thank You-Mobile,,Payment,{},\n"
+        ),
+    ),
+    "sofi-legacy": (
+        standardize_sofi_checking,
+        "sofi:checking:9999",
+        "Date,Description,Type,Amount,Current balance,Status\n2026-06-29,SOME EMPLOYER,DIRECT_DEPOSIT,{},4000.00,Posted\n",
+    ),
+    "sofi-wide": (
+        standardize_sofi_checking,
+        "sofi:checking:9999",
+        (
+            "Authorized Date,Posted Date,Status,Account Name,Description,Primary Category,Detailed Category,Amount\n"
+            "2026-06-29,2026-06-29,Posted,Checking ***9999,SOME EMPLOYER,Income,Wages,{}\n"
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", list(_AMOUNT_SCALE_TEMPLATES))
+def test_transaction_ids_ignore_the_source_files_decimal_scale(shape: str) -> None:
+    """Re-importing the same statement must not mint a new natural key just because the scale changed.
+
+    `row_hash` is fed the amount as a string, and used to be handed
+    `str(row.amount)` while `amount` was a `float` — which normalized
+    `1500.0`, `1500.00` and `1500` to one `'1500.0'`. `amount` is a `Money`
+    (`Decimal`) now, and `str(Decimal)` preserves the source file's own
+    trailing zeros, so those three spellings of a single transaction hashed
+    to three *different* `transaction_id`s. Dedup would then break the
+    first time a bank changed how it formats its exports, silently
+    doubling every re-imported row.
+
+    Every call site formats at `MONEY_SCALE` (`f"{...:.4f}"`) instead,
+    agreeing with `importers.canonical.csv`, which already did this.
+
+    `1,500.00` and `$1500.00` are deliberately *not* in here: those raise
+    `ValidationError` in the row model, which is pre-existing behaviour and
+    a separate question from this one.
+    """
+    standardize, account_id, template = _AMOUNT_SCALE_TEMPLATES[shape]
+    ids = {
+        standardize(template.format(amount), account_id)["transaction_id"].to_list()[0]
+        for amount in ("1500.0", "1500.00", "1500")
+    }
+    assert len(ids) == 1
+
+
 def test_standardize_chase_credit_card_uses_post_date_and_keeps_source_category() -> None:
     result = standardize_chase_credit_card(CHASE_CREDIT_CARD_CSV, "chase:credit_card:1234")
     toll = result.filter(pl.col("description") == "SOME TOLL PLAZA").row(0, named=True)
