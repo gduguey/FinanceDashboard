@@ -19,12 +19,11 @@ export type MonthlyPnl = components['schemas']['MonthlyPnlRow']
 export type MonthlyPnlBySymbol = components['schemas']['MonthlyPnlBySymbolRow']
 export type AllocationRow = components['schemas']['AllocationRow']
 
-// The `symbol -> target percentage` map itself. The endpoint wraps it in
-// a `TargetAllocationSetting` (adding `version`, so the settings-version
-// cache stays current — see `lib/api.ts`); the API client unwraps that
-// back to this bare map for callers, which only ever want the percentages.
+// The `symbol -> target percentage` map, which is exactly what
+// `GET`/`PUT /api/settings/target-allocation` returns — no envelope: the
+// envelope only ever existed to carry a settings-row `version`, and that
+// mechanism is gone.
 export type TargetAllocation = Record<string, number>
-export type TargetAllocationSetting = components['schemas']['TargetAllocationSetting']
 
 export type OpenLot = components['schemas']['OpenLotRow']
 export type ClosedLot = components['schemas']['ClosedLotRow']

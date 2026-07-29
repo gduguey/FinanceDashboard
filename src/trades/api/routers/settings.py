@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from db.current_user import get_current_user_id
-from db.money import quantize_rate
+from db.money import Rate, quantize_rate
 from db.session import get_db
 from trades import dashboard
 from trades.api.api_models import (
@@ -19,14 +19,13 @@ from trades.api.api_models import (
     HysaSettingsUpdate,
     IbkrCredentialsUpdate,
     IbkrSettings,
-    TargetAllocationSetting,
     TaxSettings,
     TaxSettingsUpdate,
     TimezoneSetting,
     TimezoneSettingUpdate,
     VerifyResult,
 )
-from trades.api.dependencies import _config, _stash_expected_dashboard_settings_version
+from trades.api.dependencies import _config
 from trades.brokers.ibkr import api as ibkr_api
 from trades.brokers.ibkr.credentials import (
     IbkrCredentialsNotConfiguredError,
@@ -37,31 +36,23 @@ from trades.brokers.ibkr.credentials import (
     save_ibkr_credentials,
 )
 from trades.config import AppConfig
-from trades.dashboard.settings import get_dashboard_settings_version
 
-# Runs for every endpoint in this router, IBKR-credential ones included —
-# harmless there (it just stashes a value nothing reads back), so
-# `save_settings`'s version check works for all five `DashboardSettings`
-# endpoints without each needing its own copy of this dependency.
-router = APIRouter(dependencies=[Depends(_stash_expected_dashboard_settings_version)])
+router = APIRouter()
 
 
 @router.get("/api/settings/target-allocation")
 def get_target_allocation(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> TargetAllocationSetting:
-    """Return the persisted target allocation, with the settings-row version.
+) -> dict[str, Rate]:
+    """Return the persisted target allocation.
 
     Returns
     -------
-    TargetAllocationSetting
-        `target_allocation_pct` (symbol -> target percentage) and `version`.
+    dict[str, Rate]
+        Symbol -> target percentage.
     """
-    return TargetAllocationSetting(
-        target_allocation_pct=dashboard.load_settings(session, user_id).target_allocation_pct,
-        version=get_dashboard_settings_version(session, user_id),
-    )
+    return dashboard.load_settings(session, user_id).target_allocation_pct
 
 
 @router.put("/api/settings/target-allocation")
@@ -69,29 +60,23 @@ def put_target_allocation(
     target_allocation_pct: dict[str, float],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> TargetAllocationSetting:
+) -> dict[str, Rate]:
     """Persist a new target allocation, set from the frontend.
 
     Merges into the existing settings — a settings row is one record, so
     writing this field naively from a fresh `DashboardSettings()` would
-    silently wipe out the HYSA/benchmark settings saved separately. The
-    response carries `version` (like every other settings endpoint) so the
-    client's cached version stays current and a follow-up save to another
-    settings field doesn't spuriously 409.
+    silently wipe out the HYSA/benchmark settings saved separately.
 
     Returns
     -------
-    TargetAllocationSetting
-        The persisted target allocation and the new version.
+    dict[str, Rate]
+        The persisted target allocation.
     """
     updated = dashboard.load_settings(session, user_id).model_copy(
         update={"target_allocation_pct": target_allocation_pct}
     )
     dashboard.save_settings(updated, session, user_id)
-    return TargetAllocationSetting(
-        target_allocation_pct=updated.target_allocation_pct,
-        version=get_dashboard_settings_version(session, user_id),
-    )
+    return updated.target_allocation_pct
 
 
 @router.get("/api/settings/hysa")
@@ -110,7 +95,6 @@ def get_hysa_settings(
     return HysaSettings(
         bank_id=settings.hysa_bank_id,
         fixed_rate_pct=settings.hysa_fixed_rate_pct,
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
@@ -134,7 +118,6 @@ def put_hysa_settings(
     return HysaSettings(
         bank_id=updated.hysa_bank_id,
         fixed_rate_pct=updated.hysa_fixed_rate_pct,
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
@@ -156,7 +139,6 @@ def get_benchmark_setting(
     return BenchmarkSetting(
         symbol_override=dashboard.load_settings(session, user_id).benchmark_symbol_override,
         default_symbol=config.returns.benchmark_symbol,
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
@@ -181,7 +163,6 @@ def put_benchmark_setting(
     return BenchmarkSetting(
         symbol_override=updated.benchmark_symbol_override,
         default_symbol=config.returns.benchmark_symbol,
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
@@ -203,7 +184,6 @@ def get_timezone_setting(
     return TimezoneSetting(
         local_zone=settings.local_zone,
         resolved_local_zone=dashboard.resolved_local_zone(_config(), settings),
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
@@ -230,13 +210,10 @@ def put_timezone_setting(
     return TimezoneSetting(
         local_zone=updated.local_zone,
         resolved_local_zone=dashboard.resolved_local_zone(_config(), updated),
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
-def _tax_settings_response(
-    config: AppConfig, settings: dashboard.DashboardSettings, session: Session, user_id: uuid.UUID
-) -> TaxSettings:
+def _tax_settings_response(config: AppConfig, settings: dashboard.DashboardSettings) -> TaxSettings:
     """Build the tax-settings API response, resolving the effective regime alongside the raw saved fields.
 
     Returns
@@ -256,7 +233,6 @@ def _tax_settings_response(
         ),
         qualified_ltcg_rate_pct=settings.qualified_ltcg_rate_pct,
         resolved_qualified_ltcg_rate_pct=quantize_rate(dashboard.resolved_qualified_ltcg_rate(config, settings) * 100),
-        version=get_dashboard_settings_version(session, user_id),
     )
 
 
@@ -279,7 +255,7 @@ def get_tax_settings(
         actually uses — the code default when no override was made).
     """
     settings = dashboard.load_settings(session, user_id)
-    return _tax_settings_response(_config(), settings, session, user_id)
+    return _tax_settings_response(_config(), settings)
 
 
 @router.put("/api/settings/tax")
@@ -308,7 +284,7 @@ def put_tax_settings(
         }
     )
     dashboard.save_settings(updated, session, user_id)
-    return _tax_settings_response(config, updated, session, user_id)
+    return _tax_settings_response(config, updated)
 
 
 @router.get("/api/settings/ibkr")

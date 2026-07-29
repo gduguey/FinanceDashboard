@@ -11,17 +11,11 @@ intact at the API layer too.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
-from accounting.api.dependencies import _stash_expected_store_version
 from accounting.api.routers import dashboard, exchange_rates, goals, imports, llm, postings, store
 
-# `_stash_expected_store_version` runs for every accounting endpoint so the
-# `X-Expected-Store-Version` header stays a declared, documented part of the
-# API. Nothing reads the stashed value back any more — the whole-store version
-# check went with `accounting.store.save_store` — so the header is accepted
-# and ignored; see `accounting.store.get_store_version`.
-router: APIRouter = APIRouter(prefix="/api/accounting", dependencies=[Depends(_stash_expected_store_version)])
+router: APIRouter = APIRouter(prefix="/api/accounting")
 router.include_router(store.router)
 router.include_router(exchange_rates.router)
 router.include_router(imports.router)

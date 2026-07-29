@@ -5,10 +5,7 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING
 
-import pytest
-
-from db.base import VersionConflictError
-from trades.dashboard.settings import DashboardSettings, get_dashboard_settings_version, load_settings, save_settings
+from trades.dashboard.settings import DashboardSettings, load_settings, save_settings
 
 if TYPE_CHECKING:
     import uuid
@@ -50,46 +47,14 @@ def test_save_settings_overwrites_rather_than_merges(db_session: Session, test_u
     assert load_settings(db_session, test_user_id).hysa_bank_id is None
 
 
-def test_get_dashboard_settings_version_is_zero_for_a_user_who_has_never_saved(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    assert get_dashboard_settings_version(db_session, test_user_id) == 0
+def test_repeated_saves_are_last_write_wins_and_never_conflict(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """No optimistic concurrency on this row at all — see `save_settings`'s own docstring for why.
 
+    Saving over an already-saved row (the shape two settings panels racing each other produces) just
+    takes the latest value, rather than raising the version conflict the old shared counter did.
+    """
+    save_settings(DashboardSettings(hysa_bank_id="marcus"), db_session, test_user_id)
+    save_settings(DashboardSettings(hysa_bank_id="ally"), db_session, test_user_id)
+    save_settings(DashboardSettings(hysa_bank_id="wealthfront"), db_session, test_user_id)
 
-def test_save_settings_bumps_the_version_by_one_each_time(db_session: Session, test_user_id: uuid.UUID) -> None:
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    assert get_dashboard_settings_version(db_session, test_user_id) == 1
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    assert get_dashboard_settings_version(db_session, test_user_id) == 2
-
-
-def test_save_settings_with_no_expected_version_set_skips_the_check(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    db_session.info.pop("expected_dashboard_settings_version", None)
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    assert get_dashboard_settings_version(db_session, test_user_id) == 2
-
-
-def test_save_settings_with_the_current_expected_version_succeeds_and_bumps(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    db_session.info["expected_dashboard_settings_version"] = 1
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    assert get_dashboard_settings_version(db_session, test_user_id) == 2
-
-
-def test_save_settings_with_a_stale_expected_version_raises_and_does_not_bump(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    db_session.info["expected_dashboard_settings_version"] = 1
-    save_settings(DashboardSettings(), db_session, test_user_id)
-    assert get_dashboard_settings_version(db_session, test_user_id) == 2
-
-    db_session.info["expected_dashboard_settings_version"] = 1
-    with pytest.raises(VersionConflictError):
-        save_settings(DashboardSettings(), db_session, test_user_id)
-    assert get_dashboard_settings_version(db_session, test_user_id) == 2
+    assert load_settings(db_session, test_user_id).hysa_bank_id == "wealthfront"

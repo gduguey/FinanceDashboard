@@ -119,10 +119,9 @@ def patch_goal(
     """Update one existing goal in place, without touching any other goal already saved.
 
     A true per-resource write — see `repositories.planning.update_goal`.
-    Guarded by `request.expected_version` instead of the whole-store
-    `X-Expected-Store-Version` header, so an edit to this one goal can
-    never spuriously conflict with — or be silently overwritten by — an
-    unrelated save elsewhere.
+    Guarded by `request.expected_version`, this goal's own row version,
+    so an edit to this one goal can never spuriously conflict with — or
+    be silently overwritten by — an unrelated save elsewhere.
 
     Returns
     -------

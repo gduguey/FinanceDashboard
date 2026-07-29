@@ -105,7 +105,6 @@ from accounting.repositories.taxonomy import (
 )
 from accounting.store import (
     category_ids_to_delete,
-    get_store_version,
     load_store,
     normalize_categories,
     plan_category_rename,
@@ -132,11 +131,9 @@ def get_store(
     AccountingStoreResponse
         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
-        list). `version` is this user's current save counter (see
-        `store.get_store_version`) — a client should remember it and send
-        it back as the `X-Expected-Store-Version` header on its next
-        mutating request, so `save_store` can detect if something else
-        changed this data in the meantime.
+        list). No store-wide version: optimistic concurrency is per-row
+        (`goals`, `transfer_rules`, `category_patterns` each carry their
+        own `version`), so there is nothing store-wide to echo back.
     """
     _postings, store = _resolved_postings_and_store(session, user_id)
     return AccountingStoreResponse(
@@ -158,7 +155,6 @@ def get_store(
         goal_contributions=store.goal_contributions,
         recurring_additions=store.recurring_additions,
         withdrawal_priorities=store.withdrawal_priorities,
-        version=get_store_version(session, user_id),
     )
 
 
@@ -848,13 +844,11 @@ def patch_transfer_rule(
     """Update one existing transfer rule in place, without touching any other rule already saved.
 
     A true per-resource write — unlike `POST /transfer-rules`, this
-    never round-trips through `load_store`/`save_store` (which deletes and
-    reinserts every persisted entity for the user); see
+    never round-trips through a whole-store rewrite; see
     `accounting.store.update_transfer_rule`. Guarded by
-    `request.expected_version` instead of the whole-store
-    `X-Expected-Store-Version` header, so an edit to this one rule can
-    never spuriously conflict with — or be silently overwritten by — an
-    unrelated save elsewhere in the store.
+    `request.expected_version`, this rule's own row version, so an edit
+    to this one rule can never spuriously conflict with — or be silently
+    overwritten by — an unrelated save elsewhere in the store.
 
     Returns
     -------
@@ -993,7 +987,7 @@ def patch_category_pattern(
     """Update one existing category pattern in place, without touching any other pattern already saved.
 
     A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
-    `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+    `request.expected_version`, this pattern's own row version.
 
     Returns
     -------

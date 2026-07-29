@@ -261,35 +261,30 @@ export function TransferSuggestionsPanel({
     }
   }
 
-  // Sequential, not fired in parallel — each request carries a snapshot of
-  // the last-known store version (see `accountingApi.ts`'s `request`), which
-  // only advances once this mutation's own `onSuccess` invalidation has
-  // refetched the store. Firing both at once would have them race on that
-  // same stale version, so the second create would spuriously 409 even
-  // though nothing external actually conflicted.
+  // Fired in parallel: each draft creates its own independent rule, and a
+  // rule create has no version to conflict on, so nothing here can lose a
+  // race against a sibling. `allSettled`, not `all`, so one failure
+  // doesn't discard the outcome of the others — every request is issued
+  // regardless, and the toast reports how many actually landed.
   async function addRules(newDrafts: RuleDraft[]) {
-    let added = 0
-    try {
-      for (const draft of newDrafts) {
-        await createRule.mutateAsync({
+    const results = await Promise.allSettled(
+      newDrafts.map((draft) =>
+        createRule.mutateAsync({
           description_contains: draft.description_contains,
           account_id: draft.account_id,
           counterparty_account_id: draft.counterparty_account_id,
           priority: 100,
           description: '',
-        })
-        added += 1
-      }
-    } catch {
-      // The loop is sequential (see above), so a mid-batch failure leaves the
-      // earlier rules saved and the rest untried — say exactly that instead of
-      // silently swallowing it and leaving "Add both rules" half-applied.
-      toast.error(
-        added > 0
-          ? `Added ${added} of ${newDrafts.length} rules — the rest failed, try again.`
-          : 'Could not add the rule — try again.',
-      )
-    }
+        }),
+      ),
+    )
+    const added = results.filter((result) => result.status === 'fulfilled').length
+    if (added === newDrafts.length) return
+    toast.error(
+      added > 0
+        ? `Added ${added} of ${newDrafts.length} rules — the rest failed, try again.`
+        : 'Could not add the rule — try again.',
+    )
   }
 
   const virtualEntries = useMemo(

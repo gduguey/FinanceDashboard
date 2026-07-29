@@ -16,10 +16,13 @@ branches.
 version check, so a conflict at that check left the postings already
 uncategorized/remapped with the category-list save rejected.
 
-**Status:** the version-conflict half of this is gone — `save_store` and its
-whole-store counter were removed when the accounts and taxonomy aggregates moved
-into `src/accounting/repositories/`, so there is no late check left to reject a
-handler that has already written. What remains is narrower: each of these
+**Status:** the version-conflict half of this is gone — `save_store` went when
+the accounts and taxonomy aggregates moved into `src/accounting/repositories/`,
+and its whole-store counter (`accounting.store_versions`) has since been deleted
+outright, so there is no late check left to reject a handler that has already
+written. Optimistic concurrency is now per-row only; see
+`docs/app-stack/optimistic-concurrency-versioning.md`. What remains is narrower:
+each of these
 handlers still spans several repository writes that commit as they go
 (`replace_budgets`, `uncategorize_ledger_postings`, `save_overrides_for_postings`,
 then `replace_categories`), so a *failure* partway through — an unexpected

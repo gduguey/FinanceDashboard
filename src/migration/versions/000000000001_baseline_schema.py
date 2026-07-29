@@ -185,15 +185,6 @@ def _create_tables() -> None:
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_simulator_scenarios_user_natural_key'),
     schema='accounting'
     )
-    op.create_table('store_versions',
-    sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('version', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_store_versions_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('user_id', name=op.f('pk_store_versions')),
-    schema='accounting'
-    )
     op.create_table('tags',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -272,15 +263,6 @@ def _create_tables() -> None:
     sa.CheckConstraint("tax_regime IN ('NRA', 'RESIDENT')", name=op.f('ck_dashboard_settings_tax_regime')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dashboard_settings_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('user_id', name=op.f('pk_dashboard_settings')),
-    schema='trades'
-    )
-    op.create_table('dashboard_settings_versions',
-    sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('version', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_dashboard_settings_versions_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('user_id', name=op.f('pk_dashboard_settings_versions')),
     schema='trades'
     )
     op.create_table('user_secrets',
@@ -808,7 +790,6 @@ def _drop_tables() -> None:
     op.drop_index('ix_budgets_category_id_user_id', table_name='budgets', schema='accounting')
     op.drop_table('budgets', schema='accounting')
     op.drop_table('user_secrets')
-    op.drop_table('dashboard_settings_versions', schema='trades')
     op.drop_table('dashboard_settings', schema='trades')
     op.drop_table('broker_connections', schema='trades')
     op.drop_index('ix_external_identities_user_id', table_name='external_identities')
@@ -816,7 +797,6 @@ def _drop_tables() -> None:
     op.drop_table('transfer_links', schema='accounting')
     op.drop_table('transactions', schema='accounting')
     op.drop_table('tags', schema='accounting')
-    op.drop_table('store_versions', schema='accounting')
     op.drop_table('simulator_scenarios', schema='accounting')
     op.drop_table('other_assets', schema='accounting')
     op.drop_table('llm_usage', schema='accounting')

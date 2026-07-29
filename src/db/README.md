@@ -164,11 +164,27 @@ names:
 `accounting.store.load_store` still *reads* all four groups into one
 `AccountingStore` — the dashboard genuinely needs most of them at once —
 so the read path is unchanged. Only the write side split up. One
-consequence worth knowing: the whole-store save counter
-(`accounting.store_versions`) went with `save_store`, since its
-granularity is exactly what made two unrelated edits conflict. Writes are
-guarded by row scope, or by a per-row `version` column where a real
-lost-update risk exists (see `db.base.check_and_bump_row_version`).
+consequence worth knowing: the whole-store save counter went with
+`save_store`, since its granularity is exactly what made two unrelated
+edits conflict, and its `accounting.store_versions` table is gone. Writes
+are now guarded by row scope, or by a per-row `version` column where a
+real lost-update risk exists.
+
+That per-row column is the **only** optimistic-concurrency mechanism left
+in this repo: `db.base.check_and_bump_row_version`, against the `version`
+column on `accounting.goals`, `accounting.transfer_rules`, and
+`accounting.category_patterns`. A caller sends the version it last read as
+`expected_version` in the request body; a mismatch raises
+`db.base.VersionConflictError`, which one global handler in
+`trades.api.api` turns into an HTTP 409. `expected_version=None` opts a
+write out of the check entirely (last-write-wins), which is the right
+choice for an idempotent toggle. There is no version header, no per-user
+counter table, and nothing store-wide — a second, identical mechanism for
+`trades.dashboard_settings` was deleted alongside the accounting one; that
+row is deliberately last-write-wins (see
+`trades.dashboard.settings.save_settings`). The reasoning behind which
+fields deserve a check at all is in
+`docs/app-stack/optimistic-concurrency-versioning.md`.
 
 **Wipe-and-reinsert**: delete every row this user owns in a table, then
 insert fresh rows for everything currently held in memory. Not "diff and

@@ -9,10 +9,10 @@ without a circular import back through the module that imports them.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
-from fastapi import Depends, Header, HTTPException
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from accounting.config import AccountingConfig
@@ -35,30 +35,9 @@ from accounting.store import (
     AccountingStore,
     load_store,
 )
-from db.session import get_db
 
 if TYPE_CHECKING:
     import uuid
-
-
-def _stash_expected_store_version(
-    session: Annotated[Session, Depends(get_db)],
-    x_expected_store_version: Annotated[int | None, Header()] = None,
-) -> None:
-    """Remember the client's last-seen store version on this request's own session. Nothing reads it back.
-
-    A router-level dependency (see `accounting.api.api`'s top-level
-    `APIRouter`) — no individual endpoint declares this itself. FastAPI
-    caches `Depends(get_db)` per request, so this stashes onto the exact
-    same `Session` instance every endpoint's own `Depends(get_db)`
-    parameter goes on to receive; that's how
-    `accounting.store.save_store`'s whole-store version check used to see
-    it. That check is gone (see `accounting.store.get_store_version`), so
-    `X-Expected-Store-Version` is now accepted and ignored — kept declared
-    here so clients still sending it aren't rejected, and so the header
-    stays visible in the OpenAPI schema.
-    """
-    session.info["expected_store_version"] = x_expected_store_version
 
 
 class _State:

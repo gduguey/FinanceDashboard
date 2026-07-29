@@ -84,8 +84,11 @@ export function ExcludedFromRulesTab({
   // falls back to the next-matching rule, or stays uncategorized if none
   // matches, the same choice excluding it made in the first place. Takes
   // every id to restore in one call (both sides of a reconstructed pair)
-  // so this rule's own `excluded_transaction_ids` only gets patched once,
-  // not twice against the same starting `expected_version`.
+  // rather than one patch per id: `excluded_transaction_ids` is a
+  // read-modify-write of one field on one row, so two patches built from
+  // the same starting rule would have the second overwrite the first's
+  // removal — and the rule's own per-row `expected_version` would reject
+  // it as a conflict rather than silently merge it.
   function removeExclusion(ruleId: string, transactionIds: string[]) {
     const rule = rules.find((r) => r.rule_id === ruleId)
     if (!rule) return

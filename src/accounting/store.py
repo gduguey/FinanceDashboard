@@ -45,10 +45,6 @@ from accounting.models import (
     WithdrawalPriorityEntry,
 )
 from accounting.repositories import accounts, interpretation, planning, taxonomy
-from db.base import (
-    VersionConflictError,
-    get_version,
-)
 
 if TYPE_CHECKING:
     import uuid
@@ -784,45 +780,3 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:
     if missing_accounts:
         store = store.model_copy(update={"accounts": {**store.accounts, **missing_accounts}})
     return store
-
-
-# A thin, accounting-flavored name for the shared primitive in `db.base` —
-# every call site here and in `accounting.api` was written against this
-# name before the same mechanism was generalized for `trades.dashboard.
-# settings` to reuse (see `db.base.VersionConflictError`'s own docstring);
-# keeping the alias means neither those call sites nor the tests that
-# import it by this name needed to change when the logic moved.
-StoreVersionConflictError = VersionConflictError
-
-_STORE_VERSION_TABLE = "accounting.store_versions"
-
-
-def get_store_version(session: Session, user_id: uuid.UUID) -> int:
-    """Read this user's whole-store save counter, the last remnant of the whole-store write path.
-
-    Nothing bumps this any more. It went with `save_store`: the counter
-    only ever made sense while one function wrote every table at once, and
-    its whole-store granularity is exactly what made two unrelated edits —
-    a budget and an account rename — conflict with each other. Each
-    repository's own writes are either scoped to the rows a request names
-    or row-versioned individually (see `db.base.check_and_bump_row_version`,
-    used by `PATCH /transfer-rules/{rule_id}` and friends), so there is
-    nothing left for one shared counter to guard.
-
-    Kept because `GET /store` still reports a `version` field its clients
-    read and echo back in `X-Expected-Store-Version`; that header is now
-    accepted and ignored.
-
-    Parameters
-    ----------
-    session
-        An open database session.
-    user_id
-        Whose counter to read.
-
-    Returns
-    -------
-    int
-        `0` for every user who never saved through the old whole-store path.
-    """
-    return get_version(session, _STORE_VERSION_TABLE, user_id)

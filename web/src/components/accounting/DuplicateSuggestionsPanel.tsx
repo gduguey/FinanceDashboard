@@ -340,26 +340,23 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
   // itself pre-selects, so this is exactly what confirming every checked
   // group one-by-one without changes would have produced. Each group is
   // its own independent POST rather than one batched request — there's no
-  // single endpoint left that accepts more than one merge at a time.
-  // Sequential, not `Promise.all` — each request snapshots the store's
-  // last-known version (see `accountingApi.ts`'s `request`), which only
-  // advances once its own mutation's `onSuccess` invalidation has refetched
-  // the store. Firing every merge in the batch at once would have them all
-  // race the same stale version, so only the first to land would succeed
-  // and every other would spuriously 409 against its own sibling's bump
-  // (same bug class fixed once already in commit 704abe9).
+  // single endpoint left that accepts more than one merge at a time — and
+  // they go out in parallel: each names its own disjoint set of
+  // transactions, so no two of them can conflict.
   async function handleBulkAccept() {
-    for (const row of checkedRows) {
-      const kept = pickDefaultKeptPosting(row)
-      const merge: PostingMergeUpsert = {
-        kept_transaction_id: kept.transaction_id,
-        duplicate_transaction_ids: row.postings
-          .filter((posting) => posting.transaction_id !== kept.transaction_id)
-          .map((posting) => posting.transaction_id),
-        description: null,
-      }
-      await createMerge.mutateAsync(merge)
-    }
+    await Promise.all(
+      checkedRows.map((row) => {
+        const kept = pickDefaultKeptPosting(row)
+        const merge: PostingMergeUpsert = {
+          kept_transaction_id: kept.transaction_id,
+          duplicate_transaction_ids: row.postings
+            .filter((posting) => posting.transaction_id !== kept.transaction_id)
+            .map((posting) => posting.transaction_id),
+          description: null,
+        }
+        return createMerge.mutateAsync(merge)
+      }),
+    )
     setCheckedKeys(new Set())
   }
 

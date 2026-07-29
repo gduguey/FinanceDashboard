@@ -303,20 +303,21 @@ export function useRemoveTransferLink() {
     // round trip — the badge disappears immediately and just reconciles
     // quietly once the real response (and `onSuccess`'s refetch) lands.
     // Rolled back on failure; `onSuccess: invalidate` still refetches
-    // regardless, both to reconcile with whatever the server actually
-    // persisted and to advance `lastKnownStoreVersion` for the next
-    // mutation's own version-conflict check (see `accountingApi.ts`'s
-    // `request`) — this optimistic patch only changes how fast the UI
-    // *looks* like it responded, never which version header goes out next.
+    // regardless, to reconcile with whatever the server actually persisted
+    // — this optimistic patch only changes how fast the UI *looks* like it
+    // responded, never what actually gets written.
+    // The updater is a *function* of the current cache, not a spread of the
+    // snapshot taken above, so this composes with any other optimistic write
+    // landing in the same tick instead of reverting it — `excludeFromRule`
+    // (TransferRulesTab) fires this and `usePatchTransferRule` concurrently.
     onMutate: async (linkId) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
-      if (previous) {
-        queryClient.setQueryData<AccountingStore>(keys.store, {
-          ...previous,
-          transfer_links: previous.transfer_links.filter((link) => link.link_id !== linkId),
-        })
-      }
+      queryClient.setQueryData<AccountingStore>(keys.store, (current) =>
+        current
+          ? { ...current, transfer_links: current.transfer_links.filter((link) => link.link_id !== linkId) }
+          : current,
+      )
       return { previous }
     },
     onError: (_error, _linkId, context) => {
@@ -577,24 +578,28 @@ export function usePatchTransferRule() {
     // but scoped to the one rule being edited (toggling active, editing
     // fields, excluding/un-excluding a transaction) rather than the whole
     // `transfer_rules` array — each call carries and checks its own
-    // `update.expected_version`, not the shared whole-store one, so firing
-    // several of these back-to-back (e.g. rapid clicks) can never silently
-    // clobber a sibling rule's edit or spuriously conflict with an
-    // unrelated save elsewhere in the store. Rolled back on failure;
+    // `update.expected_version`, so firing several of these back-to-back
+    // (e.g. rapid clicks) can never silently clobber a sibling rule's edit
+    // or conflict with an unrelated save elsewhere. Rolled back on failure;
     // `onSuccess: invalidate` still refetches regardless, to reconcile
     // with whatever the server actually persisted (including the bumped
-    // `version` for this rule's next edit).
+    // `version` for this rule's next edit). Like `useRemoveTransferLink`,
+    // the updater is a function of the current cache rather than a spread of
+    // the snapshot, so a concurrent optimistic write composes with this one
+    // instead of reverting it.
     onMutate: async ({ ruleId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
-      if (previous) {
-        queryClient.setQueryData<AccountingStore>(keys.store, {
-          ...previous,
-          transfer_rules: previous.transfer_rules.map((rule) =>
-            rule.rule_id === ruleId ? { ...rule, ...update } : rule,
-          ),
-        })
-      }
+      queryClient.setQueryData<AccountingStore>(keys.store, (current) =>
+        current
+          ? {
+              ...current,
+              transfer_rules: current.transfer_rules.map((rule) =>
+                rule.rule_id === ruleId ? { ...rule, ...update } : rule,
+              ),
+            }
+          : current,
+      )
       return { previous }
     },
     onError: (_error, _variables, context) => {
@@ -960,9 +965,9 @@ export function usePatchGoal() {
   return useMutation({
     mutationFn: ({ goalId, update }: { goalId: string; update: GoalUpdate }) => accountingApi.patchGoal(goalId, update),
     // Same per-row optimistic-patch approach as `usePatchTransferRule` —
-    // each call carries and checks its own `update.expected_version`, not
-    // a shared whole-store one, so editing two different goals can never
-    // clobber each other regardless of how the requests interleave.
+    // each call carries and checks its own `update.expected_version`, so
+    // editing two different goals can never clobber each other regardless
+    // of how the requests interleave.
     onMutate: async ({ goalId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)

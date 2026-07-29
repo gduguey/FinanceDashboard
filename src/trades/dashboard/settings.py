@@ -9,14 +9,11 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from db.base import check_and_bump_version, get_version
 from db.money import Rate
 from trades.config import TaxRegime
 from trades.db.models import DashboardSettings as DashboardSettingsRow
 from trades.ledger.taxes import after_tax_rate_lookup
 from trades.market_data import hysa_rates as hysa_rates_module
-
-_DASHBOARD_SETTINGS_VERSION_TABLE = "trades.dashboard_settings_versions"
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -97,42 +94,23 @@ def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
     )
 
 
-def get_dashboard_settings_version(session: Session, user_id: uuid.UUID) -> int:
-    """Read this user's current dashboard-settings save-version counter.
-
-    Parameters
-    ----------
-    session
-        An active database session.
-    user_id
-        Whose counter to read.
-
-    Returns
-    -------
-    int
-        `0` if this user has never saved settings yet (no row exists).
-    """
-    return get_version(session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id)
-
-
 def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.UUID) -> None:
     """Persist this user's dashboard settings, overwriting whatever was saved before.
 
-    Reads an expected version from `session.info["expected_dashboard_settings_version"]`
-    — stashed once per request by `trades.api.dependencies`'s
-    `_stash_expected_dashboard_settings_version`, from the client's own
-    `X-Expected-Dashboard-Settings-Version` header — via the shared
-    `db.base.check_and_bump_version`, since every one of this module's five
-    settings endpoints reads-modifies-writes the same one shared row. (This
-    is now that primitive's only caller: the accounting module's equivalent
-    whole-store counter went away with `accounting.store.save_store`, since
-    a per-user counter over ~25 tables made unrelated edits conflict —
-    which is not a problem one shared settings row has.)
-    Re-stashes the freshly-bumped version back into `session.info` after a
-    successful check, defensively — so that if any
-    endpoint here ever calls `save_settings` more than once in one request,
-    a later call checks against the version this call just bumped to,
-    not the stale one the client originally submitted.
+    Deliberately last-write-wins: no optimistic concurrency at all, no
+    version column, no expected-version argument. This is one row per
+    user, edited from one settings panel by the one person who owns it,
+    and every field on it is an idempotent preference (a bank id, a
+    benchmark symbol, a tax rate, a browser-reported timezone) — the only
+    thing that matters about the end state is which value was actually
+    wanted last, exactly the case `docs/app-stack/
+    optimistic-concurrency-versioning.md` identifies as *not* worth
+    version-checking. A version check here bought no protection against
+    real lost work and instead made two unrelated saves against the same
+    row (a timezone report racing a tax-rate edit) spuriously 409.
+    Optimistic concurrency in this repo lives per-row on the accounting
+    tables that hold genuinely conflicting user intent — see
+    `db.base.check_and_bump_row_version`.
 
     Parameters
     ----------
@@ -143,11 +121,6 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     user_id
         Whose settings this is.
     """
-    expected_version = session.info.get("expected_dashboard_settings_version")
-    session.info["expected_dashboard_settings_version"] = check_and_bump_version(
-        session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id, expected_version
-    )
-
     row = session.get(DashboardSettingsRow, user_id)
     if row is None:
         row = DashboardSettingsRow(user_id=user_id)

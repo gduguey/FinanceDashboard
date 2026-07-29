@@ -20,11 +20,9 @@ export interface paths {
      *     AccountingStoreResponse
      *         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
      *         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
-     *         list). `version` is this user's current save counter (see
-     *         `store.get_store_version`) — a client should remember it and send
-     *         it back as the `X-Expected-Store-Version` header on its next
-     *         mutating request, so `save_store` can detect if something else
-     *         changed this data in the meantime.
+     *         list). No store-wide version: optimistic concurrency is per-row
+     *         (`goals`, `transfer_rules`, `category_patterns` each carry their
+     *         own `version`), so there is nothing store-wide to echo back.
      */
     get: operations['get_store_api_accounting_store_get']
     put?: never
@@ -532,13 +530,11 @@ export interface paths {
      * @description Update one existing transfer rule in place, without touching any other rule already saved.
      *
      *     A true per-resource write — unlike `POST /transfer-rules`, this
-     *     never round-trips through `load_store`/`save_store` (which deletes and
-     *     reinserts every persisted entity for the user); see
+     *     never round-trips through a whole-store rewrite; see
      *     `accounting.store.update_transfer_rule`. Guarded by
-     *     `request.expected_version` instead of the whole-store
-     *     `X-Expected-Store-Version` header, so an edit to this one rule can
-     *     never spuriously conflict with — or be silently overwritten by — an
-     *     unrelated save elsewhere in the store.
+     *     `request.expected_version`, this rule's own row version, so an edit
+     *     to this one rule can never spuriously conflict with — or be silently
+     *     overwritten by — an unrelated save elsewhere in the store.
      *
      *     Returns
      *     -------
@@ -624,7 +620,7 @@ export interface paths {
      * @description Update one existing category pattern in place, without touching any other pattern already saved.
      *
      *     A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
-     *     `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+     *     `request.expected_version`, this pattern's own row version.
      *
      *     Returns
      *     -------
@@ -2574,10 +2570,9 @@ export interface paths {
      * @description Update one existing goal in place, without touching any other goal already saved.
      *
      *     A true per-resource write — see `repositories.planning.update_goal`.
-     *     Guarded by `request.expected_version` instead of the whole-store
-     *     `X-Expected-Store-Version` header, so an edit to this one goal can
-     *     never spuriously conflict with — or be silently overwritten by — an
-     *     unrelated save elsewhere.
+     *     Guarded by `request.expected_version`, this goal's own row version,
+     *     so an edit to this one goal can never spuriously conflict with — or
+     *     be silently overwritten by — an unrelated save elsewhere.
      *
      *     Returns
      *     -------
@@ -3330,12 +3325,12 @@ export interface paths {
     }
     /**
      * Get Target Allocation
-     * @description Return the persisted target allocation, with the settings-row version.
+     * @description Return the persisted target allocation.
      *
      *     Returns
      *     -------
-     *     TargetAllocationSetting
-     *         `target_allocation_pct` (symbol -> target percentage) and `version`.
+     *     dict[str, Rate]
+     *         Symbol -> target percentage.
      */
     get: operations['get_target_allocation_api_settings_target_allocation_get']
     /**
@@ -3344,15 +3339,12 @@ export interface paths {
      *
      *     Merges into the existing settings — a settings row is one record, so
      *     writing this field naively from a fresh `DashboardSettings()` would
-     *     silently wipe out the HYSA/benchmark settings saved separately. The
-     *     response carries `version` (like every other settings endpoint) so the
-     *     client's cached version stays current and a follow-up save to another
-     *     settings field doesn't spuriously 409.
+     *     silently wipe out the HYSA/benchmark settings saved separately.
      *
      *     Returns
      *     -------
-     *     TargetAllocationSetting
-     *         The persisted target allocation and the new version.
+     *     dict[str, Rate]
+     *         The persisted target allocation.
      */
     put: operations['put_target_allocation_api_settings_target_allocation_put']
     post?: never
@@ -4090,8 +4082,6 @@ export interface components {
       recurring_additions: components['schemas']['RecurringAddition'][]
       /** Withdrawal Priorities */
       withdrawal_priorities: components['schemas']['WithdrawalPriorityEntry'][]
-      /** Version */
-      version: number
     }
     /**
      * AllocationRow
@@ -4143,8 +4133,6 @@ export interface components {
       symbol_override: string | null
       /** Default Symbol */
       default_symbol: string
-      /** Version */
-      version: number
     }
     /**
      * BenchmarkSettingUpdate
@@ -5471,8 +5459,6 @@ export interface components {
       bank_id: string | null
       /** Fixed Rate Pct */
       fixed_rate_pct: number | null
-      /** Version */
-      version: number
     }
     /**
      * HysaSettingsUpdate
@@ -6825,23 +6811,6 @@ export interface components {
       merged: boolean
     }
     /**
-     * TargetAllocationSetting
-     * @description The persisted target allocation, plus the settings-row version so the client can echo it back.
-     *
-     *     Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
-     *     save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
-     *     back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
-     *     save. Carrying `version` (like every other settings response) closes that.
-     */
-    TargetAllocationSetting: {
-      /** Target Allocation Pct */
-      target_allocation_pct: {
-        [key: string]: number
-      }
-      /** Version */
-      version: number
-    }
-    /**
      * TaxOwedRow
      * @description One (year, regime) pair's estimated tax bill, netted against withholding already paid.
      */
@@ -6928,8 +6897,6 @@ export interface components {
       qualified_ltcg_rate_pct: number | null
       /** Resolved Qualified Ltcg Rate Pct */
       resolved_qualified_ltcg_rate_pct: number
-      /** Version */
-      version: number
     }
     /**
      * TaxSettingsUpdate
@@ -6960,8 +6927,6 @@ export interface components {
       local_zone: string | null
       /** Resolved Local Zone */
       resolved_local_zone: string
-      /** Version */
-      version: number
     }
     /**
      * TimezoneSettingUpdate
@@ -7352,9 +7317,7 @@ export interface operations {
   get_store_api_accounting_store_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7369,23 +7332,12 @@ export interface operations {
           'application/json': components['schemas']['AccountingStoreResponse']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_currencies_api_accounting_currencies_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7400,23 +7352,12 @@ export interface operations {
           'application/json': components['schemas']['Currency'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_categories_api_accounting_categories_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7453,9 +7394,7 @@ export interface operations {
   post_category_api_accounting_categories_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7488,9 +7427,7 @@ export interface operations {
   post_subcategory_api_accounting_categories__parent_id__subcategories_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         parent_id: string
       }
@@ -7525,9 +7462,7 @@ export interface operations {
   get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7558,9 +7493,7 @@ export interface operations {
   delete_category_api_accounting_categories__category_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7593,9 +7526,7 @@ export interface operations {
       query: {
         name: string
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7626,9 +7557,7 @@ export interface operations {
   post_category_rename_api_accounting_categories__category_id__rename_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7663,9 +7592,7 @@ export interface operations {
   put_tags_api_accounting_tags_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7702,9 +7629,7 @@ export interface operations {
   post_tag_api_accounting_tags_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7737,9 +7662,7 @@ export interface operations {
   delete_tag_route_api_accounting_tags__tag_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         tag_id: string
       }
@@ -7772,9 +7695,7 @@ export interface operations {
       query: {
         name: string
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         tag_id: string
       }
@@ -7805,9 +7726,7 @@ export interface operations {
   post_tag_rename_api_accounting_tags__tag_id__rename_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         tag_id: string
       }
@@ -7842,9 +7761,7 @@ export interface operations {
   post_transfer_rule_api_accounting_transfer_rules_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7877,9 +7794,7 @@ export interface operations {
   delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         rule_id: string
       }
@@ -7910,9 +7825,7 @@ export interface operations {
   patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         rule_id: string
       }
@@ -7947,9 +7860,7 @@ export interface operations {
   put_category_patterns_api_accounting_category_patterns_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7986,9 +7897,7 @@ export interface operations {
   post_category_pattern_api_accounting_category_patterns_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8021,9 +7930,7 @@ export interface operations {
   delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         pattern_id: string
       }
@@ -8054,9 +7961,7 @@ export interface operations {
   patch_category_pattern_api_accounting_category_patterns__pattern_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         pattern_id: string
       }
@@ -8091,9 +7996,7 @@ export interface operations {
   put_other_assets_api_accounting_other_assets_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8126,9 +8029,7 @@ export interface operations {
   post_other_asset_api_accounting_other_assets_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8161,9 +8062,7 @@ export interface operations {
   delete_other_asset_route_api_accounting_other_assets__asset_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         asset_id: string
       }
@@ -8194,9 +8093,7 @@ export interface operations {
   put_budgets_api_accounting_budgets_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8229,9 +8126,7 @@ export interface operations {
   post_budget_api_accounting_budgets_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8264,9 +8159,7 @@ export interface operations {
   delete_budget_api_accounting_budgets__budget_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         budget_id: string
       }
@@ -8297,9 +8190,7 @@ export interface operations {
   put_general_budgets_api_accounting_general_budgets_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8336,9 +8227,7 @@ export interface operations {
   post_general_budget_api_accounting_general_budgets_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8371,9 +8260,7 @@ export interface operations {
   delete_general_budget_api_accounting_general_budgets__key__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         key: string
       }
@@ -8404,9 +8291,7 @@ export interface operations {
   put_simulator_scenarios_api_accounting_simulator_scenarios_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8439,9 +8324,7 @@ export interface operations {
   post_simulator_scenario_api_accounting_simulator_scenarios_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8474,9 +8357,7 @@ export interface operations {
   delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         scenario_id: string
       }
@@ -8507,9 +8388,7 @@ export interface operations {
   post_account_api_accounting_accounts_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8542,9 +8421,7 @@ export interface operations {
   put_account_api_accounting_accounts__account_id__put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8579,9 +8456,7 @@ export interface operations {
   delete_account_api_accounting_accounts__account_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8612,9 +8487,7 @@ export interface operations {
   close_account_api_accounting_accounts__account_id__close_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8649,9 +8522,7 @@ export interface operations {
   reopen_account_api_accounting_accounts__account_id__reopen_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8682,9 +8553,7 @@ export interface operations {
   put_opening_balance_api_accounting_accounts__account_id__opening_balance_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8719,9 +8588,7 @@ export interface operations {
   delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8754,9 +8621,7 @@ export interface operations {
       query: {
         currency: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8787,9 +8652,7 @@ export interface operations {
       query: {
         currency: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8818,9 +8681,7 @@ export interface operations {
   post_detect_api_accounting_detect_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8853,9 +8714,7 @@ export interface operations {
   get_supported_import_kinds_api_accounting_supported_import_kinds_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8870,23 +8729,12 @@ export interface operations {
           'application/json': components['schemas']['SupportedImportKind'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_sync_status_api_accounting_sync_status_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8901,23 +8749,12 @@ export interface operations {
           'application/json': components['schemas']['SyncStatus']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   post_import_api_accounting_import_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8950,9 +8787,7 @@ export interface operations {
   post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8985,9 +8820,7 @@ export interface operations {
   post_canonical_import_api_accounting_import_canonical_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9020,9 +8853,7 @@ export interface operations {
   post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9055,9 +8886,7 @@ export interface operations {
   post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9090,9 +8919,7 @@ export interface operations {
   post_paystub_reconciliation_api_accounting_import_paystub_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9125,9 +8952,7 @@ export interface operations {
   post_rebuild_api_accounting_rebuild_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9142,23 +8967,12 @@ export interface operations {
           'application/json': components['schemas']['RebuildResult']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_postings_api_accounting_postings_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9173,23 +8987,12 @@ export interface operations {
           'application/json': components['schemas']['PostingRow'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_ledger_export_api_accounting_ledger_export_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9204,23 +9007,12 @@ export interface operations {
           'application/json': components['schemas']['Posting'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_statements_export_api_accounting_statements_export_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9235,23 +9027,12 @@ export interface operations {
           'application/json': unknown
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_posting_override_api_accounting_postings__posting_id__override_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9286,9 +9067,7 @@ export interface operations {
   put_posting_split_api_accounting_postings__posting_id__split_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9323,9 +9102,7 @@ export interface operations {
   delete_posting_split_route_api_accounting_postings__posting_id__split_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9356,9 +9133,7 @@ export interface operations {
   put_posting_merges_api_accounting_posting_merges_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9395,9 +9170,7 @@ export interface operations {
   post_posting_merge_api_accounting_posting_merges_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9430,9 +9203,7 @@ export interface operations {
   delete_posting_merge_api_accounting_posting_merges__merge_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         merge_id: string
       }
@@ -9463,9 +9234,7 @@ export interface operations {
   post_transfer_link_api_accounting_transfer_links_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9498,9 +9267,7 @@ export interface operations {
   delete_transfer_link_api_accounting_transfer_links__link_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         link_id: string
       }
@@ -9531,9 +9298,7 @@ export interface operations {
   post_validate_pending_api_accounting_postings_validate_pending_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9568,9 +9333,7 @@ export interface operations {
       query?: {
         window_days?: number
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9601,9 +9364,7 @@ export interface operations {
       query?: {
         window_days?: number
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9632,9 +9393,7 @@ export interface operations {
   get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9649,23 +9408,12 @@ export interface operations {
           'application/json': components['schemas']['DismissedSuggestion'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9698,9 +9446,7 @@ export interface operations {
   delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         suggestion_id: string
       }
@@ -9731,9 +9477,7 @@ export interface operations {
   get_llm_usage_api_accounting_llm_usage_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9750,15 +9494,6 @@ export interface operations {
           }
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   verify_llm_settings_api_accounting_settings_llm_verify_post: {
@@ -9766,9 +9501,7 @@ export interface operations {
       query: {
         provider: string
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9797,9 +9530,7 @@ export interface operations {
   get_llm_settings_api_accounting_settings_llm_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9814,23 +9545,12 @@ export interface operations {
           'application/json': components['schemas']['LlmSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_llm_settings_api_accounting_settings_llm_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9863,9 +9583,7 @@ export interface operations {
   delete_llm_settings_api_accounting_settings_llm_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9880,15 +9598,6 @@ export interface operations {
           'application/json': components['schemas']['LlmSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post: {
@@ -9896,9 +9605,7 @@ export interface operations {
       query?: {
         lock_category_id?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9931,9 +9638,7 @@ export interface operations {
       query?: {
         lock_category_id?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9964,9 +9669,7 @@ export interface operations {
   post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10005,9 +9708,7 @@ export interface operations {
         annual_rate_pct: number
         compounding_frequency?: 'annually' | 'monthly' | 'daily'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10038,9 +9739,7 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10072,9 +9771,7 @@ export interface operations {
         as_of?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10108,9 +9805,7 @@ export interface operations {
         interval_days?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10144,9 +9839,7 @@ export interface operations {
         interval_days?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10181,9 +9874,7 @@ export interface operations {
         tag_id?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10216,9 +9907,7 @@ export interface operations {
         end: string
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10251,9 +9940,7 @@ export interface operations {
         lookback_months?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10285,9 +9972,7 @@ export interface operations {
         month: string
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10322,9 +10007,7 @@ export interface operations {
         subcategory_id?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10353,9 +10036,7 @@ export interface operations {
   put_goals_api_accounting_goals_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10392,9 +10073,7 @@ export interface operations {
   post_goal_api_accounting_goals_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10427,9 +10106,7 @@ export interface operations {
   delete_goal_route_api_accounting_goals__goal_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         goal_id: string
       }
@@ -10460,9 +10137,7 @@ export interface operations {
   patch_goal_api_accounting_goals__goal_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         goal_id: string
       }
@@ -10497,9 +10172,7 @@ export interface operations {
   put_goal_contributions_api_accounting_goal_contributions_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10536,9 +10209,7 @@ export interface operations {
   post_goal_contribution_api_accounting_goal_contributions_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10571,9 +10242,7 @@ export interface operations {
   put_goal_contribution_api_accounting_goal_contributions__contribution_id__put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         contribution_id: string
       }
@@ -10608,9 +10277,7 @@ export interface operations {
   delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         contribution_id: string
       }
@@ -10641,9 +10308,7 @@ export interface operations {
   put_recurring_additions_api_accounting_recurring_additions_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10676,9 +10341,7 @@ export interface operations {
   post_recurring_addition_api_accounting_recurring_additions_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10711,9 +10374,7 @@ export interface operations {
   delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         addition_id: string
       }
@@ -10744,9 +10405,7 @@ export interface operations {
   patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         addition_id: string
       }
@@ -10781,9 +10440,7 @@ export interface operations {
   put_withdrawal_priorities_api_accounting_withdrawal_priorities_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10819,9 +10476,7 @@ export interface operations {
         as_of?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10852,9 +10507,7 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10885,9 +10538,7 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10916,9 +10567,7 @@ export interface operations {
   post_simulate_contribution_api_accounting_goals_simulate_contribution_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11327,9 +10976,7 @@ export interface operations {
   get_target_allocation_api_settings_target_allocation_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11341,16 +10988,9 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TargetAllocationSetting']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
+          'application/json': {
+            [key: string]: number
+          }
         }
       }
     }
@@ -11358,9 +10998,7 @@ export interface operations {
   put_target_allocation_api_settings_target_allocation_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11378,7 +11016,9 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TargetAllocationSetting']
+          'application/json': {
+            [key: string]: number
+          }
         }
       }
       /** @description Validation Error */
@@ -11395,9 +11035,7 @@ export interface operations {
   get_hysa_settings_api_settings_hysa_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11412,23 +11050,12 @@ export interface operations {
           'application/json': components['schemas']['HysaSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_hysa_settings_api_settings_hysa_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11461,9 +11088,7 @@ export interface operations {
   get_benchmark_setting_api_settings_benchmark_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11478,23 +11103,12 @@ export interface operations {
           'application/json': components['schemas']['BenchmarkSetting']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_benchmark_setting_api_settings_benchmark_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11527,9 +11141,7 @@ export interface operations {
   get_timezone_setting_api_settings_timezone_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11544,23 +11156,12 @@ export interface operations {
           'application/json': components['schemas']['TimezoneSetting']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_timezone_setting_api_settings_timezone_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11593,9 +11194,7 @@ export interface operations {
   get_tax_settings_api_settings_tax_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11610,23 +11209,12 @@ export interface operations {
           'application/json': components['schemas']['TaxSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_tax_settings_api_settings_tax_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11659,9 +11247,7 @@ export interface operations {
   get_ibkr_settings_api_settings_ibkr_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11676,23 +11262,12 @@ export interface operations {
           'application/json': components['schemas']['IbkrSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_ibkr_settings_api_settings_ibkr_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11725,9 +11300,7 @@ export interface operations {
   delete_ibkr_settings_api_settings_ibkr_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11742,23 +11315,12 @@ export interface operations {
           'application/json': components['schemas']['IbkrSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   verify_ibkr_settings_api_settings_ibkr_verify_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11771,15 +11333,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['trades__api__api_models__VerifyResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

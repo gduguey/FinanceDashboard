@@ -139,25 +139,11 @@ class HysaSettingsUpdate(BaseModel):
     fixed_rate_pct: Rate | None = None
 
 
-class TargetAllocationSetting(BaseModel):
-    """The persisted target allocation, plus the settings-row version so the client can echo it back.
-
-    Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
-    save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
-    back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
-    save. Carrying `version` (like every other settings response) closes that.
-    """
-
-    target_allocation_pct: dict[str, Rate]
-    version: int
-
-
 class HysaSettings(BaseModel):
     """The persisted HYSA bank selection / fixed-rate override."""
 
     bank_id: str | None
     fixed_rate_pct: Rate | None
-    version: int
 
 
 class BenchmarkSettingUpdate(BaseModel):
@@ -171,7 +157,6 @@ class BenchmarkSetting(BaseModel):
 
     symbol_override: str | None
     default_symbol: str
-    version: int
 
 
 class TimezoneSettingUpdate(BaseModel):
@@ -202,7 +187,6 @@ class TimezoneSetting(BaseModel):
 
     local_zone: str | None
     resolved_local_zone: str
-    version: int
 
 
 class TaxSettingsUpdate(BaseModel):
@@ -230,7 +214,6 @@ class TaxSettings(BaseModel):
     resolved_marginal_ordinary_rate_pct: Rate
     qualified_ltcg_rate_pct: Rate | None
     resolved_qualified_ltcg_rate_pct: Rate
-    version: int
 
 
 class IbkrCredentialsUpdate(BaseModel):

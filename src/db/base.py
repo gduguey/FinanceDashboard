@@ -320,108 +320,14 @@ def upsert_and_prune(
 
 
 class VersionConflictError(Exception):
-    """Raised by `check_and_bump_version` when a caller's remembered version no longer matches what's persisted.
+    """Raised by `check_and_bump_row_version` when a caller's remembered version no longer matches what's persisted.
 
     Means someone else's save — another browser tab, another device, or
     just an earlier request from the same tab — landed since the caller
-    last loaded this data. Mapped to an HTTP 409 by one global exception
+    last loaded that row. Mapped to an HTTP 409 by one global exception
     handler (`trades.api.api`), shared across every table that uses this
-    module, not caught anywhere any of them are actually raised from.
+    module, not caught anywhere it is actually raised from.
     """
-
-
-def get_version(session: Session, table: str, user_id: uuid.UUID) -> int:
-    """Read this user's current save-version counter for `table`.
-
-    Parameters
-    ----------
-    session
-        An open database session.
-    table
-        The fully-qualified `schema.table_name` this counter is for, e.g.
-        `"accounting.store_versions"` — a plain two-column `(user_id,
-        version)` table with `user_id` as its sole primary key (see
-        `accounting.db.concurrency.StoreVersion` for the shape every such
-        table follows).
-    user_id
-        Whose counter to read.
-
-    Returns
-    -------
-    int
-        `0` if this user has never saved anything to `table` yet (no row exists).
-    """
-    row = session.execute(
-        text(f"SELECT version FROM {table} WHERE user_id = :user_id"),  # noqa: S608 (table is a fixed internal constant, never user input)
-        {"user_id": str(user_id)},
-    ).first()
-    return row.version if row is not None else 0
-
-
-def check_and_bump_version(session: Session, table: str, user_id: uuid.UUID, expected_version: int | None) -> int:
-    """Atomically verify no other save has landed since `expected_version`, then bump `table`'s counter by one.
-
-    The check-and-bump happens as one atomic SQL statement (an upsert
-    with a conditional `WHERE` on the update branch), not a separate read
-    then write — a read-then-write here would leave a race window where
-    two concurrent saves could both read the same "current" version and
-    both proceed. `expected_version=None` (no version the caller wants
-    checked, e.g. an older client) skips the check but still bumps: a
-    real change always has to be visible to a version-aware caller later,
-    even if this particular caller didn't opt into checking itself.
-
-    Returns the newly-bumped version so a caller that saves more than once
-    per request (e.g. `accounting.store._check_and_bump_store_version`) can
-    re-stash it as the expected version for its own next call, rather than
-    that next call re-checking against the same now-stale value the first
-    call already consumed.
-
-    Parameters
-    ----------
-    session
-        An open database session.
-    table
-        The fully-qualified `schema.table_name` this counter is for (see
-        `get_version`).
-    user_id
-        Whose store this is.
-    expected_version
-        The version the caller last saw, or `None` to skip the check.
-
-    Returns
-    -------
-    int
-        The version `table` was just bumped to.
-
-    Raises
-    ------
-    VersionConflictError
-        If `expected_version` was given and no longer matches what's
-        actually stored.
-    """
-    result = session.execute(
-        text(
-            f"""
-            INSERT INTO {table} (user_id, version)
-            VALUES (:user_id, 1)
-            ON CONFLICT (user_id) DO UPDATE
-            SET version = {table}.version + 1
-            WHERE CAST(:expected_version AS INTEGER) IS NULL
-               OR {table}.version = CAST(:expected_version AS INTEGER)
-            RETURNING version
-            """  # noqa: S608 (table is a fixed internal constant, never user input)
-        ),
-        {"user_id": str(user_id), "expected_version": expected_version},
-    )
-    row = result.first()
-    if row is None:
-        current = get_version(session, table, user_id)
-        message = (
-            f"This data changed elsewhere since version {expected_version} was loaded (now at version {current}) "
-            "— reload before saving again."
-        )
-        raise VersionConflictError(message)
-    return row.version
 
 
 def check_and_bump_row_version(
@@ -429,12 +335,19 @@ def check_and_bump_row_version(
 ) -> int | None:
     """Atomically verify one row's version still matches `expected_version`, then bump it by one.
 
-    The per-row counterpart to `check_and_bump_version`: that one guards a
-    single per-user singleton counter row, this guards one row of an
-    ordinary table that already carries its own `id` and `version` columns
-    (e.g. `accounting.db.automation.TransferRule`). Same atomic
-    check-and-bump-in-one-statement reasoning applies — a read-then-write
-    here would leave the same race window.
+    The one optimistic-concurrency mechanism in this repo. It guards a
+    single row of an ordinary table that carries its own `id` and
+    `version` columns (`accounting.goals`,
+    `accounting.transfer_rules`, `accounting.category_patterns` — see
+    `accounting.db.automation.TransferRule`). A whole-store/whole-settings
+    twin used to sit alongside it, one counter per user covering every
+    table at once; that granularity is exactly what made two genuinely
+    unrelated edits conflict, and it is gone.
+
+    The check-and-bump happens as one atomic SQL statement, not a
+    separate read then write — a read-then-write would leave a race
+    window where two concurrent saves both read the same "current"
+    version and both proceed.
 
     Parameters
     ----------
@@ -449,8 +362,7 @@ def check_and_bump_row_version(
         another's row by guessing its id.
     expected_version
         The version the caller last saw, or `None` to skip the check and
-        bump unconditionally — the same `None`-skips-the-check contract
-        `check_and_bump_version` has, used for an idempotent
+        bump unconditionally — used for an idempotent
         last-write-wins field (a boolean toggle) where losing the race
         against a newer write of the same field is exactly the wanted
         outcome, not a conflict (see

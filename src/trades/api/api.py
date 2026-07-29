@@ -59,13 +59,12 @@ app.include_router(sync.router, dependencies=_authenticated)
 app.include_router(webhooks_router)
 
 
-# One handler, not one per write path — `trades.dashboard.settings.save_settings`
-# (via `db.base.check_and_bump_version`) and every row-versioned accounting
-# update (`PATCH /goals/{id}`, `PATCH /transfer-rules/{id}`, ... via
-# `db.base.check_and_bump_row_version`) all raise this from deep inside a plain
-# persistence function (no FastAPI import in any of them, deliberately), so
-# translating it into an HTTP 409 happens once, here, rather than each of those
-# call sites needing its own try/except.
+# One handler, not one per write path — every row-versioned accounting update
+# (`PATCH /goals/{id}`, `PATCH /transfer-rules/{id}`, `PATCH
+# /category-patterns/{id}`, via `db.base.check_and_bump_row_version`) raises
+# this from deep inside a plain persistence function (no FastAPI import in any
+# of them, deliberately), so translating it into an HTTP 409 happens once,
+# here, rather than each of those call sites needing its own try/except.
 @app.exception_handler(VersionConflictError)
 def _handle_version_conflict(_request: Request, exc: VersionConflictError) -> Response:
     return JSONResponse(status_code=409, content={"detail": str(exc)})

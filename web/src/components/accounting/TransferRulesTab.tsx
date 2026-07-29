@@ -164,20 +164,23 @@ export function TransferRulesTab({
   // Excluding a rule-linked transfer both stops the rule from re-linking it
   // (via `excluded_transaction_ids`, same as the Excluded-from-rules tab's
   // "remove exclusion" is the inverse of) and drops the `TransferLink` it
-  // already made — sequential, not parallel, since `removeTransferLink` goes
-  // out against the whole-store version header, which only advances once
-  // the rule patch's own success has refetched the store (see
+  // already made. The two go out together: the patch is governed by this
+  // rule's own row version and the delete names one link by id, so they
+  // touch disjoint rows and can't conflict. Awaited as a pair only so the
+  // success toast fires once both have actually landed (see
   // `TransactionsTab.tsx`'s `handleExcludeAndUnlinkFromRule`, which this
   // mirrors for the Rules page's own "linked by this rule" table).
   async function excludeFromRule(rule: TransferRule, linkId: string, transactionIds: string[]) {
     const ruleLabel = rule.description || rule.description_contains || rule.rule_id
-    await patchRule.mutateAsync({
-      ruleId: rule.rule_id,
-      update: ruleUpdateFromRule(rule, {
-        excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
+    await Promise.all([
+      patchRule.mutateAsync({
+        ruleId: rule.rule_id,
+        update: ruleUpdateFromRule(rule, {
+          excluded_transaction_ids: addedExcludedTransactionIds(rule, transactionIds),
+        }),
       }),
-    })
-    await removeTransferLink.mutateAsync(linkId)
+      removeTransferLink.mutateAsync(linkId),
+    ])
     toast.success(`Excluded from "${ruleLabel}" — both transactions are back to being normal transactions.`)
   }
 

@@ -3447,34 +3447,24 @@ def test_monthly_income_expense_reports_both_sides(client) -> None:
     assert month["expense"] == pytest.approx(70.0)
 
 
-def test_get_store_returns_a_version(client) -> None:
+def test_get_store_carries_no_store_wide_version(client) -> None:
+    """There is no whole-store counter left — optimistic concurrency is per-row, on the rows that need it."""
     response = client.get("/api/accounting/store")
     assert response.status_code == 200
-    assert isinstance(response.json()["version"], int)
+    assert "version" not in response.json()
 
 
-def test_mutation_with_a_stale_expected_version_no_longer_409s(client) -> None:
-    """The whole-store version check went with `save_store`, so a stale header is accepted and ignored.
+def test_two_unrelated_writes_both_land_without_conflicting(client) -> None:
+    """Nothing store-wide can make two genuinely unrelated edits conflict with each other.
 
-    Every write is now either scoped to the rows a request names or guarded by its own row version
-    (`PATCH /transfer-rules/{rule_id}` and friends), so there is nothing left for one shared counter to
-    guard — and nothing left to make two genuinely unrelated edits conflict.
+    Every write is either scoped to the rows a request names or guarded by its own row version
+    (`PATCH /transfer-rules/{rule_id}` and friends), so a second create against a store another
+    create already changed simply succeeds.
     """
-    version = client.get("/api/accounting/store").json()["version"]
-    # Someone else's write lands first.
     client.post("/api/accounting/categories", json={"name": "Other", "classification": "expense", "color": "#111111"})
 
-    response = client.post(
-        "/api/accounting/categories",
-        json={"name": "Custom", "classification": "expense", "color": "#000000"},
-        headers={"X-Expected-Store-Version": str(version)},
-    )
-    assert response.status_code == 200
-    assert {"expense:custom", "expense:other"} <= set(client.get("/api/accounting/store").json()["categories"])
-
-
-def test_mutation_with_no_expected_version_header_still_succeeds(client) -> None:
     response = client.post(
         "/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
     assert response.status_code == 200
+    assert {"expense:custom", "expense:other"} <= set(client.get("/api/accounting/store").json()["categories"])

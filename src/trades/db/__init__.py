@@ -12,7 +12,6 @@ from db.indexes import ensure_foreign_key_indexes
 from trades.db.models import (
     BrokerConnection,
     DashboardSettings,
-    DashboardSettingsVersion,
     LedgerEvent,
     LedgerEventTradeDetails,
 )
@@ -20,7 +19,6 @@ from trades.db.models import (
 __all__ = [
     "BrokerConnection",
     "DashboardSettings",
-    "DashboardSettingsVersion",
     "LedgerEvent",
     "LedgerEventTradeDetails",
 ]

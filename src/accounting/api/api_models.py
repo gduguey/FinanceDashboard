@@ -78,7 +78,6 @@ class AccountingStoreResponse(BaseModel):
     goal_contributions: dict[str, GoalContribution]
     recurring_additions: list[RecurringAddition]
     withdrawal_priorities: list[WithdrawalPriorityEntry]
-    version: int
 
 
 class CurrentExchangeRate(BaseModel):

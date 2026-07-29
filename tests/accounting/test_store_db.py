@@ -84,7 +84,6 @@ from accounting.repositories.taxonomy import (
 from accounting.store import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
-    get_store_version,
     load_store,
 )
 
@@ -829,14 +828,6 @@ def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
     posting_row.budget_id = derive_id(test_user_id, "budgets", "does-not-exist")
     with pytest.raises(IntegrityError):
         db_session.commit()
-
-
-def test_get_store_version_is_zero_now_that_nothing_bumps_the_whole_store_counter(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    """`GET /store` still reports a version; no write path bumps it any more (see `get_store_version`)."""
-    load_store(db_session, user_id=test_user_id)
-    assert get_store_version(db_session, user_id=test_user_id) == 0
 
 
 def test_dismissed_suggestion_ids_is_empty_for_a_user_who_never_dismissed_anything(

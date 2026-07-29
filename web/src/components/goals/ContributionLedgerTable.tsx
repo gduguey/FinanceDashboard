@@ -29,7 +29,7 @@ function todayIsoDate(): string {
 
 // Locally-controlled so typing a note doesn't fire one PATCH per keystroke — it commits once, on blur
 // (matching how the Amount field uses `onCommit`). Without this, several in-flight per-keystroke writes
-// used to race each other and could surface a spurious version-conflict toast to a user just typing.
+// used to race each other, each overwriting the last, for one note the user was still in the middle of.
 function NoteCell({ value, onCommit }: { value: string; onCommit: (note: string) => void }) {
   const [draft, setDraft] = useState(value)
   // Re-sync when the persisted value changes out from under us (e.g. a refetch), but never mid-typing.
