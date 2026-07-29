@@ -229,8 +229,10 @@ in this repo: `db.base.check_and_bump_row_version`, against the `version`
 column on `accounting.goals` and `accounting.categorization_rules`
 (both effects alike). A caller sends the version it last read as
 `expected_version` in the request body; a mismatch raises
-`db.base.VersionConflictError`, which one global handler in
-`trades.api.api` turns into an HTTP 409. `expected_version=None` opts a
+`db.base.VersionConflictError`, which one handler in
+`accounting.api.api` (registered by `install_error_handlers`, since
+FastAPI hangs exception handlers off the application rather than off an
+`APIRouter`) turns into an HTTP 409. `expected_version=None` opts a
 write out of the check entirely (last-write-wins), which is the right
 choice for an idempotent toggle. There is no version header, no per-user
 counter table, and nothing store-wide — a second, identical mechanism for

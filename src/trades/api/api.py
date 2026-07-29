@@ -25,23 +25,19 @@ module) and serves the built frontend — it holds no endpoints itself.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from accounting.api import install_error_handlers as install_accounting_error_handlers
 from accounting.api import router as accounting_router
-from db.base import VersionConflictError
 from db.current_user import get_current_user_id
 from trades.api.auth import require_clerk_session, resolve_current_user_id
 from trades.api.dependencies import app
 from trades.api.routers import dashboard, market_data, settings, sync
 from trades.api.webhooks import router as webhooks_router
-
-if TYPE_CHECKING:
-    from starlette.responses import Response
 
 # Every `/api/...` route across both modules requires a valid Clerk session
 # (see trades.api.auth) — applied here, at the one place that wires routers
@@ -64,20 +60,16 @@ _trades_router.include_router(sync.router)
 app.include_router(accounting_router, dependencies=_authenticated)
 app.include_router(_trades_router, dependencies=_authenticated)
 
+# Accounting's routes promise a 409 on a stale optimistic-concurrency write,
+# and FastAPI hangs exception handlers off the application rather than off an
+# `APIRouter` — so mounting the router is only half of mounting the module.
+# The handler itself is defined in `accounting.api.api`, beside the routes
+# whose contract it is, not here.
+install_accounting_error_handlers(app)
+
 # Deliberately unauthenticated — see trades.api.webhooks' own docstring for
 # why (Clerk's own servers call this, never a signed-in browser).
 app.include_router(webhooks_router)
-
-
-# One handler, not one per write path — every row-versioned accounting update
-# (`PATCH /goals/{id}`, `PATCH /transfer-rules/{id}`, `PATCH
-# /category-patterns/{id}`, via `db.base.check_and_bump_row_version`) raises
-# this from deep inside a plain persistence function (no FastAPI import in any
-# of them, deliberately), so translating it into an HTTP 409 happens once,
-# here, rather than each of those call sites needing its own try/except.
-@app.exception_handler(VersionConflictError)
-def _handle_version_conflict(_request: Request, exc: VersionConflictError) -> Response:
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/health", include_in_schema=False)
