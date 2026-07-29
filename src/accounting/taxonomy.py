@@ -380,7 +380,7 @@ def remap_category_ids(references: CategoryReferences, id_remap: dict[str, str])
     principled way to combine two different budgeted amounts. A caller
     that wants to warn about this before committing to the merge should
     call this same function itself and diff `references.budgets` against
-    the result (see `api.routers.store.get_category_rename_preview`).
+    the result (see `api.routers.categories.get_category_rename_preview`).
 
     Parameters
     ----------

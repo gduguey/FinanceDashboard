@@ -4028,7 +4028,7 @@ export interface components {
      * @description Every persisted accounting entity: accounts, categories, tags, rules, other assets.
      *
      *     One field per repository `load_*`, recomposed at the router (see
-     *     `api.routers.store.get_store`) — this response model is the only
+     *     `api.routers.bootstrap.get_store`) — this response model is the only
      *     place the whole set is named together; nothing server-side passes it
      *     around. `transfer_rules` is `repositories.interpretation`'s
      *     `load_transfer_rules`, under the name every other endpoint and the

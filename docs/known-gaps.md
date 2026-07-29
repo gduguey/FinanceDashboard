@@ -9,7 +9,7 @@ branches.
 ## 1. Category delete/rename still commits its side-effect writes as it goes
 
 **Where:** `delete_category` / `post_category_rename` in
-`src/accounting/api/routers/store.py`.
+`src/accounting/api/routers/categories.py`.
 
 **What (originally):** these clear the deleted/renamed category off every posting
 (and rewrite the affected overrides) *before* `save_store` ran the whole-store

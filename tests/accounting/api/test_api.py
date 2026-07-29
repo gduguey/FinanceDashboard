@@ -3173,7 +3173,7 @@ def test_post_account_twice_with_no_last_four_creates_two_distinct_accounts(clie
 
 
 def test_accounts_are_isolated_between_users(client, db_session) -> None:
-    """Proof that `store.py`'s account CRUD is genuinely per-user, not a shared global store.
+    """Proof that `accounts.py`'s account CRUD is genuinely per-user, not a shared global store.
 
     Regression test for the FK-violation/cross-user-leak sweep: before every
     endpoint threaded a real `user_id` through its own repository calls,

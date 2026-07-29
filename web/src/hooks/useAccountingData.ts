@@ -672,7 +672,7 @@ export function useCreateOtherAsset() {
 
 // Single-item budget mutations — only send the one budget being changed
 // over the wire, not the user's entire budget history for every edit
-// (see accounting.api.routers.store.post_budget). A `month: null` upsert is
+// (see accounting.api.routers.budgets.post_budget). A `month: null` upsert is
 // the general, every-month-alike target; both go through the same endpoint.
 export function useSetBudget() {
   const invalidate = useInvalidateAccounting()

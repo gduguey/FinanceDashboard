@@ -213,7 +213,7 @@ collections it actually uses — the resolution pipeline takes the five
 overlay tables plus accounts, a net-worth request takes accounts,
 opening balances and other assets, and `GET /store` is a router-level
 recomposition of every `load_*` rather than a type anything passes
-around (see `accounting.api.routers.store.get_store`). What survives of
+around (see `accounting.api.routers.bootstrap.get_store`). What survives of
 the old whole-store read is `accounting.taxonomy.seeded_categories`/
 `seeded_accounts`: the same `load_*`, with a brand-new user's defaults
 seeded first.

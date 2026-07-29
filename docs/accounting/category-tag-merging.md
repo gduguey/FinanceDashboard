@@ -9,7 +9,8 @@ wipe-and-reinsert/upsert-and-prune background these mechanisms build on.
 
 ## Category rename → merge
 
-`POST /categories/{category_id}/rename` (`accounting.api.routers.store.post_category_rename:570`).
+`POST /categories/{category_id}/rename`
+(`accounting.api.routers.categories.post_category_rename:436`).
 Renaming "Dining" to an existing category's name, "Food & Drink", merges
 the two. The matching rule itself lives in `taxonomy.plan_category_rename`
 (`:249`) and isn't repeated here — a top-level category only ever merges
@@ -108,8 +109,8 @@ subcategory only ever merges into a sibling under the same
 
 ## Category delete
 
-`DELETE /categories/{category_id}` (`accounting.api.routers.store.
-delete_category:410`). Deleting "Dining" outright, not merging it into
+`DELETE /categories/{category_id}` (`accounting.api.routers.categories.
+delete_category:276`). Deleting "Dining" outright, not merging it into
 anything.
 
 1. **`taxonomy.category_ids_to_delete`** (`:462`) — a subcategory's delete
@@ -171,8 +172,8 @@ anything.
 
 ## Tag rename → merge
 
-`POST /tags/{tag_id}/rename` (`accounting.api.routers.store.
-post_tag_rename:784`). Renaming tag "Trip" to an existing tag's name,
+`POST /tags/{tag_id}/rename` (`accounting.api.routers.tags.
+post_tag_rename:157`). Renaming tag "Trip" to an existing tag's name,
 "Travel", merges the two. Built from scratch for this — nothing like it
 existed before; the only way to "rename" a tag used to be delete-and-
 recreate, which orphaned every reference to the old id.

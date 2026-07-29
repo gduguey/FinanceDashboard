@@ -217,10 +217,14 @@ src/accounting/
     api.py                  router registration
     dependencies.py          shared per-request helpers (config, resolved postings)
     api_models.py            request/response pydantic models
-    routers/                 dashboard.py, store.py (GET /store + entity CRUD),
-                              postings.py, imports.py,
-                              goals.py, llm.py, exchange_rates.py — one file per
-                              concern, each Depends(get_current_user_id)-scoped
+    routers/                 one file per resource, each
+                              Depends(get_current_user_id)-scoped:
+                              bootstrap.py (GET /store, the boot-time composite),
+                              categories.py, tags.py, transfer_rules.py,
+                              category_patterns.py, other_assets.py, budgets.py,
+                              simulator_scenarios.py, accounts.py,
+                              exchange_rates.py, imports.py, postings.py,
+                              llm.py, dashboard.py, goals.py
 
 data/accounting/         (gitignored) — raw archives only; every derived/persisted
                           fact (ledger, store, overrides, goals, budgets, LLM usage,

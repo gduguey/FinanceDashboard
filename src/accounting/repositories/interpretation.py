@@ -226,7 +226,8 @@ def _upsert_rule(session: Session, user_id: uuid.UUID, natural_key: str, **colum
     `uq_categorization_rules_user_natural_key`, the table's real key. One
     constraint covers both effects because the natural keys are prefixed
     apart at the point they are minted (`rule:` / `pattern:`, see
-    `api.routers.store._transfer_rule_id`/`_category_pattern_id`), so a
+    `api.routers.transfer_rules._transfer_rule_id` /
+    `api.routers.category_patterns._category_pattern_id`), so a
     transfer rule and a category pattern can never collide on it.
 
     Parameters
