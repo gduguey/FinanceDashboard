@@ -96,6 +96,17 @@ def _postings(client, **params) -> list[dict]:
     return response.json()["items"]
 
 
+def _ledger_export(client, **params) -> list[dict]:
+    """The `items` of one page of `GET /ledger/export` — see `api.api_models.LedgerExportPage`.
+
+    Raw postings, so these rows carry none of `PostingRow`'s resolution
+    fields; `limit` here counts postings, not transactions.
+    """
+    response = client.get("/api/accounting/ledger/export", params=params)
+    assert response.status_code == 200
+    return response.json()["items"]
+
+
 def test_get_store_seeds_default_categories_and_placeholder_accounts(client) -> None:
     body = client.get("/api/accounting/store").json()
     assert "expense:food-drink" in body["categories"]
@@ -2382,7 +2393,7 @@ def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_categ
 
     client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
 
-    raw = client.get("/api/accounting/ledger/export").json()
+    raw = _ledger_export(client)
     raw_leg = next(p for p in raw if p["account_id"] == account["account_id"])
     assert raw_leg["category_id"] == nourriture["category_id"]
 
@@ -3320,9 +3331,7 @@ def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> 
         "/api/accounting/transfer-rules",
         json={"description_contains": "SOME EMPLOYER PAYROLL", "counterparty_account_id": account_id},
     )
-    response = client.get("/api/accounting/ledger/export")
-    assert response.status_code == 200
-    body = response.json()
+    body = _ledger_export(client)
     assert len(body) == 4  # two transactions, two postings each
     placeholder_legs = [row for row in body if row["account_id"] == "uncategorized:income"]
     assert len(placeholder_legs) == 1  # still on the placeholder — the rule never touched this export
@@ -3452,7 +3461,7 @@ def test_close_account_records_the_transfer_as_a_manual_origin_transaction_in_th
         },
     )
 
-    raw = client.get("/api/accounting/ledger/export").json()
+    raw = _ledger_export(client)
     legs = {posting["posting_id"]: posting for posting in raw}
     assert legs["manual-transfer:close-bnp-checking-0001:from"]["amount"] == pytest.approx(-100.0)
     assert legs["manual-transfer:close-bnp-checking-0001:to"]["amount"] == pytest.approx(100.0)

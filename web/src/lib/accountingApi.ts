@@ -36,6 +36,7 @@ import type {
   GoalUpdate,
   ImportResult,
   InterestAccountRow,
+  LedgerExportPage,
   LlmSettings,
   LlmSettingsUpdate,
   LlmUsage,
@@ -55,6 +56,7 @@ import type {
   PostingPage,
   PostingSplitLeg,
   ProjectionPoint,
+  RawPosting,
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
@@ -348,7 +350,23 @@ export const accountingApi = {
     } while (offset < total)
     return items
   },
-  ledgerExport: () => request<Posting[]>('/api/accounting/ledger/export'),
+  // Same paging loop as `postings` above, and for the same reason — an
+  // export that silently stopped at the cap would write a partial backup to
+  // a file the user believes is complete. `total` and `limit` count postings
+  // here, not transactions.
+  ledgerExport: async () => {
+    const limit = POSTINGS_PAGE_LIMIT
+    const items: RawPosting[] = []
+    let offset = 0
+    let total = 0
+    do {
+      const page = await request<LedgerExportPage>(`/api/accounting/ledger/export${queryString({ limit, offset })}`)
+      items.push(...page.items)
+      total = page.total
+      offset += limit
+    } while (offset < total)
+    return items
+  },
   // A request only ever carries the fields the caller means to change —
   // `put_posting_override` merges into whatever's already stored for
   // fields left out, so the request body is a genuine partial, unlike

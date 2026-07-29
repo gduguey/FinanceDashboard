@@ -19,6 +19,7 @@ from accounting.api.api_models import (
     PAGE_LIMIT_MAX,
     DismissSuggestionRequest,
     DuplicateGroup,
+    LedgerExportPage,
     PostingIdResponse,
     PostingMergeIdResponse,
     PostingMergeUpsert,
@@ -32,7 +33,6 @@ from accounting.api.api_models import (
     ValidatePendingResult,
 )
 from accounting.api.dependencies import _resolve_postings, _resolved_postings, state
-from accounting.importers.ingest import load_ledger
 from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
@@ -64,7 +64,11 @@ from accounting.repositories.interpretation import (
     undismiss_suggestion,
     upsert_posting_merge,
 )
-from accounting.repositories.ledger import transaction_keys_by_posting_key
+from accounting.repositories.ledger import (
+    ledger_posting_count,
+    load_ledger_page,
+    transaction_keys_by_posting_key,
+)
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
@@ -167,18 +171,48 @@ def get_postings(
 
 @router.get("/ledger/export")
 def get_ledger_export(
-    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
-) -> list[Posting]:
-    """Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    limit: Annotated[int, Query(ge=1, description="How many postings to return, oldest first.")] = PAGE_LIMIT_DEFAULT,
+    offset: Annotated[int, Query(ge=0, description="How many postings to skip.")] = 0,
+) -> LedgerExportPage:
+    """Export one page of the raw ledger, exactly as imported — before any rule, override, split, or merge.
+
+    An export's caller wants the whole ledger by definition, so this is
+    bounded rather than filtered: a page is capped at `PAGE_LIMIT_MAX` and
+    the client walks `offset` until it has `total` postings. That is
+    deliberately not the same as returning a truncated file — a partial
+    backup presented as a complete one is worse than several requests. A
+    streaming response would suit this endpoint better still, but choosing a
+    media type for it is a contract question rather than a read-path one.
+
+    `limit` counts postings here, not transactions as it does on
+    `GET /postings`, because the raw ledger has no overlay applied and so
+    nothing needing a transaction's legs kept together.
+
+    Parameters
+    ----------
+    limit
+        How many postings to return, oldest first. Clamped to `PAGE_LIMIT_MAX`.
+    offset
+        How many postings to skip.
 
     Returns
     -------
-    list[Posting]
-        Every posting for the user's own backup. See `GET /postings` for
-        the same data after every rule/override/split/merge is applied on
-        top — what the Transactions page actually shows.
+    LedgerExportPage
+        The page's raw postings for the user's own backup, plus the total. See
+        `GET /postings` for the same data after every
+        rule/override/split/merge is applied on top — what the Transactions
+        page actually shows.
     """
-    return [Posting(**row) for row in load_ledger(session, user_id).to_dicts()]
+    limit = min(limit, PAGE_LIMIT_MAX)
+    page = load_ledger_page(session, user_id, limit=limit, offset=offset)
+    return LedgerExportPage(
+        items=[Posting(**row) for row in page.to_dicts()],
+        total=ledger_posting_count(session, user_id),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/statements/export")

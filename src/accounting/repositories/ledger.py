@@ -57,6 +57,8 @@ def ledger_statement(
     until: date | None = None,
     origin: TransactionOrigin | None = None,
     transaction_ids: Sequence[uuid.UUID] | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> Select[Any]:
     """Build the `SELECT` whose rows are `LEDGER_FRAME_SCHEMA`, one per posting.
 
@@ -87,6 +89,13 @@ def ledger_statement(
         `visible_transaction_page` becomes a frame. Matched as one array
         parameter, so a page of any size is one bind. `None` means every
         transaction; an *empty* sequence means none, and yields no rows.
+    limit, offset
+        Return at most `limit` **postings**, skipping `offset` of them, in
+        `(posted_at, posting natural key)` order. Counted in postings rather
+        than transactions because the only caller is `GET /ledger/export`,
+        which exports the raw ledger with no overlay applied — nothing there
+        needs a transaction's legs kept together, unlike a resolved page
+        (see `visible_transaction_page`). `None` means no bound.
 
     Returns
     -------
@@ -155,7 +164,61 @@ def ledger_statement(
         statement = statement.where(adb.Transaction.posted_at >= datetime.combine(since, time.min))
     if until is not None:
         statement = statement.where(adb.Transaction.posted_at <= datetime.combine(until, time.max))
+    if limit is not None:
+        # The order is part of the bound, not decoration: `LIMIT` over an
+        # unordered result may return different rows each call, so paging
+        # through it could skip or repeat postings.
+        statement = statement.order_by(adb.Transaction.posted_at, adb.Posting.natural_key).limit(limit).offset(offset)
     return statement
+
+
+def load_ledger_page(session: Session, user_id: uuid.UUID, *, limit: int, offset: int) -> pl.DataFrame:
+    """Load one window of the raw ledger, counted in postings — what `GET /ledger/export` returns.
+
+    Separate from `importers.ingest.load_ledger` rather than two more
+    parameters on it: this is the only caller that wants a *posting*-level
+    window, because it exports the ledger with no overlay applied and so has
+    no reason to keep a transaction's legs together. Every resolved read
+    pages by transaction instead — see `visible_transaction_page`.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose ledger to load.
+    limit, offset
+        The window, in `(posted_at, posting natural key)` order. Validated by
+        the caller.
+
+    Returns
+    -------
+    polars.DataFrame
+        `LEDGER_FRAME_SCHEMA`-shaped, at most `limit` rows.
+    """
+    rows = session.execute(ledger_statement(user_id, limit=limit, offset=offset)).all()
+    if not rows:
+        return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
+    return ledger_rows_to_frame(rows)
+
+
+def ledger_posting_count(session: Session, user_id: uuid.UUID) -> int:
+    """Count the user's postings, for a paged caller that has to report a total.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose postings to count.
+
+    Returns
+    -------
+    int
+    """
+    return session.execute(
+        select(func.count()).select_from(adb.Posting).where(adb.Posting.user_id == user_id)
+    ).scalar_one()
 
 
 @dataclass(frozen=True)

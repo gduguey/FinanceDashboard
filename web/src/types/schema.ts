@@ -1538,14 +1538,34 @@ export interface paths {
     }
     /**
      * Get Ledger Export
-     * @description Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
+     * @description Export one page of the raw ledger, exactly as imported — before any rule, override, split, or merge.
+     *
+     *     An export's caller wants the whole ledger by definition, so this is
+     *     bounded rather than filtered: a page is capped at `PAGE_LIMIT_MAX` and
+     *     the client walks `offset` until it has `total` postings. That is
+     *     deliberately not the same as returning a truncated file — a partial
+     *     backup presented as a complete one is worse than several requests. A
+     *     streaming response would suit this endpoint better still, but choosing a
+     *     media type for it is a contract question rather than a read-path one.
+     *
+     *     `limit` counts postings here, not transactions as it does on
+     *     `GET /postings`, because the raw ledger has no overlay applied and so
+     *     nothing needing a transaction's legs kept together.
+     *
+     *     Parameters
+     *     ----------
+     *     limit
+     *         How many postings to return, oldest first. Clamped to `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many postings to skip.
      *
      *     Returns
      *     -------
-     *     list[Posting]
-     *         Every posting for the user's own backup. See `GET /postings` for
-     *         the same data after every rule/override/split/merge is applied on
-     *         top — what the Transactions page actually shows.
+     *     LedgerExportPage
+     *         The page's raw postings for the user's own backup, plus the total. See
+     *         `GET /postings` for the same data after every
+     *         rule/override/split/merge is applied on top — what the Transactions
+     *         page actually shows.
      */
     get: operations['get_ledger_export_api_accounting_ledger_export_get']
     put?: never
@@ -5740,6 +5760,24 @@ export interface components {
       }
     }
     /**
+     * LedgerExportPage
+     * @description One page of the raw ledger, as exported.
+     *
+     *     Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
+     *     export applies no overlay, so nothing here needs a transaction's legs
+     *     kept together. See `repositories.ledger.load_ledger_page`.
+     */
+    LedgerExportPage: {
+      /** Items */
+      items: components['schemas']['Posting'][]
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
+    }
+    /**
      * LlmProviderUsage
      * @description One LLM provider's self-tracked call count this period, and whether it's currently rate-limited.
      */
@@ -8936,7 +8974,12 @@ export interface operations {
   }
   get_ledger_export_api_accounting_ledger_export_get: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description How many postings to return, oldest first. */
+        limit?: number
+        /** @description How many postings to skip. */
+        offset?: number
+      }
       header?: never
       path?: never
       cookie?: never
@@ -8949,7 +8992,16 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['Posting'][]
+          'application/json': components['schemas']['LedgerExportPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

@@ -736,6 +736,24 @@ class PostingPage(BaseModel):
     """How many transactions were skipped."""
 
 
+class LedgerExportPage(BaseModel):
+    """One page of the raw ledger, as exported.
+
+    Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
+    export applies no overlay, so nothing here needs a transaction's legs
+    kept together. See `repositories.ledger.load_ledger_page`.
+    """
+
+    items: list[Posting]
+    """The page's postings, oldest first, exactly as imported."""
+    total: int
+    """How many postings the user has in total."""
+    limit: int
+    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
+    offset: int
+    """How many postings were skipped."""
+
+
 class PostingIdResponse(BaseModel):
     """Response body naming one posting, for endpoints whose only real effect is removing something."""
 
