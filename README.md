@@ -277,12 +277,13 @@ src/trades/
   broker_credentials.py  per-user, per-broker credentials, encrypted in Postgres
   db/                  SQLAlchemy models/queries for the `trades` schema
 src/accounting/
-  config.py           accounting-specific tunables (store/ledger/overrides paths)
+  config.py           accounting-specific tunables (archive + exchange-rate cache paths)
   models.py           pydantic schemas — Account, Posting, Category, TransferRule, …
   api/                 FastAPI app + routers, mounted onto the same app as trades
   dashboard/           net worth and income-statement aggregation
   ledger/              replay, categorization, currency conversion, transfers
-  importers/           bank CSV/PDF -> canonical postings (Chase, SoFi, canonical/ fallback)
+  importers/           bank CSV -> canonical postings (Chase, SoFi, canonical/ fallback),
+                       plus paystub PDF parsing
   db/                  SQLAlchemy models/queries for the `accounting` schema
 src/db/               shared Postgres layer: connection/session, users/secrets,
                       Row-Level Security, encryption, backups — see src/db/README.md

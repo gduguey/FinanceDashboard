@@ -5,7 +5,7 @@ Deliberately its own table (`db.models.ExternalIdentity`), not a column on
 provider, exists at all. `external_identities` also deliberately has no
 Row-Level Security policy: it's the one place a lookup has to work
 *before* the caller already knows which user is asking (a session-scoped
-policy like every other table's — see migration `817ace9deb09` — would
+policy like every other table's — see `db.tenant` — would
 block exactly the `WHERE external_id = ...` lookup this module exists to
 do, since the id it's trying to find is the very thing not known yet). The
 table holds no financial data, only an identity mapping, so skipping

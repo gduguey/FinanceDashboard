@@ -46,8 +46,8 @@ class ExternalIdentity(Base, Timestamped):
 
     `(provider, external_id)` is the primary key: one external account
     links to exactly one internal user. Deliberately excluded from Row-
-    Level Security (migration `817ace9deb09`'s `_USER_SCOPED_TABLES` never
-    lists this table) — it holds no financial data, only an identity
+    Level Security: it is the one entry in `db.tenant.RLS_EXEMPT`, which
+    requires a reason beside every exemption — it holds no financial data, only an identity
     mapping, and it's the one place a lookup has to work *before* the
     caller already knows which user is asking, which RLS would otherwise
     block. See `db.external_identities`'s own module docstring for the

@@ -13,8 +13,13 @@ for, and the exact commands for the scenarios you'll actually run into.
 |---|---|
 | `settings.py` | Where the two Postgres connection strings come from (`DATABASE_URL`, `DATABASE_URL_APP`) — see "Two roles" below. |
 | `session.py` | Builds the one shared connection pool (`get_engine`) and hands each web request its own database session (`get_db`), tagged with which user is making the request. |
-| `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus the `uuid7()` primary-key default and `ids_by_natural_key`/`natural_keys_by_id`, the one seam that translates between a human-chosen string and a row's internal id. |
-| `models.py` | The three tables that live outside any one module's own schema: `users`, `user_secrets`, and `external_identities`. |
+| `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus the `uuid7()` primary-key default; the `MONEY`/`SHARES`/`RATE` column types; the `Timestamped` mixin; `ids_by_natural_key`/`natural_keys_by_id` (the one seam translating a human-chosen string to a row's internal id) and its `UnknownNaturalKeyError`; the write helpers `merge_by_natural_key`, `upsert_and_prune` and `ensure_reference_rows`; and `check_and_bump_row_version`/`VersionConflictError`, the whole of optimistic concurrency. |
+| `models.py` | The four tables that live outside any one module's own schema: `users`, `user_secrets`, `external_identities`, and the `currencies` reference table both schemas foreign-key against. |
+| `tenant.py` | Which tables are tenant-owned, derived from the schema rather than listed by hand — `tenant_tables`, `enable_rls_statements`, `POLICY_NAME`, `is_reference_table`, and `RLS_EXEMPT`. The baseline migration emits whatever this computes; see "Row-Level Security" below. |
+| `money.py` | `MONEY_SCALE`/`MONEY_QUANTUM`/`ROUNDING` (`ROUND_HALF_UP`) and the `Money`/`Rate` wire types — the one place money's scale and rounding mode are decided. |
+| `currency.py` | The `CurrencyCode` literal and `CURRENCY_REFERENCE`, the seed data for `public.currencies`. Lives here so `trades` and `accounting` share one list instead of one of them going unvalidated. |
+| `indexes.py` | Generates the foreign-key and `(user_id, hot_col)` indexes from the schema, so a new FK cannot ship unindexed (DB-audit D1/D2). Skips reference tables, whose columns are too low-cardinality to be worth an index. |
+| `timestamped_backups.py` | Shared newest-N pruning that `db.backup.prune_old_backups` and both cache-backup modules call through to. |
 | `current_user.py` | Which user is making the current request — a placeholder name FastAPI resolves to the real Clerk-session-derived identity at runtime; see "Which user is making this request" below for exactly how. Deliberately has no `DEFAULT_USER_ID` or any other fallback identity — that's a test-only concept, defined in `tests/conftest.py` instead. |
 | `external_identities.py` | `lookup_user_id`/`link_identity` — the only place a `(provider, external id)` pair is ever read or written; see "The two tables here" below. |
 | `encryption.py` | Encrypts/decrypts anything stored in `user_secrets.ciphertext`. |
@@ -95,10 +100,11 @@ absence itself is the answer.
 
 ## Primary key patterns across every table
 
-Every table in this database falls into exactly one of three key shapes.
+Every table in this database falls into exactly one of four key shapes.
 Which one a new table should use isn't a free choice — it follows directly
-from two questions: *does this table get bulk-rewritten or re-imported?*
-and *does anything else foreign-key against its `id`?*
+from three questions: *is this tenant data at all?*, *does this table get
+bulk-rewritten or re-imported?* and *does anything else foreign-key against
+its `id`?*
 
 **1. A `uuid7()` surrogate `id`, plus a `natural_key` column** — for tables
 that get fully rewritten on every save, or re-imported from an external
@@ -106,7 +112,7 @@ source, so "insert, or recognize this already exists" has to work. The
 recognizing is done by `UNIQUE (user_id, natural_key)`, which is what every
 write conflicts on. This is the majority of user-owned tables:
 `accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
-`other_assets`, `posting_merges`, `suggestions`,
+`other_assets`, `posting_merges`, `suggestions`, `transfer_links`,
 `goals`, `goal_contributions`, `goal_automations`,
 `categorization_rules`, `budgets`, `simulator_scenarios`;
 `trades.broker_connections`, `ledger_events`.
@@ -149,8 +155,29 @@ job to do. Giving these a surrogate id would be following the majority
 pattern out of habit rather than for a reason that actually applies. The
 pure association tables (`accounting.posting_tags`,
 `posting_override_tags`, `posting_merge_duplicates`,
-`categorization_rule_exclusions`, `trades`' own join tables) belong here
-too: the association *is* the key (DB-audit D9).
+`categorization_rule_exclusions`, `transfer_linked_transactions`) belong
+here too: the association *is* the key, and their surrogate ids were dropped
+for exactly that reason (DB-audit D9).
+
+**4. No `user_id` at all, and the vocabulary value itself is the primary
+key** — the reference/dimension tables. These are shared across every
+tenant, so there is nothing to isolate and no surrogate to mint:
+
+- `public.currencies` → PK `code` (the FK target every `currency` column in
+  both schemas names).
+- `accounting.institutions` → PK `code`.
+- `trades.securities` → PK `symbol`.
+
+`db.tenant.is_reference_table` is the formal predicate — no `user_id`, and
+not `users`. That one predicate does three jobs: it keeps these tables out of
+the RLS derivation without needing an exemption, it keeps `db.indexes` from
+minting a useless index over a handful of distinct values, and it tells a
+reader that the missing `user_id` is the point rather than an oversight.
+`db.base.ensure_reference_rows` is the one batched, concurrency-safe seam
+that populates them. `accounting.db.institutions`' docstring carries the
+"why a table rather than a repeated `CHECK (... IN (...))`" argument
+(Karwin's "31 Flavors") — these three tables replaced eight copied currency
+CHECKs, and gave `trades.ledger_events.currency` its first constraint.
 
 ## How a save actually writes to Postgres: wipe-and-reinsert vs. upsert-and-prune
 
@@ -388,7 +415,7 @@ describing the relationship has nothing left to mean — unlike a
 category/account reference, which is a fact *about* the posting itself
 and should never silently disappear out from under it.
 
-## The three tables here: `users`, `user_secrets`, and `external_identities`
+## The four tables here: `users`, `user_secrets`, `external_identities`, `currencies`
 
 - **`users`** — one row per person using the app, created automatically
   (via `trades.api.webhooks`) the moment someone accepts a Clerk invite —
@@ -427,6 +454,18 @@ and should never silently disappear out from under it.
   `ciphertext` is never plaintext — see Encryption below. This is the only
   place a credential is ever stored; nothing in this app keeps a secret in
   a `.env` file, a JSON file on disk, or anywhere else.
+- **`currencies`** — one row per ISO currency code, keyed by the code
+  itself. The odd one out here: it is not tenant data at all, but shared
+  reference data, and it lives in `public` for the same reason `users` does
+  — both `accounting` and `trades` foreign-key against it, so it cannot sit
+  inside either one's schema. All nine `currency` columns across both
+  schemas point at it, which is what let the eight copied
+  `currency IN (...)` CHECKs be deleted. It needs no `RLS_EXEMPT` entry
+  because it has no `user_id`: `db.tenant.is_reference_table` recognises it
+  as a shared vocabulary rather than a tenant table with a hole in it.
+  Seeded from `db.currency.CURRENCY_REFERENCE`, the same data the
+  `CurrencyCode` literal projects, in both the baseline migration and
+  `create_all`.
 
 ## Two Postgres roles, and why there are two
 
@@ -460,27 +499,59 @@ worse than refusing to start, so it's not allowed to happen silently.
 
 ## Row-Level Security (RLS): the actual backstop
 
-RLS is **opt-in per table**, not a database-wide switch. The
-`817ace9deb09` migration has a plain list, `_USER_SCOPED_TABLES` — every
-`(schema, table, ownership_column)` that should be isolated by user —
-covering `users`, `user_secrets`, every `accounting.*` table,
-`broker_connections`, `ledger_events`, and so on. Its `upgrade()` just
-loops over that list and runs this on each one:
+RLS is **derived from the schema**, not opted into per table. `db.tenant`
+owns the derivation, and `src/migration/versions/000000000001_baseline_schema.py`
+just emits what it computes:
+
+- `tenant_tables(Base.metadata)` walks the metadata and returns every table
+  that has a `user_id` column (`OWNER_COLUMN`), with `public.users`
+  special-cased on its own `id`.
+- `enable_rls_statements(...)` turns each one into the three statements
+  below. The policy name is one constant, `POLICY_NAME = "user_isolation"`.
 
 ```sql
 ALTER TABLE some_table ENABLE ROW LEVEL SECURITY;
 ALTER TABLE some_table FORCE ROW LEVEL SECURITY;
 CREATE POLICY user_isolation ON some_table
-  USING (user_id = current_setting('app.current_user_id', true)::uuid)
-  WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+  USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
+  WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 ```
 
-A table gets this protection by being added to `_USER_SCOPED_TABLES` —
-there's no separate "disable RLS" command anywhere; a table simply never
-gets it if it's never added to that list. `external_identities` is the
-one deliberate case of that (see "The three tables here" above, and "Why
-`external_identities` can't have RLS" below) — everything else this app
-owns is in the list.
+Two details in that SQL are load-bearing. `FORCE` matters as much as
+`ENABLE`: migrations run as the table owner, and a plain `ENABLE` does not
+apply to the owner, so without `FORCE` the policy would be silently inert for
+exactly the role that created it. And the `NULLIF(..., '')` is there because
+`app.current_user_id` is an undeclared placeholder GUC — Postgres resets it to
+the empty string rather than `NULL`, so a bare cast would raise instead of
+matching nothing. Failing closed (zero rows) beats a 500, and beats returning
+everything.
+
+`public.users` is the one table whose owner column is `id` rather than
+`user_id` — it *is* the tenant — and `tenant_tables` special-cases it.
+
+**A table therefore cannot ship with a `user_id` and no policy.** It used to
+be able to: RLS was applied by hand-copying a table list into each migration,
+and three tables — `transfer_links`, `transfer_linked_transactions`,
+`categorization_rule_exclusions` — shipped with a `user_id` column and no
+policy, which nothing noticed (VISION-AUDIT T3). Deriving the list from the
+metadata removes the step a human could skip.
+
+There are exactly two ways a table can legitimately have no policy, and both
+are explicit rather than accidental:
+
+- **It is reference data.** `db.tenant.is_reference_table` says so: no
+  `user_id` and not `users`, so it is a shared vocabulary
+  (`public.currencies`, `accounting.institutions`, `trades.securities`) with
+  no tenant rows to isolate.
+- **It is in `db.tenant.RLS_EXEMPT`**, a dict keyed by `(schema, table)` whose
+  value is a mandatory prose reason. `public.external_identities` is the only
+  entry (see "Why `external_identities` can't have RLS" below): its isolation
+  comes from its provider-scoped composite primary key instead.
+
+`tests/db/test_rls_coverage.py` migrates its own scratch database and asserts
+the live `pg_policies` matches — every tenant table forced, and every
+unprotected table either reference data or a declared exemption. It runs in
+both backend CI jobs and does not skip when unconfigured.
 
 This means: even if a query somewhere in the code forgot its own
 `WHERE user_id = ...` filter, Postgres itself still refuses to return
@@ -625,14 +696,20 @@ own row" before anyone knew who "my" was. Every request would then hit
 step 3's 401 ("no account found for this session yet"), for every real,
 already-provisioned user, forever.
 
-So `external_identities` is simply never added to `817ace9deb09`'s
-`_USER_SCOPED_TABLES` list (see "Row-Level Security" above) — there's no
-special "turn RLS off" command involved, it's protected the way any table
-not in that list is: not at all, by omission. That's an acceptable,
-deliberate trade-off specifically *because* this table holds no financial
-data, only an identity mapping (`provider`, `external_id`, `user_id`) —
-every other table this app owns, which does hold real user data, stays in
-the list.
+So `external_identities` is the one entry in `db.tenant.RLS_EXEMPT` (see
+"Row-Level Security" above) — a dict that requires a prose reason next to
+every exemption, so the absence of a policy is a recorded decision rather
+than something a reader has to infer from a table's absence from a list.
+There's no "turn RLS off" command involved: the baseline simply never emits
+a policy for an exempt table.
+
+The trade-off is acceptable specifically *because* this table holds no
+financial data, only an identity mapping (`provider`, `external_id`,
+`user_id`), and because its isolation comes from somewhere else: the
+composite primary key is provider-scoped, so one external account maps to
+exactly one internal user and there is nothing to leak between tenants.
+Every table that does hold real user data has a forced policy, derived
+from its `user_id` column and asserted by `tests/db/test_rls_coverage.py`.
 
 ## Encryption: what's protected, and how
 
@@ -718,8 +795,10 @@ in order:
    whichever backend is active (R2 or local disk), backups are sorted
    newest-first by their timestamp-prefixed filename (already
    lexicographically = chronologically sortable) and anything beyond that
-   count is deleted. Only ever runs after a successful verify + upload, so
-   a failed backup never causes a good one to be pruned away.
+   count is deleted. The sort-and-prune itself lives in
+   `db.timestamped_backups`, shared with the two cache-backup modules that
+   need the identical rule. Only ever runs after a successful verify +
+   upload, so a failed backup never causes a good one to be pruned away.
 
 **This does not run by itself.** `python -m db.backup` is just a command —
 nothing in this repo schedules it automatically. Making it run on a

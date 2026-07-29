@@ -45,7 +45,7 @@ def _all_user_ids() -> list[uuid.UUID]:
     """Every real user's id, listed via the migration-owning role — bypasses Row-Level Security on purpose.
 
     `users` itself has an RLS policy scoping a normal session to its own
-    row only (migration `817ace9deb09`) — appropriate for every other
+    row only (see `db.tenant`) — appropriate for every other
     caller, wrong for this one, which genuinely needs the full list to
     know whose portfolios to check. `DatabaseSettings` (`DATABASE_URL`) is
     the same superuser/owner role `db.backup` already uses for the

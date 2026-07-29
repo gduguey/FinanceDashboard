@@ -191,9 +191,10 @@ src/accounting/
     ingest.py               archive raw, standardize, merge into the ledger;
                             rebuild_from_raw_statements recomputes it all
     paystub.py              PDF text extraction -> structured EarningsStatement
-    chase/                  checking.py, credit_card.py
-    sofi/                   checking.py, savings.py (CSV, both formats —
-                            the newer wide format also covers Vaults)
+    chase/                  checking.py, credit_card.py, models.py
+    sofi/                   csv.py, models.py (checking and savings, both CSV
+                            formats — the newer wide format also covers Vaults;
+                            the PDF statement importer is retired and deleted)
     canonical/              no-code fallback importer for any bank with no
                             dedicated standardizer — fuzzy column/date/amount
                             parsing, auto-creates categories (see
