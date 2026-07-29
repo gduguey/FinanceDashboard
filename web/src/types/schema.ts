@@ -18,11 +18,16 @@ export interface paths {
      *     Returns
      *     -------
      *     AccountingStoreResponse
-     *         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
-     *         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
-     *         list). No store-wide version: optimistic concurrency is per-row
-     *         (`goals`, `transfer_rules`, `category_patterns` each carry their
-     *         own `version`), so there is nothing store-wide to echo back.
+     *         `accounts`, `categories`, `tags`, `category_patterns`, `goals`
+     *         and `goal_contributions` (each a dict keyed by id), plus
+     *         `transfer_rules`, `other_assets`, `budgets`,
+     *         `simulator_scenarios`, `transfer_links` and `goal_automations`
+     *         (each a list). No store-wide version: optimistic concurrency is
+     *         per-row (`goals`, `transfer_rules`, `category_patterns` each
+     *         carry their own `version`), so there is nothing store-wide to
+     *         echo back. Opening balances, manual transfers, posting splits
+     *         and posting merges are deliberately absent — see
+     *         `AccountingStoreResponse` for why.
      */
     get: operations['get_store_api_accounting_store_get']
     put?: never
@@ -4035,6 +4040,17 @@ export interface components {
      *     dismissed" — see `GET /dismissed-suggestions` and
      *     `repositories.interpretation.dismissed_suggestion_ids`, which query
      *     that table directly.
+     *
+     *     Neither are `opening_balances`, `manual_transfers`, `posting_splits`
+     *     or `posting_merges`, which this response used to carry. No frontend
+     *     code path ever read them: the store is read-only (there is no
+     *     `PUT /store` to round-trip them back), splits and merges only ever
+     *     reach the client already folded into `GET /postings`' resolved rows,
+     *     opening balances are edited one account at a time through
+     *     `PUT /accounts/{account_id}/opening-balance`, and the UI's "manually
+     *     added transfers" are `transfer_links` with no `rule_id` — a different
+     *     table from `manual_transfers`, which holds only the balancing legs
+     *     behind an opening or closing balance.
      */
     AccountingStoreResponse: {
       /** Accounts */
@@ -4053,24 +4069,10 @@ export interface components {
       transfer_rules: components['schemas']['TransferRule'][]
       /** Other Assets */
       other_assets: components['schemas']['OtherAsset'][]
-      /** Opening Balances */
-      opening_balances: {
-        [key: string]: components['schemas']['OpeningBalance']
-      }
-      /** Manual Transfers */
-      manual_transfers: components['schemas']['ManualTransfer'][]
       /** Budgets */
       budgets: components['schemas']['Budget'][]
       /** Simulator Scenarios */
       simulator_scenarios: components['schemas']['SimulatorScenario'][]
-      /** Posting Splits */
-      posting_splits: {
-        [key: string]: components['schemas']['PostingSplit']
-      }
-      /** Posting Merges */
-      posting_merges: {
-        [key: string]: components['schemas']['PostingMerge']
-      }
       /** Transfer Links */
       transfer_links: components['schemas']['TransferLink'][]
       /** Category Patterns */

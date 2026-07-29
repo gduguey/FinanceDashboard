@@ -22,6 +22,8 @@ from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.market_data import exchange_rates
 from accounting.models import Posting
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
+from accounting.repositories.accounts import load_manual_transfers
+from accounting.repositories.interpretation import load_posting_merges
 from db.current_user import get_current_user_id
 from db.session import get_db
 from tests.conftest import DEFAULT_USER_ID
@@ -1334,12 +1336,12 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
 def test_monthly_income_expense_correctly_drops_a_duplicate_that_straddles_the_query_window(client) -> None:
     """A dashboard endpoint scoped to one month must still resolve a merge whose two sides are in different months.
 
-    `_resolved_postings_and_store` now passes `since`/`until` straight
+    `_resolved_postings` now passes `since`/`until` straight
     through to `load_ledger`'s own SQL filter — safe even for a merge like
     this one (kept side dated the last day of June, duplicate dated the
     first day of July) because `apply_posting_merges` drops a duplicate
-    purely by transaction id, read from `store.posting_merges` in full
-    (never date-filtered), regardless of whether the transaction it was
+    purely by transaction id, read by `api.dependencies`' own
+    `load_posting_merges` in full (never date-filtered), regardless of whether the transaction it was
     merged into even appears in this same date-limited frame. So querying
     "July only" still correctly drops the July-dated duplicate, even
     though the June-dated kept transaction was never loaded at all.
@@ -1437,7 +1439,16 @@ def test_post_posting_merge_creates_one_and_resolves_the_duplicate(client) -> No
     assert client.get("/api/accounting/duplicate-suggestions").json() == []
 
 
-def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_than_duplicates(client) -> None:
+def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_than_duplicates(
+    client, db_session
+) -> None:
+    """Merges have no read endpoint, so this reads the stored rows directly.
+
+    `GET /store` deliberately doesn't carry `posting_merges` — the client
+    only ever sees a merge already folded into `GET /postings` — so the
+    repository is the only place "exactly one merge row, with the second
+    call's description" can be observed.
+    """
     kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
     client.post(
         "/api/accounting/posting-merges",
@@ -1450,12 +1461,12 @@ def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_
     )
 
     assert response.status_code == 200
-    merges = client.get("/api/accounting/store").json()["posting_merges"]
+    merges = load_posting_merges(db_session, DEFAULT_USER_ID)
     assert list(merges.keys()) == [f"merge:{kept_id}"]
-    assert merges[f"merge:{kept_id}"]["description"] == "updated"
+    assert merges[f"merge:{kept_id}"].description == "updated"
 
 
-def test_delete_posting_merge_undoes_it(client) -> None:
+def test_delete_posting_merge_undoes_it(client, db_session) -> None:
     kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
     client.post(
         "/api/accounting/posting-merges",
@@ -1465,7 +1476,7 @@ def test_delete_posting_merge_undoes_it(client) -> None:
     response = client.delete(f"/api/accounting/posting-merges/merge:{kept_id}")
 
     assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["posting_merges"] == {}
+    assert load_posting_merges(db_session, DEFAULT_USER_ID) == {}
     assert len(client.get("/api/accounting/duplicate-suggestions").json()) == 1
 
 
@@ -3405,7 +3416,7 @@ def test_close_account_marks_it_closed_with_no_transfers(client) -> None:
     assert client.get("/api/accounting/store").json()["accounts"][account["account_id"]]["closed"] is True
 
 
-def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client) -> None:
+def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client, db_session) -> None:
     checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
     savings = _create_account(client, name="BNP Savings", kind="savings", institution="BNP", currency="USD")
     response = client.post(
@@ -3425,9 +3436,22 @@ def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client)
         },
     )
     assert response.status_code == 200
-    store = client.get("/api/accounting/store").json()
-    assert store["accounts"][checking["account_id"]]["closed"] is True
-    assert len(store["manual_transfers"]) == 1
+    assert response.json()["manual_transfers"] == [
+        {
+            "transfer_id": "close-bnp-checking-0001",
+            "date": "2026-06-30T00:00:00",
+            "from_account_id": checking["account_id"],
+            "to_account_id": savings["account_id"],
+            "from_amount": 100.0,
+            "to_amount": 100.0,
+            "description": "Closing out BNP checking",
+        }
+    ]
+    assert client.get("/api/accounting/store").json()["accounts"][checking["account_id"]]["closed"] is True
+    # `GET /store` doesn't carry `manual_transfers` — they're only ever an
+    # implementation detail of a close or an opening balance, never a
+    # collection the client reads — so the stored rows are read directly.
+    assert len(load_manual_transfers(db_session, DEFAULT_USER_ID)) == 1
 
     net_worth = client.get("/api/accounting/net-worth", params={"as_of": "2026-07-01"}).json()
     balances = {row["account_id"]: row["balance"] for row in net_worth["accounts"]}

@@ -31,12 +31,9 @@ from accounting.models import (
     GoalContribution,
     GoalContributionOrigin,
     ManualTransfer,
-    OpeningBalance,
     OtherAsset,
     PendingSuggestionSource,
     Posting,
-    PostingMerge,
-    PostingSplit,
     PostingSplitLeg,
     SimulatorScenario,
     Tag,
@@ -63,6 +60,17 @@ class AccountingStoreResponse(BaseModel):
     dismissed" — see `GET /dismissed-suggestions` and
     `repositories.interpretation.dismissed_suggestion_ids`, which query
     that table directly.
+
+    Neither are `opening_balances`, `manual_transfers`, `posting_splits`
+    or `posting_merges`, which this response used to carry. No frontend
+    code path ever read them: the store is read-only (there is no
+    `PUT /store` to round-trip them back), splits and merges only ever
+    reach the client already folded into `GET /postings`' resolved rows,
+    opening balances are edited one account at a time through
+    `PUT /accounts/{account_id}/opening-balance`, and the UI's "manually
+    added transfers" are `transfer_links` with no `rule_id` — a different
+    table from `manual_transfers`, which holds only the balancing legs
+    behind an opening or closing balance.
     """
 
     accounts: dict[str, Account]
@@ -70,12 +78,8 @@ class AccountingStoreResponse(BaseModel):
     tags: dict[str, Tag]
     transfer_rules: list[TransferRule]
     other_assets: list[OtherAsset]
-    opening_balances: dict[str, OpeningBalance]
-    manual_transfers: list[ManualTransfer]
     budgets: list[Budget]
     simulator_scenarios: list[SimulatorScenario]
-    posting_splits: dict[str, PostingSplit]
-    posting_merges: dict[str, PostingMerge]
     transfer_links: list[TransferLink]
     category_patterns: dict[str, CategoryPattern]
     goals: dict[str, Goal]
