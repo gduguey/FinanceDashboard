@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 from sqlalchemy import text
@@ -128,6 +128,20 @@ def _repo_root():
     return Path(__file__).resolve().parents[2]
 
 
+class Predicates(NamedTuple):
+    """One policy's two expressions.
+
+    Read and write are separate in Postgres: `USING` filters what a query can
+    see, `WITH CHECK` constrains what it may write. Asserting only `USING`
+    would pass a policy that reads correctly and lets a tenant insert or
+    update a row owned by someone else, which is the same leak in the other
+    direction.
+    """
+
+    using: str
+    with_check: str
+
+
 def _policies(engine: Engine) -> dict[tuple[str, str], str]:
     """Read every `user_isolation` policy from the live database.
 
@@ -138,15 +152,23 @@ def _policies(engine: Engine) -> dict[tuple[str, str], str]:
 
     Returns
     -------
-    dict[tuple[str, str], str]
-        `(schema, table)` to the policy's `USING` expression.
+    dict[tuple[str, str], Predicates]
+        `(schema, table)` to the policy's read and write expressions.
     """
     with engine.connect() as connection:
         rows = connection.execute(
-            text("SELECT schemaname, tablename, qual FROM pg_policies WHERE policyname = :name"),
+            text("SELECT schemaname, tablename, qual, with_check FROM pg_policies WHERE policyname = :name"),
             {"name": POLICY_NAME},
         ).all()
-    return {(row.schemaname, row.tablename): row.qual for row in rows}
+    # `with_check` is NULL when the policy omits it, in which case Postgres
+    # applies `USING` to writes as well — so falling back to `qual` reflects
+    # what the engine actually enforces rather than inventing a hole.
+    return {
+        (row.schemaname, row.tablename): Predicates(
+            using=row.qual or "", with_check=row.with_check if row.with_check is not None else (row.qual or "")
+        )
+        for row in rows
+    }
 
 
 def _forced_tables(engine: Engine) -> set[tuple[str, str]]:
@@ -204,15 +226,19 @@ def test_no_table_in_the_database_carries_user_id_without_a_policy(migrated_engi
 
 def test_every_policy_fails_closed_on_an_unset_current_user(migrated_engine: Engine) -> None:
     """An unset `app.current_user_id` must return zero rows, never raise and never return everything."""
-    for (schema, table), qual in _policies(migrated_engine).items():
-        assert "NULLIF" in (qual or ""), f"{schema}.{table}'s policy does not guard against an empty setting: {qual}"
+    for (schema, table), predicates in _policies(migrated_engine).items():
+        for direction, expression in (("USING", predicates.using), ("WITH CHECK", predicates.with_check)):
+            assert "NULLIF" in expression, (
+                f"{schema}.{table}'s {direction} expression does not guard against an empty setting: {expression}"
+            )
 
 
 def test_the_users_table_is_scoped_by_its_own_primary_key(migrated_engine: Engine) -> None:
     """`users` has no `user_id`; its policy must compare `id` instead."""
-    qual = _policies(migrated_engine).get(("public", "users"))
-    assert qual is not None, "public.users has no isolation policy"
-    assert "id" in qual
+    predicates = _policies(migrated_engine).get(("public", "users"))
+    assert predicates is not None, "public.users has no isolation policy"
+    assert "id" in predicates.using
+    assert "id" in predicates.with_check
 
 
 def test_every_rls_exemption_records_a_reason() -> None:

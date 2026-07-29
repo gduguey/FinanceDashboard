@@ -35,6 +35,7 @@ from accounting.taxonomy import normalize_categories, seeded_accounts, seeded_ca
 from accounting.utils.statement_archive import StatementArchive
 from db.base import ids_by_natural_key, natural_keys_by_id
 from db.money import quantize_money
+from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     import uuid
@@ -188,7 +189,11 @@ def load_ledger(
             "transaction_id": transaction.natural_key,
             "account_id": account_natural_key_by_id[posting.account_id],
             "posted_at": transaction.posted_at,
-            "amount": posting.amount,
+            # Explicit at the sanctioned helper rather than left to Polars to
+            # coerce inside the constructor — same value either way, but the
+            # `Decimal -> float` crossing stays greppable, which is the whole
+            # point of `ledger.frame` declaring one seam.
+            "amount": to_analytics_amount(posting.amount),
             "currency": posting.currency,
             "category_id": category_natural_key_by_id.get(posting.category_id)
             if posting.category_id is not None

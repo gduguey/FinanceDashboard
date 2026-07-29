@@ -89,19 +89,40 @@ def grant_app_runtime(op: ModuleType, *, schemas: Sequence[str]) -> None:
         Alembic's `op` module.
     schemas
         Every schema the role needs to reach.
+
+    Raises
+    ------
+    RuntimeError
+        In Alembic's offline (`--sql`) mode. `CREATE/ALTER ROLE ... PASSWORD`
+        needs a literal, so rendering this migration to a script would write
+        the plaintext secret into that file — and a generated script is
+        exactly the artifact people paste into a ticket or commit by
+        accident. Refusing is the only honest option; run it online against
+        the database.
     """
+    if op.get_context().as_sql:
+        message = (
+            "grant_app_runtime cannot run in Alembic's offline (--sql) mode: it would render the app_runtime "
+            "password as a literal into the generated script. Run `alembic upgrade` against the database instead."
+        )
+        raise RuntimeError(message)
+
     # CREATE/ALTER ROLE ... PASSWORD takes a string literal, never a bind
     # parameter, so the password is escaped by doubling single quotes.
     password = _app_runtime_password().replace("'", "''")
-    role_exists = (
-        op.get_bind()
-        .execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": APP_RUNTIME_ROLE})
-        .first()
-    )
+    bind = op.get_bind()
+    role_exists = bind.execute(
+        sa.text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": APP_RUNTIME_ROLE}
+    ).first()
+    # `exec_driver_sql` rather than `op.execute`, so the statement carrying the
+    # password goes straight to the driver instead of through Alembic's own
+    # migration logger. `sqlalchemy.engine` at INFO would still echo it, so
+    # this narrows the exposure rather than closing it — do not enable engine
+    # echo on a deployment that runs migrations.
     if role_exists is None:
-        op.execute(f"CREATE ROLE \"{APP_RUNTIME_ROLE}\" LOGIN PASSWORD '{password}'")
+        bind.exec_driver_sql(f"CREATE ROLE \"{APP_RUNTIME_ROLE}\" LOGIN PASSWORD '{password}'")
     else:
-        op.execute(f"ALTER ROLE \"{APP_RUNTIME_ROLE}\" WITH PASSWORD '{password}'")
+        bind.exec_driver_sql(f"ALTER ROLE \"{APP_RUNTIME_ROLE}\" WITH PASSWORD '{password}'")
 
     for schema in schemas:
         op.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO "{APP_RUNTIME_ROLE}"')
