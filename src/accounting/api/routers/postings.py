@@ -27,7 +27,7 @@ from accounting.api.api_models import (
     ValidatePendingRequest,
     ValidatePendingResult,
 )
-from accounting.api.dependencies import _resolved_postings, state
+from accounting.api.dependencies import _resolve_postings, _resolved_postings, state
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
@@ -49,11 +49,9 @@ from accounting.repositories.interpretation import (
     dismissed_suggestion_ids,
     insert_transfer_links,
     list_dismissed_suggestions,
-    load_overrides,
     load_overrides_for_postings,
     load_posting_splits,
     load_transfer_links,
-    load_transfer_rules,
     remove_posting_merge,
     remove_transfer_link,
     replace_posting_merges,
@@ -62,7 +60,6 @@ from accounting.repositories.interpretation import (
     undismiss_suggestion,
     upsert_posting_merge,
 )
-from accounting.taxonomy import seeded_accounts
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
@@ -98,17 +95,15 @@ def get_postings(
     list[PostingRow]
         One row per posting.
     """
-    postings = _resolved_postings(session, user_id)
-    overrides = load_overrides(session, user_id)
-    # Recomputed from the raw ledger rather than threaded out of
-    # `_resolved_postings` — that function is shared by every other endpoint
-    # in this module, and this is purely a display concern only
-    # `get_postings` needs.
-    raw = load_ledger(session, user_id)
-    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(
-        raw, load_transfer_rules(session, user_id), seeded_accounts(session, user_id)
-    )
-    rows = postings.to_dicts()
+    # Everything below the resolved frame — the raw ledger, the overrides, the
+    # rules and the accounts — comes back out of resolution rather than being
+    # read again. These four display columns are only `get_postings`'
+    # concern, but re-reading them for it meant loading the whole ledger
+    # twice per request (speed-audit S1).
+    resolution = _resolve_postings(session, user_id)
+    overrides = resolution.overrides
+    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(resolution.raw, resolution.rules, resolution.accounts)
+    rows = resolution.resolved.to_dicts()
 
     posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
     manual_override_posting_by_transaction: dict[str, str] = {}

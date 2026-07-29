@@ -8,6 +8,7 @@ without a circular import back through the module that imports them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     import uuid
     from collections.abc import Callable, Iterable
 
+    from accounting.models import Account, ManualOverride, TransferRule
     from accounting.precedence import OverlayStage
 
 
@@ -61,6 +63,10 @@ state = _State()
 def _overlay_appliers(
     session: Session,
     user_id: uuid.UUID,
+    *,
+    rules: list[TransferRule],
+    accounts: dict[str, Account],
+    overrides: dict[str, ManualOverride],
 ) -> dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]]:
     """Bind one applier per declared overlay stage, so the caller only has to walk the declared order.
 
@@ -83,10 +89,18 @@ def _overlay_appliers(
     loaded one collection at a time here rather than as one snapshot of
     everything persisted.
 
+    Three of the collections a stage needs are passed in rather than read
+    here: `get_postings` needs the same rules, accounts and overrides for
+    its own display columns, and loading them once for both is what stops
+    that endpoint reading each of them twice per request.
+
     Parameters
     ----------
     session, user_id
-        See `_resolved_postings`.
+        See `_resolve_postings`.
+    rules, accounts, overrides
+        Already loaded by `_resolve_postings`, which hands them back to its
+        caller alongside the resolved frame.
 
     Returns
     -------
@@ -99,15 +113,13 @@ def _overlay_appliers(
         If a declared stage has no applier registered here — an overlay
         that would otherwise silently never be applied.
     """
-    rules = load_transfer_rules(session, user_id)
-    accounts = seeded_accounts(session, user_id)
     posting_splits = load_posting_splits(session, user_id)
     posting_merges = load_posting_merges(session, user_id)
     transfer_links = load_transfer_links(session, user_id)
     appliers: dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]] = {
         "counterparty": lambda postings: apply_rules(postings, rules, accounts),
         "split": lambda postings: apply_posting_splits(postings, posting_splits),
-        "override": lambda postings: apply_manual_overrides(postings, load_overrides(session, user_id)),
+        "override": lambda postings: apply_manual_overrides(postings, overrides),
         "merge": lambda postings: apply_posting_merges(postings, posting_merges),
         "link": lambda postings: apply_transfer_links(postings, transfer_links),
     }
@@ -184,12 +196,64 @@ def _resolved_postings(
     polars.DataFrame
         The fully resolved postings.
     """
+    return _resolve_postings(session, user_id, since=since, until=until).resolved
+
+
+@dataclass(frozen=True)
+class ResolvedPostings:
+    """The resolved frame, plus the raw ledger and overlay rows it was resolved from.
+
+    Exists so `GET /postings` can build its display-only columns —
+    `resolved_by_transfer_rule_id`, `manual_transfer_override_posting_id`,
+    `pending_source`, `pending_selected` — from what resolution already
+    read, instead of re-reading it. That endpoint used to load the full
+    ledger twice per request, and the overrides, rules and accounts twice
+    each, purely because `_resolved_postings` returned only the frame.
+    """
+
+    resolved: pl.DataFrame
+    """The postings with every overlay applied, in declared precedence order."""
+    raw: pl.DataFrame
+    """The ledger as stored, before any overlay — what `apply_rules` matched against."""
+    overrides: dict[str, ManualOverride]
+    """Every persisted per-posting override, keyed by posting id."""
+    rules: list[TransferRule]
+    """Every counterparty-resolution rule."""
+    accounts: dict[str, Account]
+    """Every account, keyed by natural key."""
+
+
+def _resolve_postings(
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> ResolvedPostings:
+    """Resolve the ledger and hand back both the result and the rows it was resolved from.
+
+    `_resolved_postings` is this function for the callers that only want
+    the frame; read its docstring for what resolution actually does and why
+    `apply_category_redirects` runs outside the stage walk.
+
+    Parameters
+    ----------
+    session, user_id, since, until
+        See `_resolved_postings`.
+
+    Returns
+    -------
+    ResolvedPostings
+    """
     raw = load_ledger(session, user_id, since=since, until=until)
-    appliers = _overlay_appliers(session, user_id)
+    rules = load_transfer_rules(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    overrides = load_overrides(session, user_id)
+    appliers = _overlay_appliers(session, user_id, rules=rules, accounts=accounts, overrides=overrides)
     resolved = apply_category_redirects(raw, load_category_redirects(session, user_id))
     for stage in OVERLAY_PRECEDENCE:
         resolved = appliers[stage](resolved)
-    return resolved
+    return ResolvedPostings(resolved=resolved, raw=raw, overrides=overrides, rules=rules, accounts=accounts)
 
 
 def _resolved_postings_for_aggregation(

@@ -63,7 +63,7 @@ def test_the_precedence_tuple_is_the_vocabulary_itself() -> None:
 
 def test_every_declared_stage_has_an_applier(db_session, test_user_id) -> None:
     """A stage with no applier is an overlay that silently never runs."""
-    appliers = _overlay_appliers(db_session, test_user_id)
+    appliers = _overlay_appliers(db_session, test_user_id, rules=[], accounts={}, overrides={})
     assert set(appliers) == set(OVERLAY_PRECEDENCE)
 
 
