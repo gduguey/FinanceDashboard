@@ -57,42 +57,65 @@ runtime-only install.
 Follow these steps in order, from the repo root.
 
 **1. Start Postgres.** This downloads and starts a Postgres database
-running in the background on your machine, listening on `localhost:5432`:
+running in the background on your machine, listening on `localhost:5433`:
 
 ```bash
 docker run -d \
-  --name finance-postgres \
+  --name finance-postgres-dev \
   -e POSTGRES_USER=finance \
   -e POSTGRES_PASSWORD=changeme123 \
-  -e POSTGRES_DB=finance \
-  -p 5432:5432 \
+  -e POSTGRES_DB=finance_dev \
+  -p 5433:5432 \
   -v financedashboard_pgdata:/var/lib/postgresql/data \
   postgres:16-alpine
 ```
 
-Replace `changeme123` with any password you like — just reuse the exact
-same one in step 2 below. (If this is the first time you're running it,
-Docker downloads the Postgres image first, which can take a minute.)
+`5433` on the host, not Postgres' own default `5432`, so the container
+can't collide with a Postgres already installed natively on your machine
+— `5432` is still the port *inside* the container, hence the `5433:5432`
+mapping. Every URL below therefore uses `:5433`. Replace `changeme123`
+with any password you like — just reuse the exact same one in the steps
+below. (If this is the first time you're running it, Docker downloads the
+Postgres image first, which can take a minute.)
 
-**2. Create a `.env` file** in the repo root (a plain text file — plenty
+**2. Create the test database.** The test suite never touches
+`finance_dev`; it gets its own database on the same container:
+
+```bash
+docker exec finance-postgres-dev createdb -U finance finance_test
+```
+
+**3. Create a `.env` file** in the repo root (a plain text file — plenty
 of text editors, or `nano .env` from a terminal) with this line, using the
 same password you picked in step 1:
 
 ```
-DATABASE_URL=postgresql+psycopg://finance:changeme123@localhost:5432/finance
+DATABASE_URL=postgresql+psycopg://finance:changeme123@localhost:5433/finance_dev
 ```
 
-**3. Add a second line to that same `.env` file** — a second, more
+**4. Add a second line to that same `.env` file** — a second, more
 restricted database user the running app actually connects as day to day
-(this user doesn't exist yet; step 5 below creates it automatically).
+(this user doesn't exist yet; step 7 below creates it automatically).
 Pick any password for it, different from step 1's:
 
 ```
-DATABASE_URL_APP=postgresql+psycopg://app_runtime:another-password-here@localhost:5432/finance
+DATABASE_URL_APP=postgresql+psycopg://app_runtime:another-password-here@localhost:5433/finance_dev
 ```
 
-**4. Generate an encryption key** (encrypts broker/API credentials before
-they're stored) and add it as a third line in `.env`:
+**5. Add a third line pointing at the test database** from step 2 — same
+container and same user as `DATABASE_URL`, different database. `uv run
+pytest` reads this variable and only this one; without it, 21 test files
+fail immediately with a pydantic `ValidationError` (`TestDatabaseSettings`
+in [src/db/settings.py](src/db/settings.py) deliberately has no fallback
+to `DATABASE_URL`, so a missing value can never silently point the suite
+at your dev data):
+
+```
+DATABASE_URL_TEST=postgresql+psycopg://finance:changeme123@localhost:5433/finance_test
+```
+
+**6. Generate an encryption key** (encrypts broker/API credentials before
+they're stored) and add it as a fourth line in `.env`:
 
 ```bash
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -104,20 +127,22 @@ Copy what that command prints, and add it to `.env` as:
 APP_SECRETS_ENCRYPTION_KEY=paste-what-the-command-printed-here
 ```
 
-**5. Build the database schema:**
+**7. Build the database schema:**
 
 ```bash
 uv run alembic upgrade head
 ```
 
-This creates every table the app needs, plus the restricted
-`app_runtime` database user from step 3.
+This creates every table the app needs in `finance_dev`, plus the
+restricted `app_runtime` database user from step 4. `finance_test` is not
+migrated and doesn't need to be — pytest builds its schema from the
+SQLAlchemy models itself at the start of each run (see "Dev" below).
 
-At the end of this, `.env` has three lines
-(`DATABASE_URL`/`DATABASE_URL_APP`/`APP_SECRETS_ENCRYPTION_KEY`) and a
-Postgres database is running and ready — everything either option below
-needs. See [src/db/README.md](src/db/README.md) for more detail on what
-each of these three values actually does.
+At the end of this, `.env` has four lines (`DATABASE_URL`/
+`DATABASE_URL_APP`/`DATABASE_URL_TEST`/`APP_SECRETS_ENCRYPTION_KEY`) and a
+Postgres container is running with both databases — everything either
+option below needs. See [src/db/README.md](src/db/README.md) for more
+detail on what each of these values actually does.
 
 Once the app is running (Option A or B below), add a broker connection
 from the web dashboard's Settings page — see
@@ -302,12 +327,53 @@ adding a new data source or broker.
 
 ## Dev
 
-```bash
-uv run pytest              # requires the `api` extra installed (see Setup) for tests/*/api/test_api.py
-uv run ruff check .
-uv run ruff format .
-uv run mypy                # trades, accounting, and db are fully typed and mypy-clean (see pyproject.toml)
+### The test database
 
-cd web && npm run build    # typechecks + production-builds the frontend
-cd web && npm run lint
+`uv run pytest` runs against `finance_test` (step 2 of "Setting up
+Postgres"), never `finance_dev`. `tests/conftest.py` enforces that from
+both ends: the engine comes from `DATABASE_URL_TEST` alone, and
+`DATABASE_URL`/`DATABASE_URL_APP` are stripped from the environment *and*
+from the settings classes' `.env` fallback for the whole run, so a test
+that forgets to override the `get_db` dependency fails loudly instead of
+mutating dev data.
+
+The schema is rebuilt from the SQLAlchemy models at the start of every
+session — the `trades` and `accounting` schemas are dropped and recreated
+— and each individual test runs inside a transaction that is rolled back
+afterwards. So `finance_test` needs to exist, but nothing in it needs to
+be preserved; drop and recreate it any time. Alembic is exercised
+separately by `tests/db/test_rls_coverage.py`, which provisions and drops
+its own scratch database (this needs the `finance` user's CREATEDB
+privilege, which the container's superuser has); that module skips itself
+if `DATABASE_URL_TEST` is unset, everything else just fails.
+
+### The gates
+
+All of these run in CI on every PR, and all of them have to pass. Run
+them from the repo root:
+
+```bash
+# Backend — .github/workflows/backend.yml
+uv run ruff check .
+uv run ruff format --check .      # `uv run ruff format .` to actually fix it
+uv run mypy                       # trades, accounting, and db are fully typed and mypy-clean (see pyproject.toml)
+uv run pytest                     # needs DATABASE_URL_TEST, and the `api` extra (see Setup) for tests/*/api/
+
+# Frontend — .github/workflows/frontend.yml
+cd web && npm run lint && npm run format:check && npm run check && npm run typecheck && npm run test && npm run build
+```
+
+`npm run check` is biome's import-organization assist, separate from
+`lint`; `npm run format` (no `:check`) rewrites files instead of just
+reporting.
+
+Third gate: `web/src/types/schema.ts` is generated from the backend's
+OpenAPI schema and never hand-edited, so CI fails on any drift between
+them (`.github/workflows/openapi-types.yml`). After changing any FastAPI
+route or response model, regenerate and commit the result:
+
+```bash
+uv run python -m trades.api.export_openapi        # writes web/openapi.json
+cd web && npm run generate:schema && npx biome format --write src/types/schema.ts
+git diff --exit-code -- web/src/types/schema.ts   # what CI asserts
 ```
