@@ -226,6 +226,14 @@ def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
     second `remainder` row, or move the `remainder` row off the lowest
     priority, a state `PUT` itself refuses.
 
+    The first of the two rules is *also* structural now — `goal_automations`
+    carries `UNIQUE (user_id) WHERE mode = 'remainder'` (see
+    `db.goals.GoalAutomation`) — and this check stays on top of it anyway,
+    because the index's only vocabulary is a unique violation, which reaches
+    a client as a 500. The second rule cannot be an index at all: "is the
+    lowest-priority row" is a statement about the whole list's ordering, not
+    about any one row.
+
     Raises
     ------
     HTTPException

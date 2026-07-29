@@ -37,7 +37,7 @@ function emptyDraft(): AccountFormValue {
     name: '',
     parentAccountId: null,
     openingBalance: '',
-    externalRef: null,
+    brokerConnectionId: null,
   }
 }
 
@@ -131,7 +131,7 @@ export function AccountsManagementTable({
         currency: value.currency,
         last_four: value.last4 || null,
         parent_account_id: value.parentAccountId,
-        external_ref: value.externalRef,
+        broker_connection_id: value.brokerConnectionId,
         meta: {},
       })
       const amount = Number.parseFloat(value.openingBalance)
@@ -161,7 +161,7 @@ export function AccountsManagementTable({
           kind: value.kind,
           currency: value.currency,
           last_four: value.last4 || null,
-          external_ref: value.externalRef,
+          broker_connection_id: value.brokerConnectionId,
           meta: {},
         },
       })
@@ -323,7 +323,7 @@ export function AccountsManagementTable({
             name: editing.name,
             parentAccountId: editing.parent_account_id ?? null,
             openingBalance: '',
-            externalRef: editing.external_ref ?? null,
+            brokerConnectionId: editing.broker_connection_id ?? null,
           }}
           locked={accountIdsWithPostings.has(editing.account_id)}
           knownInstitutions={knownInstitutions}

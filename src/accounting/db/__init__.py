@@ -33,6 +33,7 @@ from accounting.db.goals import Goal, GoalAutomation, GoalContribution
 from accounting.db.llm import LLMUsage
 from accounting.db.simulator import SimulatorScenario
 from accounting.db.transfers import TransferLink, TransferLinkedTransaction
+from accounting.db.triggers import ZERO_SUM_STATEMENTS  # noqa: F401 — importing installs the after_create hook
 from db.base import Base
 from db.indexes import ensure_foreign_key_indexes
 

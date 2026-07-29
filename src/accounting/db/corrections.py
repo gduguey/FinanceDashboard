@@ -17,7 +17,7 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.db.core import SCHEMA, stage_constraint
+from accounting.db.core import SCHEMA, child_of_category_columns, stage_constraint
 from accounting.models import (
     DismissedSuggestionKind,
     PendingSuggestionSource,
@@ -55,6 +55,7 @@ class PostingOverride(Base, Timestamped):
     __tablename__ = "posting_overrides"
     __table_args__ = (
         stage_constraint("override"),
+        *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "posting_id", name="uq_posting_overrides_user_posting"),
         {"schema": SCHEMA},
     )
@@ -72,9 +73,7 @@ class PostingOverride(Base, Timestamped):
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     tags_overridden: Mapped[bool] = mapped_column(default=False)
 
 
@@ -82,24 +81,24 @@ class PostingOverrideTag(Base, Timestamped):
     """One tag in a posting override's overridden tag set — the FK-enforced replacement for a loose id array.
 
     Mirrors `accounting.db.core.PostingTag` exactly, one row per
-    (override, tag) pair; see `PostingOverride.tags_overridden`'s own
-    docstring for why the override's own "was this touched at all" state
-    still needs a separate boolean rather than being inferred from
-    whether any rows exist here.
+    (override, tag) pair — composite primary key included; see
+    `PostingOverride.tags_overridden`'s own docstring for why the
+    override's own "was this touched at all" state still needs a separate
+    boolean rather than being inferred from whether any rows exist here.
     """
 
     __tablename__ = "posting_override_tags"
-    __table_args__ = (
-        UniqueConstraint("user_id", "override_id", "tag_id", name="uq_posting_override_tags_user_override_tag"),
-        {"schema": SCHEMA},
-    )
+    __table_args__ = {"schema": SCHEMA}
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    override_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_overrides.id", ondelete="CASCADE")
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
+    override_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_overrides.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"), primary_key=True
+    )
 
 
 _PENDING_SHAPE_SQL = (
@@ -179,6 +178,7 @@ class Suggestion(Base, Timestamped):
         CheckConstraint(check_in_sql("source", get_args(SuggestionSource)), name="source"),
         CheckConstraint(_PENDING_SHAPE_SQL, name="pending_shape"),
         CheckConstraint(_DISMISSED_SHAPE_SQL, name="dismissed_shape"),
+        *child_of_category_columns("previous_category_id", "previous_subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_suggestions_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -197,9 +197,7 @@ class Suggestion(Base, Timestamped):
     previous_category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    previous_subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    previous_subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
@@ -228,10 +226,20 @@ class PostingSplitLeg(Base, Timestamped):
     `ordinal` preserves the legs' display order, since the amounts they
     were entered in matters to the user even though it's semantically
     unordered relative to `PostingSplitLeg.amount` summing to the original.
+
+    That ordering is only an ordering if it has no duplicates, and until
+    now nothing said so: this table shipped with no unique constraint at
+    all, so two legs of the same split could both claim ordinal 1 and the
+    order they came back in was whatever Postgres felt like. `UNIQUE
+    (user_id, posting_split_id, ordinal)` is that missing statement.
     """
 
     __tablename__ = "posting_split_legs"
-    __table_args__ = {"schema": SCHEMA}
+    __table_args__ = (
+        *child_of_category_columns("category_id", "subcategory_id"),
+        UniqueConstraint("user_id", "posting_split_id", "ordinal", name="uq_posting_split_legs_user_split_ordinal"),
+        {"schema": SCHEMA},
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
@@ -243,9 +251,7 @@ class PostingSplitLeg(Base, Timestamped):
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     description: Mapped[str] = mapped_column(default="")
 
 
@@ -277,20 +283,22 @@ class PostingMerge(Base, Timestamped):
 
 
 class PostingMergeDuplicate(Base, Timestamped):
-    """One transaction dropped from the resolved ledger because a `PostingMerge` kept a different one instead."""
+    """One transaction dropped from the resolved ledger because a `PostingMerge` kept a different one instead.
+
+    A pure association table, so `(user_id, merge_id,
+    duplicate_transaction_id)` is its primary key — see `core.PostingTag`
+    on the surrogate `id` this used to carry alongside a `UNIQUE` over the
+    same columns (DB-audit D9).
+    """
 
     __tablename__ = "posting_merge_duplicates"
-    __table_args__ = (
-        UniqueConstraint(
-            "user_id", "merge_id", "duplicate_transaction_id", name="uq_posting_merge_duplicates_user_merge_txn"
-        ),
-        {"schema": SCHEMA},
-    )
+    __table_args__ = {"schema": SCHEMA}
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     merge_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_merges.id", ondelete="CASCADE")
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_merges.id", ondelete="CASCADE"), primary_key=True
     )
     # CASCADE is safe: this row is a single duplicate's own membership in
     # the merge, not the merge's defining reference (that's
@@ -298,5 +306,5 @@ class PostingMergeDuplicate(Base, Timestamped):
     # transaction in a ledger rebuild should only ever drop its own row,
     # never the merge or its other duplicates.
     duplicate_transaction_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE"), primary_key=True
     )

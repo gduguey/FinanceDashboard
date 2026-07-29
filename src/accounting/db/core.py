@@ -16,7 +16,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    Computed,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    SmallInteger,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,6 +34,105 @@ from accounting.precedence import OverlayStage
 from db.base import MONEY, Base, Timestamped, check_in_sql
 
 SCHEMA = "accounting"
+
+TRADES_SCHEMA = "trades"
+"""The other ledger's schema, named here because exactly one column reaches into it.
+
+`Account.broker_connection_id` is the whole of the seam between the two
+ledgers (DB-audit move #1). It is a real foreign key rather than the string
+`external_ref = "trades"` it replaces, which means `accounting`'s DDL now
+depends on `trades.broker_connections` existing — the one place the two
+otherwise-independent packages touch. That dependency is the point: a
+brokerage account pointing at a connection that was never created, or that
+has since been deleted, has to be impossible rather than merely unlikely.
+"""
+
+
+def two_level_depth(parent_column: str) -> Computed:
+    """Build the `depth` expression Postgres computes for a two-level tree's row from its own parent column.
+
+    Half of the depth guard described on `Category`: generated rather than
+    written, so no insert can claim a depth its `parent_*_id` doesn't
+    actually imply.
+
+    Parameters
+    ----------
+    parent_column
+        The self-referencing column, e.g. `"parent_category_id"`.
+
+    Returns
+    -------
+    sqlalchemy.Computed
+    """
+    return Computed(f"CASE WHEN {parent_column} IS NULL THEN 1 ELSE 2 END", persisted=True)
+
+
+def parent_must_be_a_root(parent_column: str) -> Computed:
+    """Build the constant-`1` expression a two-level tree's composite parent foreign key points at.
+
+    The other half of the depth guard: this is the column that makes
+    `FOREIGN KEY (parent_x_id, parent_depth) REFERENCES x (id, depth)`
+    expressible at all, since a foreign key may only name columns, never
+    the literal a plain `CHECK` would compare against.
+
+    Parameters
+    ----------
+    parent_column
+        The self-referencing column, e.g. `"parent_category_id"`.
+
+    Returns
+    -------
+    sqlalchemy.Computed
+    """
+    return Computed(f"CASE WHEN {parent_column} IS NULL THEN NULL ELSE 1 END", persisted=True)
+
+
+def child_of_category_columns(
+    category_column: str, subcategory_column: str
+) -> tuple[ForeignKeyConstraint, CheckConstraint]:
+    """Make one table's `(category_id, subcategory_id)` pair a coherent pair, not two independent slots.
+
+    Six tables carry the pair (DB-audit D10, correctness finding E3), and
+    every one of them used to allow a `subcategory_id` belonging to some
+    *other* category — or a subcategory with no category beside it at all.
+    Both are closed here, structurally, and in the only two ways they can
+    be:
+
+    - **"is actually a child of"** is a real foreign key, because
+      `categories` carries `UNIQUE (id, parent_category_id)` for exactly
+      this purpose. `(subcategory_id, category_id)` referencing
+      `(id, parent_category_id)` says precisely "the row named by
+      `subcategory_id` is a child of the row named by `category_id`" — the
+      engine checks it on every write and on every reparent, where a
+      trigger would have had to be written, tested, and remembered.
+    - **"a subcategory implies a category"** cannot ride on that foreign
+      key: the default `MATCH SIMPLE` skips the check entirely as soon as
+      *any* referencing column is `NULL`, so a subcategory with a `NULL`
+      category slips straight through. `MATCH FULL` would close it, but it
+      would also forbid the legitimate "filed at the top level only" row
+      (`category_id` set, `subcategory_id` `NULL`). So it is a `CHECK`.
+
+    Parameters
+    ----------
+    category_column
+        The column naming the top-level category.
+    subcategory_column
+        The column naming the subcategory.
+
+    Returns
+    -------
+    tuple[sqlalchemy.ForeignKeyConstraint, sqlalchemy.CheckConstraint]
+        Ready to splat into a table's `__table_args__`.
+    """
+    return (
+        ForeignKeyConstraint(
+            [subcategory_column, category_column],
+            [f"{SCHEMA}.categories.id", f"{SCHEMA}.categories.parent_category_id"],
+        ),
+        CheckConstraint(
+            f"{subcategory_column} IS NULL OR {category_column} IS NOT NULL", name="subcategory_needs_category"
+        ),
+    )
 
 
 def stage_constraint(stage: OverlayStage) -> CheckConstraint:
@@ -51,13 +159,38 @@ def stage_constraint(stage: OverlayStage) -> CheckConstraint:
 
 
 class Account(Base, Timestamped):
-    """One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty."""
+    """One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
+
+    Two levels deep and no deeper, like `Category`: a `vault` names the
+    savings account it is a sub-balance of, and that savings account names
+    nothing. The `depth`/`parent_depth` pair below is what makes a
+    vault-of-a-vault unrepresentable rather than merely unexpected — see
+    `Category`'s docstring for the mechanism and why it beats the
+    alternatives.
+
+    `broker_connection_id` is the seam between the two ledgers. It replaces
+    `external_ref`, a bare `String` set to the literal `"trades"` that
+    `dashboard.net_worth` string-matched on to decide whose value came from
+    the investment portfolio (DB-audit D7/move #1). Now the account names
+    the `trades.broker_connections` row its value is pulled from, as a real
+    typed foreign key, so "this account mirrors a connection that doesn't
+    exist" is not a state the database can hold — and `ON DELETE SET NULL`
+    means removing the connection degrades the account to a
+    manually-valued one instead of leaving a dangling reference behind.
+    """
 
     __tablename__ = "accounts"
     __table_args__ = (
         CheckConstraint(check_in_sql("kind", get_args(AccountKind)), name="kind"),
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        CheckConstraint(
+            "broker_connection_id IS NULL OR kind = 'external_investment'", name="broker_link_is_an_investment"
+        ),
         UniqueConstraint("user_id", "natural_key", name="uq_accounts_user_natural_key"),
+        UniqueConstraint("id", "depth", name="uq_accounts_id_depth"),
+        ForeignKeyConstraint(
+            ["parent_account_id", "parent_depth"], [f"{SCHEMA}.accounts.id", f"{SCHEMA}.accounts.depth"]
+        ),
         {"schema": SCHEMA},
     )
 
@@ -69,10 +202,17 @@ class Account(Base, Timestamped):
     institution: Mapped[str]
     currency: Mapped[str]
     last_four: Mapped[str | None] = mapped_column(default=None)
-    parent_account_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"), default=None
+    parent_account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    depth: Mapped[int] = mapped_column(SmallInteger, two_level_depth("parent_account_id"))
+    """Generated, never written — `1` for an account with no parent, `2` for a vault. See `Category.depth`."""
+    parent_depth: Mapped[int | None] = mapped_column(SmallInteger, parent_must_be_a_root("parent_account_id"))
+    """Generated, never written — the `1` this row's composite parent foreign key requires its parent to be at."""
+    broker_connection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{TRADES_SCHEMA}.broker_connections.id", ondelete="SET NULL"),
+        default=None,
     )
-    external_ref: Mapped[str | None] = mapped_column(default=None)
+    """Which `trades` broker connection this account's value is pulled from, or `NULL` if it is valued locally."""
     meta: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     closed: Mapped[bool] = mapped_column(default=False)
 
@@ -107,6 +247,45 @@ class Category(Base, Timestamped):
     or importing a file that mints it again, brings the same row back to
     life rather than minting a second row its `UNIQUE(user_id,
     natural_key)` would reject.
+
+    ## Exactly two levels, enforced by the engine
+
+    `parent_category_id` is an adjacency list — Karwin's "Naive Trees"
+    (DB-audit D8) — and for a tree this shallow that is the *right* shape.
+    What was missing is the depth bound: nothing stopped a
+    subcategory-of-a-subcategory (correctness finding E1), even though
+    every reader in this codebase assumes two levels.
+
+    A plain `CHECK` cannot express it, because a `CHECK` only ever sees its
+    own row and the fact in question is about the parent's row. Of the two
+    mechanisms that can, this uses the composite foreign key rather than a
+    `CONSTRAINT TRIGGER`:
+
+    - `depth` is `1` for a root and `2` for a child, and `parent_depth` is
+      `1` whenever there is a parent. Both are `GENERATED ALWAYS AS ...
+      STORED`, so neither is something an insert supplies, gets wrong, or
+      forgets — they are functions of `parent_category_id` and nothing else.
+    - `UNIQUE (id, depth)` makes `(id, depth)` a legal foreign-key target,
+      and `FOREIGN KEY (parent_category_id, parent_depth) REFERENCES
+      categories (id, depth)` then reads exactly as the rule does: *my
+      parent must be a row that sits at depth 1*. A grandchild fails on
+      insert, and re-parenting a row that already has children fails too,
+      because it would have to leave depth 1 while a child still references
+      it there.
+
+    A `CONSTRAINT TRIGGER` would enforce the same thing, but as procedural
+    code: it has to be written in PL/pgSQL, kept in step with the model by
+    hand, and it is only as good as the events it happens to be declared
+    for. The composite foreign key is enforced by the same machinery as
+    every other reference in this schema, is visible in a `psql` table description,
+    and cannot be bypassed by a code path nobody thought of. The trigger is
+    reserved for the one invariant no key can express — the cross-row
+    zero-sum check in `db.triggers`.
+
+    `UNIQUE (id, parent_category_id)` is the *other* foreign-key target this
+    table publishes, and it is what makes a `(category_id, subcategory_id)`
+    pair elsewhere in the schema a real reference rather than two hopeful
+    columns — see `child_of_category_columns`.
     """
 
     __tablename__ = "categories"
@@ -116,6 +295,11 @@ class Category(Base, Timestamped):
             "superseded_by_category_id IS NULL OR retired_at IS NOT NULL", name="successor_requires_retirement"
         ),
         UniqueConstraint("user_id", "natural_key", name="uq_categories_user_natural_key"),
+        UniqueConstraint("id", "depth", name="uq_categories_id_depth"),
+        UniqueConstraint("id", "parent_category_id", name="uq_categories_id_parent_category_id"),
+        ForeignKeyConstraint(
+            ["parent_category_id", "parent_depth"], [f"{SCHEMA}.categories.id", f"{SCHEMA}.categories.depth"]
+        ),
         {"schema": SCHEMA},
     )
 
@@ -124,9 +308,11 @@ class Category(Base, Timestamped):
     natural_key: Mapped[str]
     name: Mapped[str]
     classification: Mapped[str]
-    parent_category_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    parent_category_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
+    depth: Mapped[int] = mapped_column(SmallInteger, two_level_depth("parent_category_id"))
+    """Generated, never written — `1` for a top-level category, `2` for a subcategory. See the class docstring."""
+    parent_depth: Mapped[int | None] = mapped_column(SmallInteger, parent_must_be_a_root("parent_category_id"))
+    """Generated, never written — the `1` this row's composite parent foreign key requires its parent to be at."""
     color: Mapped[str]
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     """When this category left the live tree, or `NULL` while it is still in it."""
@@ -223,6 +409,7 @@ class Posting(Base, Timestamped):
     __tablename__ = "postings"
     __table_args__ = (
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_postings_user_natural_key"),
         Index("ix_postings_user_posted_at", "user_id", "posted_at"),
         {"schema": SCHEMA},
@@ -241,9 +428,7 @@ class Posting(Base, Timestamped):
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     budget_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.budgets.id"), default=None
     )
@@ -252,20 +437,27 @@ class Posting(Base, Timestamped):
 
 
 class PostingTag(Base, Timestamped):
-    """One (posting, tag) pairing — the normalized replacement for `Posting.tag_ids`."""
+    """One (posting, tag) pairing — the normalized replacement for `Posting.tag_ids`.
+
+    A pure association table, so `(user_id, posting_id, tag_id)` *is* its
+    primary key. It used to carry a surrogate `uuid id` on top of a
+    `UNIQUE` over the same three columns — Karwin's "ID Required"
+    (DB-audit D9): a second index to maintain, buying nothing, since
+    nothing ever references a pairing by an id of its own.
+    """
 
     __tablename__ = "posting_tags"
-    __table_args__ = (
-        UniqueConstraint("user_id", "posting_id", "tag_id", name="uq_posting_tags_user_posting_tag"),
-        {"schema": SCHEMA},
-    )
+    __table_args__ = {"schema": SCHEMA}
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    posting_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE")
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
+    posting_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"), primary_key=True
+    )
 
 
 class OpeningBalance(Base, Timestamped):
@@ -287,11 +479,23 @@ class OpeningBalance(Base, Timestamped):
 
 
 class OtherAsset(Base, Timestamped):
-    """A manually-entered net-worth line with no transaction history — property, a car, etc."""
+    """A manually-entered net-worth line with no transaction history — property, a car, etc.
+
+    `value` is checked non-negative. This is an *asset* line — a house, a
+    car, a painting — and never a liability: the schema already models
+    those as `credit_card`/`loan` accounts with their own signed postings
+    (see `dashboard.net_worth`, which adds every one of these to the asset
+    side unconditionally). A negative value here would be silently
+    subtracted from assets rather than counted as a debt, so it is the
+    kind of "false statement" the engine should refuse. The check is
+    scoped deliberately: `postings.amount` is signed by design and gets no
+    such constraint.
+    """
 
     __tablename__ = "other_assets"
     __table_args__ = (
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        CheckConstraint("value >= 0", name="value_is_not_negative"),
         UniqueConstraint("user_id", "natural_key", name="uq_other_assets_user_natural_key"),
         {"schema": SCHEMA},
     )

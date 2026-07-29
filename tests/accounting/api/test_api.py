@@ -9,6 +9,7 @@ import xlsxwriter
 from fastapi.testclient import TestClient
 
 import db.models as dbm
+import trades.db as tdb
 from accounting import api as accounting_api
 from accounting.api.routers import imports as accounting_imports_router
 from accounting.api.routers import llm as accounting_llm_router
@@ -64,6 +65,21 @@ def _db_for_api(db_session):
 @pytest.fixture
 def client():
     return TestClient(trades_api.app)
+
+
+@pytest.fixture
+def broker_connection_id(db_session) -> uuid.UUID:
+    """A real `trades.broker_connections` row for an account to link its value to.
+
+    `accounts.broker_connection_id` is a genuine foreign key across the
+    ledger seam now (DB-audit move #1), so "this account mirrors the
+    tracked portfolio" can only be said about a connection that exists.
+    A sync creates it in the real app; this creates it directly.
+    """
+    connection_id = uuid.uuid4()
+    db_session.add(tdb.BrokerConnection(id=connection_id, user_id=DEFAULT_USER_ID, natural_key="ibkr", broker="ibkr"))
+    db_session.commit()
+    return connection_id
 
 
 def test_get_store_seeds_default_categories_and_placeholder_accounts(client) -> None:
@@ -517,16 +533,19 @@ def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     posting_id = payroll["posting_id"]
 
-    client.put(f"/api/accounting/postings/{posting_id}/override", json={"category_id": "income:salary"})
-    response = client.put(f"/api/accounting/postings/{posting_id}/override", json={"subcategory_id": "income:bonus"})
+    client.put(f"/api/accounting/postings/{posting_id}/override", json={"category_id": "income:reimbursement"})
+    response = client.put(
+        f"/api/accounting/postings/{posting_id}/override",
+        json={"subcategory_id": "income:reimbursement:employer"},
+    )
     assert response.status_code == 200
-    assert response.json()["category_id"] == "income:salary"
-    assert response.json()["subcategory_id"] == "income:bonus"
+    assert response.json()["category_id"] == "income:reimbursement"
+    assert response.json()["subcategory_id"] == "income:reimbursement:employer"
 
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["posting_id"] == posting_id)
-    assert updated_payroll["category_id"] == "income:salary"
-    assert updated_payroll["subcategory_id"] == "income:bonus"
+    assert updated_payroll["category_id"] == "income:reimbursement"
+    assert updated_payroll["subcategory_id"] == "income:reimbursement:employer"
 
 
 def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) -> None:
@@ -1129,7 +1148,9 @@ def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
     assert checking_row["balance"] == pytest.approx(1430.0)
 
 
-def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client, tmp_path, monkeypatch) -> None:
+def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(
+    client, broker_connection_id, tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(trades_api.app.state, "config", AppConfig(ibkr={"cache_dir": tmp_path / "empty-ibkr"}))
     investment = _create_account(
         client,
@@ -1138,7 +1159,7 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
         institution="external",
         currency="USD",
         parent_account_id=None,
-        external_ref="trades",
+        broker_connection_id=str(broker_connection_id),
         meta={},
     )
     client.post(
@@ -3098,7 +3119,7 @@ def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) ->
     assert renamed.json()["name"] == "Renamed"
 
 
-def test_post_account_accepts_an_external_investment_pulling_from_trades(client) -> None:
+def test_post_account_accepts_an_external_investment_pulling_from_trades(client, broker_connection_id) -> None:
     response = client.post(
         "/api/accounting/accounts",
         json={
@@ -3106,13 +3127,13 @@ def test_post_account_accepts_an_external_investment_pulling_from_trades(client)
             "kind": "external_investment",
             "institution": "external",
             "currency": "USD",
-            "external_ref": "trades",
+            "broker_connection_id": str(broker_connection_id),
         },
     )
     assert response.status_code == 200
     account_id = response.json()["account_id"]
     created = client.get("/api/accounting/store").json()["accounts"][account_id]
-    assert created["external_ref"] == "trades"
+    assert created["broker_connection_id"] == str(broker_connection_id)
 
 
 def test_post_account_accepts_a_manually_tracked_external_investment(client) -> None:
@@ -3123,10 +3144,41 @@ def test_post_account_accepts_a_manually_tracked_external_investment(client) -> 
     assert response.status_code == 200
     account_id = response.json()["account_id"]
     created = client.get("/api/accounting/store").json()["accounts"][account_id]
-    assert created["external_ref"] is None
+    assert created["broker_connection_id"] is None
 
 
-def test_put_account_can_switch_an_external_investment_between_trades_and_manual(client) -> None:
+def test_post_account_rejects_a_broker_connection_that_does_not_exist(client) -> None:
+    """DB-audit move #1: the seam is a real foreign key, so an account can't name a connection nobody has."""
+    response = client.post(
+        "/api/accounting/accounts",
+        json={
+            "name": "Interactive Brokers",
+            "kind": "external_investment",
+            "institution": "external",
+            "currency": "USD",
+            "broker_connection_id": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 404
+    assert "broker connection" in response.json()["detail"].lower()
+
+
+def test_post_account_rejects_a_broker_link_on_a_non_investment_account(client, broker_connection_id) -> None:
+    """The `CHECK` that makes "my checking account mirrors a brokerage" unrepresentable."""
+    response = client.post(
+        "/api/accounting/accounts",
+        json={
+            "name": "Chase Checking",
+            "kind": "checking",
+            "institution": "Chase",
+            "currency": "USD",
+            "broker_connection_id": str(broker_connection_id),
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_put_account_can_switch_an_external_investment_between_trades_and_manual(client, broker_connection_id) -> None:
     account = _create_account(
         client, name="Friend's Fund", kind="external_investment", institution="external", currency="USD"
     )
@@ -3137,18 +3189,18 @@ def test_put_account_can_switch_an_external_investment_between_trades_and_manual
             "institution": "external",
             "kind": "external_investment",
             "currency": "USD",
-            "external_ref": "trades",
+            "broker_connection_id": str(broker_connection_id),
         },
     )
     assert response.status_code == 200
-    assert response.json()["external_ref"] == "trades"
+    assert response.json()["broker_connection_id"] == str(broker_connection_id)
 
     back_to_manual = client.put(
         f"/api/accounting/accounts/{account['account_id']}",
         json={"name": "Friend's Fund", "institution": "external", "kind": "external_investment", "currency": "USD"},
     )
     assert back_to_manual.status_code == 200
-    assert back_to_manual.json()["external_ref"] is None
+    assert back_to_manual.json()["broker_connection_id"] is None
 
 
 def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> None:

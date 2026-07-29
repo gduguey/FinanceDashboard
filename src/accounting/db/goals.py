@@ -28,6 +28,7 @@ class Goal(Base, Timestamped):
     __tablename__ = "goals"
     __table_args__ = (
         CheckConstraint(check_in_sql("target_currency", get_args(CurrencyCode)), name="target_currency"),
+        CheckConstraint("target_amount > 0", name="target_amount_is_positive"),
         UniqueConstraint("user_id", "natural_key", name="uq_goals_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -37,6 +38,7 @@ class Goal(Base, Timestamped):
     natural_key: Mapped[str]
     name: Mapped[str]
     target_amount: Mapped[Decimal] = mapped_column(MONEY)
+    """Strictly positive — a goal of zero (or less) is already met by definition and has nothing to progress towards."""
     target_currency: Mapped[str] = mapped_column(default="USD")
     target_date: Mapped[datetime]
     color: Mapped[str]
@@ -143,6 +145,18 @@ class GoalAutomation(Base, Timestamped):
     `UNIQUE (user_id, goal_id)` becomes: a goal appears at most once in
     the drawdown order, while it may legitimately have several
     contribution schedules funding it.
+
+    A second partial unique index carries the "one remainder" rule.
+    `mode = "remainder"` means "fund this goal with whatever is left after
+    every other automation has run" (see `ledger.goal_automations`), which
+    is only meaningful once: two of them would each claim the same leftover,
+    and whichever ran second would find nothing. `api.routers.goals`
+    rejected the second one with a 400, and nothing stopped a write that
+    did not go through that endpoint. `UNIQUE (user_id) WHERE mode =
+    'remainder'` is that rule, now held by the engine. The endpoint's other
+    rule — that a `remainder` row is the *lowest-priority* one — stays in
+    Python: it is a statement about the ordering of the whole list, which no
+    index can express.
     """
 
     __tablename__ = "goal_automations"
@@ -159,6 +173,12 @@ class GoalAutomation(Base, Timestamped):
             "goal_id",
             unique=True,
             postgresql_where=text("direction = 'withdrawal'"),
+        ),
+        Index(
+            "uq_goal_automations_user_remainder",
+            "user_id",
+            unique=True,
+            postgresql_where=text("mode = 'remainder'"),
         ),
         {"schema": SCHEMA},
     )

@@ -178,10 +178,7 @@ def get_net_worth(
     NetWorthSummary
     """
     postings, store = _resolved_postings_and_store(session, user_id)
-    has_external_investment = any(
-        account.kind == "external_investment" and account.external_ref == "trades"
-        for account in store.accounts.values()
-    )
+    has_external_investment = any(account.broker_connection_id is not None for account in store.accounts.values())
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     external_values = (
         _external_investment_values([resolved_as_of], session, user_id) if has_external_investment else None
@@ -230,10 +227,7 @@ def get_net_worth_history(
         Oldest first.
     """
     postings, store = _resolved_postings_and_store(session, user_id)
-    has_external_investment = any(
-        account.kind == "external_investment" and account.external_ref == "trades"
-        for account in store.accounts.values()
-    )
+    has_external_investment = any(account.broker_connection_id is not None for account in store.accounts.values())
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     external_values = _external_investment_values(dates, session, user_id) if has_external_investment else None
     return [
@@ -282,9 +276,7 @@ def get_net_worth_history_by_account(
         for account_id, account in store.accounts.items()
         if account.kind not in _VIRTUAL_ACCOUNT_KINDS
     }
-    has_external_investment = any(
-        account.kind == "external_investment" and account.external_ref == "trades" for account in real_accounts.values()
-    )
+    has_external_investment = any(account.broker_connection_id is not None for account in real_accounts.values())
     external_values = _external_investment_values(dates, session, user_id) if has_external_investment else None
 
     balances = cast("pl.DataFrame", account_balances_over_time(postings, dates))
@@ -294,7 +286,7 @@ def get_net_worth_history_by_account(
     for day in dates:
         display = _display_currency(display_currency, store, day)
         for account_id, account in real_accounts.items():
-            if account.kind == "external_investment" and account.external_ref == "trades":
+            if account.broker_connection_id is not None:
                 native = (external_values or {}).get(day, 0.0)
             else:
                 native = balance_lookup.get((account_id, day), 0.0)

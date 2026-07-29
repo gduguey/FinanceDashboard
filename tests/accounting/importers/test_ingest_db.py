@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
+from sqlalchemy import text
 
 import db.models
 from accounting.importers.ingest import _write_ledger, load_ledger
@@ -122,6 +123,36 @@ def test_write_then_load_ledger_round_trips_a_posting(db_session: Session, test_
     assert row["transaction_id"] == "t1"
     assert row["amount"] == pytest.approx(42.5)
     assert row["meta"] == {"source": "test"}
+
+
+def test_a_bulk_ledger_rewrite_still_satisfies_the_deferred_zero_sum_guard(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The reason the zero-sum trigger is `DEFERRABLE INITIALLY DEFERRED` rather than checked per statement.
+
+    `_write_ledger` upserts leg by leg and prunes what it no longer
+    produces in a separate pass, so it passes through several states where
+    a transaction has one leg, or none. An immediate check would abort on
+    the first of them. `SET CONSTRAINTS ALL IMMEDIATE` runs what `COMMIT`
+    would have run, once, over the finished state — see
+    `tests/db/test_schema_invariants` on why a test has to ask for it.
+    """
+    _register_account(db_session, test_user_id)
+    _register_account(db_session, test_user_id, account_id="payee:test")
+    _write_ledger(
+        _frame(_posting("p1", "t1", amount=-100.0), _posting("p2", "t1", account_id="payee:test", amount=100.0)),
+        db_session,
+        user_id=test_user_id,
+    )
+    _write_ledger(
+        _frame(_posting("p3", "t2", amount=-250.0), _posting("p4", "t2", account_id="payee:test", amount=250.0)),
+        db_session,
+        user_id=test_user_id,
+    )
+
+    db_session.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
+
+    assert sorted(load_ledger(db_session, user_id=test_user_id)["posting_id"].to_list()) == ["p3", "p4"]
 
 
 def test_write_then_load_ledger_round_trips_tag_ids(db_session: Session, test_user_id: uuid.UUID) -> None:

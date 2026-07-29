@@ -8,6 +8,7 @@ without any router needing to know about another router's models.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Annotated, Literal
 
@@ -467,7 +468,7 @@ class AccountCreate(BaseModel):
     currency: CurrencyCode
     last_four: str | None = None
     parent_account_id: str | None = None
-    external_ref: str | None = None
+    broker_connection_id: uuid.UUID | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
 
@@ -479,11 +480,12 @@ class AccountUpdate(BaseModel):
     `put_account`, not here, since that check needs the ledger. `closed`
     isn't edited here — see `close_account`/`reopen_account`, which pair it
     with recording where a closed account's remaining balance went.
-    `external_ref` is never locked — it only ever changes which value an
-    `external_investment` account shows (see `dashboard.net_worth`), never
-    what it has already recorded, so it's free to toggle regardless of postings.
-    `last_four` is never locked either, for the same reason: it never
-    affects identity or any stored history.
+    `broker_connection_id` is never locked — it only ever changes which
+    value an `external_investment` account shows (see
+    `dashboard.net_worth`), never what it has already recorded, so it's
+    free to toggle regardless of postings. `last_four` is never locked
+    either, for the same reason: it never affects identity or any stored
+    history.
     """
 
     name: str
@@ -491,7 +493,7 @@ class AccountUpdate(BaseModel):
     kind: AccountKind
     currency: CurrencyCode
     last_four: str | None = None
-    external_ref: str | None = None
+    broker_connection_id: uuid.UUID | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
 

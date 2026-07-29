@@ -14,6 +14,7 @@ reimbursement legs).
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Annotated, Literal, assert_never, get_args
 
@@ -146,10 +147,20 @@ class Account(BaseModel):
     """One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
 
     `parent_account_id` is only set for a `vault`, pointing at the savings
-    account it's a named sub-balance of. `external_ref` is only set for the
-    `external_investment` kind, naming where its value actually comes from
-    (currently always `"trades"`, meaning `trades.dashboard.overview_cards`)
-    since this account's balance is never derived from its own postings.
+    account it's a named sub-balance of. `broker_connection_id` is only set
+    for the `external_investment` kind, naming the *broker connection*
+    whose portfolio this account mirrors, since its balance is never
+    derived from its own postings.
+
+    That field replaces `external_ref`, a free-text column whose only ever
+    value was the literal `"trades"` and which `dashboard.net_worth`
+    string-matched on. It is the one id on this model that is a raw
+    `broker_connections.id` rather than a natural key, deliberately: it
+    points across the seam into the other ledger's schema, where this
+    package has no business resolving natural keys, and the database
+    enforces it as a real foreign key (see `db.core.Account`) so an account
+    can never name a connection that isn't there.
+
     `meta` holds facts about the account itself rather than any one
     posting — currently just `apy_pct`, the interest rate last seen on a
     statement, carried here because it describes the account's terms, not
@@ -171,7 +182,7 @@ class Account(BaseModel):
     currency: CurrencyCode
     last_four: str | None = None
     parent_account_id: str | None = None
-    external_ref: str | None = None
+    broker_connection_id: uuid.UUID | None = None
     meta: dict[str, str] = Field(default_factory=dict)
     closed: bool = False
 
@@ -288,11 +299,14 @@ class TransferLink(BaseModel):
     `TransferRule` found a safe, unique match for at write time (see
     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
     resolution itself. `rule_id`, set only when `source == "rule"`, names
-    *which* rule found it — a plain historical label, not a foreign key
-    enforced anywhere: if that rule is later deleted, this link keeps
-    remembering which one originally created it rather than the id turning
-    meaningless, the same way a bank statement keeps a routing number that
-    later stops being valid.
+    *which* rule found it. It used to be a plain historical label deliberately
+    left un-foreign-keyed, on the theory that a link should keep remembering
+    the rule that made it even after that rule is gone; it is a real foreign
+    key now (DB-audit D7's "Keyless Entry"), because a label naming a row
+    nobody can look up is not provenance. `ON DELETE SET NULL` keeps what was
+    actually worth keeping: the link survives its rule, `source` still records
+    that a rule rather than the user proposed it, and only the reference that
+    no longer resolves is cleared.
     """
 
     model_config = ConfigDict(frozen=True)

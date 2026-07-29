@@ -1024,9 +1024,18 @@ def remove_posting_merge(session: Session, user_id: uuid.UUID, merge_id: str) ->
 
 
 def _transfer_link_from_row(
-    row: adb.TransferLink, transaction_ids: list[uuid.UUID], transaction_natural_key_by_id: dict[uuid.UUID, str]
+    row: adb.TransferLink,
+    transaction_ids: list[uuid.UUID],
+    transaction_natural_key_by_id: dict[uuid.UUID, str],
+    rule_natural_key_by_id: dict[uuid.UUID, str],
 ) -> TransferLink:
     """Convert one persisted `TransferLink` row (plus its two membership rows) back into its pydantic model.
+
+    `rule_id` is stored as a real foreign key now (DB-audit D7) and reversed
+    back to the rule's natural key here, the same way every other stored
+    reference in this module is. A link whose rule has since been deleted
+    comes back with `rule_id=None` — `ON DELETE SET NULL` cleared it — where
+    it used to come back naming a rule nobody could look up.
 
     Returns
     -------
@@ -1050,7 +1059,7 @@ def _transfer_link_from_row(
         transaction_id_a=first,
         transaction_id_b=second,
         source=row.source,  # type: ignore[arg-type]
-        rule_id=row.rule_id,
+        rule_id=rule_natural_key_by_id.get(row.rule_id) if row.rule_id is not None else None,
     )
 
 
@@ -1076,11 +1085,15 @@ def load_transfer_links(session: Session, user_id: uuid.UUID) -> list[TransferLi
     members_by_link: dict[uuid.UUID, list[adb.TransferLinkedTransaction]] = _group_by(
         member_rows, key=lambda row: row.link_id
     )
+    rule_natural_key_by_id = natural_keys_by_id(
+        session, adb.CategorizationRule, user_id, [row.rule_id for row in link_rows]
+    )
     return [
         _transfer_link_from_row(
             row,
             [member.transaction_id for member in members_by_link.get(row.id, [])],
             transaction_natural_key_by_id,
+            rule_natural_key_by_id,
         )
         for row in link_rows
     ]
@@ -1092,6 +1105,12 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
     `TransferLinkedTransaction.link_id` foreign-keys into `TransferLink.id`,
     so the parent rows need their own flush before the membership rows can
     be inserted.
+
+    `TransferLink.rule_id` is a foreign key into `categorization_rules`
+    too (DB-audit D7), so a link naming a rule can only be written once
+    that rule exists. Every caller already satisfies that: a rule-sourced
+    link is only ever minted by `ledger.transfers.apply_transfer_rules`,
+    from rules it has just read back out of that table.
 
     Parameters
     ----------
@@ -1109,7 +1128,7 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
             user_id=user_id,
             natural_key=link.link_id,
             source=link.source,
-            rule_id=link.rule_id,
+            rule_id=derive_id(user_id, _RULES_NAMESPACE, link.rule_id) if link.rule_id is not None else None,
         )
         for link in transfer_links
     )
@@ -1171,12 +1190,32 @@ def remove_rule_transfer_links(session: Session, user_id: uuid.UUID, rule_id: st
     happen to match the deleted rule. Each link's `TransferLinkedTransaction`
     membership rows go automatically via their `ON DELETE CASCADE` FK.
 
+    This still has to run *before* the rule row itself is deleted: the
+    column is a real foreign key with `ON DELETE SET NULL` now (DB-audit
+    D7), so dropping the rule first would clear every link's `rule_id` and
+    leave nothing here to match on.
+
+    Parameters
+    ----------
+    session
+        An open database session; the caller commits.
+    user_id
+        Whose links these are.
+    rule_id
+        The rule's own natural key, resolved to its row id the same way
+        every other reference in this module is.
+
     Returns
     -------
     int
         How many links were deleted (0 if the rule created none).
     """
-    deleted = session.query(adb.TransferLink).filter_by(user_id=user_id, source="rule", rule_id=rule_id).delete()
+    deleted = (
+        session
+        .query(adb.TransferLink)
+        .filter_by(user_id=user_id, source="rule", rule_id=derive_id(user_id, _RULES_NAMESPACE, rule_id))
+        .delete()
+    )
     session.flush()
     return deleted
 

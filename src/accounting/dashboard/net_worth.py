@@ -78,13 +78,13 @@ def net_worth_summary(
     Virtual counterparty accounts (`income_source`/`expense_payee`,
     including the two uncategorized placeholders) are excluded entirely —
     their "balance" is just how much has passed through categorization,
-    never money that is anywhere. An `external_investment` account whose
-    `external_ref` is `"trades"` never gets its balance from `postings` at
-    all; it comes from `external_investment_value`, sourced by the caller
-    from `trades.dashboard.overview_cards` (see `api.py`) since this module
-    has no way to compute it and no business trying to — denominated in
-    the account's own `currency`, converted like any other account. An
-    `external_investment` account with no `external_ref` is a
+    never money that is anywhere. An account carrying a
+    `broker_connection_id` never gets its balance from `postings` at all;
+    it comes from `external_investment_value`, sourced by the caller from
+    `trades.dashboard.overview_cards` (see `api.py`) since this module has
+    no way to compute it and no business trying to — denominated in the
+    account's own `currency`, converted like any other account. An
+    `external_investment` account with no broker connection is a
     manually-tracked one instead, and is valued the same way as any other
     account — from its postings plus its opening balance.
 
@@ -124,11 +124,15 @@ def net_worth_summary(
     def is_trades_linked(account: Account) -> bool:
         """Whether this account's value is pulled live from the tracked `trades` portfolio.
 
+        One column, not a string match over two: the `kind` half is
+        redundant now that `accounts` carries a `CHECK` making a broker
+        link possible only on an `external_investment` row.
+
         Returns
         -------
         bool
         """
-        return account.kind == "external_investment" and account.external_ref == "trades"
+        return account.broker_connection_id is not None
 
     def base_balance(account: Account) -> float:
         """Return this account's balance in its own native currency, before display-currency conversion.

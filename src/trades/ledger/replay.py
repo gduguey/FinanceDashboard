@@ -27,6 +27,7 @@ from trades.ledger.lots import (
     consume_fifo,
     lots_to_frame,
 )
+from trades.ledger.signs import cash_effect, signed_cash_effect
 from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
@@ -103,10 +104,9 @@ def replay_ledger(
     ReplayResult
         The open lots, closed lots, and cash balance after every event.
 
-    Raises
-    ------
-    ValueError
-        If the ledger contains an event type this replay doesn't handle.
+    An event type `ledger.signs` knows no direction for raises
+    `ValueError` out of `cash_effect`, which is now the single place an
+    unhandled type is caught rather than a fall-through branch here.
     """
     rows = collect_if_lazy(ledger)
     open_lots_by_symbol: dict[str, list[Lot]] = {}
@@ -119,19 +119,19 @@ def replay_ledger(
         symbol: str = row["symbol"]
         amount: float = row["amount"]
 
-        if event_type == "DEPOSIT":
-            cash_balance += amount
-        elif event_type == "DIVIDEND":
-            cash_balance += amount
+        # Direction is decided once, in `ledger.signs`, for every event type
+        # at once — including the ones whose only effect is on cash. What is
+        # left below is per-type *structure* (which events open a lot, close
+        # one, or accrue a dividend), never a sign.
+        cash_balance += cash_effect(event_type, amount)
+
+        if event_type == "DIVIDEND":
             accrual_amount = amount
             if net_dividends:
                 wh = withholding_by_symbol_date.get((symbol, row["event_datetime"].date()), 0.0)
                 accrual_amount = max(0.0, amount - wh)
             open_lots_by_symbol[symbol] = accrue_dividend(open_lots_by_symbol.get(symbol, []), accrual_amount)
-        elif event_type in {"WITHDRAWAL", "WITHHOLDING", "FEE"}:
-            cash_balance -= amount
         elif event_type == "BUY":
-            cash_balance -= amount
             open_lots_by_symbol.setdefault(symbol, []).append(
                 Lot(
                     lot_id=row["event_id"],
@@ -142,7 +142,6 @@ def replay_ledger(
                 )
             )
         elif event_type == "SELL":
-            cash_balance += amount
             remaining, newly_closed = consume_fifo(
                 open_lots_by_symbol.get(symbol, []),
                 shares_to_consume=row["shares"],
@@ -156,9 +155,6 @@ def replay_ledger(
         elif event_type == "SPLIT":
             ratio = float(row["meta"]["ratio"])
             open_lots_by_symbol[symbol] = apply_split(open_lots_by_symbol.get(symbol, []), symbol, ratio)
-        else:
-            message = f"Unhandled ledger event_type: {event_type!r}"
-            raise ValueError(message)
 
     all_open_lots = [lot for lots in open_lots_by_symbol.values() for lot in lots]
     return ReplayResult(
@@ -177,6 +173,11 @@ def external_cashflows(ledger: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl
     excluded. This is the cashflow set XIRR, the counterfactual engines,
     and NAV unit minting/burning all read from.
 
+    The sign is the *negation* of the cash effect (`ledger.signs`), stated
+    as a negation rather than re-derived from `event_type`: money-weighted
+    return is computed from the investor's side of the boundary, where
+    paying money in is an outflow.
+
     Parameters
     ----------
     ledger
@@ -189,8 +190,7 @@ def external_cashflows(ledger: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl
         `WITHDRAWAL` positive. Same type as `ledger`.
     """
     return ledger.filter(pl.col("event_type").is_in(["DEPOSIT", "WITHDRAWAL"])).select(
-        "event_datetime",
-        amount=pl.when(pl.col("event_type") == "DEPOSIT").then(-pl.col("amount")).otherwise(pl.col("amount")),
+        "event_datetime", amount=-signed_cash_effect()
     )
 
 

@@ -9,7 +9,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.db.core import SCHEMA
+from accounting.db.core import SCHEMA, child_of_category_columns
 from accounting.models import RuleEffect
 from accounting.precedence import OverlayStage
 from db.base import Base, Timestamped, check_in_sql
@@ -80,6 +80,7 @@ class CategorizationRule(Base, Timestamped):
         CheckConstraint(check_in_sql("effect", get_args(RuleEffect)), name="effect"),
         CheckConstraint(check_in_sql("stage", sorted(set(_STAGE_BY_EFFECT.values()))), name="stage"),
         CheckConstraint(_EFFECT_COLUMNS_SQL, name="effect_columns"),
+        *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_categorization_rules_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -108,9 +109,7 @@ class CategorizationRule(Base, Timestamped):
     category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
-    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     priority: Mapped[int] = mapped_column(default=0)
     description: Mapped[str] = mapped_column(default="")
     active: Mapped[bool] = mapped_column(default=True)
@@ -136,20 +135,21 @@ class CategorizationRuleExclusion(Base, Timestamped):
     foreign key into `transactions`, not a JSON array of ids) for the same
     reason: `transaction_id` values are deterministic (`db.base.derive_id`),
     so a lasting reference into `transactions` survives a ledger rebuild.
+
+    A pure association table, so `(user_id, rule_id, transaction_id)` is
+    its primary key — see `core.PostingTag` on why the surrogate `id` it
+    used to carry alongside a `UNIQUE` over the same columns was dead
+    weight (DB-audit D9).
     """
 
     __tablename__ = "categorization_rule_exclusions"
-    __table_args__ = (
-        UniqueConstraint(
-            "user_id", "rule_id", "transaction_id", name="uq_categorization_rule_exclusions_user_rule_txn"
-        ),
-        {"schema": SCHEMA},
-    )
+    __table_args__ = {"schema": SCHEMA}
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     rule_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categorization_rules.id", ondelete="CASCADE")
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categorization_rules.id", ondelete="CASCADE"), primary_key=True
     )
     # CASCADE here is safe (unlike TransferLinkedTransaction/PostingMerge's
     # kept_transaction_id): this row is a single, standalone exclusion, not
@@ -157,5 +157,5 @@ class CategorizationRuleExclusion(Base, Timestamped):
     # transaction is pruned by a ledger rebuild (see
     # `importers.ingest._write_ledger`).
     transaction_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE"), primary_key=True
     )

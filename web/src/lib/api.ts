@@ -2,6 +2,7 @@ import type {
   AllocationRow,
   BenchmarkSetting,
   BenchmarkSettingUpdate,
+  BrokerConnection,
   CashHistoryPoint,
   CashSitting,
   DataQualityRow,
@@ -119,6 +120,7 @@ export const api = {
       body: JSON.stringify(settings),
     }),
   taxReport: (asOf?: string) => request<TaxReport>(asOf ? `/api/tax/report?as_of=${asOf}` : '/api/tax/report'),
+  brokerConnections: () => request<BrokerConnection[]>('/api/broker-connections'),
   ibkrSettings: () => request<IbkrSettings>('/api/settings/ibkr'),
   setIbkrSettings: (update: IbkrSettingsUpdate) =>
     request<IbkrSettings>('/api/settings/ibkr', {

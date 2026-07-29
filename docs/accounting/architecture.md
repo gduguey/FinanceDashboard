@@ -257,13 +257,21 @@ The SoFi savings export shows money leaving to a brokerage
 twice, that posting's counterparty can be a placeholder account
 (`kind="external_investment"`) whose balance is pulled live from `trades`
 instead of being computed by replaying postings — but only when the
-account's own `external_ref` field is set to `"trades"`. This is a choice
-made once, when the account is created (or edited): "pull from
-Investments" sets `external_ref="trades"`; "set manually" leaves it `None`,
-and `dashboard.net_worth.base_balance` then values that account exactly
-like any other — from its own postings and opening balance. A manually-
-tracked `external_investment` account (a friend-managed fund, a brokerage
-this app doesn't sync with) never reaches into `trades` at all.
+account's own `broker_connection_id` names one of the user's
+`trades.broker_connections` rows. This is a choice made once, when the
+account is created (or edited): "pull from Investments" sets it to a real
+connection id; "set manually" leaves it `None`, and
+`dashboard.net_worth.base_balance` then values that account exactly like
+any other — from its own postings and opening balance. A manually-tracked
+`external_investment` account (a friend-managed fund, a brokerage this app
+doesn't sync with) never reaches into `trades` at all.
+
+The column is a real foreign key into `trades.broker_connections`, not the
+bare string `external_ref = "trades"` it replaces (DB-audit D7 / move #1),
+so the frontend offers only connections that actually exist
+(`GET /api/broker-connections`) and an account can never point at one that
+doesn't. A `CHECK` pins the link to the `external_investment` kind, which
+is why `net_worth.is_trades_linked` tests one column rather than two.
 
 When it does pull, `api.routers.dashboard._external_investment_values_usd`
 reads the value live from the *running* `trades.api` app's own

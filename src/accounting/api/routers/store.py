@@ -49,6 +49,7 @@ from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import (
     SUPPORTED_CURRENCIES,
     Account,
+    AccountKind,
     Budget,
     Category,
     CategoryPattern,
@@ -60,6 +61,7 @@ from accounting.models import (
     TransferRule,
 )
 from accounting.repositories.accounts import (
+    broker_connection_exists,
     insert_manual_transfers,
     remove_account,
     remove_opening_balance,
@@ -924,10 +926,16 @@ def delete_transfer_rule_route(
         404 if no rule with `rule_id` exists.
     """
     raw_ledger = load_ledger(session, user_id)
+    # Links first, rule second. `transfer_links.rule_id` is a real foreign
+    # key with `ON DELETE SET NULL` now (DB-audit D7): deleting the rule
+    # first would clear the column this sweep matches on and strand every
+    # link the rule created. A rule that doesn't exist has no links either
+    # — that is what the foreign key guarantees — so this is a no-op on the
+    # 404 path below.
+    remove_rule_transfer_links(session, user_id, rule_id)
     deleted = delete_transfer_rule(session, user_id, rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
-    remove_rule_transfer_links(session, user_id, rule_id)
     session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
     return TransferRuleIdResponse(rule_id=rule_id)
@@ -1285,6 +1293,46 @@ def delete_simulator_scenario_route(
     return SimulatorScenarioIdResponse(scenario_id=scenario_id)
 
 
+def _check_broker_link(
+    session: Session, user_id: uuid.UUID, kind: AccountKind, broker_connection_id: uuid.UUID | None
+) -> None:
+    """Reject a broker link the database itself would reject, with a status code that says which way it is wrong.
+
+    Both rules are enforced structurally — a foreign key into
+    `trades.broker_connections` and a `CHECK` pinning the link to the
+    `external_investment` kind (see `db.core.Account`). Both are also
+    checked here, because a foreign-key or check violation reaches a
+    client as a 500, and neither of these is a server error: one is a
+    reference to something that isn't there (404) and the other is a
+    malformed request (400).
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose account this is.
+    kind
+        The account kind being created or updated to.
+    broker_connection_id
+        The connection being linked, or `None` for a locally-valued account.
+
+    Raises
+    ------
+    HTTPException
+        404 if the connection doesn't exist; 400 if `kind` cannot carry one.
+    """
+    if broker_connection_id is None:
+        return
+    if kind != "external_investment":
+        raise HTTPException(
+            status_code=400,
+            detail="Only an external_investment account can pull its value from a broker connection",
+        )
+    if not broker_connection_exists(session, user_id, broker_connection_id):
+        raise HTTPException(status_code=404, detail=f"Broker connection {broker_connection_id} does not exist")
+
+
 @router.post("/accounts")
 def post_account(
     account: AccountCreate,
@@ -1301,11 +1349,14 @@ def post_account(
     Raises
     ------
     HTTPException
-        404 if `parent_account_id` is set but names an account that doesn't exist.
+        404 if `parent_account_id` is set but names an account that doesn't
+        exist, or if `broker_connection_id` names a connection that doesn't;
+        400 if a broker connection is named on a non-investment account.
     """
     store = load_store(session, user_id)
     if account.parent_account_id is not None and account.parent_account_id not in store.accounts:
         raise HTTPException(status_code=404, detail=f"Parent account {account.parent_account_id!r} does not exist")
+    _check_broker_link(session, user_id, account.kind, account.broker_connection_id)
     new_account = Account(
         account_id=uuid.uuid4().hex,
         name=account.name,
@@ -1314,7 +1365,7 @@ def post_account(
         currency=account.currency,
         last_four=account.last_four,
         parent_account_id=account.parent_account_id,
-        external_ref=account.external_ref,
+        broker_connection_id=account.broker_connection_id,
         meta=account.meta,
     )
     replace_accounts(session, user_id, [new_account], prune=False)
@@ -1339,8 +1390,10 @@ def put_account(
     Raises
     ------
     HTTPException
-        404 if the account doesn't exist; 400 if institution/kind/currency
-        changed on an account that already has postings.
+        404 if the account doesn't exist or `broker_connection_id` names a
+        connection that doesn't; 400 if institution/kind/currency changed on
+        an account that already has postings, or a broker connection is
+        named on a non-investment account.
     """
     store = load_store(session, user_id)
     existing = store.accounts.get(account_id)
@@ -1358,6 +1411,7 @@ def put_account(
             detail="This account already has transactions — only its display name and meta can be edited",
         )
 
+    _check_broker_link(session, user_id, update.kind, update.broker_connection_id)
     updated = existing.model_copy(
         update={
             "name": update.name,
@@ -1365,7 +1419,7 @@ def put_account(
             "kind": update.kind,
             "currency": update.currency,
             "last_four": update.last_four,
-            "external_ref": update.external_ref,
+            "broker_connection_id": update.broker_connection_id,
             "meta": update.meta,
         }
     )

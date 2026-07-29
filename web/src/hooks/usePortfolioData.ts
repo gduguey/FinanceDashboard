@@ -30,6 +30,7 @@ const keys = {
   benchmarkSetting: ['portfolio', 'settings', 'benchmark'],
   taxSettings: ['portfolio', 'settings', 'tax'],
   taxReport: ['portfolio', 'tax-report'],
+  brokerConnections: ['portfolio', 'broker-connections'],
   ibkrSettings: ['portfolio', 'settings', 'ibkr'],
   ibkrVerify: ['portfolio', 'settings', 'ibkr', 'verify'],
   timezoneSetting: ['portfolio', 'settings', 'timezone'],
@@ -108,6 +109,13 @@ export function useEnsureSymbolPriced() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
   })
 }
+
+// The user's live broker connections. An accounting account's value can
+// only be pulled from one of these, because `accounts.broker_connection_id`
+// is a real foreign key into `trades.broker_connections` — a connection row
+// only exists once a sync has actually run, so "IBKR credentials are saved"
+// is not the same question and no longer the one the account form asks.
+export const useBrokerConnections = () => useQuery({ queryKey: keys.brokerConnections, queryFn: api.brokerConnections })
 
 export const useIbkrSettings = () => useQuery({ queryKey: keys.ibkrSettings, queryFn: api.ibkrSettings })
 

@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime
 
 import polars as pl
@@ -65,13 +66,16 @@ UNCATEGORIZED_EXPENSE = Account(
     institution="internal",
     currency="USD",
 )
+BROKER_CONNECTION_ID = uuid.UUID("6f1d0d1e-2c8b-4f5a-9d2c-1a3b5c7d9e11")
+"""A stand-in `trades.broker_connections.id` — this module never touches a database, so any fixed id will do."""
+
 EXTERNAL_INVESTMENT = Account(
     account_id="external:interactive-brokers",
     name="Interactive Brokers",
     kind="external_investment",
     institution="external",
     currency="USD",
-    external_ref="trades",
+    broker_connection_id=BROKER_CONNECTION_ID,
 )
 MANUAL_EXTERNAL_INVESTMENT = Account(
     account_id="external:friends-fund",

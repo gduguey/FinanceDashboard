@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Literal
 
@@ -241,6 +242,23 @@ class VerifyResult(BaseModel):
 
     ok: bool
     error: str | None
+
+
+class BrokerConnection(BaseModel):
+    """One of this user's live broker connections — what an accounting account may link its value to.
+
+    `connection_id` is the raw `trades.broker_connections.id`, not a
+    natural key, because it is what
+    `accounting.models.Account.broker_connection_id` foreign-keys to. This
+    endpoint exists so the frontend can offer only connections that
+    actually exist: the link is a real foreign key now (DB-audit move #1),
+    so "IBKR credentials are configured" is no longer close enough — the
+    connection row is only created by the first sync, and until then there
+    is nothing to point at.
+    """
+
+    connection_id: uuid.UUID
+    broker: str
 
 
 class AnnualTaxRow(BaseModel):

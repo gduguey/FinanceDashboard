@@ -883,7 +883,9 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if `parent_account_id` is set but names an account that doesn't exist.
+     *         404 if `parent_account_id` is set but names an account that doesn't
+     *         exist, or if `broker_connection_id` names a connection that doesn't;
+     *         400 if a broker connection is named on a non-investment account.
      */
     post: operations['post_account_api_accounting_accounts_post']
     delete?: never
@@ -912,8 +914,10 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if the account doesn't exist; 400 if institution/kind/currency
-     *         changed on an account that already has postings.
+     *         404 if the account doesn't exist or `broker_connection_id` names a
+     *         connection that doesn't; 400 if institution/kind/currency changed on
+     *         an account that already has postings, or a broker connection is
+     *         named on a non-investment account.
      */
     put: operations['put_account_api_accounting_accounts__account_id__put']
     post?: never
@@ -3458,6 +3462,32 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/broker-connections': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Broker Connections
+     * @description List this user's broker connections — the only things an account may pull its value from.
+     *
+     *     Returns
+     *     -------
+     *     list[BrokerConnection]
+     *         Ordered by broker then id, so the frontend's list is stable across
+     *         requests. Empty until a sync has actually created a connection.
+     */
+    get: operations['get_broker_connections_api_broker_connections_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/settings/ibkr': {
     parameters: {
       query?: never
@@ -3794,10 +3824,20 @@ export interface components {
      * @description One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
      *
      *     `parent_account_id` is only set for a `vault`, pointing at the savings
-     *     account it's a named sub-balance of. `external_ref` is only set for the
-     *     `external_investment` kind, naming where its value actually comes from
-     *     (currently always `"trades"`, meaning `trades.dashboard.overview_cards`)
-     *     since this account's balance is never derived from its own postings.
+     *     account it's a named sub-balance of. `broker_connection_id` is only set
+     *     for the `external_investment` kind, naming the *broker connection*
+     *     whose portfolio this account mirrors, since its balance is never
+     *     derived from its own postings.
+     *
+     *     That field replaces `external_ref`, a free-text column whose only ever
+     *     value was the literal `"trades"` and which `dashboard.net_worth`
+     *     string-matched on. It is the one id on this model that is a raw
+     *     `broker_connections.id` rather than a natural key, deliberately: it
+     *     points across the seam into the other ledger's schema, where this
+     *     package has no business resolving natural keys, and the database
+     *     enforces it as a real foreign key (see `db.core.Account`) so an account
+     *     can never name a connection that isn't there.
+     *
      *     `meta` holds facts about the account itself rather than any one
      *     posting — currently just `apy_pct`, the interest rate last seen on a
      *     statement, carried here because it describes the account's terms, not
@@ -3840,8 +3880,8 @@ export interface components {
       last_four?: string | null
       /** Parent Account Id */
       parent_account_id?: string | null
-      /** External Ref */
-      external_ref?: string | null
+      /** Broker Connection Id */
+      broker_connection_id?: string | null
       /** Meta */
       meta?: {
         [key: string]: string
@@ -3902,8 +3942,8 @@ export interface components {
       last_four?: string | null
       /** Parent Account Id */
       parent_account_id?: string | null
-      /** External Ref */
-      external_ref?: string | null
+      /** Broker Connection Id */
+      broker_connection_id?: string | null
       /** Meta */
       meta?: {
         [key: string]: string
@@ -3926,11 +3966,12 @@ export interface components {
      *     `put_account`, not here, since that check needs the ledger. `closed`
      *     isn't edited here — see `close_account`/`reopen_account`, which pair it
      *     with recording where a closed account's remaining balance went.
-     *     `external_ref` is never locked — it only ever changes which value an
-     *     `external_investment` account shows (see `dashboard.net_worth`), never
-     *     what it has already recorded, so it's free to toggle regardless of postings.
-     *     `last_four` is never locked either, for the same reason: it never
-     *     affects identity or any stored history.
+     *     `broker_connection_id` is never locked — it only ever changes which
+     *     value an `external_investment` account shows (see
+     *     `dashboard.net_worth`), never what it has already recorded, so it's
+     *     free to toggle regardless of postings. `last_four` is never locked
+     *     either, for the same reason: it never affects identity or any stored
+     *     history.
      */
     AccountUpdate: {
       /** Name */
@@ -3959,8 +4000,8 @@ export interface components {
       currency: 'USD' | 'EUR'
       /** Last Four */
       last_four?: string | null
-      /** External Ref */
-      external_ref?: string | null
+      /** Broker Connection Id */
+      broker_connection_id?: string | null
       /** Meta */
       meta?: {
         [key: string]: string
@@ -4177,6 +4218,28 @@ export interface components {
     Body_post_paystub_reconciliation_api_accounting_import_paystub_post: {
       /** File */
       file: string
+    }
+    /**
+     * BrokerConnection
+     * @description One of this user's live broker connections — what an accounting account may link its value to.
+     *
+     *     `connection_id` is the raw `trades.broker_connections.id`, not a
+     *     natural key, because it is what
+     *     `accounting.models.Account.broker_connection_id` foreign-keys to. This
+     *     endpoint exists so the frontend can offer only connections that
+     *     actually exist: the link is a real foreign key now (DB-audit move #1),
+     *     so "IBKR credentials are configured" is no longer close enough — the
+     *     connection row is only created by the first sync, and until then there
+     *     is nothing to point at.
+     */
+    BrokerConnection: {
+      /**
+       * Connection Id
+       * Format: uuid
+       */
+      connection_id: string
+      /** Broker */
+      broker: string
     }
     /**
      * Budget
@@ -11077,6 +11140,26 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_broker_connections_api_broker_connections_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BrokerConnection'][]
         }
       }
     }

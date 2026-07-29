@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from trades.ledger.signs import signed_share_effect
 from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
@@ -248,7 +249,7 @@ def _symbol_position_events(ledger: pl.DataFrame, symbol: str) -> list[tuple[dat
         .filter((pl.col("symbol") == symbol) & pl.col("event_type").is_in(["BUY", "SELL"]))
         .with_columns(
             event_date=pl.col("event_datetime").dt.date(),
-            delta=pl.when(pl.col("event_type") == "BUY").then(pl.col("shares")).otherwise(-pl.col("shares")),
+            delta=signed_share_effect(),
         )
         .sort("event_date")
     )

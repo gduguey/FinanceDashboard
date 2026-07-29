@@ -10,7 +10,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, tex
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.db.core import SCHEMA
+from accounting.db.core import SCHEMA, child_of_category_columns
 from accounting.models import CurrencyCode
 from db.base import MONEY, Base, Timestamped, check_in_sql
 
@@ -44,6 +44,8 @@ class Budget(Base, Timestamped):
     __tablename__ = "budgets"
     __table_args__ = (
         CheckConstraint(check_in_sql("currency", get_args(CurrencyCode)), name="currency"),
+        CheckConstraint("amount >= 0", name="amount_is_not_negative"),
+        *child_of_category_columns("category_id", "subcategory_id"),
         UniqueConstraint("user_id", "natural_key", name="uq_budgets_user_natural_key"),
         Index(
             "uq_budgets_user_month_category",
@@ -62,8 +64,7 @@ class Budget(Base, Timestamped):
     month: Mapped[str | None] = mapped_column(default=None)
     """`"YYYY-MM"` for one month's target; `NULL` for the general, every-month-alike one."""
     category_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"))
-    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
-    )
+    subcategory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), default=None)
     amount: Mapped[Decimal] = mapped_column(MONEY)
+    """A spending target, so never negative — a budget of "minus fifty dollars" is not a thing to plan for."""
     currency: Mapped[str] = mapped_column(default="USD")

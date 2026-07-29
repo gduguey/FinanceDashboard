@@ -100,7 +100,7 @@ export interface AccountCreate {
   currency: string
   last_four?: string | null
   parent_account_id?: string | null
-  external_ref?: string | null
+  broker_connection_id?: string | null
   meta: Record<string, string>
 }
 
@@ -110,7 +110,7 @@ export interface AccountUpdate {
   kind: string
   currency: string
   last_four?: string | null
-  external_ref?: string | null
+  broker_connection_id?: string | null
   meta: Record<string, string>
 }
 

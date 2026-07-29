@@ -43,6 +43,47 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+_BROKER_CONNECTIONS_TABLE = "trades.broker_connections"
+"""The other ledger's table, named here because `accounts.broker_connection_id` foreign-keys into it.
+
+The only place this package reads across the seam, and it reads exactly one
+bit: does this connection exist for this user. Written as raw SQL against
+the qualified table rather than by importing `trades.db`, so the Python-side
+dependency stays what the schema-side dependency already is — a name — and
+`accounting` still imports nothing from `trades`.
+"""
+
+
+def broker_connection_exists(session: Session, user_id: uuid.UUID, connection_id: uuid.UUID) -> bool:
+    """Whether `connection_id` names a broker connection this user actually has.
+
+    The foreign key is the guarantee; this is the *diagnostic*, and the
+    reason both exist. Without it a client naming a connection that isn't
+    there gets an `IntegrityError` surfaced as a 500; with it,
+    `POST`/`PUT /accounts` answers 404 and says which reference was bad.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose connections to look in — a connection belonging to someone
+        else is "does not exist" here, exactly as Row-Level Security
+        already makes it in the live app.
+    connection_id
+        The connection to look for.
+
+    Returns
+    -------
+    bool
+    """
+    found = session.execute(
+        text(f"SELECT 1 FROM {_BROKER_CONNECTIONS_TABLE} WHERE id = :id AND user_id = :user_id"),  # noqa: S608
+        {"id": str(connection_id), "user_id": str(user_id)},
+    ).first()
+    return found is not None
+
+
 def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
     """Derive this user's stable internal id for the account natural-keyed `account_id`.
 
@@ -70,7 +111,7 @@ def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUI
         parent_account_id=account_natural_key_by_id.get(row.parent_account_id)
         if row.parent_account_id is not None
         else None,
-        external_ref=row.external_ref,
+        broker_connection_id=row.broker_connection_id,
         meta=row.meta,
         closed=row.closed,
     )
@@ -95,7 +136,7 @@ def _account_row(user_id: uuid.UUID, account: Account) -> adb.Account:
         parent_account_id=_account_id(user_id, account.parent_account_id)
         if account.parent_account_id is not None
         else None,
-        external_ref=account.external_ref,
+        broker_connection_id=account.broker_connection_id,
         meta=account.meta,
         closed=account.closed,
     )
@@ -188,7 +229,7 @@ def update_account_fields(session: Session, user_id: uuid.UUID, account: Account
     row.institution = account.institution
     row.currency = account.currency
     row.last_four = account.last_four
-    row.external_ref = account.external_ref
+    row.broker_connection_id = account.broker_connection_id
     row.meta = account.meta
     row.closed = account.closed
     session.flush()

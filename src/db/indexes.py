@@ -139,6 +139,15 @@ def ensure_foreign_key_indexes(metadata: MetaData, *, schema: str | None = None)
         for column in table.columns:
             if not column.foreign_keys:
                 continue
+            if column.computed is not None:
+                # A stored generated column only ever exists here to pin the
+                # constant side of a composite foreign key (the `parent_depth`
+                # columns behind the two-level tree guard, see
+                # `accounting.db.core.Category`). Every row holds the same
+                # value, so an index led by it is pure write cost — the
+                # selectivity lives in the composite's other column, which
+                # gets its own index on the pass below.
+                continue
             wanted: tuple[str, ...]
             if column.name == OWNER_COLUMN:
                 # The tenant key itself. RLS filters on it, so it needs a

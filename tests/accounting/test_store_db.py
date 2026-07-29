@@ -699,6 +699,9 @@ def test_upsert_posting_merge_leaves_every_other_merge_alone(db_session: Session
 def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    replace_transfer_rules(
+        db_session, test_user_id, [TransferRule(rule_id="chase-card-payoff", description_contains="payoff")]
+    )
     link = TransferLink(
         link_id="transfer-link:t1:t2",
         transaction_id_a="t1",
@@ -712,6 +715,56 @@ def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID)
 
     assert reloaded.transfer_links == [link]
     assert reloaded.transfer_links[0].rule_id == "chase-card-payoff"
+
+
+def test_transfer_link_cannot_name_a_rule_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """DB-audit D7: `rule_id` was a bare string, so a link could reference a rule nobody could look up."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    with pytest.raises(IntegrityError):
+        insert_transfer_links(
+            db_session,
+            test_user_id,
+            [
+                TransferLink(
+                    link_id="transfer-link:t1:t2",
+                    transaction_id_a="t1",
+                    transaction_id_b="t2",
+                    source="rule",
+                    rule_id="never-created",
+                )
+            ],
+        )
+
+
+def test_deleting_a_rule_clears_its_links_reference_rather_than_stranding_it(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`ON DELETE SET NULL`: the link survives its rule, the dangling reference does not."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="payoff")])
+    insert_transfer_links(
+        db_session,
+        test_user_id,
+        [
+            TransferLink(
+                link_id="transfer-link:t1:t2",
+                transaction_id_a="t1",
+                transaction_id_b="t2",
+                source="rule",
+                rule_id="r1",
+            )
+        ],
+    )
+    db_session.commit()
+
+    delete_transfer_rule(db_session, test_user_id, "r1")
+    db_session.commit()
+
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert [link.rule_id for link in reloaded.transfer_links] == [None]
+    assert [link.source for link in reloaded.transfer_links] == ["rule"]
 
 
 def test_transfer_link_naming_an_already_linked_transaction_raises(
