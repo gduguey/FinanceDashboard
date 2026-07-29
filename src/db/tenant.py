@@ -5,8 +5,8 @@ Row-Level Security is this app's isolation guarantee: `app_runtime` can
 returns other tenants' rows unless the database itself refuses. That only
 holds if *every* tenant table has a policy, and the old arrangement could
 not promise it — each migration hand-copied a `_USER_SCOPED_TABLES` list,
-and three tables (`transfer_links`, `transfer_linked_transactions`,
-`transfer_rule_exclusions`) were simply never added to one. Nothing failed;
+and three tables (`transfer_links`, `transfer_linked_transactions`, and
+what is now `categorization_rule_exclusions`) were simply never added to one. Nothing failed;
 the tables just quietly had no policy. That is VISION-AUDIT T3.
 
 The fix is to stop maintaining a list. `tenant_tables` *computes* the set

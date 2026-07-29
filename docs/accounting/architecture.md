@@ -147,10 +147,15 @@ src/accounting/
                          and writes: accounts, taxonomy, planning, interpretation
   db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
                          core.py (accounts/categories/tags/postings/transactions),
-                         budgets.py, goals.py, automation.py (recurring additions,
-                         withdrawal priorities), corrections.py (manual overrides,
-                         splits, merges, dismissed suggestions), simulator.py, llm.py
-                         (per-provider usage tracking)
+                         budgets.py, goals.py, automation.py (categorization_rules —
+                         one description matcher, typed transfer/categorize effect),
+                         corrections.py (manual overrides, splits, merges, and
+                         suggestions — pending + dismissed in one table), simulator.py,
+                         llm.py (per-provider usage tracking)
+
+  precedence.py         the order the interpretation overlays are applied in, declared
+                         as data — each overlay table stores its own stage, the resolver
+                         walks the declaration instead of a hard-coded call sequence
 
   ledger/               pure domain logic, no I/O
     replay.py             postings -> account balances as of any date

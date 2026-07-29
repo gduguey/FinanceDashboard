@@ -175,12 +175,13 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
 
     `transactions`/`postings` are upserted and pruned rather than deleted
     wholesale and reinserted — `manual_overrides`, `posting_splits`,
-    `posting_merges`, `transfer_links`, `transfer_rule_exclusions`, and
+    `posting_merges`, `transfer_links`, `categorization_rule_exclusions`, and
     `goal_contributions.source_posting_id` all foreign-key into them (see
     `db.base.upsert_and_prune` for the same reasoning applied to accounts,
     categories, and tags). Pruning a
     transaction still referenced by one of these needs `transfer_links`
-    handled explicitly (see below); `posting_merges`/`transfer_rule_exclusions`
+    handled explicitly (see below);
+    `posting_merges`/`categorization_rule_exclusions`
     lean on `ondelete="CASCADE"` instead, since each references its
     transaction directly rather than through a separate join table.
     `posting_tags` has nothing foreign-keying into it, so it's safe to
@@ -250,7 +251,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
         # child row alone would leave the link's other side referencing a
         # link with only one member. Deleting the whole link here instead
         # (its children cascade off `link_id`) removes both sides together.
-        # `PostingMerge`/`PostingMergeDuplicate`/`TransferRuleExclusion`
+        # `PostingMerge`/`PostingMergeDuplicate`/`CategorizationRuleExclusion`
         # don't need the same handling: each references its transaction
         # directly, so `ondelete="CASCADE"` on those columns is enough.
         stale_link_ids = {

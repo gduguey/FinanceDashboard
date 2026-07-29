@@ -8,7 +8,7 @@ transitively) before doing so, or these tables silently won't exist yet.
 
 from __future__ import annotations
 
-from accounting.db.automation import CategoryPattern, TransferRule, TransferRuleExclusion
+from accounting.db.automation import CategorizationRule, CategorizationRuleExclusion
 from accounting.db.budgets import Budget
 from accounting.db.core import (
     Account,
@@ -22,14 +22,13 @@ from accounting.db.core import (
     Transaction,
 )
 from accounting.db.corrections import (
-    DismissedSuggestion,
     PostingMerge,
     PostingMergeDuplicate,
     PostingOverride,
     PostingOverrideTag,
-    PostingPendingSuggestion,
     PostingSplit,
     PostingSplitLeg,
+    Suggestion,
 )
 from accounting.db.goals import Goal, GoalAutomation, GoalContribution
 from accounting.db.llm import LLMUsage
@@ -41,9 +40,9 @@ from db.indexes import ensure_foreign_key_indexes
 __all__ = [
     "Account",
     "Budget",
+    "CategorizationRule",
+    "CategorizationRuleExclusion",
     "Category",
-    "CategoryPattern",
-    "DismissedSuggestion",
     "Goal",
     "GoalAutomation",
     "GoalContribution",
@@ -56,17 +55,15 @@ __all__ = [
     "PostingMergeDuplicate",
     "PostingOverride",
     "PostingOverrideTag",
-    "PostingPendingSuggestion",
     "PostingSplit",
     "PostingSplitLeg",
     "PostingTag",
     "SimulatorScenario",
+    "Suggestion",
     "Tag",
     "Transaction",
     "TransferLink",
     "TransferLinkedTransaction",
-    "TransferRule",
-    "TransferRuleExclusion",
 ]
 
 

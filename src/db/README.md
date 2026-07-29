@@ -91,18 +91,17 @@ that get fully rewritten on every save, or re-imported from an external
 source (so "insert, or recognize this already exists" has to work without
 a lookup). This is the majority of user-owned tables:
 `accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
-`manual_transfers`, `other_assets`, `posting_merges`,
-`dismissed_suggestions`, `goals`, `goal_contributions`,
-`goal_automations`, `transfer_rules`, `category_patterns`, `budgets`,
-`simulator_scenarios`; `trades.broker_connections`, `ledger_events`.
+`manual_transfers`, `other_assets`, `posting_merges`, `suggestions`,
+`goals`, `goal_contributions`, `goal_automations`,
+`categorization_rules`, `budgets`, `simulator_scenarios`;
+`trades.broker_connections`, `ledger_events`.
 
 **2. A plain random `uuid.uuid4()` surrogate `id`** — for tables that are
 never bulk-rewritten and have no re-import/dedup concept, just an ordinary
 "create one row, maybe delete it later" lifecycle. Uniqueness (where it
 matters) comes from a separate `UniqueConstraint`, not the id itself:
 `public.users`; `accounting.posting_tags`, `posting_splits`,
-`posting_split_legs`, `posting_merge_duplicates`, `posting_overrides`,
-`posting_pending_suggestions`.
+`posting_split_legs`, `posting_merge_duplicates`, `posting_overrides`.
 
 **3. No surrogate `id` at all — the real key(s) are the primary key,
 directly.** This is the right choice specifically when nothing else ever
@@ -152,12 +151,11 @@ names:
   want of a better home so far — `other_assets`, `simulator_scenarios`;
 - `accounting.repositories.planning` owns `budgets`, `goals`,
   `goal_contributions`, `goal_automations`;
-- `accounting.repositories.interpretation` owns `transfer_rules`,
-  `transfer_rule_exclusions`, `category_patterns`, `posting_splits`,
+- `accounting.repositories.interpretation` owns `categorization_rules`,
+  `categorization_rule_exclusions`, `posting_splits`,
   `posting_split_legs`, `posting_merges`, `posting_merge_duplicates`,
   `transfer_links`, `transfer_linked_transactions`, `posting_overrides`,
-  `posting_override_tags`, `posting_pending_suggestions`,
-  `dismissed_suggestions`.
+  `posting_override_tags`, `suggestions`.
 
 `accounting.store.load_store` still *reads* all four groups into one
 `AccountingStore` — the dashboard genuinely needs most of them at once —
@@ -170,8 +168,8 @@ real lost-update risk exists.
 
 That per-row column is the **only** optimistic-concurrency mechanism left
 in this repo: `db.base.check_and_bump_row_version`, against the `version`
-column on `accounting.goals`, `accounting.transfer_rules`, and
-`accounting.category_patterns`. A caller sends the version it last read as
+column on `accounting.goals` and `accounting.categorization_rules`
+(both effects alike). A caller sends the version it last read as
 `expected_version` in the request body; a mismatch raises
 `db.base.VersionConflictError`, which one global handler in
 `trades.api.api` turns into an HTTP 409. `expected_version=None` opts a
@@ -221,12 +219,13 @@ Single-entity endpoints (`POST /budgets`, `POST /transfer-rules`,
 `upsert_*`/`insert_*`/`remove_*` functions instead, which touch one row's
 worth of state and nothing else.
 
-Two tables in the interpretation set are neither: `transfer_rules` and
-`category_patterns` carry a `version` column that per-row optimistic
-concurrency depends on, so they are upserted by raw
-`INSERT ... ON CONFLICT (id) DO UPDATE` whose `SET` clause omits `version`,
-then pruned — see `repositories.interpretation.replace_transfer_rules`.
-`dismissed_suggestions` is only ever `session.merge()`d one row at a time.
+One table in the interpretation set is neither: `categorization_rules`
+carries a `version` column that per-row optimistic concurrency depends on,
+so its rows are upserted by raw `INSERT ... ON CONFLICT (id) DO UPDATE`
+whose `SET` clause omits `version`, then pruned — scoped to one `effect`,
+so rewriting the transfer rules cannot delete a category pattern sharing
+the table (see `repositories.interpretation.replace_transfer_rules`). A
+dismissed `suggestions` row is only ever `session.merge()`d one at a time.
 
 **Upsert-and-prune** (`db.base.upsert_and_prune`): for each row
 currently held in memory, `session.merge()` it — update it in place if a

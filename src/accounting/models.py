@@ -198,6 +198,17 @@ class Tag(BaseModel):
     name: str = Field(min_length=1)
 
 
+RuleEffect = Literal["transfer", "categorize"]
+"""What a `categorization_rules` row does with the postings its description match selects.
+
+`"transfer"` repoints the posting's counterparty (`TransferRule` below);
+`"categorize"` proposes a category (`CategoryPattern` below). The two share
+one table because they are the same matcher, and stay two pydantic models
+because they are two API resources — see
+`accounting.db.automation.CategorizationRule`.
+"""
+
+
 class TransferRule(BaseModel):
     """A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
 
@@ -644,6 +655,45 @@ own color and the "temporary" filter can distinguish them, per the user's
 explicit request that the two never share a visual or a stored flag.
 """
 
+DismissedSuggestionKind = Literal["transfer", "duplicate"]
+"""What a *detected* suggestion is about — a transfer pair, or a duplicate group.
+
+Only these two are detected (and therefore dismissable); a `"category"`
+suggestion is staged on a posting instead and resolved by accepting or
+rejecting it, never dismissed. See `SuggestionKind`.
+"""
+
+SuggestionStatus = Literal["pending", "dismissed"]
+"""Where one row of `accounting.suggestions` sits in its lifecycle.
+
+`"pending"` is a staged category suggestion awaiting the user's accept or
+reject — resolving it *deletes* the row, which is why there is no
+`"accepted"`/`"rejected"` value here (see `ledger.pending`). `"dismissed"`
+is a detected transfer/duplicate suggestion the user archived so it stops
+being proposed; that one is kept, since restoring it has to be lossless.
+"""
+
+SuggestionKind = Literal["category", "transfer", "duplicate"]
+"""What one row of `accounting.suggestions` is a suggestion *about*.
+
+`"category"` belongs to the pending lifecycle (a category staged on one
+posting); `"transfer"`/`"duplicate"` belong to the dismissed one
+(`DismissedSuggestionKind`, a detector's proposal about a pair or a group).
+The table's own `CheckConstraint` is what ties each kind to the status it
+can appear with, rather than leaving `kind` the unconstrained free text the
+old `dismissed_suggestions.kind` column was.
+"""
+
+SuggestionSource = Literal["ai", "pattern", "detector"]
+"""What produced one row of `accounting.suggestions`.
+
+`"ai"`/`"pattern"` are the two `PendingSuggestionSource` values, kept
+distinct for the reason that type documents. `"detector"` is the
+transfer/duplicate candidate search (see `api.get_transfer_suggestions`/
+`get_duplicate_suggestions`), which had no stored source at all while
+dismissals lived in their own table.
+"""
+
 
 class ManualOverride(BaseModel):
     """A user's direct edit to one posting, always winning over whatever a rule would have produced.
@@ -750,7 +800,7 @@ class DismissedSuggestion(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     suggestion_id: str = Field(min_length=1)
-    kind: Literal["transfer", "duplicate"]
+    kind: DismissedSuggestionKind
     description: str
     dismissed_at: datetime
 

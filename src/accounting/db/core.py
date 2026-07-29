@@ -21,9 +21,33 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.models import AccountKind, CategoryClassification, CurrencyCode
+from accounting.precedence import OverlayStage
 from db.base import MONEY, Base, Timestamped, check_in_sql
 
 SCHEMA = "accounting"
+
+
+def stage_constraint(stage: OverlayStage) -> CheckConstraint:
+    """Pin an overlay table's `stage` column to the single stage that table is applied at.
+
+    Every overlay table stores which stage of the resolution pipeline its
+    rows are applied at, so the resolver can read its running order out of
+    the schema (see `accounting.precedence`). For all but
+    `categorization_rules` — whose stage follows its `effect` — that value
+    is the same on every row of the table, and this is what stops it from
+    silently becoming something else: a row claiming a stage its own table
+    is never applied at would be an overlay that quietly never runs.
+
+    Parameters
+    ----------
+    stage
+        The one stage rows of this table may declare.
+
+    Returns
+    -------
+    sqlalchemy.CheckConstraint
+    """
+    return CheckConstraint(check_in_sql("stage", [stage]), name="stage")
 
 
 class Account(Base, Timestamped):
@@ -192,6 +216,7 @@ class ManualTransfer(Base, Timestamped):
 
     __tablename__ = "manual_transfers"
     __table_args__ = (
+        stage_constraint("manual_transfer"),
         UniqueConstraint("user_id", "natural_key", name="uq_manual_transfers_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -199,6 +224,14 @@ class ManualTransfer(Base, Timestamped):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
+    stage: Mapped[str] = mapped_column(default="manual_transfer")
+    """Which resolution stage these postings enter the frame at — see `accounting.precedence`.
+
+    Alone among the stage-carrying tables this one is generative rather
+    than an overlay: its rows are turned into postings and concatenated in,
+    not layered over postings that already exist. It still declares a
+    stage, because the resolver walks one declared order and this is one of
+    the steps in it."""
     date: Mapped[datetime]
     from_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
     to_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))

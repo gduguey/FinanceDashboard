@@ -28,6 +28,7 @@ from accounting.ledger.manual_transfers import postings_for_manual_transfers
 from accounting.ledger.transfers import apply_transfer_links
 from accounting.market_data import exchange_rates
 from accounting.models import CurrencyCode
+from accounting.precedence import OVERLAY_PRECEDENCE
 from accounting.repositories.interpretation import (
     load_overrides,
 )
@@ -38,6 +39,9 @@ from accounting.store import (
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Callable
+
+    from accounting.precedence import OverlayStage
 
 
 class _State:
@@ -51,6 +55,72 @@ class _State:
 state = _State()
 
 
+def _overlay_appliers(
+    session: Session,
+    user_id: uuid.UUID,
+    store: AccountingStore,
+    *,
+    since: date | None,
+    until: date | None,
+) -> dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]]:
+    """Bind one applier per declared overlay stage, so the caller only has to walk the declared order.
+
+    Each entry is the whole of what that stage does to the frame, already
+    closed over the rows it needs. The mapping is keyed by
+    `accounting.precedence.OverlayStage` and asserted complete below, so a
+    stage added to the vocabulary without an applier fails at import-time
+    review rather than by silently never running — which is the property
+    that makes precedence data rather than the line order of a function
+    body.
+
+    Parameters
+    ----------
+    session, user_id
+        See `_resolved_postings_and_store`.
+    store
+        The already-loaded store the overlay rows come from.
+    since, until
+        The caller's date window, applied to the manual-transfer stage's
+        generated postings — every other stage is per-posting and needs no
+        window of its own (see `_resolved_postings_and_store`).
+
+    Returns
+    -------
+    dict[accounting.precedence.OverlayStage, collections.abc.Callable]
+        One applier per stage, each mapping a frame to the frame that stage produces.
+
+    Raises
+    ------
+    RuntimeError
+        If a declared stage has no applier registered here — an overlay
+        that would otherwise silently never be applied.
+    """
+
+    def apply_manual_transfers(postings: pl.DataFrame) -> pl.DataFrame:
+        if not store.manual_transfers:
+            return postings
+        manual = postings_for_manual_transfers(store.manual_transfers, store.accounts)
+        if since is not None:
+            manual = manual.filter(pl.col("posted_at").dt.date() >= since)
+        if until is not None:
+            manual = manual.filter(pl.col("posted_at").dt.date() <= until)
+        return pl.concat([postings, manual], how="vertical")
+
+    appliers: dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]] = {
+        "counterparty": lambda postings: apply_rules(postings, store.rules, store.accounts),
+        "split": lambda postings: apply_posting_splits(postings, store.posting_splits),
+        "override": lambda postings: apply_manual_overrides(postings, load_overrides(session, user_id)),
+        "merge": lambda postings: apply_posting_merges(postings, store.posting_merges),
+        "manual_transfer": apply_manual_transfers,
+        "link": lambda postings: apply_transfer_links(postings, store.transfer_links),
+    }
+    missing = [stage for stage in OVERLAY_PRECEDENCE if stage not in appliers]
+    if missing:
+        message = f"No applier registered for declared overlay stage(s): {', '.join(missing)}"
+        raise RuntimeError(message)
+    return appliers
+
+
 def _resolved_postings_and_store(
     session: Session,
     user_id: uuid.UUID,
@@ -58,7 +128,13 @@ def _resolved_postings_and_store(
     since: date | None = None,
     until: date | None = None,
 ) -> tuple[Any, Any]:
-    """Load the raw ledger and resolve it against the current rules and manual overrides.
+    """Load the raw ledger and replay every interpretation overlay over it, in declared precedence order.
+
+    Which stages exist and what order they run in is
+    `accounting.precedence.OVERLAY_PRECEDENCE` — read that module for the
+    rationale behind the order. This function walks it; it does not define
+    it, and adding a stage does not mean finding the right line here to
+    insert a call at.
 
     A rule only ever repoints a posting at an account that already exists
     in the store, never creates one — so unlike importing a statement
@@ -90,9 +166,9 @@ def _resolved_postings_and_store(
         (loaded in full, independently of `since`/`until`), never by
         checking whether the transaction it was merged into is also
         present in this same date-limited frame. `store.manual_transfers`
-        (added below, also independent of `load_ledger`'s own filter) is
-        the one thing still filtered again afterward, so a transfer dated
-        outside the window doesn't leak in.
+        (added by the `manual_transfer` stage, also independent of
+        `load_ledger`'s own filter) is the one thing still filtered again
+        afterward, so a transfer dated outside the window doesn't leak in.
     until
         Last day to include, inclusive. Same reasoning as `since`.
 
@@ -103,24 +179,10 @@ def _resolved_postings_and_store(
     """
     raw = load_ledger(session, user_id, since=since, until=until)
     store = load_store(session, user_id)
-    resolved = apply_rules(raw, store.rules, store.accounts)
-    resolved = apply_posting_splits(resolved, store.posting_splits)
-    overrides = load_overrides(session, user_id)
-    resolved = apply_manual_overrides(resolved, overrides)
-    resolved = apply_posting_merges(resolved, store.posting_merges)
-    if store.manual_transfers:
-        manual = postings_for_manual_transfers(store.manual_transfers, store.accounts)
-        if since is not None:
-            manual = manual.filter(pl.col("posted_at").dt.date() >= since)
-        if until is not None:
-            manual = manual.filter(pl.col("posted_at").dt.date() <= until)
-        resolved = pl.concat([resolved, manual], how="vertical")
-    # Deliberately the *last* step: `apply_posting_splits`/`apply_manual_overrides`
-    # above rebuild the frame through `LEDGER_FRAME_SCHEMA`, which would
-    # silently drop `is_linked_transfer`/`linked_transaction_id`/
-    # `transfer_link_source` if they were added any earlier (see
-    # `ledger.transfers.apply_transfer_links`'s own docstring).
-    resolved = apply_transfer_links(resolved, store.transfer_links)
+    appliers = _overlay_appliers(session, user_id, store, since=since, until=until)
+    resolved = raw
+    for stage in OVERLAY_PRECEDENCE:
+        resolved = appliers[stage](resolved)
     return resolved, store
 
 

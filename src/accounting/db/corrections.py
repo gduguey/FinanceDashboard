@@ -1,4 +1,4 @@
-"""User corrections layered on top of the ledger: overrides, splits, merges, and dismissed suggestions.
+"""User corrections layered on top of the ledger: overrides, splits, merges, and suggestions.
 
 None of these are ever baked into a posting itself — re-importing a
 statement or rebuilding from raw archives can never silently erase one,
@@ -17,20 +17,26 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.db.core import SCHEMA
-from accounting.models import PendingSuggestionSource
+from accounting.db.core import SCHEMA, stage_constraint
+from accounting.models import (
+    DismissedSuggestionKind,
+    PendingSuggestionSource,
+    SuggestionKind,
+    SuggestionSource,
+    SuggestionStatus,
+)
 from db.base import MONEY, Base, Timestamped, check_in_sql
 
 
 class PostingOverride(Base, Timestamped):
     """A user's direct edit to one posting, always winning over whatever a rule would have produced.
 
-    Split from the old combined `manual_overrides` table:
-    `PostingPendingSuggestion` below now owns the transient
-    "an automation suggested this, not yet confirmed" state — a
-    correction here is persistent until the user changes it again, a
-    different lifecycle from a pending suggestion that gets deleted
-    outright once resolved, not left with a cleared set of columns.
+    Split from the old combined `manual_overrides` table: a pending row of
+    `Suggestion` below now owns the transient "an automation suggested
+    this, not yet confirmed" state — a correction here is persistent until
+    the user changes it again, a different lifecycle from a pending
+    suggestion that gets deleted outright once resolved, not left with a
+    cleared set of columns.
 
     A posting's overridden tag set lives in `PostingOverrideTag` below, a
     real FK-enforced join table, not an array column here — unlike a
@@ -48,12 +54,15 @@ class PostingOverride(Base, Timestamped):
 
     __tablename__ = "posting_overrides"
     __table_args__ = (
+        stage_constraint("override"),
         UniqueConstraint("user_id", "posting_id", name="uq_posting_overrides_user_posting"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    stage: Mapped[str] = mapped_column(default="override")
+    """Which resolution stage this overlay is applied at — see `accounting.precedence`."""
     posting_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE")
     )
@@ -93,31 +102,97 @@ class PostingOverrideTag(Base, Timestamped):
     tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.tags.id", ondelete="CASCADE"))
 
 
-class PostingPendingSuggestion(Base, Timestamped):
-    """A not-yet-confirmed automated suggestion for one posting — deleted outright once resolved.
+_PENDING_SHAPE_SQL = (
+    "status <> 'pending' OR ("
+    "kind = 'category'"
+    f" AND {check_in_sql('source', get_args(PendingSuggestionSource))}"
+    " AND posting_id IS NOT NULL"
+    " AND dismissed_at IS NULL"
+    ")"
+)
+"""What a `pending` row of `suggestions` must look like: a category staged on one posting.
 
-    Existence of a row here *is* "this posting is pending" — no more
-    `pending_source IS NOT NULL` checks against a column that's also used
-    for persistent corrections. Accepting a suggestion deletes this row
-    (and upserts `PostingOverride` with the same category/subcategory);
-    rejecting it deletes this row and touches nothing else, since the
-    posting's real category was never changed to begin with (see
-    `ledger.pending`).
+`posting_id` is what makes it "pending on *this* posting", and
+`dismissed_at` has to be empty because nothing has been dismissed. `source`
+is narrowed back to the two categorizers (`ai`/`pattern`) — a detector
+never stages a category on a posting.
+"""
+
+_DISMISSED_SHAPE_SQL = (
+    "status <> 'dismissed' OR ("
+    f"{check_in_sql('kind', get_args(DismissedSuggestionKind))}"
+    " AND source = 'detector'"
+    " AND posting_id IS NULL"
+    " AND previous_category_id IS NULL"
+    " AND previous_subcategory_id IS NULL"
+    " AND dismissed_at IS NOT NULL"
+    ")"
+)
+"""What a `dismissed` row of `suggestions` must look like: an archived detector proposal.
+
+A detected transfer pair or duplicate group is a statement about several
+transactions at once, so it has no single `posting_id` and none of the
+pending lifecycle's category-snapshot columns; `dismissed_at` is required,
+because "when" is the whole content of the archive listing.
+"""
+
+
+class Suggestion(Base, Timestamped):
+    """Something an automation proposed and the user has not (or has explicitly not) acted on.
+
+    Merged from the old `posting_pending_suggestions` and
+    `dismissed_suggestions`, which were the same concept — a proposal the
+    user still owes an answer to — held at two lifecycle stages. `status`
+    is that difference, made a typed column, and the two shape constraints
+    above keep each lifecycle's own columns from leaking into the other:
+
+    - `pending` — a category an LLM or a `CategoryPattern` staged on one
+      posting. Existence of the row *is* "this posting is pending"; there
+      is no `pending_source IS NOT NULL` check against a column also used
+      for persistent corrections. Accepting deletes the row (and upserts
+      `PostingOverride` with the same category/subcategory); rejecting
+      deletes it and touches nothing else, since the posting's real
+      category was never changed to begin with (see `ledger.pending`).
+    - `dismissed` — a transfer pair or duplicate group the detector keeps
+      proposing and the user has archived rather than discarded. Kept, not
+      deleted, so restoring it is lossless.
+
+    `natural_key` covers both lifecycles with one `UNIQUE(user_id,
+    natural_key)`. A dismissed row's is derived from the suggestion's own
+    content (see `api._transfer_suggestion_id`/`_duplicate_suggestion_id`),
+    so the same real-world pair or group always dismisses and restores
+    under the same `id` via `db.base.derive_id`, however many times the
+    detector recomputes it. A pending row's is derived from its posting
+    (`pending:<posting natural key>`), which is what makes that unique
+    constraint subsume the old `UNIQUE(user_id, posting_id)` — one posting
+    can still only be pending once.
+
+    No `stage` column, unlike every other table in this module: see
+    `accounting.precedence`'s docstring for why a proposal has no
+    precedence of its own.
     """
 
-    __tablename__ = "posting_pending_suggestions"
+    __tablename__ = "suggestions"
     __table_args__ = (
-        CheckConstraint(check_in_sql("source", get_args(PendingSuggestionSource)), name="source"),
-        UniqueConstraint("user_id", "posting_id", name="uq_posting_pending_suggestions_user_posting"),
+        CheckConstraint(check_in_sql("status", get_args(SuggestionStatus)), name="status"),
+        CheckConstraint(check_in_sql("kind", get_args(SuggestionKind)), name="kind"),
+        CheckConstraint(check_in_sql("source", get_args(SuggestionSource)), name="source"),
+        CheckConstraint(_PENDING_SHAPE_SQL, name="pending_shape"),
+        CheckConstraint(_DISMISSED_SHAPE_SQL, name="dismissed_shape"),
+        UniqueConstraint("user_id", "natural_key", name="uq_suggestions_user_natural_key"),
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    posting_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE")
-    )
+    natural_key: Mapped[str]
+    status: Mapped[str]
+    kind: Mapped[str]
     source: Mapped[str]
+    description: Mapped[str] = mapped_column(default="")
+    posting_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE"), default=None
+    )
     selected: Mapped[bool] = mapped_column(default=True)
     previous_category_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
@@ -125,6 +200,7 @@ class PostingPendingSuggestion(Base, Timestamped):
     previous_subcategory_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
 
 class PostingSplit(Base, Timestamped):
@@ -132,12 +208,15 @@ class PostingSplit(Base, Timestamped):
 
     __tablename__ = "posting_splits"
     __table_args__ = (
+        stage_constraint("split"),
         UniqueConstraint("user_id", "posting_id", name="uq_posting_splits_user_posting"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    stage: Mapped[str] = mapped_column(default="split")
+    """Which resolution stage this overlay is applied at — see `accounting.precedence`."""
     posting_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.postings.id", ondelete="CASCADE")
     )
@@ -175,6 +254,7 @@ class PostingMerge(Base, Timestamped):
 
     __tablename__ = "posting_merges"
     __table_args__ = (
+        stage_constraint("merge"),
         UniqueConstraint("user_id", "natural_key", name="uq_posting_merges_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -182,6 +262,8 @@ class PostingMerge(Base, Timestamped):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
+    stage: Mapped[str] = mapped_column(default="merge")
+    """Which resolution stage this overlay is applied at — see `accounting.precedence`."""
     # CASCADE is safe here: this row itself references its kept transaction
     # directly (unlike TransferLink, which only relates to a transaction
     # through its TransferLinkedTransaction children) — pruning the kept
@@ -218,27 +300,3 @@ class PostingMergeDuplicate(Base, Timestamped):
     duplicate_transaction_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.transactions.id", ondelete="CASCADE")
     )
-
-
-class DismissedSuggestion(Base, Timestamped):
-    """A user's decision that an auto-detected suggestion isn't relevant, archived rather than discarded.
-
-    `natural_key` is a stable key derived from the suggestion's own
-    content (see `api._transfer_suggestion_id`/`_duplicate_suggestion_id`),
-    not a random choice — the same real-world pair or group always
-    dismisses and restores under the same `id` via `db.base.derive_id`,
-    regardless of how many times the detector recomputes it.
-    """
-
-    __tablename__ = "dismissed_suggestions"
-    __table_args__ = (
-        UniqueConstraint("user_id", "natural_key", name="uq_dismissed_suggestions_user_natural_key"),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    natural_key: Mapped[str]
-    kind: Mapped[str]
-    description: Mapped[str]
-    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

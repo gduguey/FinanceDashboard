@@ -224,7 +224,12 @@ def test_every_rls_exemption_records_a_reason() -> None:
 
 
 def test_the_previously_uncovered_transfer_tables_are_covered_now(migrated_engine: Engine) -> None:
-    """Regression guard for the exact three tables VISION-AUDIT T3 found unprotected."""
+    """Regression guard for the exact three tables VISION-AUDIT T3 found unprotected.
+
+    `transfer_rule_exclusions` is now `categorization_rule_exclusions` — the
+    same table, renamed when `transfer_rules` and `category_patterns` merged
+    into `categorization_rules`.
+    """
     covered = set(_policies(migrated_engine))
-    for table in ("transfer_links", "transfer_linked_transactions", "transfer_rule_exclusions"):
+    for table in ("transfer_links", "transfer_linked_transactions", "categorization_rule_exclusions"):
         assert ("accounting", table) in covered, f"accounting.{table} lost its policy again"

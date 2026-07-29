@@ -411,11 +411,11 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
             text(
                 """
                 INSERT INTO accounting.manual_transfers
-                    (id, user_id, natural_key, date, from_account_id, to_account_id,
+                    (id, user_id, natural_key, stage, date, from_account_id, to_account_id,
                      from_amount, to_amount, description)
                 VALUES
-                    (:id, :user_id, :natural_key, :date, :from_account_id, :to_account_id,
-                     :from_amount, :to_amount, :description)
+                    (:id, :user_id, :natural_key, 'manual_transfer', :date, :from_account_id,
+                     :to_account_id, :from_amount, :to_amount, :description)
                 ON CONFLICT (id) DO UPDATE SET
                     date = EXCLUDED.date,
                     from_account_id = EXCLUDED.from_account_id,

@@ -198,8 +198,8 @@ recreate, which orphaned every reference to the old id.
 | Table | Category merge | Category delete | Tag merge |
 |---|---|---|---|
 | `categories` / `tags` | old entry pruned | target + subcategories pruned | old entry pruned |
-| `transfer_rules`, `posting_split_legs` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | — |
-| `category_patterns`, `budgets` | repointed; merged-away collision dropped | row dropped if its own `category_id` is deleted, else `subcategory_id` cleared | — |
+| `categorization_rules` (transfer effect), `posting_split_legs` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | — |
+| `categorization_rules` (categorize effect), `budgets` | repointed; merged-away collision dropped | row dropped if its own `category_id` is deleted, else `subcategory_id` cleared | — |
 | `posting_tags` | — | — | `tag_id` repointed; deleted if it'd duplicate an existing row |
 | `postings` (real ledger) | `category_id`/`subcategory_id` updated in place | cleared to `NULL` in place | no column of its own — join table only |
 | `posting_overrides` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | `tag_ids_override` array entries replaced |

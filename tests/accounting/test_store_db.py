@@ -53,6 +53,7 @@ from accounting.repositories.planning import (
 )
 from accounting.repositories.interpretation import (
     delete_posting_split,
+    delete_transfer_rule,
     dismiss_suggestion,
     dismissed_suggestion_ids,
     insert_transfer_links,
@@ -957,3 +958,267 @@ def test_undismiss_suggestion_reports_false_when_nothing_to_remove(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     assert undismiss_suggestion(db_session, test_user_id, "transfer:nope") is False
+
+
+# --- One table, two effects / two lifecycles -------------------------------
+#
+# `transfer_rules` + `category_patterns` are now one `categorization_rules`
+# table, and `posting_pending_suggestions` + `dismissed_suggestions` one
+# `suggestions` table. Sharing a table creates two hazards that did not exist
+# while each concept had its own: a scoped rewrite of one effect/lifecycle
+# could prune the other's rows, and a row could be written holding a mixture
+# of both shapes. Everything below is a guard on one of those two.
+
+
+def test_replacing_the_transfer_rules_leaves_the_category_patterns_alone(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Both effects share `categorization_rules`, so the transfer prune must be scoped to its own."""
+    load_store(db_session, user_id=test_user_id)  # seeds the default categories the pattern FKs into
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:keep", description_contains="uber", category_id="expense:transport")],
+    )
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:a", description_contains="a")])
+    db_session.commit()
+
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:b", description_contains="b")])
+    db_session.commit()
+
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert [rule.rule_id for rule in reloaded.rules] == ["rule:b"]
+    assert set(reloaded.category_patterns) == {"pattern:keep"}
+
+
+def test_replacing_the_category_patterns_leaves_the_transfer_rules_alone(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    load_store(db_session, user_id=test_user_id)
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:keep", description_contains="a")])
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:a", description_contains="uber", category_id="expense:transport")],
+    )
+    db_session.commit()
+
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:b", description_contains="lyft", category_id="expense:transport")],
+    )
+    db_session.commit()
+
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert set(reloaded.category_patterns) == {"pattern:b"}
+    assert [rule.rule_id for rule in reloaded.rules] == ["rule:keep"]
+
+
+def test_deleting_a_transfer_rule_never_matches_a_category_pattern_row(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`delete_transfer_rule` is scoped to `effect="transfer"`, so a pattern id can't be deleted through it."""
+    load_store(db_session, user_id=test_user_id)
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:p", description_contains="uber", category_id="expense:transport")],
+    )
+    db_session.commit()
+
+    assert delete_transfer_rule(db_session, test_user_id, "pattern:p") is False
+    assert set(load_store(db_session, user_id=test_user_id).category_patterns) == {"pattern:p"}
+
+
+def test_a_transfer_rule_row_carrying_a_category_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_categorization_rules_effect_columns` — a row holds its own effect's columns and nothing else."""
+    load_store(db_session, user_id=test_user_id)
+    db_session.add(
+        adb.CategorizationRule(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="rule:mixed",
+            effect="transfer",
+            stage="counterparty",
+            description_contains="uber",
+            category_id=derive_id(test_user_id, "categories", "expense:transport"),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_category_pattern_row_without_a_category_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    db_session.add(
+        adb.CategorizationRule(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="pattern:empty",
+            effect="categorize",
+            stage="override",
+            description_contains="uber",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_rule_claiming_the_wrong_stage_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """Declared precedence is only worth anything if a row can't claim a stage its effect never runs at."""
+    db_session.add(
+        adb.CategorizationRule(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="rule:wrong-stage",
+            effect="transfer",
+            stage="override",
+            description_contains="uber",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_saving_every_override_leaves_the_dismissed_archive_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """Both lifecycles share `suggestions`, so the pending rewrite must be scoped to `status="pending"`."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+    )
+
+    save_overrides(
+        {"p1": ManualOverride(pending_source="ai", category_id="expense:transport")}, db_session, test_user_id
+    )
+    save_overrides({}, db_session, test_user_id)
+
+    assert [entry.suggestion_id for entry in list_dismissed_suggestions(db_session, test_user_id)] == ["transfer:a"]
+
+
+def test_dismissing_a_suggestion_never_looks_like_a_pending_one(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """A dismissed row must not be picked up by the override read, which only wants pending ones."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="duplicate:g", kind="duplicate", description="g", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    assert load_overrides(db_session, test_user_id) == {}
+
+
+def test_one_posting_can_only_be_pending_once(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The old `UNIQUE(user_id, posting_id)` survives as a posting-derived `natural_key`."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    save_overrides({"p1": ManualOverride(pending_source="ai")}, db_session, test_user_id)
+
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="pending:p1",
+            status="pending",
+            kind="category",
+            source="pattern",
+            posting_id=derive_id(test_user_id, "postings", "p1"),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_suggestion_kind_outside_the_vocabulary_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_suggestions_kind` — the DB audit flagged this column as unconstrained free text."""
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="transfer:a",
+            status="dismissed",
+            kind="whatever",
+            source="detector",
+            description="a",
+            dismissed_at=datetime.now(UTC),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_dismissed_suggestion_pointing_at_a_posting_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_suggestions_dismissed_shape` — the archive lifecycle owns none of the pending one's columns."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="transfer:a",
+            status="dismissed",
+            kind="transfer",
+            source="detector",
+            description="a",
+            posting_id=derive_id(test_user_id, "postings", "p1"),
+            dismissed_at=datetime.now(UTC),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_pending_suggestion_from_the_detector_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_suggestions_pending_shape` — only the two categorizers stage a category on a posting."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="pending:p1",
+            status="pending",
+            kind="category",
+            source="detector",
+            posting_id=derive_id(test_user_id, "postings", "p1"),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_restaging_a_pending_suggestion_replaces_the_row_the_posting_already_had(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The `POST /postings/{id}/…-suggest-category` flow, twice: load in one session, then save over it.
+
+    A pending row's id is now derived from its posting rather than random,
+    so the second save writes the *same* id the first one did — the case
+    where a delete-then-add inside one session can collide on the identity
+    map instead of quietly inserting a second row.
+    """
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    save_overrides_for_postings(
+        ["p1"],
+        {"p1": ManualOverride(category_id="income:salary", pending_source="ai")},
+        db_session,
+        test_user_id,
+    )
+
+    loaded = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    save_overrides_for_postings(
+        ["p1"],
+        {"p1": loaded["p1"].model_copy(update={"pending_source": "pattern"})},
+        db_session,
+        test_user_id,
+    )
+
+    reloaded = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    assert reloaded["p1"].pending_source == "pattern"
+    assert db_session.query(adb.Suggestion).filter_by(user_id=test_user_id).count() == 1

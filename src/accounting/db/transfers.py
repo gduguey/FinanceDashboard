@@ -9,7 +9,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.db.core import SCHEMA
+from accounting.db.core import SCHEMA, stage_constraint
 from accounting.models import TransferLinkSource
 from db.base import Base, Timestamped, check_in_sql
 
@@ -30,12 +30,19 @@ class TransferLink(Base, Timestamped):
     __table_args__ = (
         UniqueConstraint("user_id", "natural_key", name="uq_transfer_links_user_natural_key"),
         CheckConstraint(check_in_sql("source", get_args(TransferLinkSource)), name="source"),
+        stage_constraint("link"),
         {"schema": SCHEMA},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
+    stage: Mapped[str] = mapped_column(default="link")
+    """Which resolution stage this overlay is applied at — see `accounting.precedence`.
+
+    Last of the six, and not merely by preference — the stage ordering
+    module records why moving it earlier would silently drop the columns it
+    adds."""
     source: Mapped[str]
     # A plain historical label, not a foreign key — see `models.TransferLink`'s
     # own docstring for why this deliberately survives the referenced rule
