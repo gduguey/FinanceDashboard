@@ -29,20 +29,18 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CategoryPattern,
-    GeneralBudget,
     Goal,
+    GoalAutomation,
     GoalContribution,
     ManualTransfer,
     OpeningBalance,
     OtherAsset,
     PostingMerge,
     PostingSplit,
-    RecurringAddition,
     SimulatorScenario,
     Tag,
     TransferLink,
     TransferRule,
-    WithdrawalPriorityEntry,
 )
 from accounting.repositories import accounts, interpretation, planning, taxonomy
 
@@ -337,21 +335,27 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
 
     Doesn't touch `store.categories` itself (the caller already applied
     `plan_category_rename`'s own result there) — this only fixes the other
-    places a category id is stored: category patterns, budgets (both
-    per-month and general), and posting splits. `TransferRule` has no
+    places a category id is stored: category patterns, budgets (per-month
+    and general alike), and posting splits. `TransferRule` has no
     category fields of its own (see its own docstring). The raw ledger
     cache and manual per-posting overrides live outside `AccountingStore`
     entirely and must be remapped separately.
 
-    If the merge target already has a budget (or general budget) for the
-    same month/category/subcategory the merged-away category also had one
-    for, the merged-away category's entry is dropped rather than kept —
-    the survivor's own existing entry always wins, since there's no
+    A budget's `budget_id` *is* its `(month, category_id,
+    subcategory_id)` triple (see `repositories.planning.budget_row_key`),
+    so a repointed budget gets a rebuilt id rather than one still naming
+    the merged-away category — otherwise the next single-cell upsert for
+    the surviving category would mint a second row that the table's
+    `(user, month, category, subcategory)` unique index rejects.
+
+    If the merge target already has a budget for the same
+    month/category/subcategory the merged-away category also had one for,
+    the merged-away category's entry is dropped rather than kept — the
+    survivor's own existing entry always wins, since there's no
     principled way to combine two different budgeted amounts. A caller
     that wants to warn about this before committing to the merge should
-    call this same function itself and diff `store.budgets`/
-    `general_budgets` against the result (see
-    `api.routers.store.get_category_rename_preview`).
+    call this same function itself and diff `store.budgets` against the
+    result (see `api.routers.store.get_category_rename_preview`).
 
     Parameters
     ----------
@@ -395,27 +399,23 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         )
         for pattern_id, pattern in store.category_patterns.items()
     }
-    budgets_by_key: dict[tuple[str, str, str | None], Budget] = {}
+    budgets_by_key: dict[tuple[str | None, str, str | None], Budget] = {}
     # Sorted so a budget the merge doesn't touch (including the survivor's own)
     # claims its key first — a colliding merged-away budget is then skipped
     # instead of overwriting it.
     for budget in sorted(store.budgets, key=lambda b: was_remapped(b.category_id, b.subcategory_id)):
-        updated_budget = budget.model_copy(
-            update={"category_id": remap(budget.category_id), "subcategory_id": remap(budget.subcategory_id)}
-        )
-        budget_key = updated_budget.month, updated_budget.category_id, updated_budget.subcategory_id
+        category_id = id_remap.get(budget.category_id, budget.category_id)
+        subcategory_id = remap(budget.subcategory_id)
+        budget_key = budget.month, category_id, subcategory_id
         if budget_key in budgets_by_key:
             continue
-        budgets_by_key[budget_key] = updated_budget
-    general_budgets: dict[str, GeneralBudget] = {}
-    for general_key, general in sorted(store.general_budgets.items(), key=lambda item: item[0] in id_remap):
-        updated_general = general.model_copy(
-            update={"category_id": remap(general.category_id), "subcategory_id": remap(general.subcategory_id)}
+        budgets_by_key[budget_key] = budget.model_copy(
+            update={
+                "budget_id": planning.budget_row_key(budget.month, category_id, subcategory_id),
+                "category_id": category_id,
+                "subcategory_id": subcategory_id,
+            }
         )
-        new_key = id_remap.get(general_key, general_key)
-        if new_key in general_budgets:
-            continue
-        general_budgets[new_key] = updated_general
     posting_splits = {
         posting_id: split.model_copy(
             update={
@@ -433,7 +433,6 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         update={
             "category_patterns": patterns,
             "budgets": list(budgets_by_key.values()),
-            "general_budgets": general_budgets,
             "posting_splits": posting_splits,
         }
     )
@@ -479,11 +478,12 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
     so a reference there is simply cleared — unlike a merge, there's no
     replacement id to repoint at. `TransferRule` has no category fields of
     its own (see its own docstring), so there's nothing to clear there.
-    `Budget`/`GeneralBudget`/`CategoryPattern` require a `category_id`
-    (never null): a row whose own `category_id` is being deleted has
-    nothing left to be, so it's dropped entirely; one only referencing a
-    deleted id via its (nullable) `subcategory_id` just has that cleared,
-    same as the nullable-field tables.
+    `Budget`/`CategoryPattern` require a `category_id` (never null): a row
+    whose own `category_id` is being deleted has nothing left to be, so
+    it's dropped entirely; one only referencing a deleted id via its
+    (nullable) `subcategory_id` just has that cleared, same as the
+    nullable-field tables. That rule now covers general budgets too (they
+    are `Budget` rows with no `month`), where it used to differ.
 
     Parameters
     ----------
@@ -513,20 +513,27 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
         for pattern_id, pattern in store.category_patterns.items()
         if pattern.category_id not in category_ids
     }
-    budgets = [
-        budget.model_copy(update={"subcategory_id": clear(budget.subcategory_id)})
-        for budget in store.budgets
-        if budget.category_id not in category_ids
-    ]
-    general_budgets = {
-        key: general.model_copy(update={"subcategory_id": clear(general.subcategory_id)})
-        for key, general in store.general_budgets.items()
-        # `general_budgets` is keyed by whichever of category_id/subcategory_id
-        # is most specific — a deleted top-level category's own subcategories
-        # are already folded into `category_ids` (see `category_ids_to_delete`),
-        # so checking the key alone is enough to catch both cases.
-        if key not in category_ids
-    }
+    budgets_by_key: dict[tuple[str | None, str, str | None], Budget] = {}
+    # A budget that only referenced a deleted *subcategory* keeps its
+    # category-level target, so it can land on a key a whole-category budget
+    # for the same month already holds. Sorted so that untouched budget claims
+    # the key first and the cleared one is dropped rather than overwriting it —
+    # the same survivor-wins arbitration `remap_category_ids` makes, and what
+    # keeps the table's own (user, month, category, subcategory) unique index
+    # satisfiable afterwards.
+    for budget in sorted(store.budgets, key=lambda b: b.subcategory_id in category_ids):
+        if budget.category_id in category_ids:
+            continue
+        subcategory_id = clear(budget.subcategory_id)
+        budget_key = budget.month, budget.category_id, subcategory_id
+        if budget_key in budgets_by_key:
+            continue
+        budgets_by_key[budget_key] = budget.model_copy(
+            update={
+                "budget_id": planning.budget_row_key(budget.month, budget.category_id, subcategory_id),
+                "subcategory_id": subcategory_id,
+            }
+        )
     posting_splits = {
         posting_id: split.model_copy(
             update={
@@ -543,8 +550,7 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
     return store.model_copy(
         update={
             "category_patterns": patterns,
-            "budgets": budgets,
-            "general_budgets": general_budgets,
+            "budgets": list(budgets_by_key.values()),
             "posting_splits": posting_splits,
         }
     )
@@ -683,15 +689,15 @@ class AccountingStore(BaseModel):
     opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)
     manual_transfers: list[ManualTransfer] = Field(default_factory=list)
     budgets: list[Budget] = Field(default_factory=list)
-    general_budgets: dict[str, GeneralBudget] = Field(default_factory=dict)
+    """Every spending target, per-month and general (`month is None`) alike — one list, one table."""
     simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
     posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
     posting_merges: dict[str, PostingMerge] = Field(default_factory=dict)
     transfer_links: list[TransferLink] = Field(default_factory=list)
     goals: dict[str, Goal] = Field(default_factory=dict)
     goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
-    recurring_additions: list[RecurringAddition] = Field(default_factory=list)
-    withdrawal_priorities: list[WithdrawalPriorityEntry] = Field(default_factory=list)
+    goal_automations: list[GoalAutomation] = Field(default_factory=list)
+    """Every automation moving money into or out of a goal — `direction` tells the two apart."""
 
 
 def seed_new_user_defaults(session: Session, user_id: uuid.UUID) -> None:
@@ -765,15 +771,13 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:
         opening_balances=accounts.load_opening_balances(session, user_id),
         manual_transfers=accounts.load_manual_transfers(session, user_id),
         budgets=planning.load_budgets(session, user_id),
-        general_budgets=planning.load_general_budgets(session, user_id),
         simulator_scenarios=taxonomy.load_simulator_scenarios(session, user_id),
         posting_splits=interpretation.load_posting_splits(session, user_id),
         posting_merges=interpretation.load_posting_merges(session, user_id),
         transfer_links=interpretation.load_transfer_links(session, user_id),
         goals=planning.load_goals(session, user_id),
         goal_contributions=planning.load_goal_contributions(session, user_id),
-        recurring_additions=planning.load_recurring_additions(session, user_id),
-        withdrawal_priorities=planning.load_withdrawal_priorities(session, user_id),
+        goal_automations=planning.load_goal_automations(session, user_id),
     )
 
     missing_accounts = {k: v for k, v in default_accounts().items() if k not in store.accounts}

@@ -15,11 +15,11 @@ reimbursement legs).
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal, assert_never, get_args
+from typing import Annotated, Literal, assert_never, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from db.money import ZERO, Money, Rate
+from db.money import Money, Rate
 
 AccountKind = Literal[
     "checking",
@@ -371,7 +371,15 @@ class ManualTransfer(BaseModel):
 
 
 class Budget(BaseModel):
-    """One month's spending target for one top-level expense category, or one of its subcategories.
+    """One spending target for one top-level expense category, or one of its subcategories.
+
+    `month` is what scopes the target: a `"YYYY-MM"` string targets that
+    one month, and `None` is the *general* target — the standing amount
+    that applies to every month alike, which the Budget page's "General"
+    mode edits. Both live in the same list (and the same `budgets` table):
+    a month target and a general target for the same category coexist as
+    two rows, and neither falls back to or overwrites the other, so
+    switching the page's mode never silently rewrites the other one.
 
     `category_id` is always the top-level category, matching
     `Posting.category_id`. `subcategory_id`, when set, scopes the target to
@@ -392,25 +400,7 @@ class Budget(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     budget_id: str = Field(min_length=1)
-    month: str = Field(pattern=r"^\d{4}-\d{2}$")
-    category_id: str = Field(min_length=1)
-    subcategory_id: str | None = None
-    amount: Money
-    currency: CurrencyCode = "USD"
-
-
-class GeneralBudget(BaseModel):
-    """A category's (or subcategory's) spending target applied to every month alike.
-
-    Independent of any per-month `Budget` rows — the Budget page's
-    "General" mode edits these; its "Per month" mode
-    edits `Budget` instead — the two are stored completely separately (see
-    `store.AccountingStore`), never merged or falling back to one
-    another, so switching modes never silently overwrites the other.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
+    month: Annotated[str, Field(pattern=r"^\d{4}-\d{2}$")] | None = None
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
     amount: Money
@@ -480,6 +470,12 @@ class GoalContribution(BaseModel):
     a manually-entered contribution from one an automation wrote; `edited`
     flags an automation-written contribution the user has since hand-edited,
     so the ledger table can show it's no longer purely automatic.
+
+    `account_id` names the account the allocated money actually sits in
+    ("envelope over balance"). It is plumbing only for now: nothing in
+    `dashboard.goals` reads it, so no goal balance, net-worth figure, or
+    unallocated-money computation changes because it is set — a later
+    change makes the unallocated arithmetic account-aware.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -490,85 +486,100 @@ class GoalContribution(BaseModel):
     amount: Money
     currency: CurrencyCode = "USD"
     note: str = ""
+    account_id: str | None = None
     source_posting_id: str | None = None
     origin: GoalContributionOrigin = "manual"
     edited: bool = False
 
 
-RecurringAdditionMode = Literal["fixed_amount", "percent_of_unallocated", "remainder"]
-RecurringAdditionFrequency = Literal["daily", "weekly", "biweekly", "monthly"]
+GoalAutomationDirection = Literal["contribution", "withdrawal"]
+"""Which way an automation moves money: into a goal, or out of one.
+
+The one thing that distinguishes the two kinds of `GoalAutomation`. A
+`contribution` runs on a schedule (`start_date`/`frequency`/`end_date`)
+and allocates unallocated money into its goal; a `withdrawal` is purely
+an ordering, drawn on whenever unallocated money dips below zero, so it
+carries no schedule at all.
+"""
+
+GoalAutomationMode = Literal["fixed_amount", "percent_of_unallocated", "remainder"]
+GoalAutomationFrequency = Literal["daily", "weekly", "biweekly", "monthly"]
 
 
-class RecurringAddition(BaseModel):
-    """One ordered rule for automatically allocating unallocated money into a goal on a recurring schedule.
+class GoalAutomation(BaseModel):
+    """One ordered rule for automatically moving money into — or out of — a goal.
+
+    `direction` is the discriminator, and it decides which of the fields
+    below are set (enforced here *and* by the `goal_automations` table's
+    own `schedule_matches_direction` CHECK, so neither layer can drift):
+
+    - `direction="contribution"` carries the whole schedule —
+      `start_date` + `frequency`, optionally bounded by `end_date`; see
+      `ledger.goal_automations.next_recurring_occurrence` for how a due
+      date is derived from those. For `frequency="monthly"`, the day of
+      month is `start_date`'s own day, capped at 28 so every month
+      actually has that day rather than silently skipping February on a
+      day-30 schedule. `mode`/`value`/`currency` say how much it wants.
+    - `direction="withdrawal"` carries none of them. The withdrawal
+      automation (`ledger.goal_automations.run_withdrawal_automation`) is
+      event-driven — triggered whenever unallocated money dips below zero
+      — not scheduled, so a withdrawal row is nothing but its goal and
+      its place in the drawdown order.
 
     `priority` is the manually-set execution order (lowest first) the
-    Goals page's drag-and-drop reorders — a `fixed_amount` row funded
-    first can leave less (or nothing) for a lower-priority one when
-    unallocated money runs out; see `ledger.goal_automations.run_recurring_additions`.
-    `mode="remainder"` ("whatever's left after all the others") is only
-    ever valid on the single lowest-priority row — enforced by the API
-    that persists this list, not by this model.
-
-    The schedule itself is `start_date` + `frequency`, optionally bounded
-    by `end_date` — see `ledger.goal_automations.next_recurring_occurrence`
-    for how a due date is derived from these. For `frequency="monthly"`,
-    the day of month is `start_date`'s own day, capped at 28 so every
-    month actually has that day rather than silently skipping February on
-    a day-30 schedule.
+    Goals page's drag-and-drop reorders, and means the corresponding
+    thing in each direction: which contribution gets funded first (a
+    `fixed_amount` row funded first can leave less, or nothing, for a
+    lower-priority one when unallocated money runs out — see
+    `ledger.goal_automations.run_recurring_additions`), and which goal
+    gets drawn down first. `mode="remainder"` ("whatever's left after all
+    the others") is only ever valid on the single lowest-priority
+    contribution — enforced by the API that persists the list, not by
+    this model.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    addition_id: str = Field(min_length=1)
+    automation_id: str = Field(min_length=1)
     goal_id: str = Field(min_length=1)
-    start_date: date
-    frequency: RecurringAdditionFrequency
-    end_date: date | None = None
-    mode: RecurringAdditionMode
-    value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
-    currency: CurrencyCode = "USD"
+    direction: GoalAutomationDirection
     priority: int = 0
+    start_date: date | None = None
+    frequency: GoalAutomationFrequency | None = None
+    end_date: date | None = None
+    mode: GoalAutomationMode | None = None
+    value: Money | None = Field(default=None, json_schema_extra={"default": None})
+    currency: CurrencyCode | None = None
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_schedule_day_of_month(cls, data: object) -> object:
-        """Translate the old `schedule_day_of_month`-only schedule onto the new fields, in place.
+    @model_validator(mode="after")
+    def _check_schedule_matches_direction(self) -> GoalAutomation:
+        """Reject a `contribution` missing its schedule, or a `withdrawal` carrying one.
 
-        The old model had no `start_date` at all — a day-of-month rule
-        applied retroactively to any month once persisted. `date(2000, 1,
-        day)` reproduces that same unlimited-lookback behavior under the
-        new model rather than inventing a start date that would silently
-        stop a rule the user already had running. Without this, loading a
-        `store.json` written before this schedule redesign would fail
-        validation outright the next time the app starts.
+        The pydantic twin of the table's own `schedule_matches_direction`
+        CHECK — stated in both places deliberately, so a request body is
+        rejected with a 422 at the edge rather than an `IntegrityError`
+        deep inside a transaction, and so a row hand-written straight into
+        Postgres still can't reach the state this rejects.
 
         Returns
         -------
-        object
-            `data`, migrated onto the new schedule fields if it was in the old shape; unchanged otherwise.
+        GoalAutomation
+            `self`, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If the fields set don't match `direction`.
         """
-        if isinstance(data, dict) and "schedule_day_of_month" in data and "frequency" not in data:
-            data = dict(data)
-            day = data.pop("schedule_day_of_month")
-            data["frequency"] = "monthly"
-            data.setdefault("start_date", date(2000, 1, min(int(day), 28)))
-        return data
-
-
-class WithdrawalPriorityEntry(BaseModel):
-    """One goal's place in the order goals are drawn down from when unallocated money goes negative.
-
-    Purely an ordering — the withdrawal automation itself
-    (`ledger.goal_automations.run_withdrawal_automation`) is event-driven
-    (triggered whenever unallocated dips below zero), not scheduled, so
-    there's no schedule field here the way `RecurringAddition` has one.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    goal_id: str = Field(min_length=1)
-    priority: int = 0
+        scheduled = (self.start_date, self.frequency, self.mode, self.value, self.currency)
+        if self.direction == "contribution":
+            if any(field is None for field in scheduled):
+                message = "A 'contribution' automation needs start_date, frequency, mode, value and currency"
+                raise ValueError(message)
+        elif any(field is not None for field in (*scheduled, self.end_date)):
+            message = "A 'withdrawal' automation carries no schedule — it is only a goal and a drawdown priority"
+            raise ValueError(message)
+        return self
 
 
 class EarningsDeposit(BaseModel):

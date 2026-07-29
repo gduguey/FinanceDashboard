@@ -9,7 +9,7 @@ transitively) before doing so, or these tables silently won't exist yet.
 from __future__ import annotations
 
 from accounting.db.automation import CategoryPattern, TransferRule, TransferRuleExclusion
-from accounting.db.budgets import Budget, GeneralBudget
+from accounting.db.budgets import Budget
 from accounting.db.core import (
     Account,
     Category,
@@ -31,7 +31,7 @@ from accounting.db.corrections import (
     PostingSplit,
     PostingSplitLeg,
 )
-from accounting.db.goals import Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
+from accounting.db.goals import Goal, GoalAutomation, GoalContribution
 from accounting.db.llm import LLMUsage
 from accounting.db.simulator import SimulatorScenario
 from accounting.db.transfers import TransferLink, TransferLinkedTransaction
@@ -44,8 +44,8 @@ __all__ = [
     "Category",
     "CategoryPattern",
     "DismissedSuggestion",
-    "GeneralBudget",
     "Goal",
+    "GoalAutomation",
     "GoalContribution",
     "LLMUsage",
     "ManualTransfer",
@@ -60,7 +60,6 @@ __all__ = [
     "PostingSplit",
     "PostingSplitLeg",
     "PostingTag",
-    "RecurringAddition",
     "SimulatorScenario",
     "Tag",
     "Transaction",
@@ -68,7 +67,6 @@ __all__ = [
     "TransferLinkedTransaction",
     "TransferRule",
     "TransferRuleExclusion",
-    "WithdrawalPriorityEntry",
 ]
 
 

@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 
 import accounting.db as adb
-from accounting.models import Budget, GeneralBudget, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
+from accounting.models import Budget, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
 from db.base import check_and_bump_row_version, derive_id, natural_keys_by_id
 
 if TYPE_CHECKING:
@@ -60,24 +60,36 @@ def _posting_id(user_id: uuid.UUID, posting_id: str) -> uuid.UUID:
     return derive_id(user_id, "postings", posting_id)
 
 
-def general_budget_row_key(category_id: str, subcategory_id: str | None) -> str:
-    """Build the natural key one general budget's `(category_id, subcategory_id)` pair always maps to.
+def _account_id(user_id: uuid.UUID, account_id: str | None) -> uuid.UUID | None:
+    """Derive this user's stable internal id for `account_id`, or `None` if `account_id` is `None`.
+
+    Returns
+    -------
+    uuid.UUID or None
+    """
+    return derive_id(user_id, "accounts", account_id) if account_id is not None else None
+
+
+def budget_row_key(month: str | None, category_id: str, subcategory_id: str | None) -> str:
+    """Build the natural key one budget's `(month, category_id, subcategory_id)` triple always maps to.
+
+    `month=None` (the general, every-month-alike target) leaves the month
+    segment empty, which no `"YYYY-MM"` month can produce — so a general
+    budget and a month budget for the same category never collide on this
+    key, exactly as they don't collide on the table's own unique index.
+
+    A budget's identity *is* this triple, so anything that changes one of
+    the three (a category merge, see `store.remap_category_ids`) has to
+    rebuild the key rather than carry the old one forward.
 
     Returns
     -------
     str
     """
-    return f"{category_id}:{subcategory_id or ''}"
-
-
-def general_budget_key(category_id: str, subcategory_id: str | None) -> str:
-    """Which of `category_id`/`subcategory_id` a general budget is keyed by in the API — whichever is more specific.
-
-    Returns
-    -------
-    str
-    """
-    return subcategory_id if subcategory_id is not None else category_id
+    month_segment = month or ""
+    if subcategory_id is not None:
+        return f"{month_segment}:{category_id}:{subcategory_id}"
+    return f"{month_segment}:{category_id}"
 
 
 # --------------------------------------------------------------------------
@@ -86,7 +98,7 @@ def general_budget_key(category_id: str, subcategory_id: str | None) -> str:
 
 
 def load_budgets(session: Session, user_id: uuid.UUID) -> list[Budget]:
-    """Read every per-month budget cell.
+    """Read every budget cell — per-month and general (`month is None`) alike.
 
     Parameters
     ----------
@@ -98,6 +110,7 @@ def load_budgets(session: Session, user_id: uuid.UUID) -> list[Budget]:
     Returns
     -------
     list[Budget]
+        Both kinds in one list; a general budget is the one whose `month` is `None`.
     """
     rows = list(session.query(adb.Budget).filter_by(user_id=user_id))
     category_natural_key_by_id = natural_keys_by_id(
@@ -119,7 +132,7 @@ def load_budgets(session: Session, user_id: uuid.UUID) -> list[Budget]:
 
 
 def replace_budgets(session: Session, user_id: uuid.UUID, budgets: Iterable[Budget]) -> None:
-    """Replace this user's whole per-month budget grid, touching no other table.
+    """Replace this user's whole budget grid — every month plus the general targets — touching no other table.
 
     Parameters
     ----------
@@ -128,7 +141,7 @@ def replace_budgets(session: Session, user_id: uuid.UUID, budgets: Iterable[Budg
     user_id
         Whose budgets these are.
     budgets
-        The complete desired set of budget cells.
+        The complete desired set of budget cells, general ones (`month is None`) included.
     """
     session.query(adb.Budget).filter_by(user_id=user_id).delete()
     session.flush()
@@ -149,11 +162,12 @@ def replace_budgets(session: Session, user_id: uuid.UUID, budgets: Iterable[Budg
 
 
 def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
-    """Insert-or-update one per-month budget, touching no other budget cell.
+    """Insert-or-update one budget cell — per-month or general — touching no other.
 
-    Keyed by `budget.budget_id` (derived from month+category+subcategory),
-    so re-setting the same cell is last-write-wins — the intended semantics
-    for a single amount.
+    Keyed by `budget.budget_id` (derived from month+category+subcategory,
+    with an empty month standing for the general target), so re-setting
+    the same cell is last-write-wins — the intended semantics for a single
+    amount.
 
     Parameters
     ----------
@@ -194,7 +208,7 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
 
 
 def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:
-    """Delete one per-month budget, touching no other budget cell. Idempotent, no version check.
+    """Delete one budget cell — per-month or general — touching no other. Idempotent, no version check.
 
     Returns
     -------
@@ -203,133 +217,6 @@ def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:
     """
     row_id = derive_id(user_id, "budgets", budget_id)
     deleted = session.query(adb.Budget).filter_by(id=row_id, user_id=user_id).delete()
-    session.flush()
-    return deleted > 0
-
-
-# --------------------------------------------------------------------------
-# General (every-month-alike) budgets
-# --------------------------------------------------------------------------
-
-
-def load_general_budgets(session: Session, user_id: uuid.UUID) -> dict[str, GeneralBudget]:
-    """Read every standing (all-month) budget, keyed the way the API exposes them.
-
-    Parameters
-    ----------
-    session
-        An open database session.
-    user_id
-        Whose general budgets to read.
-
-    Returns
-    -------
-    dict[str, GeneralBudget]
-        Keyed by whichever of category/subcategory is more specific.
-    """
-    rows = list(session.query(adb.GeneralBudget).filter_by(user_id=user_id))
-    category_natural_key_by_id = natural_keys_by_id(
-        session, adb.Category, user_id, [row.category_id for row in rows] + [row.subcategory_id for row in rows]
-    )
-    general_budgets: dict[str, GeneralBudget] = {}
-    for row in rows:
-        category_id = category_natural_key_by_id[row.category_id]
-        subcategory_id = category_natural_key_by_id.get(row.subcategory_id) if row.subcategory_id is not None else None
-        general_budgets[general_budget_key(category_id, subcategory_id)] = GeneralBudget(
-            category_id=category_id,
-            subcategory_id=subcategory_id,
-            amount=row.amount,
-            currency=row.currency,  # type: ignore[arg-type]
-        )
-    return general_budgets
-
-
-def replace_general_budgets(session: Session, user_id: uuid.UUID, general_budgets: Iterable[GeneralBudget]) -> None:
-    """Replace this user's whole standing-budget set, touching no other table.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose general budgets these are.
-    general_budgets
-        The complete desired set.
-    """
-    session.query(adb.GeneralBudget).filter_by(user_id=user_id).delete()
-    session.flush()
-    session.add_all(
-        adb.GeneralBudget(
-            id=derive_id(
-                user_id,
-                "general_budgets",
-                general_budget_row_key(general_budget.category_id, general_budget.subcategory_id),
-            ),
-            user_id=user_id,
-            category_id=_category_id(user_id, general_budget.category_id),
-            subcategory_id=_category_id(user_id, general_budget.subcategory_id),
-            amount=general_budget.amount,
-            currency=general_budget.currency,
-        )
-        for general_budget in general_budgets
-    )
-    session.flush()
-
-
-def upsert_general_budget(general_budget: GeneralBudget, session: Session, user_id: uuid.UUID) -> None:
-    """Insert-or-update one standing (all-month) budget, touching no other entry.
-
-    Keyed by the category/subcategory pair, so re-setting the same
-    category's standing target is last-write-wins.
-
-    Parameters
-    ----------
-    general_budget
-        The standing budget to persist.
-    session
-        An open database session; `session.commit()` is called on success.
-    user_id
-        Whose general budget this is.
-    """
-    row_key = general_budget_row_key(general_budget.category_id, general_budget.subcategory_id)
-    session.execute(
-        text(
-            """
-            INSERT INTO accounting.general_budgets
-                (id, user_id, category_id, subcategory_id, amount, currency)
-            VALUES
-                (:id, :user_id, :category_id, :subcategory_id, :amount, :currency)
-            ON CONFLICT (id) DO UPDATE SET
-                category_id = EXCLUDED.category_id,
-                subcategory_id = EXCLUDED.subcategory_id,
-                amount = EXCLUDED.amount,
-                currency = EXCLUDED.currency
-            """
-        ),
-        {
-            "id": str(derive_id(user_id, "general_budgets", row_key)),
-            "user_id": str(user_id),
-            "category_id": str(derive_id(user_id, "categories", general_budget.category_id)),
-            "subcategory_id": str(sub)
-            if (sub := _category_id(user_id, general_budget.subcategory_id)) is not None
-            else None,
-            "amount": general_budget.amount,
-            "currency": general_budget.currency,
-        },
-    )
-    session.commit()
-
-
-def remove_general_budget(session: Session, user_id: uuid.UUID, category_id: str, subcategory_id: str | None) -> bool:
-    """Delete one standing budget by its category/subcategory, touching no other. Idempotent, no version check.
-
-    Returns
-    -------
-    bool
-        `True` if a row was actually deleted, `False` if none existed.
-    """
-    row_id = derive_id(user_id, "general_budgets", general_budget_row_key(category_id, subcategory_id))
-    deleted = session.query(adb.GeneralBudget).filter_by(id=row_id, user_id=user_id).delete()
     session.flush()
     return deleted > 0
 
@@ -507,8 +394,7 @@ def delete_goal(session: Session, user_id: uuid.UUID, goal_id: str) -> bool:
     Idempotent by design: no version check, since a goal that's already
     gone has nothing left to conflict with. Fails loudly (an
     `IntegrityError`, uncaught) if the goal still has real
-    `GoalContribution`/`RecurringAddition`/`WithdrawalPriorityEntry` rows
-    referencing it.
+    `GoalContribution`/`GoalAutomation` rows referencing it.
 
     Returns
     -------
@@ -545,6 +431,7 @@ def load_goal_contributions(session: Session, user_id: uuid.UUID) -> dict[str, G
     posting_natural_key_by_id = natural_keys_by_id(
         session, adb.Posting, user_id, [row.source_posting_id for row in rows]
     )
+    account_natural_key_by_id = natural_keys_by_id(session, adb.Account, user_id, [row.account_id for row in rows])
     return {
         row.natural_key: GoalContribution(
             contribution_id=row.natural_key,
@@ -553,6 +440,7 @@ def load_goal_contributions(session: Session, user_id: uuid.UUID) -> dict[str, G
             amount=row.amount,
             currency=row.currency,  # type: ignore[arg-type]
             note=row.note,
+            account_id=account_natural_key_by_id.get(row.account_id) if row.account_id is not None else None,
             source_posting_id=posting_natural_key_by_id.get(row.source_posting_id)
             if row.source_posting_id is not None
             else None,
@@ -579,6 +467,7 @@ def _goal_contribution_row(user_id: uuid.UUID, contribution: GoalContribution) -
         amount=contribution.amount,
         currency=contribution.currency,
         note=contribution.note,
+        account_id=_account_id(user_id, contribution.account_id),
         source_posting_id=_posting_id(user_id, contribution.source_posting_id)
         if contribution.source_posting_id is not None
         else None,
@@ -645,16 +534,18 @@ def upsert_goal_contribution(contribution: GoalContribution, session: Session, u
         text(
             """
             INSERT INTO accounting.goal_contributions
-                (id, user_id, natural_key, goal_id, date, amount, currency, note, source_posting_id, origin, edited)
+                (id, user_id, natural_key, goal_id, date, amount, currency, note, account_id, source_posting_id,
+                 origin, edited)
             VALUES
-                (:id, :user_id, :natural_key, :goal_id, :date, :amount, :currency, :note, :source_posting_id,
-                 :origin, :edited)
+                (:id, :user_id, :natural_key, :goal_id, :date, :amount, :currency, :note, :account_id,
+                 :source_posting_id, :origin, :edited)
             ON CONFLICT (id) DO UPDATE SET
                 goal_id = EXCLUDED.goal_id,
                 date = EXCLUDED.date,
                 amount = EXCLUDED.amount,
                 currency = EXCLUDED.currency,
                 note = EXCLUDED.note,
+                account_id = EXCLUDED.account_id,
                 source_posting_id = EXCLUDED.source_posting_id,
                 origin = EXCLUDED.origin,
                 edited = EXCLUDED.edited
@@ -669,6 +560,7 @@ def upsert_goal_contribution(contribution: GoalContribution, session: Session, u
             "amount": contribution.amount,
             "currency": contribution.currency,
             "note": contribution.note,
+            "account_id": str(account) if (account := _account_id(user_id, contribution.account_id)) else None,
             "source_posting_id": str(_posting_id(user_id, contribution.source_posting_id))
             if contribution.source_posting_id is not None
             else None,
@@ -705,194 +597,198 @@ def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_
 
 
 # --------------------------------------------------------------------------
-# Recurring additions and withdrawal priorities
+# Goal automations (contributions in, withdrawals out)
 # --------------------------------------------------------------------------
 
 
-def load_recurring_additions(session: Session, user_id: uuid.UUID) -> list[RecurringAddition]:
-    """Read every recurring-addition rule.
+def withdrawal_automation_id(goal_id: str) -> str:
+    """Build the natural key the one withdrawal automation for `goal_id` always maps to.
+
+    A withdrawal automation has no identity beyond its goal — a goal
+    appears at most once in the drawdown order (the
+    `uq_goal_automations_user_withdrawal_goal` partial index) — so its id
+    is derived rather than minted, the way a general budget's used to be.
+    The `withdrawal:` prefix is what keeps it from ever colliding with a
+    contribution automation's server-minted `addition:...` id in the
+    table's shared `(user_id, natural_key)` unique constraint.
+
+    Returns
+    -------
+    str
+    """
+    return f"withdrawal:{goal_id}"
+
+
+def load_goal_automations(session: Session, user_id: uuid.UUID) -> list[GoalAutomation]:
+    """Read every goal automation — both scheduled contributions in and drawdown-ordered withdrawals out.
 
     Parameters
     ----------
     session
         An open database session.
     user_id
-        Whose rules to read.
+        Whose automations to read.
 
     Returns
     -------
-    list[RecurringAddition]
+    list[GoalAutomation]
+        Both directions in one list; `direction` tells them apart.
     """
-    rows = list(session.query(adb.RecurringAddition).filter_by(user_id=user_id))
+    rows = list(session.query(adb.GoalAutomation).filter_by(user_id=user_id))
     goal_natural_key_by_id = natural_keys_by_id(session, adb.Goal, user_id, [row.goal_id for row in rows])
     return [
-        RecurringAddition(
-            addition_id=row.natural_key,
+        GoalAutomation(
+            automation_id=row.natural_key,
             goal_id=goal_natural_key_by_id[row.goal_id],
+            direction=row.direction,  # type: ignore[arg-type]
+            priority=row.priority,
             start_date=row.start_date,
             frequency=row.frequency,  # type: ignore[arg-type]
             end_date=row.end_date,
             mode=row.mode,  # type: ignore[arg-type]
             value=row.value,
             currency=row.currency,  # type: ignore[arg-type]
-            priority=row.priority,
         )
         for row in rows
     ]
 
 
-def replace_recurring_additions(session: Session, user_id: uuid.UUID, additions: Iterable[RecurringAddition]) -> None:
-    """Replace this user's whole recurring-addition list, touching no other table.
+def _goal_automation_row(user_id: uuid.UUID, automation: GoalAutomation) -> adb.GoalAutomation:
+    """Build the ORM row for one automation.
+
+    Returns
+    -------
+    accounting.db.GoalAutomation
+    """
+    return adb.GoalAutomation(
+        id=derive_id(user_id, "goal_automations", automation.automation_id),
+        user_id=user_id,
+        natural_key=automation.automation_id,
+        goal_id=_goal_id(user_id, automation.goal_id),
+        direction=automation.direction,
+        priority=automation.priority,
+        start_date=automation.start_date,
+        frequency=automation.frequency,
+        end_date=automation.end_date,
+        mode=automation.mode,
+        value=automation.value,
+        currency=automation.currency,
+    )
+
+
+def replace_goal_automations(
+    session: Session, user_id: uuid.UUID, automations: Iterable[GoalAutomation], direction: GoalAutomationDirection
+) -> None:
+    """Replace this user's whole automation list *for one direction*, touching no other table.
+
+    Scoped to `direction` because the two directions are edited by two
+    independent bits of UI (the recurring-additions list and the
+    withdrawal ordering): replacing one must never wipe the other, even
+    though they now share a table.
 
     Parameters
     ----------
     session
         An open database session; the caller commits.
     user_id
-        Whose rules these are.
-    additions
-        The complete desired set, in priority order.
+        Whose automations these are.
+    automations
+        The complete desired set for `direction`, in priority order.
+    direction
+        Which direction is being replaced; every entry in `automations` must match it.
+
+    Raises
+    ------
+    ValueError
+        If any entry's own `direction` differs from `direction` — that
+        would delete rows of one direction and insert rows of another.
     """
-    session.query(adb.RecurringAddition).filter_by(user_id=user_id).delete()
+    rows = list(automations)
+    mismatched = [row.automation_id for row in rows if row.direction != direction]
+    if mismatched:
+        message = f"Cannot replace the {direction!r} automations with rows of another direction: {mismatched}"
+        raise ValueError(message)
+    session.query(adb.GoalAutomation).filter_by(user_id=user_id, direction=direction).delete()
     session.flush()
-    session.add_all(
-        adb.RecurringAddition(
-            id=derive_id(user_id, "recurring_additions", addition.addition_id),
-            user_id=user_id,
-            natural_key=addition.addition_id,
-            goal_id=_goal_id(user_id, addition.goal_id),
-            start_date=addition.start_date,
-            frequency=addition.frequency,
-            end_date=addition.end_date,
-            mode=addition.mode,
-            value=addition.value,
-            currency=addition.currency,
-            priority=addition.priority,
-        )
-        for addition in additions
-    )
+    session.add_all(_goal_automation_row(user_id, automation) for automation in rows)
     session.flush()
 
 
-def upsert_recurring_addition(addition: RecurringAddition, session: Session, user_id: uuid.UUID) -> None:
-    """Insert-or-update one recurring-addition rule, touching no other.
+def upsert_goal_automation(automation: GoalAutomation, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one goal automation, touching no other.
 
-    A single-field edit of one rule (its amount, dates, frequency, mode) no
-    longer blanket-reinserts every rule for the user, so it can't revert a
-    concurrent edit to a different one.
+    A single-field edit of one rule (its amount, dates, frequency, mode)
+    no longer blanket-reinserts every rule for the user, so it can't
+    revert a concurrent edit to a different one.
 
     Parameters
     ----------
-    addition
-        The recurring addition to persist.
+    automation
+        The automation to persist.
     session
         An open database session; `session.commit()` is called on success.
     user_id
-        Whose recurring addition this is.
+        Whose automation this is.
     """
     session.execute(
         text(
             """
-            INSERT INTO accounting.recurring_additions
-                (id, user_id, natural_key, goal_id, start_date, frequency, end_date, mode, value, currency, priority)
+            INSERT INTO accounting.goal_automations
+                (id, user_id, natural_key, goal_id, direction, priority, start_date, frequency, end_date,
+                 mode, value, currency)
             VALUES
-                (:id, :user_id, :natural_key, :goal_id, :start_date, :frequency, :end_date, :mode, :value,
-                 :currency, :priority)
+                (:id, :user_id, :natural_key, :goal_id, :direction, :priority, :start_date, :frequency, :end_date,
+                 :mode, :value, :currency)
             ON CONFLICT (id) DO UPDATE SET
                 goal_id = EXCLUDED.goal_id,
+                direction = EXCLUDED.direction,
+                priority = EXCLUDED.priority,
                 start_date = EXCLUDED.start_date,
                 frequency = EXCLUDED.frequency,
                 end_date = EXCLUDED.end_date,
                 mode = EXCLUDED.mode,
                 value = EXCLUDED.value,
-                currency = EXCLUDED.currency,
-                priority = EXCLUDED.priority
+                currency = EXCLUDED.currency
             """
         ),
         {
-            "id": str(derive_id(user_id, "recurring_additions", addition.addition_id)),
+            "id": str(derive_id(user_id, "goal_automations", automation.automation_id)),
             "user_id": str(user_id),
-            "natural_key": addition.addition_id,
-            "goal_id": str(_goal_id(user_id, addition.goal_id)),
-            "start_date": addition.start_date,
-            "frequency": addition.frequency,
-            "end_date": addition.end_date,
-            "mode": addition.mode,
-            "value": addition.value,
-            "currency": addition.currency,
-            "priority": addition.priority,
+            "natural_key": automation.automation_id,
+            "goal_id": str(_goal_id(user_id, automation.goal_id)),
+            "direction": automation.direction,
+            "priority": automation.priority,
+            "start_date": automation.start_date,
+            "frequency": automation.frequency,
+            "end_date": automation.end_date,
+            "mode": automation.mode,
+            "value": automation.value,
+            "currency": automation.currency,
         },
     )
     session.commit()
 
 
-def recurring_addition_exists(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
-    """Whether one recurring-addition row exists.
+def goal_automation_exists(session: Session, user_id: uuid.UUID, automation_id: str) -> bool:
+    """Whether one goal-automation row exists.
 
     Returns
     -------
     bool
     """
-    row_id = derive_id(user_id, "recurring_additions", addition_id)
-    return session.get(adb.RecurringAddition, row_id) is not None
+    row_id = derive_id(user_id, "goal_automations", automation_id)
+    return session.get(adb.GoalAutomation, row_id) is not None
 
 
-def remove_recurring_addition(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
-    """Delete one recurring-addition rule, touching no other. Idempotent, no version check.
+def remove_goal_automation(session: Session, user_id: uuid.UUID, automation_id: str) -> bool:
+    """Delete one goal automation, touching no other. Idempotent, no version check.
 
     Returns
     -------
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "recurring_additions", addition_id)
-    deleted = session.query(adb.RecurringAddition).filter_by(id=row_id, user_id=user_id).delete()
+    row_id = derive_id(user_id, "goal_automations", automation_id)
+    deleted = session.query(adb.GoalAutomation).filter_by(id=row_id, user_id=user_id).delete()
     session.flush()
     return deleted > 0
-
-
-def load_withdrawal_priorities(session: Session, user_id: uuid.UUID) -> list[WithdrawalPriorityEntry]:
-    """Read the order goals are drawn down from when unallocated money goes negative.
-
-    Parameters
-    ----------
-    session
-        An open database session.
-    user_id
-        Whose ordering to read.
-
-    Returns
-    -------
-    list[WithdrawalPriorityEntry]
-    """
-    rows = list(session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id))
-    goal_natural_key_by_id = natural_keys_by_id(session, adb.Goal, user_id, [row.goal_id for row in rows])
-    return [WithdrawalPriorityEntry(goal_id=goal_natural_key_by_id[row.goal_id], priority=row.priority) for row in rows]
-
-
-def replace_withdrawal_priorities(
-    session: Session, user_id: uuid.UUID, priorities: Iterable[WithdrawalPriorityEntry]
-) -> None:
-    """Replace this user's whole withdrawal ordering, touching no other table.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose ordering this is.
-    priorities
-        The complete desired ordering.
-    """
-    session.query(adb.WithdrawalPriorityEntry).filter_by(user_id=user_id).delete()
-    session.flush()
-    session.add_all(
-        adb.WithdrawalPriorityEntry(
-            id=derive_id(user_id, "withdrawal_priority_entries", entry.goal_id),
-            user_id=user_id,
-            goal_id=_goal_id(user_id, entry.goal_id),
-            priority=entry.priority,
-        )
-        for entry in priorities
-    )
-    session.flush()

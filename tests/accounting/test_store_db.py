@@ -24,8 +24,8 @@ from accounting.models import (
     Budget,
     CategoryPattern,
     DismissedSuggestion,
-    GeneralBudget,
     Goal,
+    GoalAutomation,
     GoalContribution,
     ManualOverride,
     ManualTransfer,
@@ -34,12 +34,10 @@ from accounting.models import (
     PostingMerge,
     PostingSplit,
     PostingSplitLeg,
-    RecurringAddition,
     SimulatorScenario,
     Tag,
     TransferLink,
     TransferRule,
-    WithdrawalPriorityEntry,
 )
 from accounting.repositories.accounts import (
     replace_accounts,
@@ -49,10 +47,9 @@ from accounting.repositories.accounts import (
 from accounting.repositories.planning import (
     insert_goal,
     replace_budgets,
-    replace_general_budgets,
+    replace_goal_automations,
     replace_goal_contributions,
-    replace_recurring_additions,
-    replace_withdrawal_priorities,
+    withdrawal_automation_id,
 )
 from accounting.repositories.interpretation import (
     delete_posting_split,
@@ -488,9 +485,11 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
     replace_budgets(
         db_session,
         test_user_id,
-        [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)],
+        [
+            Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300),
+            Budget(budget_id="b2", month=None, category_id="expense:food-drink", amount=250),
+        ],
     )
-    replace_general_budgets(db_session, test_user_id, [GeneralBudget(category_id="expense:food-drink", amount=250)])
     insert_goal(
         db_session,
         test_user_id,
@@ -508,21 +507,33 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
         test_user_id,
         [GoalContribution(contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5), amount=100)],
     )
-    replace_recurring_additions(
+    replace_goal_automations(
         db_session,
         test_user_id,
         [
-            RecurringAddition(
-                addition_id="ra1",
+            GoalAutomation(
+                automation_id="ra1",
                 goal_id="g1",
+                direction="contribution",
                 start_date=datetime(2026, 1, 1).date(),
                 frequency="monthly",
                 mode="fixed_amount",
                 value=50,
+                currency="USD",
             )
         ],
+        "contribution",
     )
-    replace_withdrawal_priorities(db_session, test_user_id, [WithdrawalPriorityEntry(goal_id="g1", priority=1)])
+    replace_goal_automations(
+        db_session,
+        test_user_id,
+        [
+            GoalAutomation(
+                automation_id=withdrawal_automation_id("g1"), goal_id="g1", direction="withdrawal", priority=1
+            )
+        ],
+        "withdrawal",
+    )
     db_session.commit()
 
     reloaded = load_store(db_session, user_id=test_user_id)
@@ -534,8 +545,7 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
     assert reloaded.other_assets[0].name == "Car"
     assert reloaded.opening_balances["checking:test"].amount == 100
     assert reloaded.manual_transfers[0].to_account_id == "savings:vault-parent"
-    assert reloaded.budgets[0].amount == 300
-    assert reloaded.general_budgets["expense:food-drink"].amount == 250
+    assert {(budget.month, budget.amount) for budget in reloaded.budgets} == {("2026-01", 300), (None, 250)}
     assert reloaded.simulator_scenarios[0].name == "Retirement"
     split = reloaded.posting_splits["p1"]
     assert [leg.amount for leg in split.legs] == [6, 4]
@@ -543,8 +553,10 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
     assert reloaded.posting_merges["m1"].duplicate_transaction_ids == ["t2"]
     assert reloaded.goals["g1"].name == "Emergency fund"
     assert reloaded.goal_contributions["gc1"].amount == 100
-    assert reloaded.recurring_additions[0].value == 50
-    assert reloaded.withdrawal_priorities[0].goal_id == "g1"
+    by_direction = {automation.direction: automation for automation in reloaded.goal_automations}
+    assert by_direction["contribution"].value == 50
+    assert by_direction["withdrawal"].goal_id == "g1"
+    assert by_direction["withdrawal"].start_date is None
 
 
 def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -783,24 +795,29 @@ def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Ses
         replace_goal_contributions(db_session, test_user_id, [contribution])
 
 
-def test_recurring_addition_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
-    addition = RecurringAddition(
-        addition_id="ra1",
+def test_contribution_automation_referencing_a_nonexistent_goal_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    automation = GoalAutomation(
+        automation_id="ra1",
         goal_id="does-not-exist",
+        direction="contribution",
         start_date=datetime(2026, 1, 1).date(),
         frequency="monthly",
         mode="fixed_amount",
         value=50,
+        currency="USD",
     )
     with pytest.raises(IntegrityError):
-        replace_recurring_additions(db_session, test_user_id, [addition])
+        replace_goal_automations(db_session, test_user_id, [automation], "contribution")
 
 
-def test_withdrawal_priority_entry_referencing_a_nonexistent_goal_raises(
+def test_withdrawal_automation_referencing_a_nonexistent_goal_raises(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
+    automation = GoalAutomation(automation_id="w1", goal_id="does-not-exist", direction="withdrawal")
     with pytest.raises(IntegrityError):
-        replace_withdrawal_priorities(db_session, test_user_id, [WithdrawalPriorityEntry(goal_id="does-not-exist")])
+        replace_goal_automations(db_session, test_user_id, [automation], "withdrawal")
 
 
 def test_posting_budget_id_round_trips_a_real_budget_reference(db_session: Session, test_user_id: uuid.UUID) -> None:

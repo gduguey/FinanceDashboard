@@ -189,8 +189,8 @@ export interface paths {
      *     state a posting that was never categorized at all is already in.
      *     Anything else referencing the deleted id(s) is cleared where the
      *     field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
-     *     entirely where it isn't (`Budget`, `GeneralBudget`, `CategoryPattern`
-     *     all require a `category_id`) — see `store.uncategorize_category_ids`.
+     *     entirely where it isn't (`Budget`, `CategoryPattern` both require a
+     *     `category_id`) — see `store.uncategorize_category_ids`.
      *
      *     Returns
      *     -------
@@ -231,9 +231,9 @@ export interface paths {
      *         `will_merge` is true if this rename would fold into an existing
      *         category rather than just changing a name; `target_name` is that
      *         existing category's name, or `None` when `will_merge` is false;
-     *         `budgets_to_delete` lists every `Budget`/`GeneralBudget` entry the
-     *         merged-away category holds that the merge target already has one
-     *         for, and which would therefore be discarded (see
+     *         `budgets_to_delete` lists every `Budget` entry (per-month or
+     *         general) the merged-away category holds that the merge target
+     *         already has one for, and which would therefore be discarded (see
      *         `store.remap_category_ids`).
      *
      *     Raises
@@ -716,7 +716,7 @@ export interface paths {
     get?: never
     /**
      * Put Budgets
-     * @description Replace the whole budget list, across every month.
+     * @description Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
      *
      *     Returns
      *     -------
@@ -726,7 +726,11 @@ export interface paths {
     put: operations['put_budgets_api_accounting_budgets_put']
     /**
      * Post Budget
-     * @description Set one month's spending target for one category (or subcategory), replacing any prior target for it.
+     * @description Set one spending target for one category (or subcategory), replacing any prior target for it.
+     *
+     *     `request.month` picks which target: a `"YYYY-MM"` sets that month's,
+     *     and omitting it sets the general, every-month-alike one. The two are
+     *     separate rows, so setting one never overwrites the other.
      *
      *     Unlike `PUT /budgets`, only the one budget in the request body is
      *     sent or touched — every other month/category's target is left alone,
@@ -757,7 +761,7 @@ export interface paths {
     post?: never
     /**
      * Delete Budget
-     * @description Remove one month's target for one category.
+     * @description Remove one target — a month's, or the general one — for one category.
      *
      *     Returns
      *     -------
@@ -770,77 +774,6 @@ export interface paths {
      *         404 if no budget has this id.
      */
     delete: operations['delete_budget_api_accounting_budgets__budget_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/general-budgets': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put General Budgets
-     * @description Replace the whole general-budget map, keyed by `category_id` — the same amount applies to every month.
-     *
-     *     Stored, edited, and displayed completely separately from `Budget`'s
-     *     per-month rows (see `models.GeneralBudget`); this never falls back to
-     *     or overwrites a per-month budget, or vice versa.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, GeneralBudget]
-     *         The general budgets just persisted.
-     */
-    put: operations['put_general_budgets_api_accounting_general_budgets_put']
-    /**
-     * Post General Budget
-     * @description Set one category's (or subcategory's) standing target, replacing any prior one for it.
-     *
-     *     Unlike `PUT /general-budgets`, only the one entry in the request body
-     *     is sent or touched.
-     *
-     *     Returns
-     *     -------
-     *     GeneralBudget
-     *         The general budget just persisted.
-     */
-    post: operations['post_general_budget_api_accounting_general_budgets_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/general-budgets/{key}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete General Budget
-     * @description Remove one category's (or subcategory's) standing target.
-     *
-     *     Returns
-     *     -------
-     *     GeneralBudgetKeyResponse
-     *         The key just removed.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no general budget has this key.
-     */
-    delete: operations['delete_general_budget_api_accounting_general_budgets__key__delete']
     options?: never
     head?: never
     patch?: never
@@ -2675,7 +2608,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/recurring-additions': {
+  '/api/accounting/goal-automations/contributions': {
     parameters: {
       query?: never
       header?: never
@@ -2684,8 +2617,12 @@ export interface paths {
     }
     get?: never
     /**
-     * Put Recurring Additions
-     * @description Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
+     * Put Goal Contribution Automations
+     * @description Replace the whole contribution-automation list — the priority-ordered allocation rules.
+     *
+     *     Scoped to `direction="contribution"`: the withdrawal ordering lives in
+     *     the same table now but is replaced by its own endpoint, so neither
+     *     list can wipe the other.
      *
      *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
      *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
@@ -2693,33 +2630,35 @@ export interface paths {
      *
      *     Returns
      *     -------
-     *     list[RecurringAddition]
-     *         The additions just persisted.
+     *     list[GoalAutomation]
+     *         The automations just persisted. Answers 400 if any entry is not a
+     *         `contribution`, or if the `remainder` invariant is broken.
      */
-    put: operations['put_recurring_additions_api_accounting_recurring_additions_put']
+    put: operations['put_goal_contribution_automations_api_accounting_goal_automations_contributions_put']
     /**
-     * Post Recurring Addition
-     * @description Create one new recurring-addition rule, appended after every rule already saved.
+     * Post Goal Automation
+     * @description Create one new scheduled contribution automation, appended after every one already saved.
      *
-     *     `addition_id` is server-minted — two rules can validly share every
+     *     `automation_id` is server-minted — two rules can validly share every
      *     other field. `priority` is never taken from the client: this always
-     *     goes after the current lowest-priority rule, matching the Goals
-     *     page's own "append at the end of the ordered list" behavior.
-     *     Drag-and-drop reordering still goes through `PUT /recurring-additions`.
+     *     goes after the current lowest-priority contribution, matching the
+     *     Goals page's own "append at the end of the ordered list" behavior.
+     *     Drag-and-drop reordering still goes through
+     *     `PUT /goal-automations/contributions`.
      *
      *     Returns
      *     -------
-     *     RecurringAddition
-     *         The addition just persisted.
+     *     GoalAutomation
+     *         The automation just persisted.
      */
-    post: operations['post_recurring_addition_api_accounting_recurring_additions_post']
+    post: operations['post_goal_automation_api_accounting_goal_automations_contributions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/recurring-additions/{addition_id}': {
+  '/api/accounting/goal-automations/{automation_id}': {
     parameters: {
       query?: never
       header?: never
@@ -2730,44 +2669,44 @@ export interface paths {
     put?: never
     post?: never
     /**
-     * Delete Recurring Addition Route
-     * @description Delete one recurring-addition rule, without touching any other. Idempotent, no version check.
+     * Delete Goal Automation Route
+     * @description Delete one goal automation, without touching any other. Idempotent, no version check.
      *
      *     Returns
      *     -------
-     *     RecurringAdditionIdResponse
-     *         The rule id just deleted.
+     *     GoalAutomationIdResponse
+     *         The automation id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if no rule with `addition_id` exists.
+     *         404 if no automation with `automation_id` exists.
      */
-    delete: operations['delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete']
+    delete: operations['delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete']
     options?: never
     head?: never
     /**
-     * Patch Recurring Addition
-     * @description Edit one recurring-addition rule in place, without touching any other. Scoped, last-write-wins.
+     * Patch Goal Automation
+     * @description Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
      *
      *     A single-rule field edit no longer round-trips through the whole-list
      *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-     *     edit to a different one); see `repositories.planning.upsert_recurring_addition`.
+     *     edit to a different one); see `repositories.planning.upsert_goal_automation`.
      *
      *     Returns
      *     -------
-     *     RecurringAddition
+     *     GoalAutomation
      *         The rule as persisted after the edit.
      *
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if no rule with `addition_id` exists.
+     *         404 if no automation with `automation_id` exists.
      */
-    patch: operations['patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch']
+    patch: operations['patch_goal_automation_api_accounting_goal_automations__automation_id__patch']
     trace?: never
   }
-  '/api/accounting/withdrawal-priorities': {
+  '/api/accounting/goal-automations/withdrawals': {
     parameters: {
       query?: never
       header?: never
@@ -2776,20 +2715,22 @@ export interface paths {
     }
     get?: never
     /**
-     * Put Withdrawal Priorities
-     * @description Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
+     * Put Goal Withdrawal Automations
+     * @description Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
      *
-     *     A pure ordering + set-membership operation (no free text or amount
-     *     anywhere), so it's last-write-wins by nature — whichever ordering was
-     *     submitted last is the intended one, and the write touches this one
-     *     table alone.
+     *     A pure ordering + set-membership operation (no free text, schedule, or
+     *     amount anywhere — a withdrawal automation carries none), so it's
+     *     last-write-wins by nature: whichever ordering was submitted last is
+     *     the intended one. Scoped to `direction="withdrawal"`, so it never
+     *     touches the contribution automations sharing the table.
      *
      *     Returns
      *     -------
-     *     list[WithdrawalPriorityEntry]
-     *         The priorities just persisted.
+     *     list[GoalAutomation]
+     *         The withdrawal automations just persisted. Answers 400 if any
+     *         entry is not a `withdrawal`.
      */
-    put: operations['put_withdrawal_priorities_api_accounting_withdrawal_priorities_put']
+    put: operations['put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put']
     post?: never
     delete?: never
     options?: never
@@ -2835,13 +2776,13 @@ export interface paths {
     put?: never
     /**
      * Post Run Recurring Additions
-     * @description Run every recurring addition whose most recent scheduled occurrence hasn't already run.
+     * @description Run every contribution automation whose most recent scheduled occurrence hasn't already run.
      *
-     *     Idempotent by construction: each addition's occurrence writes a
+     *     Idempotent by construction: each automation's occurrence writes a
      *     contribution under a deterministic id
-     *     (`f"auto:{addition_id}:{occurrence.isoformat()}"`, see
+     *     (`f"auto:{automation_id}:{occurrence.isoformat()}"`, see
      *     `ledger.goal_automations.next_recurring_occurrence`); calling this
-     *     again before the next occurrence is a no-op for any addition that id
+     *     again before the next occurrence is a no-op for any automation that id
      *     already exists for. There is no background scheduler in this app —
      *     this is meant to be called when the Goals page loads, which is the
      *     natural moment a user would notice a change anyway.
@@ -4062,10 +4003,6 @@ export interface components {
       }
       /** Transfer Links */
       transfer_links: components['schemas']['TransferLink'][]
-      /** General Budgets */
-      general_budgets: {
-        [key: string]: components['schemas']['GeneralBudget']
-      }
       /** Category Patterns */
       category_patterns: {
         [key: string]: components['schemas']['CategoryPattern']
@@ -4078,10 +4015,8 @@ export interface components {
       goal_contributions: {
         [key: string]: components['schemas']['GoalContribution']
       }
-      /** Recurring Additions */
-      recurring_additions: components['schemas']['RecurringAddition'][]
-      /** Withdrawal Priorities */
-      withdrawal_priorities: components['schemas']['WithdrawalPriorityEntry'][]
+      /** Goal Automations */
+      goal_automations: components['schemas']['GoalAutomation'][]
     }
     /**
      * AllocationRow
@@ -4233,7 +4168,15 @@ export interface components {
     }
     /**
      * Budget
-     * @description One month's spending target for one top-level expense category, or one of its subcategories.
+     * @description One spending target for one top-level expense category, or one of its subcategories.
+     *
+     *     `month` is what scopes the target: a `"YYYY-MM"` string targets that
+     *     one month, and `None` is the *general* target — the standing amount
+     *     that applies to every month alike, which the Budget page's "General"
+     *     mode edits. Both live in the same list (and the same `budgets` table):
+     *     a month target and a general target for the same category coexist as
+     *     two rows, and neither falls back to or overwrites the other, so
+     *     switching the page's mode never silently rewrites the other one.
      *
      *     `category_id` is always the top-level category, matching
      *     `Posting.category_id`. `subcategory_id`, when set, scopes the target to
@@ -4254,7 +4197,7 @@ export interface components {
       /** Budget Id */
       budget_id: string
       /** Month */
-      month: string
+      month?: string | null
       /** Category Id */
       category_id: string
       /** Subcategory Id */
@@ -4305,13 +4248,13 @@ export interface components {
     }
     /**
      * BudgetToDeletePreview
-     * @description One `Budget`/`GeneralBudget` entry a category merge would discard rather than keep.
+     * @description One `Budget` entry a category merge would discard rather than keep.
      *
      *     The merged-away category's own entry is what's described here — the
      *     merge target's entry for the same month/category always survives
      *     unchanged (see `store.remap_category_ids`). `month` is `None` for a
-     *     `GeneralBudget` (applies to every month alike), or `"YYYY-MM"` for a
-     *     per-month `Budget`.
+     *     general budget (applies to every month alike), or `"YYYY-MM"` for a
+     *     per-month one.
      */
     BudgetToDeletePreview: {
       /** Month */
@@ -4326,19 +4269,24 @@ export interface components {
     }
     /**
      * BudgetUpsert
-     * @description Request body for `POST /api/accounting/budgets` — sets one month's target for one category.
+     * @description Request body for `POST /api/accounting/budgets` — sets one target for one category.
+     *
+     *     `month` is what picks which kind of target this is: `"YYYY-MM"` sets
+     *     that one month's, and omitting it (`null`) sets the general,
+     *     every-month-alike one. The two are separate rows and neither
+     *     overwrites the other.
      *
      *     `budget_id` is never taken from the client — derived server-side from
      *     `(month, category_id, subcategory_id)`, the same natural key
      *     `PUT /budgets/{budget_id}` used to require the whole list to encode
-     *     implicitly. Posting this twice for the same `(month, category_id,
-     *     subcategory_id)` replaces the existing target rather than erroring —
-     *     unlike a category/tag name, there's no ambiguity a human needs to
-     *     confirm here, every tuple maps to exactly one budget.
+     *     implicitly. Posting this twice for the same triple replaces the
+     *     existing target rather than erroring — unlike a category/tag name,
+     *     there's no ambiguity a human needs to confirm here, every triple maps
+     *     to exactly one budget.
      */
     BudgetUpsert: {
       /** Month */
-      month: string
+      month?: string | null
       /** Category Id */
       category_id: string
       /** Subcategory Id */
@@ -5062,59 +5010,6 @@ export interface components {
       smoothed_rate: number
     }
     /**
-     * GeneralBudget
-     * @description A category's (or subcategory's) spending target applied to every month alike.
-     *
-     *     Independent of any per-month `Budget` rows — the Budget page's
-     *     "General" mode edits these; its "Per month" mode
-     *     edits `Budget` instead — the two are stored completely separately (see
-     *     `store.AccountingStore`), never merged or falling back to one
-     *     another, so switching modes never silently overwrites the other.
-     */
-    GeneralBudget: {
-      /** Category Id */
-      category_id: string
-      /** Subcategory Id */
-      subcategory_id?: string | null
-      /** Amount */
-      amount: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-    }
-    /**
-     * GeneralBudgetKeyResponse
-     * @description Response body naming one general budget's key, for endpoints whose only real effect is removing something.
-     */
-    GeneralBudgetKeyResponse: {
-      /** Key */
-      key: string
-    }
-    /**
-     * GeneralBudgetUpsert
-     * @description Request body for `POST /api/accounting/general-budgets` — sets one category's standing target.
-     *
-     *     Same upsert-by-natural-key reasoning as `BudgetUpsert`, keyed by
-     *     `(category_id, subcategory_id)` instead of also including a month.
-     */
-    GeneralBudgetUpsert: {
-      /** Category Id */
-      category_id: string
-      /** Subcategory Id */
-      subcategory_id?: string | null
-      /** Amount */
-      amount: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-    }
-    /**
      * Goal
      * @description A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
      *
@@ -5156,6 +5051,171 @@ export interface components {
       version: number
     }
     /**
+     * GoalAutomation
+     * @description One ordered rule for automatically moving money into — or out of — a goal.
+     *
+     *     `direction` is the discriminator, and it decides which of the fields
+     *     below are set (enforced here *and* by the `goal_automations` table's
+     *     own `schedule_matches_direction` CHECK, so neither layer can drift):
+     *
+     *     - `direction="contribution"` carries the whole schedule —
+     *       `start_date` + `frequency`, optionally bounded by `end_date`; see
+     *       `ledger.goal_automations.next_recurring_occurrence` for how a due
+     *       date is derived from those. For `frequency="monthly"`, the day of
+     *       month is `start_date`'s own day, capped at 28 so every month
+     *       actually has that day rather than silently skipping February on a
+     *       day-30 schedule. `mode`/`value`/`currency` say how much it wants.
+     *     - `direction="withdrawal"` carries none of them. The withdrawal
+     *       automation (`ledger.goal_automations.run_withdrawal_automation`) is
+     *       event-driven — triggered whenever unallocated money dips below zero
+     *       — not scheduled, so a withdrawal row is nothing but its goal and
+     *       its place in the drawdown order.
+     *
+     *     `priority` is the manually-set execution order (lowest first) the
+     *     Goals page's drag-and-drop reorders, and means the corresponding
+     *     thing in each direction: which contribution gets funded first (a
+     *     `fixed_amount` row funded first can leave less, or nothing, for a
+     *     lower-priority one when unallocated money runs out — see
+     *     `ledger.goal_automations.run_recurring_additions`), and which goal
+     *     gets drawn down first. `mode="remainder"` ("whatever's left after all
+     *     the others") is only ever valid on the single lowest-priority
+     *     contribution — enforced by the API that persists the list, not by
+     *     this model.
+     */
+    GoalAutomation: {
+      /** Automation Id */
+      automation_id: string
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Direction
+       * @enum {string}
+       */
+      direction: 'contribution' | 'withdrawal'
+      /**
+       * Priority
+       * @default 0
+       */
+      priority: number
+      /** Start Date */
+      start_date?: string | null
+      /** Frequency */
+      frequency?: ('daily' | 'weekly' | 'biweekly' | 'monthly') | null
+      /** End Date */
+      end_date?: string | null
+      /** Mode */
+      mode?: ('fixed_amount' | 'percent_of_unallocated' | 'remainder') | null
+      /** Value */
+      value?: number | null
+      /** Currency */
+      currency?: ('USD' | 'EUR') | null
+    }
+    /**
+     * GoalAutomationCreate
+     * @description Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
+     *
+     *     Only the `contribution` direction is creatable one at a time: a
+     *     withdrawal automation has no fields of its own beyond its goal and its
+     *     place in the drawdown order, so the Goals page only ever submits that
+     *     ordering wholesale (`PUT /goal-automations/withdrawals`).
+     *
+     *     `automation_id` is server-minted, same reasoning as `GoalCreate`.
+     *     `priority` is never taken from the client either — a newly created
+     *     rule always goes last (one past the current lowest-priority row),
+     *     matching the Goals page's own "append at the end of the ordered list"
+     *     behavior; drag-and-drop reordering still goes through the existing
+     *     `PUT /goal-automations/contributions`, unaffected by this.
+     */
+    GoalAutomationCreate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+    }
+    /**
+     * GoalAutomationIdResponse
+     * @description Response body naming one goal automation, for endpoints whose only real effect is removing something.
+     */
+    GoalAutomationIdResponse: {
+      /** Automation Id */
+      automation_id: string
+    }
+    /**
+     * GoalAutomationUpdate
+     * @description Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
+     *
+     *     A single-rule field edit (amount, dates, frequency, mode, goal),
+     *     scoped to its own `automation_id` so it never blanket-reinserts every
+     *     rule. Carries `priority` unchanged (the row keeps its place);
+     *     re-ordering the whole list is still
+     *     `PUT /goal-automations/contributions`. No `expected_version`: like a
+     *     budget cell, an edit of one rule is last-write-wins on that rule (see
+     *     `docs/app-stack/optimistic-concurrency-versioning.md`).
+     *
+     *     Contribution-shaped for the same reason `GoalAutomationCreate` is —
+     *     there is nothing on a withdrawal automation a `PATCH` could edit.
+     */
+    GoalAutomationUpdate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+      /** Priority */
+      priority: number
+    }
+    /**
      * GoalContribution
      * @description One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
      *
@@ -5171,6 +5231,12 @@ export interface components {
      *     a manually-entered contribution from one an automation wrote; `edited`
      *     flags an automation-written contribution the user has since hand-edited,
      *     so the ledger table can show it's no longer purely automatic.
+     *
+     *     `account_id` names the account the allocated money actually sits in
+     *     ("envelope over balance"). It is plumbing only for now: nothing in
+     *     `dashboard.goals` reads it, so no goal balance, net-worth figure, or
+     *     unallocated-money computation changes because it is set — a later
+     *     change makes the unallocated arithmetic account-aware.
      */
     GoalContribution: {
       /** Contribution Id */
@@ -5195,6 +5261,8 @@ export interface components {
        * @default
        */
       note: string
+      /** Account Id */
+      account_id?: string | null
       /** Source Posting Id */
       source_posting_id?: string | null
       /**
@@ -5216,6 +5284,10 @@ export interface components {
      *     `contribution_id` is never taken from the client — unlike a budget's
      *     `(month, category_id)`, a contribution is an arbitrary event with no
      *     natural key to derive one from, so the server generates an opaque one.
+     *
+     *     `account_id` records which account the allocated money actually sits
+     *     in; it is stored and echoed back, and read by nothing else yet — see
+     *     `models.GoalContribution`.
      */
     GoalContributionCreate: {
       /** Goal Id */
@@ -5238,6 +5310,8 @@ export interface components {
        * @default
        */
       note: string
+      /** Account Id */
+      account_id?: string | null
       /** Source Posting Id */
       source_posting_id?: string | null
       /**
@@ -5289,6 +5363,8 @@ export interface components {
        * @default
        */
       note: string
+      /** Account Id */
+      account_id?: string | null
       /** Source Posting Id */
       source_posting_id?: string | null
       /**
@@ -6297,160 +6373,6 @@ export interface components {
       total_posting_count: number
     }
     /**
-     * RecurringAddition
-     * @description One ordered rule for automatically allocating unallocated money into a goal on a recurring schedule.
-     *
-     *     `priority` is the manually-set execution order (lowest first) the
-     *     Goals page's drag-and-drop reorders — a `fixed_amount` row funded
-     *     first can leave less (or nothing) for a lower-priority one when
-     *     unallocated money runs out; see `ledger.goal_automations.run_recurring_additions`.
-     *     `mode="remainder"` ("whatever's left after all the others") is only
-     *     ever valid on the single lowest-priority row — enforced by the API
-     *     that persists this list, not by this model.
-     *
-     *     The schedule itself is `start_date` + `frequency`, optionally bounded
-     *     by `end_date` — see `ledger.goal_automations.next_recurring_occurrence`
-     *     for how a due date is derived from these. For `frequency="monthly"`,
-     *     the day of month is `start_date`'s own day, capped at 28 so every
-     *     month actually has that day rather than silently skipping February on
-     *     a day-30 schedule.
-     */
-    RecurringAddition: {
-      /** Addition Id */
-      addition_id: string
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Start Date
-       * Format: date
-       */
-      start_date: string
-      /**
-       * Frequency
-       * @enum {string}
-       */
-      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
-      /** End Date */
-      end_date?: string | null
-      /**
-       * Mode
-       * @enum {string}
-       */
-      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
-      /**
-       * Value
-       * @default 0
-       */
-      value: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-      /**
-       * Priority
-       * @default 0
-       */
-      priority: number
-    }
-    /**
-     * RecurringAdditionCreate
-     * @description Request body for `POST /api/accounting/recurring-additions` — creates one new automation rule.
-     *
-     *     `addition_id` is server-minted, same reasoning as `GoalCreate`.
-     *     `priority` is never taken from the client either — a newly created
-     *     rule always goes last (one past the current lowest-priority row),
-     *     matching the Goals page's own "append at the end of the ordered list"
-     *     behavior; drag-and-drop reordering still goes through the existing
-     *     `PUT /recurring-additions`, unaffected by this.
-     */
-    RecurringAdditionCreate: {
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Start Date
-       * Format: date
-       */
-      start_date: string
-      /**
-       * Frequency
-       * @enum {string}
-       */
-      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
-      /** End Date */
-      end_date?: string | null
-      /**
-       * Mode
-       * @enum {string}
-       */
-      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
-      /**
-       * Value
-       * @default 0
-       */
-      value: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-    }
-    /**
-     * RecurringAdditionIdResponse
-     * @description Response body naming one recurring addition, for endpoints whose only real effect is removing something.
-     */
-    RecurringAdditionIdResponse: {
-      /** Addition Id */
-      addition_id: string
-    }
-    /**
-     * RecurringAdditionUpdate
-     * @description Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
-     *
-     *     A single-rule field edit (amount, dates, frequency, mode, goal), scoped
-     *     to its own `addition_id` so it never blanket-reinserts every rule.
-     *     Carries `priority` unchanged (the row keeps its place); re-ordering the
-     *     whole list is still `PUT /recurring-additions`. No `expected_version`:
-     *     like a budget cell, an edit of one rule is last-write-wins on that rule
-     *     (see `docs/app-stack/optimistic-concurrency-versioning.md`).
-     */
-    RecurringAdditionUpdate: {
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Start Date
-       * Format: date
-       */
-      start_date: string
-      /**
-       * Frequency
-       * @enum {string}
-       */
-      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
-      /** End Date */
-      end_date?: string | null
-      /**
-       * Mode
-       * @enum {string}
-       */
-      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
-      /**
-       * Value
-       * @default 0
-       */
-      value: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-      /** Priority */
-      priority: number
-    }
-    /**
      * RiskStat
      * @description The largest peak-to-trough NAV decline over a window.
      */
@@ -7266,24 +7188,6 @@ export interface components {
       withdrawals: components['schemas']['GoalContribution'][]
       /** Remaining Shortfall */
       remaining_shortfall: number
-    }
-    /**
-     * WithdrawalPriorityEntry
-     * @description One goal's place in the order goals are drawn down from when unallocated money goes negative.
-     *
-     *     Purely an ordering — the withdrawal automation itself
-     *     (`ledger.goal_automations.run_withdrawal_automation`) is event-driven
-     *     (triggered whenever unallocated dips below zero), not scheduled, so
-     *     there's no schedule field here the way `RecurringAddition` has one.
-     */
-    WithdrawalPriorityEntry: {
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Priority
-       * @default 0
-       */
-      priority: number
     }
     /**
      * VerifyResult
@@ -8174,107 +8078,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['BudgetIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_general_budgets_api_accounting_general_budgets_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['GeneralBudget']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['GeneralBudget']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_general_budget_api_accounting_general_budgets_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GeneralBudgetUpsert']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GeneralBudget']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_general_budget_api_accounting_general_budgets__key__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        key: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GeneralBudgetKeyResponse']
         }
       }
       /** @description Validation Error */
@@ -10305,7 +10108,7 @@ export interface operations {
       }
     }
   }
-  put_recurring_additions_api_accounting_recurring_additions_put: {
+  put_goal_contribution_automations_api_accounting_goal_automations_contributions_put: {
     parameters: {
       query?: never
       header?: never
@@ -10314,7 +10117,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['RecurringAddition'][]
+        'application/json': components['schemas']['GoalAutomation'][]
       }
     }
     responses: {
@@ -10324,7 +10127,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAddition'][]
+          'application/json': components['schemas']['GoalAutomation'][]
         }
       }
       /** @description Validation Error */
@@ -10338,7 +10141,7 @@ export interface operations {
       }
     }
   }
-  post_recurring_addition_api_accounting_recurring_additions_post: {
+  post_goal_automation_api_accounting_goal_automations_contributions_post: {
     parameters: {
       query?: never
       header?: never
@@ -10347,7 +10150,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['RecurringAdditionCreate']
+        'application/json': components['schemas']['GoalAutomationCreate']
       }
     }
     responses: {
@@ -10357,7 +10160,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAddition']
+          'application/json': components['schemas']['GoalAutomation']
         }
       }
       /** @description Validation Error */
@@ -10371,12 +10174,12 @@ export interface operations {
       }
     }
   }
-  delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete: {
+  delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete: {
     parameters: {
       query?: never
       header?: never
       path: {
-        addition_id: string
+        automation_id: string
       }
       cookie?: never
     }
@@ -10388,7 +10191,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAdditionIdResponse']
+          'application/json': components['schemas']['GoalAutomationIdResponse']
         }
       }
       /** @description Validation Error */
@@ -10402,18 +10205,18 @@ export interface operations {
       }
     }
   }
-  patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch: {
+  patch_goal_automation_api_accounting_goal_automations__automation_id__patch: {
     parameters: {
       query?: never
       header?: never
       path: {
-        addition_id: string
+        automation_id: string
       }
       cookie?: never
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['RecurringAdditionUpdate']
+        'application/json': components['schemas']['GoalAutomationUpdate']
       }
     }
     responses: {
@@ -10423,7 +10226,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAddition']
+          'application/json': components['schemas']['GoalAutomation']
         }
       }
       /** @description Validation Error */
@@ -10437,7 +10240,7 @@ export interface operations {
       }
     }
   }
-  put_withdrawal_priorities_api_accounting_withdrawal_priorities_put: {
+  put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put: {
     parameters: {
       query?: never
       header?: never
@@ -10446,7 +10249,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['WithdrawalPriorityEntry'][]
+        'application/json': components['schemas']['GoalAutomation'][]
       }
     }
     responses: {
@@ -10456,7 +10259,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['WithdrawalPriorityEntry'][]
+          'application/json': components['schemas']['GoalAutomation'][]
         }
       }
       /** @description Validation Error */

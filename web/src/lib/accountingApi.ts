@@ -24,9 +24,10 @@ import type {
   DismissSuggestionRequest,
   DuplicateGroup,
   ExchangeRateHistoryPoint,
-  GeneralBudget,
-  GeneralBudgetUpsert,
   Goal,
+  GoalAutomation,
+  GoalAutomationCreate,
+  GoalAutomationUpdate,
   GoalContribution,
   GoalContributionCreate,
   GoalContributionUpdate,
@@ -53,9 +54,6 @@ import type {
   PostingMergeUpsert,
   PostingSplitLeg,
   ProjectionPoint,
-  RecurringAddition,
-  RecurringAdditionCreate,
-  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
@@ -68,7 +66,6 @@ import type {
   TransferRuleUpdate,
   TransferSuggestion,
   VerifyResult,
-  WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
 // One request path for every accounting endpoint. Nothing store-wide is
@@ -426,10 +423,6 @@ export const accountingApi = {
   setBudget: (budget: BudgetUpsert) => request<Budget>('/api/accounting/budgets', jsonInit('POST', budget)),
   removeBudget: (budgetId: string) =>
     request<{ budget_id: string }>(`/api/accounting/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
-  setGeneralBudget: (generalBudget: GeneralBudgetUpsert) =>
-    request<GeneralBudget>('/api/accounting/general-budgets', jsonInit('POST', generalBudget)),
-  removeGeneralBudget: (key: string) =>
-    request<{ key: string }>(`/api/accounting/general-budgets/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   budgetComparison: (month: string, displayCurrency?: string) =>
     request<BudgetComparisonRow[]>(
       `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,
@@ -484,21 +477,21 @@ export const accountingApi = {
     request<{ contribution_id: string }>(`/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`, {
       method: 'DELETE',
     }),
-  putRecurringAdditions: (additions: RecurringAddition[]) =>
-    request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
-  createRecurringAddition: (addition: RecurringAdditionCreate) =>
-    request<RecurringAddition>('/api/accounting/recurring-additions', jsonInit('POST', addition)),
-  patchRecurringAddition: (additionId: string, update: RecurringAdditionUpdate) =>
-    request<RecurringAddition>(
-      `/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`,
+  putContributionAutomations: (automations: GoalAutomation[]) =>
+    request<GoalAutomation[]>('/api/accounting/goal-automations/contributions', jsonInit('PUT', automations)),
+  createContributionAutomation: (automation: GoalAutomationCreate) =>
+    request<GoalAutomation>('/api/accounting/goal-automations/contributions', jsonInit('POST', automation)),
+  patchGoalAutomation: (automationId: string, update: GoalAutomationUpdate) =>
+    request<GoalAutomation>(
+      `/api/accounting/goal-automations/${encodeURIComponent(automationId)}`,
       jsonInit('PATCH', update),
     ),
-  deleteRecurringAddition: (additionId: string) =>
-    request<{ addition_id: string }>(`/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`, {
+  deleteGoalAutomation: (automationId: string) =>
+    request<{ automation_id: string }>(`/api/accounting/goal-automations/${encodeURIComponent(automationId)}`, {
       method: 'DELETE',
     }),
-  putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
-    request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
+  putWithdrawalAutomations: (automations: GoalAutomation[]) =>
+    request<GoalAutomation[]>('/api/accounting/goal-automations/withdrawals', jsonInit('PUT', automations)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
   goalsSummary: (asOf?: string, displayCurrency?: string) =>
     request<GoalsSummary>(

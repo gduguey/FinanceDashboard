@@ -19,6 +19,15 @@ CHECKING_CSV = (
 )
 
 
+def _withdrawal(goal_id: str, priority: int) -> dict[str, object]:
+    return {
+        "automation_id": f"withdrawal:{goal_id}",
+        "goal_id": goal_id,
+        "direction": "withdrawal",
+        "priority": priority,
+    }
+
+
 def _fake_rate_history() -> pl.DataFrame:
     today = date.today()
     return pl.DataFrame(
@@ -351,6 +360,40 @@ def test_post_goal_contribution_creates_one_with_a_server_generated_id(client) -
     assert set(contributions.keys()) == {created["contribution_id"]}
 
 
+def test_post_goal_contribution_round_trips_the_account_the_money_sits_in(client) -> None:
+    # Plumbing only: `account_id` is stored and read back, and no balance or
+    # unallocated figure moves because it is set (see `models.GoalContribution`).
+    _create_goal(client)
+    account = _create_account(client, name="Vault", kind="savings", institution="SoFi")
+
+    created = client.post(
+        "/api/accounting/goal-contributions",
+        json={
+            "goal_id": "emergency-fund",
+            "date": "2026-06-10T00:00:00",
+            "amount": 500.0,
+            "currency": "USD",
+            "account_id": account["account_id"],
+        },
+    ).json()
+    assert created["account_id"] == account["account_id"]
+
+    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    assert contributions[created["contribution_id"]]["account_id"] == account["account_id"]
+
+    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
+
+
+def test_post_goal_contribution_defaults_the_account_to_none(client) -> None:
+    _create_goal(client)
+    created = client.post(
+        "/api/accounting/goal-contributions",
+        json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
+    ).json()
+    assert created["account_id"] is None
+
+
 def test_post_goal_contribution_twice_creates_two_distinct_rows(client) -> None:
     _create_goal(client)
     body = {"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"}
@@ -450,15 +493,16 @@ def test_goals_summary_converts_into_the_requested_display_currency(client, monk
     assert summary["unallocated"] == pytest.approx(1250.0)
 
 
-def test_run_recurring_additions_writes_a_contribution_once_due(client) -> None:
+def test_run_contribution_automations_writes_a_contribution_once_due(client) -> None:
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/recurring-additions",
+        "/api/accounting/goal-automations/contributions",
         json=[
             {
-                "addition_id": "auto:emergency-fund",
+                "automation_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
+                "direction": "contribution",
                 "start_date": "2026-01-05",
                 "frequency": "monthly",
                 "mode": "fixed_amount",
@@ -480,15 +524,16 @@ def test_run_recurring_additions_writes_a_contribution_once_due(client) -> None:
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
 
 
-def test_run_recurring_additions_is_idempotent_within_the_same_month(client) -> None:
+def test_run_contribution_automations_is_idempotent_within_the_same_month(client) -> None:
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/recurring-additions",
+        "/api/accounting/goal-automations/contributions",
         json=[
             {
-                "addition_id": "auto:emergency-fund",
+                "automation_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
+                "direction": "contribution",
                 "start_date": "2026-01-05",
                 "frequency": "monthly",
                 "mode": "fixed_amount",
@@ -506,15 +551,16 @@ def test_run_recurring_additions_is_idempotent_within_the_same_month(client) -> 
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)  # not double-funded
 
 
-def test_run_recurring_additions_supports_a_weekly_schedule(client) -> None:
+def test_run_contribution_automations_supports_a_weekly_schedule(client) -> None:
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/recurring-additions",
+        "/api/accounting/goal-automations/contributions",
         json=[
             {
-                "addition_id": "auto:emergency-fund",
+                "automation_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
+                "direction": "contribution",
                 "start_date": "2026-06-01",
                 "frequency": "weekly",
                 "mode": "fixed_amount",
@@ -537,15 +583,16 @@ def test_run_recurring_additions_supports_a_weekly_schedule(client) -> None:
     assert summary["balances"]["emergency-fund"] == pytest.approx(200.0)
 
 
-def test_run_recurring_additions_stops_after_the_end_date(client) -> None:
+def test_run_contribution_automations_stops_after_the_end_date(client) -> None:
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/recurring-additions",
+        "/api/accounting/goal-automations/contributions",
         json=[
             {
-                "addition_id": "auto:emergency-fund",
+                "automation_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
+                "direction": "contribution",
                 "start_date": "2026-06-01",
                 "frequency": "daily",
                 "end_date": "2026-06-03",
@@ -564,15 +611,26 @@ def test_run_recurring_additions_stops_after_the_end_date(client) -> None:
     assert summary["balances"]["emergency-fund"] == pytest.approx(50.0)
 
 
-def test_put_recurring_additions_still_accepts_the_legacy_schedule_day_of_month(client) -> None:
+def test_put_contribution_automations_rejects_a_withdrawal_in_the_body(client) -> None:
+    # Both directions share one table, and each whole-list PUT only deletes its
+    # own direction's rows — a mixed body would silently drop the mismatched
+    # entries, so it is refused outright.
+    _create_goal(client)
+    response = client.put("/api/accounting/goal-automations/contributions", json=[_withdrawal("emergency-fund", 0)])
+    assert response.status_code == 400
+
+
+def test_put_withdrawal_automations_rejects_a_contribution_in_the_body(client) -> None:
     _create_goal(client)
     response = client.put(
-        "/api/accounting/recurring-additions",
+        "/api/accounting/goal-automations/withdrawals",
         json=[
             {
-                "addition_id": "auto:emergency-fund",
+                "automation_id": "auto:emergency-fund",
                 "goal_id": "emergency-fund",
-                "schedule_day_of_month": 5,
+                "direction": "contribution",
+                "start_date": "2026-01-05",
+                "frequency": "monthly",
                 "mode": "fixed_amount",
                 "value": 500.0,
                 "currency": "USD",
@@ -580,16 +638,38 @@ def test_put_recurring_additions_still_accepts_the_legacy_schedule_day_of_month(
             }
         ],
     )
-    assert response.status_code == 200
-    saved = response.json()[0]
-    assert saved["frequency"] == "monthly"
-    assert saved["start_date"] == "2000-01-05"
+    assert response.status_code == 400
 
 
-def test_post_recurring_addition_creates_one_with_a_server_generated_id(client) -> None:
+def test_replacing_one_direction_leaves_the_other_untouched(client) -> None:
+    _create_goal(client)
+    client.put(
+        "/api/accounting/goal-automations/contributions",
+        json=[
+            {
+                "automation_id": "auto:emergency-fund",
+                "goal_id": "emergency-fund",
+                "direction": "contribution",
+                "start_date": "2026-01-05",
+                "frequency": "monthly",
+                "mode": "fixed_amount",
+                "value": 500.0,
+                "currency": "USD",
+                "priority": 0,
+            }
+        ],
+    )
+    client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    client.put("/api/accounting/goal-automations/contributions", json=[])
+
+    automations = client.get("/api/accounting/store").json()["goal_automations"]
+    assert [automation["direction"] for automation in automations] == ["withdrawal"]
+
+
+def test_post_goal_automation_creates_one_with_a_server_generated_id(client) -> None:
     _create_goal(client)
     response = client.post(
-        "/api/accounting/recurring-additions",
+        "/api/accounting/goal-automations/contributions",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -600,13 +680,13 @@ def test_post_recurring_addition_creates_one_with_a_server_generated_id(client) 
         },
     )
     assert response.status_code == 200
-    addition = response.json()
-    assert addition["addition_id"]
-    assert addition["goal_id"] == "emergency-fund"
-    assert addition["priority"] == 0
+    automation = response.json()
+    assert automation["automation_id"]
+    assert automation["goal_id"] == "emergency-fund"
+    assert automation["priority"] == 0
 
 
-def test_post_recurring_addition_appends_after_existing_ones_by_priority(client) -> None:
+def test_post_goal_automation_appends_after_existing_ones_by_priority(client) -> None:
     _create_goal(client)
     payload = {
         "goal_id": "emergency-fund",
@@ -616,14 +696,14 @@ def test_post_recurring_addition_appends_after_existing_ones_by_priority(client)
         "value": 500.0,
         "currency": "USD",
     }
-    first = client.post("/api/accounting/recurring-additions", json=payload).json()
-    second = client.post("/api/accounting/recurring-additions", json=payload).json()
-    assert first["addition_id"] != second["addition_id"]
+    first = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    second = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    assert first["automation_id"] != second["automation_id"]
     assert first["priority"] == 0
     assert second["priority"] == 1
 
 
-def test_patch_recurring_addition_edits_one_without_touching_another(client) -> None:
+def test_patch_goal_automation_edits_one_without_touching_another(client) -> None:
     _create_goal(client)
     payload = {
         "goal_id": "emergency-fund",
@@ -633,11 +713,11 @@ def test_patch_recurring_addition_edits_one_without_touching_another(client) -> 
         "value": 500.0,
         "currency": "USD",
     }
-    first = client.post("/api/accounting/recurring-additions", json=payload).json()
-    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+    first = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    second = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
 
     response = client.patch(
-        f"/api/accounting/recurring-additions/{first['addition_id']}",
+        f"/api/accounting/goal-automations/{first['automation_id']}",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -651,15 +731,15 @@ def test_patch_recurring_addition_edits_one_without_touching_another(client) -> 
     assert response.status_code == 200
     assert response.json()["value"] == pytest.approx(750.0)
 
-    additions = {a["addition_id"]: a for a in client.get("/api/accounting/store").json()["recurring_additions"]}
-    assert additions[first["addition_id"]]["value"] == pytest.approx(750.0)
-    assert additions[second["addition_id"]]["value"] == pytest.approx(500.0)  # untouched
+    additions = {a["automation_id"]: a for a in client.get("/api/accounting/store").json()["goal_automations"]}
+    assert additions[first["automation_id"]]["value"] == pytest.approx(750.0)
+    assert additions[second["automation_id"]]["value"] == pytest.approx(500.0)  # untouched
 
 
-def test_patch_recurring_addition_404s_for_an_unknown_id(client) -> None:
+def test_patch_goal_automation_404s_for_an_unknown_id(client) -> None:
     _create_goal(client)
     response = client.patch(
-        "/api/accounting/recurring-additions/nope",
+        "/api/accounting/goal-automations/nope",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -673,7 +753,7 @@ def test_patch_recurring_addition_404s_for_an_unknown_id(client) -> None:
     assert response.status_code == 404
 
 
-def test_delete_recurring_addition_removes_only_that_one(client) -> None:
+def test_delete_goal_automation_removes_only_that_one(client) -> None:
     _create_goal(client)
     payload = {
         "goal_id": "emergency-fund",
@@ -683,17 +763,17 @@ def test_delete_recurring_addition_removes_only_that_one(client) -> None:
         "value": 500.0,
         "currency": "USD",
     }
-    first = client.post("/api/accounting/recurring-additions", json=payload).json()
-    second = client.post("/api/accounting/recurring-additions", json=payload).json()
+    first = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    second = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
 
-    response = client.delete(f"/api/accounting/recurring-additions/{first['addition_id']}")
+    response = client.delete(f"/api/accounting/goal-automations/{first['automation_id']}")
     assert response.status_code == 200
-    remaining = {a["addition_id"] for a in client.get("/api/accounting/store").json()["recurring_additions"]}
-    assert remaining == {second["addition_id"]}
+    remaining = {a["automation_id"] for a in client.get("/api/accounting/store").json()["goal_automations"]}
+    assert remaining == {second["automation_id"]}
 
 
-def test_delete_recurring_addition_that_is_already_gone_gets_404(client) -> None:
-    assert client.delete("/api/accounting/recurring-additions/nope").status_code == 404
+def test_delete_goal_automation_that_is_already_gone_gets_404(client) -> None:
+    assert client.delete("/api/accounting/goal-automations/nope").status_code == 404
 
 
 _BIG_EXPENSE_CSV = (
@@ -728,7 +808,7 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
             }
         },
     )
-    client.put("/api/accounting/withdrawal-priorities", json=[{"goal_id": "emergency-fund", "priority": 0}])
+    client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
 
     response = client.post("/api/accounting/goals/run-withdrawal-automation", params={"as_of": "2026-06-25"})
     assert response.status_code == 200
@@ -740,7 +820,7 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
     assert body["remaining_shortfall"] == pytest.approx(4000.0)
 
 
-def test_put_withdrawal_priorities_never_conflicts(client) -> None:
+def test_put_withdrawal_automations_never_conflicts(client) -> None:
     """Reordering withdrawal priorities is a pure last-write-wins ordering op with no version of its own.
 
     A per-row `expected_version` governs only the row it names (`PATCH /goals/{goal_id}`); nothing
@@ -759,8 +839,8 @@ def test_put_withdrawal_priorities_never_conflicts(client) -> None:
             "expected_version": 1,
         },
     )
-    first = client.put("/api/accounting/withdrawal-priorities", json=[{"goal_id": "emergency-fund", "priority": 0}])
-    second = client.put("/api/accounting/withdrawal-priorities", json=[{"goal_id": "emergency-fund", "priority": 1}])
+    first = client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    second = client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 1)])
     assert first.status_code == 200
     assert second.status_code == 200
 

@@ -93,7 +93,7 @@ a lookup). This is the majority of user-owned tables:
 `accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
 `manual_transfers`, `other_assets`, `posting_merges`,
 `dismissed_suggestions`, `goals`, `goal_contributions`,
-`recurring_additions`, `transfer_rules`, `category_patterns`, `budgets`,
+`goal_automations`, `transfer_rules`, `category_patterns`, `budgets`,
 `simulator_scenarios`; `trades.broker_connections`, `ledger_events`.
 
 **2. A plain random `uuid.uuid4()` surrogate `id`** — for tables that are
@@ -102,8 +102,7 @@ never bulk-rewritten and have no re-import/dedup concept, just an ordinary
 matters) comes from a separate `UniqueConstraint`, not the id itself:
 `public.users`; `accounting.posting_tags`, `posting_splits`,
 `posting_split_legs`, `posting_merge_duplicates`, `posting_overrides`,
-`posting_pending_suggestions`, `general_budgets`,
-`withdrawal_priority_entries`.
+`posting_pending_suggestions`.
 
 **3. No surrogate `id` at all — the real key(s) are the primary key,
 directly.** This is the right choice specifically when nothing else ever
@@ -151,9 +150,8 @@ names:
   `opening_balances`, `manual_transfers`;
 - `accounting.repositories.taxonomy` owns `categories`, `tags`, and — for
   want of a better home so far — `other_assets`, `simulator_scenarios`;
-- `accounting.repositories.planning` owns `budgets`, `general_budgets`,
-  `goals`, `goal_contributions`, `recurring_additions`,
-  `withdrawal_priority_entries`;
+- `accounting.repositories.planning` owns `budgets`, `goals`,
+  `goal_contributions`, `goal_automations`;
 - `accounting.repositories.interpretation` owns `transfer_rules`,
   `transfer_rule_exclusions`, `category_patterns`, `posting_splits`,
   `posting_split_legs`, `posting_merges`, `posting_merge_duplicates`,
@@ -197,7 +195,7 @@ back with the *exact same* `id` it had before, so nothing that
 mid-rewrite.
 This is the technique for 16 tables — several of which *are* foreign-keyed
 against by others in the same wipe-and-reinsert set (e.g. `posting_split_legs`
-→ `posting_splits`, `goal_contributions`/`recurring_additions` → `goals`),
+→ `posting_splits`, `goal_contributions`/`goal_automations` → `goals`),
 which is exactly why the derived id must stay stable: a reinserted parent
 keeps its id, so a child's foreign key still resolves across the rewrite:
 
@@ -210,8 +208,7 @@ when a request genuinely submits that whole list:
 - `repositories.taxonomy` (`PUT /other-assets`, `PUT /simulator/scenarios`):
   `other_assets`, `simulator_scenarios`.
 - `repositories.planning` (`PUT /budgets`, `PUT /goals`, ...):
-  `goal_contributions`, `recurring_additions`,
-  `withdrawal_priority_entries`, `goals`, `budgets`, `general_budgets`.
+  `goal_contributions`, `goal_automations`, `goals`, `budgets`.
 - `repositories.interpretation` (`PUT /category-patterns`,
   `PUT /posting-merges`, ...): `posting_split_legs`, `posting_splits`,
   `posting_merge_duplicates`, `posting_merges`, `transfer_links`,

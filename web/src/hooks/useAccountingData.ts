@@ -16,7 +16,9 @@ import type {
   CategoryPatternUpdate,
   CurrencyCode,
   DismissSuggestionRequest,
-  GeneralBudgetUpsert,
+  GoalAutomation,
+  GoalAutomationCreate,
+  GoalAutomationUpdate,
   GoalContributionCreate,
   GoalContributionUpdate,
   GoalCreate,
@@ -28,15 +30,11 @@ import type {
   OtherAssetCreate,
   PostingMergeUpsert,
   PostingSplitLeg,
-  RecurringAddition,
-  RecurringAdditionCreate,
-  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   TransferLinkCreate,
   TransferRuleCreate,
   TransferRuleUpdate,
-  WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
 const keys = {
@@ -673,7 +671,8 @@ export function useCreateOtherAsset() {
 
 // Single-item budget mutations — only send the one budget being changed
 // over the wire, not the user's entire budget history for every edit
-// (see accounting.api.routers.store.post_budget/post_general_budget).
+// (see accounting.api.routers.store.post_budget). A `month: null` upsert is
+// the general, every-month-alike target; both go through the same endpoint.
 export function useSetBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -686,22 +685,6 @@ export function useRemoveBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (budgetId: string) => accountingApi.removeBudget(budgetId),
-    onSuccess: invalidate,
-  })
-}
-
-export function useSetGeneralBudget() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (generalBudget: GeneralBudgetUpsert) => accountingApi.setGeneralBudget(generalBudget),
-    onSuccess: invalidate,
-  })
-}
-
-export function useRemoveGeneralBudget() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (key: string) => accountingApi.removeGeneralBudget(key),
     onSuccess: invalidate,
   })
 }
@@ -1043,31 +1026,31 @@ export function useRemoveGoalContribution() {
 
 // Whole-list PUT — used only for drag-to-reorder (a pure ordering operation); single-rule field
 // edits and deletes go through the scoped hooks below.
-export function useSetRecurringAdditions() {
+export function useSetContributionAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (additions: RecurringAddition[]) => accountingApi.putRecurringAdditions(additions),
+    mutationFn: (automations: GoalAutomation[]) => accountingApi.putContributionAutomations(automations),
     onSuccess: invalidate,
   })
 }
 
-export function usePatchRecurringAddition() {
+export function usePatchGoalAutomation() {
   const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ additionId, update }: { additionId: string; update: RecurringAdditionUpdate }) =>
-      accountingApi.patchRecurringAddition(additionId, update),
-    // Optimistically patch the one addition in the cached list so a field edit
-    // reflects immediately instead of lagging until the refetch — same
+    mutationFn: ({ automationId, update }: { automationId: string; update: GoalAutomationUpdate }) =>
+      accountingApi.patchGoalAutomation(automationId, update),
+    // Optimistically patch the one automation in the cached list so a field
+    // edit reflects immediately instead of lagging until the refetch — same
     // onMutate/onError shape as `usePatchGoal`, over a list rather than a map.
-    onMutate: async ({ additionId, update }) => {
+    onMutate: async ({ automationId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
       if (previous) {
         queryClient.setQueryData<AccountingStore>(keys.store, {
           ...previous,
-          recurring_additions: previous.recurring_additions.map((addition) =>
-            addition.addition_id === additionId ? { ...addition, ...update } : addition,
+          goal_automations: previous.goal_automations.map((automation) =>
+            automation.automation_id === automationId ? { ...automation, ...update } : automation,
           ),
         })
       }
@@ -1080,41 +1063,41 @@ export function usePatchRecurringAddition() {
   })
 }
 
-export function useDeleteRecurringAddition() {
+export function useDeleteGoalAutomation() {
   const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (additionId: string) => accountingApi.deleteRecurringAddition(additionId),
-    onMutate: async (additionId) => {
+    mutationFn: (automationId: string) => accountingApi.deleteGoalAutomation(automationId),
+    onMutate: async (automationId) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
       if (previous) {
         queryClient.setQueryData<AccountingStore>(keys.store, {
           ...previous,
-          recurring_additions: previous.recurring_additions.filter((addition) => addition.addition_id !== additionId),
+          goal_automations: previous.goal_automations.filter((automation) => automation.automation_id !== automationId),
         })
       }
       return { previous }
     },
-    onError: (_error, _additionId, context) => {
+    onError: (_error, _automationId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
     onSuccess: invalidate,
   })
 }
 
-export function useCreateRecurringAddition() {
+export function useCreateContributionAutomation() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (addition: RecurringAdditionCreate) => accountingApi.createRecurringAddition(addition),
+    mutationFn: (automation: GoalAutomationCreate) => accountingApi.createContributionAutomation(automation),
     onSuccess: invalidate,
   })
 }
 
-export function useSetWithdrawalPriorities() {
+export function useSetWithdrawalAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (priorities: WithdrawalPriorityEntry[]) => accountingApi.putWithdrawalPriorities(priorities),
+    mutationFn: (automations: GoalAutomation[]) => accountingApi.putWithdrawalAutomations(automations),
     onSuccess: invalidate,
   })
 }

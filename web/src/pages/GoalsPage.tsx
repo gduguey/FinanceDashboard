@@ -387,11 +387,7 @@ export function GoalsPage() {
             />
           </TabsContent>
           <TabsContent value="automations">
-            <GoalAutomationsPanel
-              goals={store.goals}
-              recurringAdditions={store.recurring_additions}
-              withdrawalPriorities={store.withdrawal_priorities}
-            />
+            <GoalAutomationsPanel goals={store.goals} automations={store.goal_automations} />
           </TabsContent>
           <TabsContent value="ledger">
             <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />

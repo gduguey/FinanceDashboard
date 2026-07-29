@@ -2752,19 +2752,18 @@ def test_get_budget_comparison_rejects_a_malformed_month(client) -> None:
     assert response.status_code == 400
 
 
-def test_put_general_budgets_persists_separately_from_per_month_budgets(client) -> None:
+def test_a_general_budget_persists_alongside_the_same_categorys_per_month_one(client) -> None:
+    # One table, one list — `month: null` is the general target and coexists
+    # with the month one for the same category rather than replacing it.
     client.put(
         "/api/accounting/budgets",
-        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}],
+        json=[
+            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0},
+            {"budget_id": "b2", "month": None, "category_id": "expense:food-drink", "amount": 500.0},
+        ],
     )
-    response = client.put(
-        "/api/accounting/general-budgets",
-        json={"expense:food-drink": {"category_id": "expense:food-drink", "amount": 500.0}},
-    )
-    assert response.status_code == 200
-    store = client.get("/api/accounting/store").json()
-    assert store["general_budgets"]["expense:food-drink"]["amount"] == pytest.approx(500.0)
-    assert store["budgets"][0]["amount"] == pytest.approx(100.0)
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {(b["month"], b["amount"]) for b in budgets} == {("2026-06", 100.0), (None, 500.0)}
 
 
 def test_post_budget_upserts_one_budget_without_touching_others(client) -> None:
@@ -2836,51 +2835,50 @@ def test_delete_budget_404s_for_an_unknown_id(client) -> None:
 
 
 def test_post_general_budget_upserts_one_without_touching_others(client) -> None:
-    client.put(
-        "/api/accounting/general-budgets",
-        json={"expense:transport": {"category_id": "expense:transport", "amount": 40.0}},
-    )
+    client.post("/api/accounting/budgets", json={"category_id": "expense:transport", "amount": 40.0})
 
-    response = client.post(
-        "/api/accounting/general-budgets", json={"category_id": "expense:food-drink", "amount": 500.0}
-    )
+    response = client.post("/api/accounting/budgets", json={"category_id": "expense:food-drink", "amount": 500.0})
 
     assert response.status_code == 200
     assert response.json()["amount"] == pytest.approx(500.0)
-    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
-    assert set(general_budgets.keys()) == {"expense:transport", "expense:food-drink"}
+    assert response.json()["month"] is None
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {":expense:transport", ":expense:food-drink"}
 
 
-def test_post_general_budget_with_a_subcategory_keys_by_subcategory(client) -> None:
+def test_post_general_budget_with_a_subcategory_includes_it_in_the_derived_id(client) -> None:
     response = client.post(
-        "/api/accounting/general-budgets",
+        "/api/accounting/budgets",
         json={"category_id": "expense:food-drink", "subcategory_id": "expense:food-drink:groceries", "amount": 200.0},
     )
     assert response.status_code == 200
-    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
-    assert "expense:food-drink:groceries" in general_budgets
-    assert "expense:food-drink" not in general_budgets
+    assert response.json()["budget_id"] == ":expense:food-drink:expense:food-drink:groceries"
+
+
+def test_post_general_budget_does_not_overwrite_the_same_categorys_month_budget(client) -> None:
+    client.post(
+        "/api/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}
+    )
+    client.post("/api/accounting/budgets", json={"category_id": "expense:food-drink", "amount": 500.0})
+
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {"2026-06:expense:food-drink", ":expense:food-drink"}
 
 
 def test_delete_general_budget_removes_only_that_one(client) -> None:
     client.put(
-        "/api/accounting/general-budgets",
-        json={
-            "expense:food-drink": {"category_id": "expense:food-drink", "amount": 500.0},
-            "expense:transport": {"category_id": "expense:transport", "amount": 40.0},
-        },
+        "/api/accounting/budgets",
+        json=[
+            {"budget_id": ":expense:food-drink", "month": None, "category_id": "expense:food-drink", "amount": 500.0},
+            {"budget_id": ":expense:transport", "month": None, "category_id": "expense:transport", "amount": 40.0},
+        ],
     )
 
-    response = client.delete("/api/accounting/general-budgets/expense:food-drink")
+    response = client.delete("/api/accounting/budgets/:expense:food-drink")
 
     assert response.status_code == 200
-    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
-    assert set(general_budgets.keys()) == {"expense:transport"}
-
-
-def test_delete_general_budget_404s_for_an_unknown_key(client) -> None:
-    response = client.delete("/api/accounting/general-budgets/does-not-exist")
-    assert response.status_code == 404
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {":expense:transport"}
 
 
 def test_get_suggested_budget_amount_returns_zero_with_no_history(client) -> None:

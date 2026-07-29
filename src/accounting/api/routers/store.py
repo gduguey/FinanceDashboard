@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,8 +28,6 @@ from accounting.api.api_models import (
     CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
-    GeneralBudgetKeyResponse,
-    GeneralBudgetUpsert,
     OtherAssetCreate,
     OtherAssetIdResponse,
     SimulatorScenarioCreate,
@@ -54,7 +53,6 @@ from accounting.models import (
     Category,
     CategoryPattern,
     Currency,
-    GeneralBudget,
     OpeningBalance,
     OtherAsset,
     SimulatorScenario,
@@ -83,14 +81,7 @@ from accounting.repositories.interpretation import (
     upsert_category_pattern,
     upsert_transfer_rule,
 )
-from accounting.repositories.planning import (
-    remove_budget,
-    remove_general_budget,
-    replace_budgets,
-    replace_general_budgets,
-    upsert_budget,
-    upsert_general_budget,
-)
+from accounting.repositories.planning import budget_row_key, remove_budget, replace_budgets, upsert_budget
 from accounting.repositories.taxonomy import (
     delete_other_asset,
     delete_simulator_scenario,
@@ -149,12 +140,10 @@ def get_store(
         posting_splits=store.posting_splits,
         posting_merges=store.posting_merges,
         transfer_links=store.transfer_links,
-        general_budgets=store.general_budgets,
         category_patterns=store.category_patterns,
         goals=store.goals,
         goal_contributions=store.goal_contributions,
-        recurring_additions=store.recurring_additions,
-        withdrawal_priorities=store.withdrawal_priorities,
+        goal_automations=store.goal_automations,
     )
 
 
@@ -382,8 +371,8 @@ def delete_category(
     state a posting that was never categorized at all is already in.
     Anything else referencing the deleted id(s) is cleared where the
     field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
-    entirely where it isn't (`Budget`, `GeneralBudget`, `CategoryPattern`
-    all require a `category_id`) — see `store.uncategorize_category_ids`.
+    entirely where it isn't (`Budget`, `CategoryPattern` both require a
+    `category_id`) — see `store.uncategorize_category_ids`.
 
     Returns
     -------
@@ -411,7 +400,6 @@ def delete_category(
     # cleared/dropped rows land before `replace_categories` prunes the category
     # rows they used to point at.
     replace_budgets(session, user_id, store.budgets)
-    replace_general_budgets(session, user_id, store.general_budgets.values())
     replace_category_patterns(session, user_id, store.category_patterns.values())
     replace_posting_splits(session, user_id, store.posting_splits.values())
 
@@ -469,9 +457,9 @@ def get_category_rename_preview(
         `will_merge` is true if this rename would fold into an existing
         category rather than just changing a name; `target_name` is that
         existing category's name, or `None` when `will_merge` is false;
-        `budgets_to_delete` lists every `Budget`/`GeneralBudget` entry the
-        merged-away category holds that the merge target already has one
-        for, and which would therefore be discarded (see
+        `budgets_to_delete` lists every `Budget` entry (per-month or
+        general) the merged-away category holds that the merge target
+        already has one for, and which would therefore be discarded (see
         `store.remap_category_ids`).
 
     Raises
@@ -488,20 +476,36 @@ def get_category_rename_preview(
     target_name = store.categories[target_id].name if target_id is not None else None
 
     updated = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
-    dropped_budget_ids = {budget.budget_id for budget in store.budgets} - {
-        budget.budget_id for budget in updated.budgets
-    }
-    dropped_general_keys = set(store.general_budgets) - set(updated.general_budgets)
-    budgets_to_delete = [
-        BudgetToDeletePreview(month=budget.month, amount=budget.amount, currency=budget.currency)
-        for budget in store.budgets
-        if budget.budget_id in dropped_budget_ids
-    ] + [
-        BudgetToDeletePreview(
-            month=None, amount=store.general_budgets[key].amount, currency=store.general_budgets[key].currency
+    # Matched on the identity triple rather than on `budget_id`, because a
+    # repointed budget's id is rebuilt from its new category (see
+    # `store.remap_category_ids`) — and *counted*, because two budgets can
+    # land on the same triple and only one survives. Walking the source
+    # budgets untouched-first consumes the survivors in the same order the
+    # merge itself arbitrated them, so the entry reported as discarded is
+    # always the merged-away category's, never the target's.
+    remaining = Counter((budget.month, budget.category_id, budget.subcategory_id) for budget in updated.budgets)
+
+    def post_merge_key(budget: Budget) -> tuple[str | None, str, str | None]:
+        """Build the `(month, category_id, subcategory_id)` identity this budget would have after the merge.
+
+        Returns
+        -------
+        tuple[str | None, str, str | None]
+        """
+        subcategory_id = (
+            id_remap.get(budget.subcategory_id, budget.subcategory_id) if budget.subcategory_id is not None else None
         )
-        for key in dropped_general_keys
-    ]
+        return budget.month, id_remap.get(budget.category_id, budget.category_id), subcategory_id
+
+    budgets_to_delete: list[BudgetToDeletePreview] = []
+    for budget in sorted(store.budgets, key=lambda b: b.category_id in id_remap or b.subcategory_id in id_remap):
+        key = post_merge_key(budget)
+        if remaining[key] > 0:
+            remaining[key] -= 1
+            continue
+        budgets_to_delete.append(
+            BudgetToDeletePreview(month=budget.month, amount=budget.amount, currency=budget.currency)
+        )
     return CategoryRenamePreviewResponse(
         will_merge=target_id is not None, target_name=target_name, budgets_to_delete=budgets_to_delete
     )
@@ -552,7 +556,6 @@ def post_category_rename(
     # their own repositories, before `replace_categories` below prunes the
     # merged-away category rows they used to reference.
     replace_budgets(session, user_id, store.budgets)
-    replace_general_budgets(session, user_id, store.general_budgets.values())
     replace_category_patterns(session, user_id, store.category_patterns.values())
     replace_posting_splits(session, user_id, store.posting_splits.values())
 
@@ -1120,7 +1123,7 @@ def put_budgets(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[Budget]:
-    """Replace the whole budget list, across every month.
+    """Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
 
     Returns
     -------
@@ -1133,23 +1136,17 @@ def put_budgets(
     return budgets
 
 
-def _budget_id(month: str, category_id: str, subcategory_id: str | None) -> str:
-    """Derive the natural key one `(month, category_id, subcategory_id)` tuple always maps to.
-
-    Returns
-    -------
-    str
-    """
-    return f"{month}:{category_id}:{subcategory_id}" if subcategory_id is not None else f"{month}:{category_id}"
-
-
 @router.post("/budgets")
 def post_budget(
     request: BudgetUpsert,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Budget:
-    """Set one month's spending target for one category (or subcategory), replacing any prior target for it.
+    """Set one spending target for one category (or subcategory), replacing any prior target for it.
+
+    `request.month` picks which target: a `"YYYY-MM"` sets that month's,
+    and omitting it sets the general, every-month-alike one. The two are
+    separate rows, so setting one never overwrites the other.
 
     Unlike `PUT /budgets`, only the one budget in the request body is
     sent or touched — every other month/category's target is left alone,
@@ -1165,7 +1162,7 @@ def post_budget(
     # a no-op read for everyone but a brand-new user.
     seed_new_user_defaults(session, user_id)
     budget = Budget(
-        budget_id=_budget_id(request.month, request.category_id, request.subcategory_id),
+        budget_id=budget_row_key(request.month, request.category_id, request.subcategory_id),
         month=request.month,
         category_id=request.category_id,
         subcategory_id=request.subcategory_id,
@@ -1182,7 +1179,7 @@ def delete_budget(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> BudgetIdResponse:
-    """Remove one month's target for one category.
+    """Remove one target — a month's, or the general one — for one category.
 
     Returns
     -------
@@ -1198,96 +1195,6 @@ def delete_budget(
         raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
     session.commit()
     return BudgetIdResponse(budget_id=budget_id)
-
-
-@router.put("/general-budgets")
-def put_general_budgets(
-    general_budgets: dict[str, GeneralBudget],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, GeneralBudget]:
-    """Replace the whole general-budget map, keyed by `category_id` — the same amount applies to every month.
-
-    Stored, edited, and displayed completely separately from `Budget`'s
-    per-month rows (see `models.GeneralBudget`); this never falls back to
-    or overwrites a per-month budget, or vice versa.
-
-    Returns
-    -------
-    dict[str, GeneralBudget]
-        The general budgets just persisted.
-    """
-    seed_new_user_defaults(session, user_id)
-    replace_general_budgets(session, user_id, general_budgets.values())
-    session.commit()
-    return general_budgets
-
-
-def _general_budget_key(category_id: str, subcategory_id: str | None) -> str:
-    """Which of `category_id`/`subcategory_id` a general budget is keyed by — whichever is more specific.
-
-    Returns
-    -------
-    str
-    """
-    return subcategory_id if subcategory_id is not None else category_id
-
-
-@router.post("/general-budgets")
-def post_general_budget(
-    request: GeneralBudgetUpsert,
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GeneralBudget:
-    """Set one category's (or subcategory's) standing target, replacing any prior one for it.
-
-    Unlike `PUT /general-budgets`, only the one entry in the request body
-    is sent or touched.
-
-    Returns
-    -------
-    GeneralBudget
-        The general budget just persisted.
-    """
-    seed_new_user_defaults(session, user_id)  # see the equivalent note in `post_budget`
-    general_budget = GeneralBudget(
-        category_id=request.category_id,
-        subcategory_id=request.subcategory_id,
-        amount=request.amount,
-        currency=request.currency,
-    )
-    upsert_general_budget(general_budget, session, user_id)
-    return general_budget
-
-
-@router.delete("/general-budgets/{key}")
-def delete_general_budget(
-    key: str,
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GeneralBudgetKeyResponse:
-    """Remove one category's (or subcategory's) standing target.
-
-    Returns
-    -------
-    GeneralBudgetKeyResponse
-        The key just removed.
-
-    Raises
-    ------
-    HTTPException
-        404 if no general budget has this key.
-    """
-    # Read (not a whole-store save) to resolve `key` back to its full category/subcategory pair, since
-    # the row id derives from both and `key` alone (subcategory-or-category) can't reconstruct it. The
-    # actual delete is scoped to the one row, so it never blanket-rewrites the general-budget table.
-    store = load_store(session, user_id)
-    entry = store.general_budgets.get(key)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"General budget {key!r} not found")
-    remove_general_budget(session, user_id, entry.category_id, entry.subcategory_id)
-    session.commit()
-    return GeneralBudgetKeyResponse(key=key)
 
 
 @router.post("/simulator/scenarios")

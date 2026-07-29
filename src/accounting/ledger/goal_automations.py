@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from accounting.ledger.frame import to_analytics_amount
 
 if TYPE_CHECKING:
-    from accounting.models import RecurringAddition, WithdrawalPriorityEntry
+    from accounting.models import GoalAutomation
 
 _FREQUENCY_STEP_DAYS = {"daily": 1, "weekly": 7, "biweekly": 14}
 _MAX_DAY_OF_MONTH = 28
@@ -40,8 +40,8 @@ def _monthly_occurrence_on_or_before(start_date: date, as_of: date) -> date | No
     return None if candidate < start_date else candidate
 
 
-def next_recurring_occurrence(addition: RecurringAddition, as_of: date) -> date | None:
-    """Return the most recent scheduled occurrence of `addition` on or before `as_of`, if any.
+def next_recurring_occurrence(automation: GoalAutomation, as_of: date) -> date | None:
+    """Return the most recent scheduled occurrence of `automation` on or before `as_of`, if any.
 
     `frequency="daily"`/`"weekly"`/`"biweekly"` step forward from
     `start_date` in fixed-size increments — the occurrence is whichever
@@ -52,77 +52,87 @@ def next_recurring_occurrence(addition: RecurringAddition, as_of: date) -> date 
 
     Parameters
     ----------
-    addition
-        The recurring addition, whose `start_date`/`frequency`/`end_date` define the schedule.
+    automation
+        The automation, whose `start_date`/`frequency`/`end_date` define the schedule.
     as_of
         The date to compute the most recent due occurrence relative to.
 
     Returns
     -------
     datetime.date or None
-        `None` if `as_of` is before `start_date`, or before the first
+        `None` if `automation` carries no schedule at all (only a
+        `direction="contribution"` one does — see `models.GoalAutomation`),
+        if `as_of` is before `start_date`, or if it is before the first
         occurrence would land within `start_date`'s own month (for
         `frequency="monthly"`) — otherwise the occurrence date, clamped to
         `end_date` if `as_of` is past it.
     """
-    effective_as_of = min(as_of, addition.end_date) if addition.end_date is not None else as_of
-    if effective_as_of < addition.start_date:
+    if automation.start_date is None or automation.frequency is None:
         return None
-    if addition.frequency == "monthly":
-        return _monthly_occurrence_on_or_before(addition.start_date, effective_as_of)
-    step = _FREQUENCY_STEP_DAYS[addition.frequency]
-    elapsed_periods = (effective_as_of - addition.start_date).days // step
-    return addition.start_date + timedelta(days=elapsed_periods * step)
+    effective_as_of = min(as_of, automation.end_date) if automation.end_date is not None else as_of
+    if effective_as_of < automation.start_date:
+        return None
+    if automation.frequency == "monthly":
+        return _monthly_occurrence_on_or_before(automation.start_date, effective_as_of)
+    step = _FREQUENCY_STEP_DAYS[automation.frequency]
+    elapsed_periods = (effective_as_of - automation.start_date).days // step
+    return automation.start_date + timedelta(days=elapsed_periods * step)
 
 
-def run_recurring_additions(additions: list[RecurringAddition], unallocated: float) -> list[tuple[str, float]]:
-    """Allocate `unallocated` money across `additions` in priority order, funding each in turn until it runs out.
+def run_recurring_additions(automations: list[GoalAutomation], unallocated: float) -> list[tuple[str, float]]:
+    """Allocate `unallocated` money across `automations` in priority order, funding each until it runs out.
 
-    Each addition's own `value`/`mode` determines how much it wants:
+    Each automation's own `value`/`mode` determines how much it wants:
     `fixed_amount` wants exactly `value`; `percent_of_unallocated` wants
     `value`% of `unallocated` as it stood *before this run started* (not
-    the shrinking remainder — so two 10%-mode additions each get 10% of
+    the shrinking remainder — so two 10%-mode automations each get 10% of
     the original balance, not 10% then 10% of what's left); `remainder`
     ("whatever's left after all the others") wants the entire shrinking
     remainder at the point it runs, and is only ever meaningful on the
-    lowest-priority addition. If the remainder can't fully fund an
-    addition, it gets whatever's left (a partial amount), and every
-    addition after it in priority order gets nothing.
+    lowest-priority automation. If the remainder can't fully fund an
+    automation, it gets whatever's left (a partial amount), and every
+    automation after it in priority order gets nothing.
 
     Parameters
     ----------
-    additions
-        Every recurring addition due to run, in any order — sorted here by `priority` (lowest first).
+    automations
+        Every contribution automation due to run, in any order — sorted
+        here by `priority` (lowest first). A `direction="withdrawal"`
+        entry has no schedule to fund and is skipped.
     unallocated
         The unallocated balance available before this run.
 
     Returns
     -------
     list[tuple[str, float]]
-        `(goal_id, amount)` pairs, in funding order — only for additions
+        `(goal_id, amount)` pairs, in funding order — only for automations
         that actually received a nonzero amount.
     """
     remaining = unallocated
     funded: list[tuple[str, float]] = []
-    for addition in sorted(additions, key=lambda a: a.priority):
+    for automation in sorted(automations, key=lambda a: a.priority):
         if remaining <= 0:
             break
-        if addition.mode == "fixed_amount":
-            wanted = to_analytics_amount(addition.value)
-        elif addition.mode == "percent_of_unallocated":
-            wanted = unallocated * (to_analytics_amount(addition.value) / 100.0)
+        if automation.mode is None or automation.value is None:
+            # Only a `contribution` carries a schedule (see `models.GoalAutomation`);
+            # a withdrawal that reached this list has nothing to fund.
+            continue
+        if automation.mode == "fixed_amount":
+            wanted = to_analytics_amount(automation.value)
+        elif automation.mode == "percent_of_unallocated":
+            wanted = unallocated * (to_analytics_amount(automation.value) / 100.0)
         else:
             wanted = remaining
         amount = min(wanted, remaining)
         if amount <= 0:
             continue
-        funded.append((addition.goal_id, amount))
+        funded.append((automation.goal_id, amount))
         remaining -= amount
     return funded
 
 
 def run_withdrawal_automation(
-    priorities: list[WithdrawalPriorityEntry], goal_balances: dict[str, float], shortfall: float
+    automations: list[GoalAutomation], goal_balances: dict[str, float], shortfall: float
 ) -> list[tuple[str, float]]:
     """Draw down goals in priority order to cover a negative-unallocated `shortfall`, never taking a goal below zero.
 
@@ -134,8 +144,9 @@ def run_withdrawal_automation(
 
     Parameters
     ----------
-    priorities
-        Every goal's withdrawal priority, in any order — sorted here by `priority` (lowest first).
+    automations
+        Every `direction="withdrawal"` automation, in any order — sorted
+        here by `priority` (lowest first).
     goal_balances
         Each goal's current balance, keyed by `goal_id`.
     shortfall
@@ -148,13 +159,13 @@ def run_withdrawal_automation(
     """
     remaining = shortfall
     withdrawals: list[tuple[str, float]] = []
-    for entry in sorted(priorities, key=lambda p: p.priority):
+    for automation in sorted(automations, key=lambda a: a.priority):
         if remaining <= 0:
             break
-        available = goal_balances.get(entry.goal_id, 0.0)
+        available = goal_balances.get(automation.goal_id, 0.0)
         if available <= 0:
             continue
         amount = min(available, remaining)
-        withdrawals.append((entry.goal_id, -amount))
+        withdrawals.append((automation.goal_id, -amount))
         remaining -= amount
     return withdrawals

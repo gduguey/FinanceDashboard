@@ -29,25 +29,32 @@ subcategory only ever merges into a sibling under the same
    the real rename is ever called, the frontend calls this to find out
    whether it *would* merge. It runs step 1 (`plan_category_rename`) plus
    step 3 below (`remap_category_ids`) against the *current* store,
-   without persisting anything, and diffs `store.budgets`/
-   `general_budgets` before and after to report exactly which entries
-   would be discarded (`api_models.BudgetToDeletePreview`) — see step 3
-   for why some are discarded rather than repointed. The UI shows this in
+   without persisting anything, and diffs `store.budgets` before and
+   after to report exactly which entries would be discarded
+   (`api_models.BudgetToDeletePreview`) — matched on the
+   `(month, category_id, subcategory_id)` identity rather than on
+   `budget_id`, which step 3 rebuilds. See step 3 for why some are
+   discarded rather than repointed. The UI shows this in
    a confirmation dialog before the user commits to the real rename.
 
-3. **`store.remap_category_ids`** (`:335`) — five in-memory collections
+3. **`store.remap_category_ids`** (`:335`) — four in-memory collections
    get every `category_id`/`subcategory_id` field pointing at "Dining"
    swapped to "Food & Drink": `store.rules` (`TransferRule.category_id`/
    `subcategory_id`), `store.category_patterns`
    (`CategoryPattern.category_id`/`subcategory_id`), `store.budgets`
-   (`Budget.category_id`/`subcategory_id`), `store.general_budgets`
-   (`GeneralBudget.category_id`/`subcategory_id`, and the dict's own key,
-   which is whichever of the two is more specific), `store.posting_splits`
-   (`PostingSplitLeg.category_id`/`subcategory_id`). If "Dining" and "Food
-   & Drink" **both** already had a `Budget`/`GeneralBudget` for the same
-   month/category/subcategory, the one that belonged to "Dining" (the
-   *merged-away* id) is **dropped** — "Food & Drink"'s own entry always
-   survives untouched. This used to raise a 409 and refuse the whole
+   (`Budget.category_id`/`subcategory_id` — per-month and general rows
+   alike, since a general budget is just a `Budget` with no `month`),
+   `store.posting_splits`
+   (`PostingSplitLeg.category_id`/`subcategory_id`). A repointed budget's
+   `budget_id` is **rebuilt** from its new
+   `(month, category_id, subcategory_id)` triple (see
+   `repositories.planning.budget_row_key`) rather than left naming the
+   merged-away category — otherwise the next single-cell upsert for the
+   surviving category would mint a second row the table's unique index
+   rejects. If "Dining" and "Food & Drink" **both** already had a `Budget`
+   for the same month/category/subcategory, the one that belonged to
+   "Dining" (the *merged-away* id) is **dropped** — "Food & Drink"'s own
+   entry always survives untouched. This used to raise a 409 and refuse the whole
    rename; now it just proceeds, since step 2's preview already gave the
    user a chance to see this coming and back out.
 
@@ -70,8 +77,8 @@ subcategory only ever merges into a sibling under the same
 6. **The scoped repository writes, then `replace_categories`.** Everything
    step 3 repointed *except* the categories dict itself is written by its
    own aggregate's repository, and runs right after step 3 (before step 4,
-   not after step 5): `store.budgets`/`general_budgets` through
-   `repositories.planning.replace_budgets`/`replace_general_budgets`, and
+   not after step 5): `store.budgets` through
+   `repositories.planning.replace_budgets`, and
    `store.category_patterns`/`posting_splits` through
    `repositories.interpretation.replace_category_patterns`/
    `replace_posting_splits`. `repositories.taxonomy.replace_categories`
@@ -113,14 +120,16 @@ anything.
    - `TransferRule.category_id`/`subcategory_id` and
      `PostingSplitLeg.category_id`/`subcategory_id` are nullable — cleared
      to `NULL`, row otherwise untouched.
-   - `Budget.category_id`, `GeneralBudget.category_id`, and
-     `CategoryPattern.category_id` are **not** nullable. A row whose own
-     `category_id` is being deleted has nothing left to be, so the whole
-     row is **dropped**. A row only referencing a deleted id through its
-     (nullable) `subcategory_id` — e.g. a budget for "Food & Drink"
-     overall that also had a `subcategory_id` of "Dining" — keeps
-     existing, just with `subcategory_id` cleared, becoming a
-     category-level budget again.
+   - `Budget.category_id` and `CategoryPattern.category_id` are **not**
+     nullable. A row whose own `category_id` is being deleted has nothing
+     left to be, so the whole row is **dropped**. A row only referencing a
+     deleted id through its (nullable) `subcategory_id` — e.g. a budget
+     for "Food & Drink" overall that also had a `subcategory_id` of
+     "Dining" — keeps existing, just with `subcategory_id` cleared,
+     becoming a category-level budget again (with its `budget_id` rebuilt,
+     as in the merge case). If clearing it would collide with a budget
+     that already holds that identity, the untouched one wins and the
+     cleared one is dropped.
 
 4. **`accounting.importers.ingest.uncategorize_ledger_postings`**
    (`:269`) — same shape as `remap_ledger_category_ids`, but replacing
@@ -135,7 +144,7 @@ anything.
 
 6. **The scoped repository writes, then `replace_categories`** — the same
    split as step 6 of the merge case, in the same position:
-   `replace_budgets`/`replace_general_budgets` and
+   `replace_budgets` and
    `replace_category_patterns`/`replace_posting_splits` persist whatever
    step 3 cleared or dropped (running right after step 3), then
    `replace_categories` persists the categories dict with "Dining" (and any
@@ -190,7 +199,7 @@ recreate, which orphaned every reference to the old id.
 |---|---|---|---|
 | `categories` / `tags` | old entry pruned | target + subcategories pruned | old entry pruned |
 | `transfer_rules`, `posting_split_legs` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | — |
-| `category_patterns`, `budgets`, `general_budgets` | repointed; merged-away collision dropped | row dropped if its own `category_id` is deleted, else `subcategory_id` cleared | — |
+| `category_patterns`, `budgets` | repointed; merged-away collision dropped | row dropped if its own `category_id` is deleted, else `subcategory_id` cleared | — |
 | `posting_tags` | — | — | `tag_id` repointed; deleted if it'd duplicate an existing row |
 | `postings` (real ledger) | `category_id`/`subcategory_id` updated in place | cleared to `NULL` in place | no column of its own — join table only |
 | `posting_overrides` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | `tag_ids_override` array entries replaced |

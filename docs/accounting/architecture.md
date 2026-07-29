@@ -163,7 +163,7 @@ src/accounting/
     transfers.py            unmatched-internal-transfer suggestions
     duplicates.py           likely-duplicate-transaction suggestions + certainty scoring
     manual_transfers.py     turns a ManualTransfer into its two postings (see below)
-    goal_automations.py     recurring-addition and withdrawal-automation math —
+    goal_automations.py     contribution- and withdrawal-automation math —
                             decides amounts only, never writes anything itself
 
   dashboard/            API-facing aggregation, one file per concern
