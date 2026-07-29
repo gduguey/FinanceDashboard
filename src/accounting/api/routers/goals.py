@@ -11,13 +11,10 @@ from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
     GoalAutomationCreate,
-    GoalAutomationIdResponse,
     GoalAutomationUpdate,
     GoalContributionCreate,
-    GoalContributionIdResponse,
     GoalContributionUpdate,
     GoalCreate,
-    GoalIdResponse,
     GoalsSummary,
     GoalUpdate,
     SimulateContributionRequest,
@@ -151,22 +148,18 @@ def patch_goal(
     return updated
 
 
-@router.delete("/goals/{goal_id}")
+@router.delete("/goals/{goal_id}", status_code=204)
 def delete_goal_route(
     goal_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GoalIdResponse:
+) -> None:
     """Delete one goal, without touching any other goal already saved.
 
     No version check — see `repositories.planning.delete_goal`'s own
     docstring for why deleting an already-gone goal is a plain 404, not a
     409: there's nothing left to conflict with.
 
-    Returns
-    -------
-    GoalIdResponse
-        The goal id just deleted.
 
     Raises
     ------
@@ -177,7 +170,6 @@ def delete_goal_route(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
     session.commit()
-    return GoalIdResponse(goal_id=goal_id)
 
 
 @router.put("/goal-contributions")
@@ -324,17 +316,13 @@ def put_goal_contribution(
     return contribution
 
 
-@router.delete("/goal-contributions/{contribution_id}")
+@router.delete("/goal-contributions/{contribution_id}", status_code=204)
 def delete_goal_contribution(
     contribution_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GoalContributionIdResponse:
+) -> None:
     """Remove one contribution, without touching any other.
-
-    Returns
-    -------
-    GoalContributionIdResponse
 
     Raises
     ------
@@ -344,7 +332,6 @@ def delete_goal_contribution(
     if not remove_goal_contribution(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
     session.commit()
-    return GoalContributionIdResponse(contribution_id=contribution_id)
 
 
 @router.post("/goal-automations/contributions")
@@ -472,18 +459,13 @@ def patch_goal_automation(
     return automation
 
 
-@router.delete("/goal-automations/{automation_id}")
+@router.delete("/goal-automations/{automation_id}", status_code=204)
 def delete_goal_automation_route(
     automation_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GoalAutomationIdResponse:
+) -> None:
     """Delete one goal automation, without touching any other. Idempotent, no version check.
-
-    Returns
-    -------
-    GoalAutomationIdResponse
-        The automation id just deleted.
 
     Raises
     ------
@@ -493,7 +475,6 @@ def delete_goal_automation_route(
     if not remove_goal_automation(session, user_id, automation_id):
         raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
     session.commit()
-    return GoalAutomationIdResponse(automation_id=automation_id)
 
 
 @router.put("/goal-automations/withdrawals")

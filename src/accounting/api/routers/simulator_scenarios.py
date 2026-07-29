@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from accounting.api.api_models import SimulatorScenarioCreate, SimulatorScenarioIdResponse
+from accounting.api.api_models import SimulatorScenarioCreate
 from accounting.models import SimulatorScenario
 from accounting.repositories.taxonomy import (
     delete_simulator_scenario,
@@ -70,21 +70,17 @@ def put_simulator_scenarios(
     return scenarios
 
 
-@router.delete("/simulator/scenarios/{scenario_id}")
+@router.delete("/simulator/scenarios/{scenario_id}", status_code=204)
 def delete_simulator_scenario_route(
     scenario_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> SimulatorScenarioIdResponse:
+) -> None:
     """Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
 
     Replaces deleting a scenario by re-sending the whole list minus one;
     see `repositories.taxonomy.delete_simulator_scenario`.
 
-    Returns
-    -------
-    SimulatorScenarioIdResponse
-        The scenario id just deleted.
 
     Raises
     ------
@@ -94,4 +90,3 @@ def delete_simulator_scenario_route(
     if not delete_simulator_scenario(session, user_id, scenario_id):
         raise HTTPException(status_code=404, detail=f"Simulator scenario {scenario_id!r} not found")
     session.commit()
-    return SimulatorScenarioIdResponse(scenario_id=scenario_id)

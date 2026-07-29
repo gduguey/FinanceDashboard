@@ -1,4 +1,4 @@
-import { ApiError, RowVersionConflictError } from '@/lib/api'
+import { ApiError, parseBody, RowVersionConflictError } from '@/lib/api'
 import type {
   Account,
   AccountingStore,
@@ -94,7 +94,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (response.status === 409) throw new RowVersionConflictError(message)
     throw new ApiError(message)
   }
-  return (await response.json()) as T
+  return (await parseBody(response)) as T
 }
 
 const jsonInit = (method: string, body: unknown): RequestInit => ({
@@ -227,7 +227,7 @@ export const accountingApi = {
       { method: 'DELETE' },
     ),
   createTag: (tag: TagCreate) => request<Tag>('/tags', jsonInit('POST', tag)),
-  deleteTag: (tagId: string) => request<{ tag_id: string }>(`/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
+  deleteTag: (tagId: string) => request<void>(`/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
   tagRenamePreview: (tagId: string, name: string) =>
     request<TagRenamePreview>(`/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`),
   renameTag: (tagId: string, name: string) =>
@@ -239,26 +239,26 @@ export const accountingApi = {
   patchTransferRule: (ruleId: string, update: TransferRuleUpdate) =>
     request<TransferRule>(`/transfer-rules/${encodeURIComponent(ruleId)}`, jsonInit('PATCH', update)),
   deleteTransferRule: (ruleId: string) =>
-    request<{ rule_id: string }>(`/transfer-rules/${encodeURIComponent(ruleId)}`, {
+    request<void>(`/transfer-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
   createOtherAsset: (asset: OtherAssetCreate) => request<OtherAsset>('/other-assets', jsonInit('POST', asset)),
   deleteOtherAsset: (assetId: string) =>
-    request<{ asset_id: string }>(`/other-assets/${encodeURIComponent(assetId)}`, {
+    request<void>(`/other-assets/${encodeURIComponent(assetId)}`, {
       method: 'DELETE',
     }),
   postAccount: (account: AccountCreate) => request<Account>('/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
     request<Account>(`/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
   deleteAccount: (accountId: string) =>
-    request<{ account_id: string }>(`/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+    request<void>(`/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
   putOpeningBalance: (accountId: string, openingBalance: OpeningBalance) =>
     request<OpeningBalance>(
       `/accounts/${encodeURIComponent(accountId)}/opening-balance`,
       jsonInit('PUT', openingBalance),
     ),
   deleteOpeningBalance: (accountId: string) =>
-    request<{ account_id: string }>(`/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
+    request<void>(`/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
       method: 'DELETE',
     }),
   closeAccount: (accountId: string, transfers: ManualTransfer[]) =>
@@ -394,7 +394,7 @@ export const accountingApi = {
       jsonInit('PUT', legs),
     ),
   deletePostingSplit: (postingId: string) =>
-    request<{ posting_id: string }>(`/postings/${encodeURIComponent(postingId)}/split`, {
+    request<void>(`/postings/${encodeURIComponent(postingId)}/split`, {
       method: 'DELETE',
     }),
   aiSuggestCategory: (postingId: string, lockCategoryId?: string | null) =>
@@ -422,7 +422,7 @@ export const accountingApi = {
   patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
     request<CategoryPattern>(`/category-patterns/${encodeURIComponent(patternId)}`, jsonInit('PATCH', update)),
   deleteCategoryPattern: (patternId: string) =>
-    request<{ pattern_id: string }>(`/category-patterns/${encodeURIComponent(patternId)}`, {
+    request<void>(`/category-patterns/${encodeURIComponent(patternId)}`, {
       method: 'DELETE',
     }),
   transferSuggestions: (windowDays?: number) =>
@@ -433,17 +433,17 @@ export const accountingApi = {
   dismissSuggestion: (body: DismissSuggestionRequest) =>
     request<DismissedSuggestion>('/dismissed-suggestions', jsonInit('POST', body)),
   restoreSuggestion: (suggestionId: string) =>
-    request<{ suggestion_id: string }>(`/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
+    request<void>(`/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
       method: 'DELETE',
     }),
   createPostingMerge: (merge: PostingMergeUpsert) => request<PostingMerge>('/posting-merges', jsonInit('POST', merge)),
   removePostingMerge: (mergeId: string) =>
-    request<{ merge_id: string }>(`/posting-merges/${encodeURIComponent(mergeId)}`, {
+    request<void>(`/posting-merges/${encodeURIComponent(mergeId)}`, {
       method: 'DELETE',
     }),
   createTransferLink: (link: TransferLinkCreate) => request<TransferLink>('/transfer-links', jsonInit('POST', link)),
   removeTransferLink: (linkId: string) =>
-    request<{ link_id: string }>(`/transfer-links/${encodeURIComponent(linkId)}`, {
+    request<void>(`/transfer-links/${encodeURIComponent(linkId)}`, {
       method: 'DELETE',
     }),
   netWorth: (asOf?: string, displayCurrency?: string) =>
@@ -469,8 +469,7 @@ export const accountingApi = {
       `/income-statement/spend-curve${queryString({ month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
     ),
   setBudget: (budget: BudgetUpsert) => request<Budget>('/budgets', jsonInit('POST', budget)),
-  removeBudget: (budgetId: string) =>
-    request<{ budget_id: string }>(`/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
+  removeBudget: (budgetId: string) => request<void>(`/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
   budgetComparison: (month: string, displayCurrency?: string) =>
     request<BudgetComparisonRow[]>(`/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`),
   suggestedBudgetAmount: (
@@ -487,7 +486,7 @@ export const accountingApi = {
   createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
     request<SimulatorScenario>('/simulator/scenarios', jsonInit('POST', scenario)),
   deleteSimulatorScenario: (scenarioId: string) =>
-    request<{ scenario_id: string }>(`/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
+    request<void>(`/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
       method: 'DELETE',
     }),
   simulatorProject: (
@@ -509,8 +508,7 @@ export const accountingApi = {
   createGoal: (goal: GoalCreate) => request<Goal>('/goals', jsonInit('POST', goal)),
   patchGoal: (goalId: string, update: GoalUpdate) =>
     request<Goal>(`/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
-  deleteGoal: (goalId: string) =>
-    request<{ goal_id: string }>(`/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
+  deleteGoal: (goalId: string) => request<void>(`/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
   createGoalContribution: (contribution: GoalContributionCreate) =>
     request<GoalContribution>('/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
@@ -519,7 +517,7 @@ export const accountingApi = {
       jsonInit('PUT', contribution),
     ),
   removeGoalContribution: (contributionId: string) =>
-    request<{ contribution_id: string }>(`/goal-contributions/${encodeURIComponent(contributionId)}`, {
+    request<void>(`/goal-contributions/${encodeURIComponent(contributionId)}`, {
       method: 'DELETE',
     }),
   putContributionAutomations: (automations: GoalAutomation[]) =>
@@ -529,7 +527,7 @@ export const accountingApi = {
   patchGoalAutomation: (automationId: string, update: GoalAutomationUpdate) =>
     request<GoalAutomation>(`/goal-automations/${encodeURIComponent(automationId)}`, jsonInit('PATCH', update)),
   deleteGoalAutomation: (automationId: string) =>
-    request<{ automation_id: string }>(`/goal-automations/${encodeURIComponent(automationId)}`, {
+    request<void>(`/goal-automations/${encodeURIComponent(automationId)}`, {
       method: 'DELETE',
     }),
   putWithdrawalAutomations: (automations: GoalAutomation[]) =>

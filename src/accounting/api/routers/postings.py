@@ -20,14 +20,10 @@ from accounting.api.api_models import (
     DismissSuggestionRequest,
     DuplicateGroup,
     LedgerExportPage,
-    PostingIdResponse,
-    PostingMergeIdResponse,
     PostingMergeUpsert,
     PostingPage,
     PostingRow,
-    SuggestionIdResponse,
     TransferLinkCreate,
-    TransferLinkIdResponse,
     TransferSuggestion,
     ValidatePendingRequest,
     ValidatePendingResult,
@@ -328,21 +324,15 @@ def put_posting_split(
     return split
 
 
-@router.delete("/postings/{posting_id}/split")
+@router.delete("/postings/{posting_id}/split", status_code=204)
 def delete_posting_split_route(
     posting_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> PostingIdResponse:
-    """Undo a posting split, restoring the single original posting.
-
-    Returns
-    -------
-    PostingIdResponse
-    """
+) -> None:
+    """Undo a posting split, restoring the single original posting."""
     delete_posting_split(session, user_id, posting_id)
     session.commit()
-    return PostingIdResponse(posting_id=posting_id)
 
 
 @router.put("/posting-merges")
@@ -396,17 +386,13 @@ def post_posting_merge(
     return merge
 
 
-@router.delete("/posting-merges/{merge_id}")
+@router.delete("/posting-merges/{merge_id}", status_code=204)
 def delete_posting_merge(
     merge_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> PostingMergeIdResponse:
+) -> None:
     """Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
-
-    Returns
-    -------
-    PostingMergeIdResponse
 
     Raises
     ------
@@ -416,7 +402,6 @@ def delete_posting_merge(
     if not remove_posting_merge(session, user_id, merge_id):
         raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
     session.commit()
-    return PostingMergeIdResponse(merge_id=merge_id)
 
 
 @router.post("/transfer-links")
@@ -507,17 +492,13 @@ def post_transfer_link(
     return link
 
 
-@router.delete("/transfer-links/{link_id}")
+@router.delete("/transfer-links/{link_id}", status_code=204)
 def delete_transfer_link(
     link_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> TransferLinkIdResponse:
+) -> None:
     """Undo a confirmed transfer link, restoring both transactions to their prior classification.
-
-    Returns
-    -------
-    TransferLinkIdResponse
 
     Raises
     ------
@@ -527,7 +508,6 @@ def delete_transfer_link(
     if not remove_transfer_link(session, user_id, link_id):
         raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
     session.commit()
-    return TransferLinkIdResponse(link_id=link_id)
 
 
 @router.post("/postings/validate-pending")
@@ -699,18 +679,13 @@ def post_dismissed_suggestion(
     return entry
 
 
-@router.delete("/dismissed-suggestions/{suggestion_id}")
+@router.delete("/dismissed-suggestions/{suggestion_id}", status_code=204)
 def delete_dismissed_suggestion(
     suggestion_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> SuggestionIdResponse:
+) -> None:
     """Restore a dismissed suggestion so it can be proposed again.
-
-    Returns
-    -------
-    SuggestionIdResponse
-        The entry just restored.
 
     Raises
     ------
@@ -719,4 +694,3 @@ def delete_dismissed_suggestion(
     """
     if not undismiss_suggestion(session, user_id, suggestion_id):
         raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
-    return SuggestionIdResponse(suggestion_id=suggestion_id)

@@ -1073,7 +1073,7 @@ def test_delete_category_pattern_removes_it(client) -> None:
         json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
     ).json()
     response = client.delete(f"/api/v1/accounting/category-patterns/{pattern['pattern_id']}")
-    assert response.status_code == 200
+    assert response.status_code == 204
     assert client.get("/api/v1/accounting/store").json()["category_patterns"] == {}
 
 
@@ -1479,7 +1479,7 @@ def test_delete_posting_merge_undoes_it(client, db_session) -> None:
 
     response = client.delete(f"/api/v1/accounting/posting-merges/merge:{kept_id}")
 
-    assert response.status_code == 200
+    assert response.status_code == 204
     assert load_posting_merges(db_session, DEFAULT_USER_ID) == {}
     assert len(client.get("/api/v1/accounting/duplicate-suggestions").json()) == 1
 
@@ -1545,7 +1545,7 @@ def test_restoring_a_dismissed_suggestion_brings_it_back(client) -> None:
     assert client.get("/api/v1/accounting/transfer-suggestions").json() == []
 
     restore_response = client.delete(f"/api/v1/accounting/dismissed-suggestions/{suggestion_id}")
-    assert restore_response.status_code == 200
+    assert restore_response.status_code == 204
     assert len(client.get("/api/v1/accounting/transfer-suggestions").json()) == 1
     assert client.get("/api/v1/accounting/dismissed-suggestions").json() == []
 
@@ -1740,7 +1740,7 @@ def test_delete_transfer_link_unlinks_it(client) -> None:
 
     response = client.delete(f"/api/v1/accounting/transfer-links/{link['link_id']}")
 
-    assert response.status_code == 200
+    assert response.status_code == 204
     assert client.get("/api/v1/accounting/store").json()["transfer_links"] == []
     updated = _postings(client)
     assert next(p for p in updated if p["account_id"] == checking_id)["is_linked_transfer"] is False
@@ -2095,7 +2095,7 @@ def test_delete_transfer_rule_removes_it(client) -> None:
     ).json()
 
     response = client.delete(f"/api/v1/accounting/transfer-rules/{rule['rule_id']}")
-    assert response.status_code == 200
+    assert response.status_code == 204
 
     assert client.get("/api/v1/accounting/store").json()["transfer_rules"] == []
 
@@ -2859,7 +2859,7 @@ def test_delete_tag_removes_only_that_tag(client) -> None:
     client.post("/api/v1/accounting/tags", json={"name": "Trip"})
     client.post("/api/v1/accounting/tags", json={"name": "Move"})
     response = client.delete("/api/v1/accounting/tags/tag:trip")
-    assert response.status_code == 200
+    assert response.status_code == 204
     tags = client.get("/api/v1/accounting/store").json()["tags"]
     assert "tag:trip" not in tags
     assert "tag:move" in tags  # a delete of one tag never disturbs another
@@ -2956,7 +2956,7 @@ def test_delete_other_asset_removes_only_that_asset(client) -> None:
     car = client.post("/api/v1/accounting/other-assets", json={"name": "Car", "value": 15000.0}).json()
     boat = client.post("/api/v1/accounting/other-assets", json={"name": "Boat", "value": 5000.0}).json()
     response = client.delete(f"/api/v1/accounting/other-assets/{car['asset_id']}")
-    assert response.status_code == 200
+    assert response.status_code == 204
     remaining = {a["asset_id"] for a in client.get("/api/v1/accounting/store").json()["other_assets"]}
     assert remaining == {boat["asset_id"]}
 
@@ -3072,7 +3072,7 @@ def test_delete_budget_removes_only_that_one(client) -> None:
 
     response = client.delete("/api/v1/accounting/budgets/b1")
 
-    assert response.status_code == 200
+    assert response.status_code == 204
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
     assert {b["budget_id"] for b in budgets} == {"b2"}
 
@@ -3124,7 +3124,7 @@ def test_delete_general_budget_removes_only_that_one(client) -> None:
 
     response = client.delete("/api/v1/accounting/budgets/:expense:food-drink")
 
-    assert response.status_code == 200
+    assert response.status_code == 204
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
     assert {b["budget_id"] for b in budgets} == {":expense:transport"}
 
@@ -3429,7 +3429,7 @@ def test_put_opening_balance_is_reflected_in_net_worth(client) -> None:
     assert row["balance"] == pytest.approx(250.0)
 
     delete_response = client.delete(f"/api/v1/accounting/accounts/{account['account_id']}/opening-balance")
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
     net_worth_after = client.get("/api/v1/accounting/net-worth", params={"as_of": "2026-06-01"}).json()
     row_after = next(r for r in net_worth_after["accounts"] if r["account_id"] == account["account_id"])
     assert row_after["balance"] == pytest.approx(0.0)
@@ -3450,7 +3450,7 @@ def test_net_worth_history_by_account_returns_a_row_per_account_per_date(client)
 def test_delete_account_removes_an_account_with_no_postings(client) -> None:
     account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
     response = client.delete(f"/api/v1/accounting/accounts/{account['account_id']}")
-    assert response.status_code == 200
+    assert response.status_code == 204
     assert account["account_id"] not in client.get("/api/v1/accounting/store").json()["accounts"]
 
 
@@ -3718,7 +3718,7 @@ def test_delete_simulator_scenario_removes_only_that_scenario(client) -> None:
     first = client.post("/api/v1/accounting/simulator/scenarios", json=payload).json()
     second = client.post("/api/v1/accounting/simulator/scenarios", json=payload).json()
     response = client.delete(f"/api/v1/accounting/simulator/scenarios/{first['scenario_id']}")
-    assert response.status_code == 200
+    assert response.status_code == 204
     remaining = {s["scenario_id"] for s in client.get("/api/v1/accounting/store").json()["simulator_scenarios"]}
     assert remaining == {second["scenario_id"]}
 

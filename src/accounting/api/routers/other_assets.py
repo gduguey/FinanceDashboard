@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from accounting.api.api_models import OtherAssetCreate, OtherAssetIdResponse
+from accounting.api.api_models import OtherAssetCreate
 from accounting.models import OtherAsset
 from accounting.repositories.taxonomy import delete_other_asset, insert_other_asset, replace_other_assets
 from db.current_user import get_current_user_id
@@ -63,21 +63,17 @@ def put_other_assets(
     return other_assets
 
 
-@router.delete("/other-assets/{asset_id}")
+@router.delete("/other-assets/{asset_id}", status_code=204)
 def delete_other_asset_route(
     asset_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> OtherAssetIdResponse:
+) -> None:
     """Delete one manually-entered asset, without touching any other. Idempotent, no version check.
 
     Replaces deleting an asset by re-sending the whole list minus one; see
     `repositories.taxonomy.delete_other_asset`.
 
-    Returns
-    -------
-    OtherAssetIdResponse
-        The asset id just deleted.
 
     Raises
     ------
@@ -87,4 +83,3 @@ def delete_other_asset_route(
     if not delete_other_asset(session, user_id, asset_id):
         raise HTTPException(status_code=404, detail=f"Other asset {asset_id!r} not found")
     session.commit()
-    return OtherAssetIdResponse(asset_id=asset_id)

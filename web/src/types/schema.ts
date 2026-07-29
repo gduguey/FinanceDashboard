@@ -205,9 +205,18 @@ export interface paths {
      *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
      *     `taxonomy.uncategorize_category_ids`.
      *
+     *     Answers 200 with a body rather than the 204 the other row deletes answer:
+     *     this delete has effects beyond the row it names — it cascades to
+     *     subcategories, re-derives the survivors' "Other" catch-alls, and
+     *     uncategorizes an arbitrary number of postings — so the resulting tree and
+     *     the count of affected postings are not derivable from the request. A 204
+     *     here would mean the caller could not tell the user what just happened.
+     *
      *     Returns
      *     -------
      *     CategoryDeleteResponse
+     *         The category tree that survives, and how many postings now read as
+     *         uncategorized.
      *
      *     Raises
      *     ------
@@ -376,10 +385,6 @@ export interface paths {
      *     see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
      *     removed from them too, via the `posting_tags` FK cascade.
      *
-     *     Returns
-     *     -------
-     *     TagIdResponse
-     *         The tag id just deleted.
      *
      *     Raises
      *     ------
@@ -529,10 +534,6 @@ export interface paths {
      *     docstring for why deleting an already-gone rule is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
-     *     Returns
-     *     -------
-     *     RuleIdResponse
-     *         The rule id just deleted.
      *
      *     Raises
      *     ------
@@ -619,10 +620,6 @@ export interface paths {
      *
      *     No version check — see `repositories.interpretation.delete_category_pattern`.
      *
-     *     Returns
-     *     -------
-     *     CategoryPatternIdResponse
-     *         The pattern id just deleted.
      *
      *     Raises
      *     ------
@@ -707,10 +704,6 @@ export interface paths {
      *     Replaces deleting an asset by re-sending the whole list minus one; see
      *     `repositories.taxonomy.delete_other_asset`.
      *
-     *     Returns
-     *     -------
-     *     OtherAssetIdResponse
-     *         The asset id just deleted.
      *
      *     Raises
      *     ------
@@ -780,11 +773,6 @@ export interface paths {
      * Delete Budget
      * @description Remove one target — a month's, or the general one — for one category.
      *
-     *     Returns
-     *     -------
-     *     BudgetIdResponse
-     *         The id just removed.
-     *
      *     Raises
      *     ------
      *     HTTPException
@@ -851,10 +839,6 @@ export interface paths {
      *     Replaces deleting a scenario by re-sending the whole list minus one;
      *     see `repositories.taxonomy.delete_simulator_scenario`.
      *
-     *     Returns
-     *     -------
-     *     SimulatorScenarioIdResponse
-     *         The scenario id just deleted.
      *
      *     Raises
      *     ------
@@ -929,11 +913,6 @@ export interface paths {
     /**
      * Delete Account
      * @description Delete an account, as long as it has no postings yet.
-     *
-     *     Returns
-     *     -------
-     *     AccountIdResponse
-     *         The account just deleted.
      *
      *     Raises
      *     ------
@@ -1041,11 +1020,6 @@ export interface paths {
     /**
      * Delete Opening Balance
      * @description Remove an account's opening balance, if it has one.
-     *
-     *     Returns
-     *     -------
-     *     AccountIdResponse
-     *         The account whose opening balance was cleared.
      */
     delete: operations['delete_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_delete']
     options?: never
@@ -1673,10 +1647,6 @@ export interface paths {
     /**
      * Delete Posting Split Route
      * @description Undo a posting split, restoring the single original posting.
-     *
-     *     Returns
-     *     -------
-     *     PostingIdResponse
      */
     delete: operations['delete_posting_split_route_api_v1_accounting_postings__posting_id__split_delete']
     options?: never
@@ -1731,10 +1701,6 @@ export interface paths {
     /**
      * Delete Posting Merge
      * @description Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
-     *
-     *     Returns
-     *     -------
-     *     PostingMergeIdResponse
      *
      *     Raises
      *     ------
@@ -1804,10 +1770,6 @@ export interface paths {
     /**
      * Delete Transfer Link
      * @description Undo a confirmed transfer link, restoring both transactions to their prior classification.
-     *
-     *     Returns
-     *     -------
-     *     TransferLinkIdResponse
      *
      *     Raises
      *     ------
@@ -1964,11 +1926,6 @@ export interface paths {
      * Delete Dismissed Suggestion
      * @description Restore a dismissed suggestion so it can be proposed again.
      *
-     *     Returns
-     *     -------
-     *     SuggestionIdResponse
-     *         The entry just restored.
-     *
      *     Raises
      *     ------
      *     HTTPException
@@ -2079,6 +2036,12 @@ export interface paths {
     /**
      * Delete Llm Settings
      * @description Clear this user's saved API key for every provider.
+     *
+     *     One of the three deletes in this app that answers 200 with a body rather
+     *     than 204: this clears fields on a singleton settings row that still
+     *     exists afterwards, so there is a representation to return, and it is not
+     *     derivable from the request. The 15 deletes that remove a row the client
+     *     named answer 204.
      *
      *     Returns
      *     -------
@@ -2550,10 +2513,6 @@ export interface paths {
      *     docstring for why deleting an already-gone goal is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
-     *     Returns
-     *     -------
-     *     GoalIdResponse
-     *         The goal id just deleted.
      *
      *     Raises
      *     ------
@@ -2658,10 +2617,6 @@ export interface paths {
      * Delete Goal Contribution
      * @description Remove one contribution, without touching any other.
      *
-     *     Returns
-     *     -------
-     *     GoalContributionIdResponse
-     *
      *     Raises
      *     ------
      *     HTTPException
@@ -2736,11 +2691,6 @@ export interface paths {
     /**
      * Delete Goal Automation Route
      * @description Delete one goal automation, without touching any other. Idempotent, no version check.
-     *
-     *     Returns
-     *     -------
-     *     GoalAutomationIdResponse
-     *         The automation id just deleted.
      *
      *     Raises
      *     ------
@@ -3545,6 +3495,11 @@ export interface paths {
      * Delete Ibkr Settings
      * @description Clear this user's saved IBKR credentials entirely.
      *
+     *     Answers 200 with a body rather than 204 for the same reason
+     *     `DELETE /api/v1/accounting/settings/llm` does: this clears fields on a
+     *     settings row that still exists afterwards, so there is a representation
+     *     to return.
+     *
      *     Returns
      *     -------
      *     IbkrSettings
@@ -3966,14 +3921,6 @@ export interface components {
       }
     }
     /**
-     * AccountIdResponse
-     * @description Response body naming one account, for endpoints whose only real effect is removing something.
-     */
-    AccountIdResponse: {
-      /** Account Id */
-      account_id: string
-    }
-    /**
      * AccountUpdate
      * @description Request body for `PUT /api/v1/accounting/accounts/{account_id}`.
      *
@@ -4333,14 +4280,6 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
-     * BudgetIdResponse
-     * @description Response body naming one budget, for endpoints whose only real effect is removing something.
-     */
-    BudgetIdResponse: {
-      /** Budget Id */
-      budget_id: string
-    }
-    /**
      * BudgetToDeletePreview
      * @description One `Budget` entry a category merge would discard rather than keep.
      *
@@ -4655,14 +4594,6 @@ export interface components {
        * @default 100
        */
       priority: number
-    }
-    /**
-     * CategoryPatternIdResponse
-     * @description Response body naming one category pattern, for endpoints whose only real effect is removing something.
-     */
-    CategoryPatternIdResponse: {
-      /** Pattern Id */
-      pattern_id: string
     }
     /**
      * CategoryPatternUpdate
@@ -5253,14 +5184,6 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
-     * GoalAutomationIdResponse
-     * @description Response body naming one goal automation, for endpoints whose only real effect is removing something.
-     */
-    GoalAutomationIdResponse: {
-      /** Automation Id */
-      automation_id: string
-    }
-    /**
      * GoalAutomationUpdate
      * @description Request body for `PATCH /api/v1/accounting/goal-automations/{automation_id}` — edits one rule in place.
      *
@@ -5421,14 +5344,6 @@ export interface components {
       edited: boolean
     }
     /**
-     * GoalContributionIdResponse
-     * @description Response body naming one goal contribution, for endpoints whose only real effect is removing something.
-     */
-    GoalContributionIdResponse: {
-      /** Contribution Id */
-      contribution_id: string
-    }
-    /**
      * GoalContributionUpdate
      * @description Request body for `PUT /api/v1/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
      *
@@ -5501,14 +5416,6 @@ export interface components {
        * Format: date-time
        */
       target_date: string
-    }
-    /**
-     * GoalIdResponse
-     * @description Response body naming one goal, for endpoints whose only real effect is removing something.
-     */
-    GoalIdResponse: {
-      /** Goal Id */
-      goal_id: string
     }
     /**
      * GoalUpdate
@@ -6158,14 +6065,6 @@ export interface components {
       note: string
     }
     /**
-     * OtherAssetIdResponse
-     * @description Response body naming one manually-entered asset, for endpoints whose only real effect is removing something.
-     */
-    OtherAssetIdResponse: {
-      /** Asset Id */
-      asset_id: string
-    }
-    /**
      * Overview
      * @description The overview card row: value, gain split, XIRR, dollar alpha, TWR.
      */
@@ -6295,14 +6194,6 @@ export interface components {
       }
     }
     /**
-     * PostingIdResponse
-     * @description Response body naming one posting, for endpoints whose only real effect is removing something.
-     */
-    PostingIdResponse: {
-      /** Posting Id */
-      posting_id: string
-    }
-    /**
      * PostingMerge
      * @description A user's decision that two or more imported transactions are the same real-world event, recorded twice.
      *
@@ -6323,14 +6214,6 @@ export interface components {
       duplicate_transaction_ids: string[]
       /** Description */
       description?: string | null
-    }
-    /**
-     * PostingMergeIdResponse
-     * @description Response body naming one posting merge, for endpoints whose only real effect is removing something.
-     */
-    PostingMergeIdResponse: {
-      /** Merge Id */
-      merge_id: string
     }
     /**
      * PostingMergeUpsert
@@ -6665,14 +6548,6 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
-     * SimulatorScenarioIdResponse
-     * @description Response body naming one simulator scenario, for endpoints whose only real effect is removing something.
-     */
-    SimulatorScenarioIdResponse: {
-      /** Scenario Id */
-      scenario_id: string
-    }
-    /**
      * SkippedRowsInfo
      * @description Rows an import couldn't parse — see `importers.canonical.csv.SkippedRowsInfo`.
      */
@@ -6719,14 +6594,6 @@ export interface components {
     SuggestedBudgetAmount: {
       /** Suggested Amount */
       suggested_amount: number
-    }
-    /**
-     * SuggestionIdResponse
-     * @description Response body naming one dismissed suggestion, for endpoints whose only real effect is removing something.
-     */
-    SuggestionIdResponse: {
-      /** Suggestion Id */
-      suggestion_id: string
     }
     /**
      * SupportedImportKind
@@ -6858,14 +6725,6 @@ export interface components {
     TagCreate: {
       /** Name */
       name: string
-    }
-    /**
-     * TagIdResponse
-     * @description Response body naming one tag, for endpoints whose only real effect is removing something.
-     */
-    TagIdResponse: {
-      /** Tag Id */
-      tag_id: string
     }
     /**
      * TagRenamePreviewResponse
@@ -7088,14 +6947,6 @@ export interface components {
       transaction_id_b: string
     }
     /**
-     * TransferLinkIdResponse
-     * @description Response body naming one transfer link, for endpoints whose only real effect is removing something.
-     */
-    TransferLinkIdResponse: {
-      /** Link Id */
-      link_id: string
-    }
-    /**
      * TransferRule
      * @description A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
      *
@@ -7189,14 +7040,6 @@ export interface components {
        * @default
        */
       description: string
-    }
-    /**
-     * TransferRuleIdResponse
-     * @description Response body naming one transfer rule, for endpoints whose only real effect is removing something.
-     */
-    TransferRuleIdResponse: {
-      /** Rule Id */
-      rule_id: string
     }
     /**
      * TransferRuleUpdate
@@ -7745,13 +7588,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['TagIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -7877,13 +7718,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['TransferRuleIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8013,13 +7852,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['CategoryPatternIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8145,13 +7982,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['OtherAssetIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8242,13 +8077,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['BudgetIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8339,13 +8172,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['SimulatorScenarioIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8438,13 +8269,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['AccountIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8570,13 +8399,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['AccountIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -9112,13 +8939,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['PostingIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -9213,13 +9038,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['PostingMergeIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -9277,13 +9100,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['TransferLinkIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -9456,13 +9277,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['SuggestionIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -10116,13 +9935,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['GoalIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -10287,13 +10104,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['GoalContributionIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -10384,13 +10199,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['GoalAutomationIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {

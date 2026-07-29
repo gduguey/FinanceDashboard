@@ -12,7 +12,6 @@ from accounting.api.api_models import (
     AccountCloseRequest,
     AccountCloseResponse,
     AccountCreate,
-    AccountIdResponse,
     AccountUpdate,
 )
 from accounting.api.dependencies import _account_has_postings
@@ -170,18 +169,13 @@ def put_account(
     return updated
 
 
-@router.delete("/accounts/{account_id}")
+@router.delete("/accounts/{account_id}", status_code=204)
 def delete_account(
     account_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> AccountIdResponse:
+) -> None:
     """Delete an account, as long as it has no postings yet.
-
-    Returns
-    -------
-    AccountIdResponse
-        The account just deleted.
 
     Raises
     ------
@@ -194,7 +188,6 @@ def delete_account(
         raise HTTPException(status_code=400, detail="This account already has transactions and can't be deleted")
     remove_account(session, user_id, account_id)
     session.commit()
-    return AccountIdResponse(account_id=account_id)
 
 
 @router.post("/accounts/{account_id}/close")
@@ -299,19 +292,12 @@ def put_opening_balance(
     return opening_balance
 
 
-@router.delete("/accounts/{account_id}/opening-balance")
+@router.delete("/accounts/{account_id}/opening-balance", status_code=204)
 def delete_opening_balance(
     account_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> AccountIdResponse:
-    """Remove an account's opening balance, if it has one.
-
-    Returns
-    -------
-    AccountIdResponse
-        The account whose opening balance was cleared.
-    """
+) -> None:
+    """Remove an account's opening balance, if it has one."""
     remove_opening_balance(session, user_id, account_id)
     session.commit()
-    return AccountIdResponse(account_id=account_id)

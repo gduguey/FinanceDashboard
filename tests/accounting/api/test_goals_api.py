@@ -209,7 +209,7 @@ def test_patch_goal_that_does_not_exist_gets_404(client) -> None:
 def test_delete_goal_removes_it(client) -> None:
     _create_goal(client)
     response = client.delete("/api/v1/accounting/goals/emergency-fund")
-    assert response.status_code == 200
+    assert response.status_code == 204
     assert client.get("/api/v1/accounting/store").json()["goals"] == {}
 
 
@@ -457,7 +457,7 @@ def test_delete_goal_contribution_removes_only_that_one(client) -> None:
 
     response = client.delete(f"/api/v1/accounting/goal-contributions/{created['contribution_id']}")
 
-    assert response.status_code == 200
+    assert response.status_code == 204
     contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert set(contributions.keys()) == {other["contribution_id"]}
 
@@ -847,7 +847,7 @@ def test_delete_goal_automation_removes_only_that_one(client) -> None:
     second = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
 
     response = client.delete(f"/api/v1/accounting/goal-automations/{first['automation_id']}")
-    assert response.status_code == 200
+    assert response.status_code == 204
     remaining = {a["automation_id"] for a in client.get("/api/v1/accounting/store").json()["goal_automations"]}
     assert remaining == {second["automation_id"]}
 

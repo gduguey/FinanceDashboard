@@ -348,6 +348,11 @@ def delete_ibkr_settings(
 ) -> IbkrSettings:
     """Clear this user's saved IBKR credentials entirely.
 
+    Answers 200 with a body rather than 204 for the same reason
+    `DELETE /api/v1/accounting/settings/llm` does: this clears fields on a
+    settings row that still exists afterwards, so there is a representation
+    to return.
+
     Returns
     -------
     IbkrSettings

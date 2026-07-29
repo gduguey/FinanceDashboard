@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
     TagCreate,
-    TagIdResponse,
     TagRenamePreviewResponse,
     TagRenameRequest,
     TagRenameResponse,
@@ -88,12 +87,12 @@ def post_tag(
     return new_tag
 
 
-@router.delete("/tags/{tag_id}")
+@router.delete("/tags/{tag_id}", status_code=204)
 def delete_tag_route(
     tag_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> TagIdResponse:
+) -> None:
     """Delete one tag, without touching any other. Idempotent, no version check.
 
     Replaces deleting a tag by re-sending the whole tag list minus one
@@ -101,10 +100,6 @@ def delete_tag_route(
     see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
     removed from them too, via the `posting_tags` FK cascade.
 
-    Returns
-    -------
-    TagIdResponse
-        The tag id just deleted.
 
     Raises
     ------
@@ -114,7 +109,6 @@ def delete_tag_route(
     if not delete_tag(session, user_id, tag_id):
         raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
     session.commit()
-    return TagIdResponse(tag_id=tag_id)
 
 
 @router.get("/tags/{tag_id}/rename-preview")

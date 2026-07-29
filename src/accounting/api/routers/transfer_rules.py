@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from accounting.api.api_models import TransferRuleCreate, TransferRuleIdResponse, TransferRuleUpdate
+from accounting.api.api_models import TransferRuleCreate, TransferRuleUpdate
 from accounting.importers.common import row_hash
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
@@ -140,12 +140,12 @@ def patch_transfer_rule(
     return updated
 
 
-@router.delete("/transfer-rules/{rule_id}")
+@router.delete("/transfer-rules/{rule_id}", status_code=204)
 def delete_transfer_rule_route(
     rule_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> TransferRuleIdResponse:
+) -> None:
     """Delete one transfer rule and every transfer link it created, touching no other rule.
 
     Deleting a rule cascades to the links it produced: a rule-created link
@@ -159,10 +159,6 @@ def delete_transfer_rule_route(
     docstring for why deleting an already-gone rule is a plain 404, not a
     409: there's nothing left to conflict with.
 
-    Returns
-    -------
-    RuleIdResponse
-        The rule id just deleted.
 
     Raises
     ------
@@ -182,4 +178,3 @@ def delete_transfer_rule_route(
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
     session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
-    return TransferRuleIdResponse(rule_id=rule_id)

@@ -297,9 +297,18 @@ def delete_category(
     (`Budget`, `CategoryPattern` both require a `category_id`) — see
     `taxonomy.uncategorize_category_ids`.
 
+    Answers 200 with a body rather than the 204 the other row deletes answer:
+    this delete has effects beyond the row it names — it cascades to
+    subcategories, re-derives the survivors' "Other" catch-alls, and
+    uncategorizes an arbitrary number of postings — so the resulting tree and
+    the count of affected postings are not derivable from the request. A 204
+    here would mean the caller could not tell the user what just happened.
+
     Returns
     -------
     CategoryDeleteResponse
+        The category tree that survives, and how many postings now read as
+        uncategorized.
 
     Raises
     ------

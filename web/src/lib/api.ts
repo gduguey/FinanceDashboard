@@ -55,13 +55,24 @@ export class RowVersionConflictError extends ApiError {}
 // download, which cannot go through `request`.
 export const TRADES_API_BASE = '/api/v1/trades'
 
+// A 204 has no body at all, so `response.json()` on one throws
+// "Unexpected end of JSON input" — which is why this check is not an
+// optimization. Every delete answers 204 (see `accounting.api.routers.*`),
+// so without this branch every delete in the app fails after succeeding on
+// the server. Shared by `accountingApi.ts`'s own wrapper, which has the same
+// hazard.
+export async function parseBody(response: Response): Promise<unknown> {
+  if (response.status === 204) return undefined
+  return await response.json()
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${TRADES_API_BASE}${path}`, init)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new ApiError(body?.detail ?? `${response.status} ${response.statusText}`)
   }
-  return (await response.json()) as T
+  return (await parseBody(response)) as T
 }
 
 // Date range params shared by every chart/stat endpoint — omitted keys let

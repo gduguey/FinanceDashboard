@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from accounting.api.api_models import BudgetIdResponse, BudgetUpsert
+from accounting.api.api_models import BudgetUpsert
 from accounting.models import Budget
 from accounting.repositories.planning import budget_row_key, remove_budget, replace_budgets, upsert_budget
 from accounting.taxonomy import seed_new_user_defaults
@@ -74,18 +74,13 @@ def post_budget(
     return budget
 
 
-@router.delete("/budgets/{budget_id}")
+@router.delete("/budgets/{budget_id}", status_code=204)
 def delete_budget(
     budget_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> BudgetIdResponse:
+) -> None:
     """Remove one target — a month's, or the general one — for one category.
-
-    Returns
-    -------
-    BudgetIdResponse
-        The id just removed.
 
     Raises
     ------
@@ -95,4 +90,3 @@ def delete_budget(
     if not remove_budget(session, user_id, budget_id):
         raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
     session.commit()
-    return BudgetIdResponse(budget_id=budget_id)

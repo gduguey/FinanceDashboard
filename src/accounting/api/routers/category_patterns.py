@@ -8,7 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from accounting.api.api_models import CategoryPatternCreate, CategoryPatternIdResponse, CategoryPatternUpdate
+from accounting.api.api_models import CategoryPatternCreate, CategoryPatternUpdate
 from accounting.importers.common import row_hash
 from accounting.models import CategoryPattern
 from accounting.repositories.interpretation import (
@@ -120,20 +120,16 @@ def patch_category_pattern(
     return updated
 
 
-@router.delete("/category-patterns/{pattern_id}")
+@router.delete("/category-patterns/{pattern_id}", status_code=204)
 def delete_category_pattern_route(
     pattern_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> CategoryPatternIdResponse:
+) -> None:
     """Delete one category pattern, without touching any other pattern already saved.
 
     No version check — see `repositories.interpretation.delete_category_pattern`.
 
-    Returns
-    -------
-    CategoryPatternIdResponse
-        The pattern id just deleted.
 
     Raises
     ------
@@ -144,4 +140,3 @@ def delete_category_pattern_route(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Category pattern {pattern_id!r} not found")
     session.commit()
-    return CategoryPatternIdResponse(pattern_id=pattern_id)

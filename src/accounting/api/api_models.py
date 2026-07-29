@@ -352,48 +352,6 @@ class OtherAssetCreate(BaseModel):
     note: str = ""
 
 
-class BudgetIdResponse(BaseModel):
-    """Response body naming one budget, for endpoints whose only real effect is removing something."""
-
-    budget_id: str
-
-
-class TransferRuleIdResponse(BaseModel):
-    """Response body naming one transfer rule, for endpoints whose only real effect is removing something."""
-
-    rule_id: str
-
-
-class GoalIdResponse(BaseModel):
-    """Response body naming one goal, for endpoints whose only real effect is removing something."""
-
-    goal_id: str
-
-
-class CategoryPatternIdResponse(BaseModel):
-    """Response body naming one category pattern, for endpoints whose only real effect is removing something."""
-
-    pattern_id: str
-
-
-class TagIdResponse(BaseModel):
-    """Response body naming one tag, for endpoints whose only real effect is removing something."""
-
-    tag_id: str
-
-
-class OtherAssetIdResponse(BaseModel):
-    """Response body naming one manually-entered asset, for endpoints whose only real effect is removing something."""
-
-    asset_id: str
-
-
-class SimulatorScenarioIdResponse(BaseModel):
-    """Response body naming one simulator scenario, for endpoints whose only real effect is removing something."""
-
-    scenario_id: str
-
-
 class CategoryRenamePreviewResponse(BaseModel):
     """Response body for `GET /categories/{category_id}/rename-preview`."""
 
@@ -505,12 +463,6 @@ class AccountUpdate(BaseModel):
     last_four: str | None = None
     broker_connection_id: uuid.UUID | None = None
     meta: dict[str, str] = Field(default_factory=dict)
-
-
-class AccountIdResponse(BaseModel):
-    """Response body naming one account, for endpoints whose only real effect is removing something."""
-
-    account_id: str
 
 
 class AccountCloseRequest(BaseModel):
@@ -758,12 +710,6 @@ class LedgerExportPage(BaseModel):
     """How many postings were skipped."""
 
 
-class PostingIdResponse(BaseModel):
-    """Response body naming one posting, for endpoints whose only real effect is removing something."""
-
-    posting_id: str
-
-
 class PostingMergeUpsert(BaseModel):
     """Request body for `POST /api/v1/accounting/posting-merges` — records one duplicate-resolution decision.
 
@@ -776,12 +722,6 @@ class PostingMergeUpsert(BaseModel):
     kept_transaction_id: str = Field(min_length=1)
     duplicate_transaction_ids: list[str] = Field(min_length=1)
     description: str | None = None
-
-
-class PostingMergeIdResponse(BaseModel):
-    """Response body naming one posting merge, for endpoints whose only real effect is removing something."""
-
-    merge_id: str
 
 
 class TransferLinkCreate(BaseModel):
@@ -797,12 +737,6 @@ class TransferLinkCreate(BaseModel):
 
     transaction_id_a: str = Field(min_length=1)
     transaction_id_b: str = Field(min_length=1)
-
-
-class TransferLinkIdResponse(BaseModel):
-    """Response body naming one transfer link, for endpoints whose only real effect is removing something."""
-
-    link_id: str
 
 
 class GoalContributionCreate(BaseModel):
@@ -845,18 +779,6 @@ class GoalContributionUpdate(BaseModel):
     source_posting_id: str | None = None
     origin: GoalContributionOrigin = "manual"
     edited: bool = False
-
-
-class GoalContributionIdResponse(BaseModel):
-    """Response body naming one goal contribution, for endpoints whose only real effect is removing something."""
-
-    contribution_id: str
-
-
-class GoalAutomationIdResponse(BaseModel):
-    """Response body naming one goal automation, for endpoints whose only real effect is removing something."""
-
-    automation_id: str
 
 
 class LlmProviderUsage(BaseModel):
@@ -971,12 +893,6 @@ class DismissSuggestionRequest(BaseModel):
     suggestion_id: str
     kind: Literal["transfer", "duplicate"]
     description: str
-
-
-class SuggestionIdResponse(BaseModel):
-    """Response body naming one dismissed suggestion, for endpoints whose only real effect is removing something."""
-
-    suggestion_id: str
 
 
 class InterestAccountRow(BaseModel):
