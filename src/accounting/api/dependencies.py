@@ -275,23 +275,29 @@ def _resolve_postings(
     -------
     ResolvedPostings
     """
+    paged_total: int | None = None
     if limit is None:
         raw = load_ledger(session, user_id, since=since, until=until)
         overrides = load_overrides(session, user_id)
-        total = raw.select("transaction_id").n_unique()
     else:
         page = visible_transaction_page(session, user_id, limit=limit, offset=offset, since=since, until=until)
         raw = load_ledger(session, user_id, transaction_ids=page.transaction_ids)
         # Scoped to the page's own postings; the whole-table read would
         # otherwise be the one thing left that scaled with total history.
         overrides = load_overrides_for_postings(session, user_id, raw["posting_id"].to_list())
-        total = page.total
+        paged_total = page.total
     rules = load_transfer_rules(session, user_id)
     accounts = seeded_accounts(session, user_id)
     appliers = _overlay_appliers(session, user_id, rules=rules, accounts=accounts, overrides=overrides)
     resolved = apply_category_redirects(raw, load_category_redirects(session, user_id))
     for stage in OVERLAY_PRECEDENCE:
         resolved = appliers[stage](resolved)
+    # Counted off the *resolved* frame for an unpaged call, not the raw one:
+    # `apply_posting_merges` drops a merged-away duplicate's postings, and the
+    # paged branch excludes those in SQL before its own `LIMIT`. Counting raw
+    # transactions here would give the same field two different meanings
+    # depending on how it was called.
+    total = paged_total if paged_total is not None else resolved.select("transaction_id").n_unique()
     return ResolvedPostings(
         resolved=resolved, raw=raw, overrides=overrides, rules=rules, accounts=accounts, total=total
     )
