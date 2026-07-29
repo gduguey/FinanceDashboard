@@ -6,9 +6,11 @@ and both deserve their own focused, tested change rather than being bundled into
 a larger PR. Surfaced during the CodeRabbit review sweep of the decomposed
 branches.
 
-## 1. Category delete/rename still commits its side-effect writes as it goes
+## 1. The transaction boundary lives in the HTTP layer
 
-**Where:** `delete_category` / `post_category_rename` in
+**Where:** 40 `session.commit()` calls in route bodies across
+`src/accounting/api/routers/` (11 of the 15 modules). Worst-case handlers:
+`delete_category` / `post_category_rename` in
 `src/accounting/api/routers/categories.py`.
 
 **What (originally):** these clear the deleted/renamed category off every posting
@@ -28,14 +30,27 @@ handlers still spans several repository writes that commit as they go
 then `replace_categories`), so a *failure* partway through — an unexpected
 `IntegrityError`, a dropped connection — leaves the earlier ones committed.
 
-**Fix direction:** run the whole handler in one transaction, committing once at
-the end, instead of letting each repository call commit for itself. That means
-giving the repositories a "flush, don't commit" contract everywhere (several
-already have it) and moving the commit up to the router.
+**Fix direction:** commit once per request in `db.session.get_db`, so a handler
+spans one transaction and no route body names a commit at all. That also removes
+the `set_rls_user` re-arming hazard `get_db`'s own docstring warns about, which
+only exists because a request can commit mid-flight.
 
-**Why deferred:** it's a cross-cutting change to every repository's transaction
-contract, not something to bundle into an aggregate extraction, and it needs its
-own failure-injection tests to be worth anything.
+**Why deferred (again, out of the API-contract PR):** two concrete blockers, not
+just size.
+
+1. `POST /api/sync` deliberately depends on mid-request commits for
+   partial-success semantics: `sync_ibkr_account` commits per successful step and
+   rolls back per failed one, then `src/trades/api/routers/sync.py:150` re-arms
+   RLS and keeps reading. One commit at request end would turn a partly-successful
+   sync into all-or-nothing — a behaviour change, not a refactor.
+2. Committing at request end commits partial writes for any handler that catches
+   an error and still returns normally (e.g. the per-item commits at
+   `imports.py:527` and `postings.py:500`). Today those partial writes are rolled
+   back by `session_scope`. Each such handler needs its own decision.
+
+Neither is hard; both need failure-injection tests, and both are behavioural
+rather than contractual — so this belongs in its own PR rather than one whose
+subject is the HTTP contract.
 
 ## 2. First-login lockout if the Clerk `user.created` webhook is slow or lost
 
