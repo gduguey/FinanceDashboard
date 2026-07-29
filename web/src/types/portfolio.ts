@@ -20,7 +20,7 @@ export type MonthlyPnlBySymbol = components['schemas']['MonthlyPnlBySymbolRow']
 export type AllocationRow = components['schemas']['AllocationRow']
 
 // The `symbol -> target percentage` map, which is exactly what
-// `GET`/`PUT /api/settings/target-allocation` returns — no envelope: the
+// `GET`/`PUT /api/v1/trades/settings/target-allocation` returns — no envelope: the
 // envelope only ever existed to carry a settings-row `version`, and that
 // mechanism is gone.
 export type TargetAllocation = Record<string, number>

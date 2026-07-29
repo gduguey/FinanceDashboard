@@ -593,7 +593,7 @@ function meant to run — its own body just raises an error
 unconditionally. Nothing in the real, running app ever actually executes
 that body. Concretely, here's what happens for one real request — say,
 Bob (a real invited user) loads the dashboard, which calls
-`GET /api/overview`:
+`GET /api/v1/trades/overview`:
 
 1. The endpoint declares it needs two things, both *by name*, not by
    calling anything directly:

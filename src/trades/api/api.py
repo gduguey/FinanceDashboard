@@ -6,14 +6,14 @@ aggregation happens in the API layer itself, matching the split
 documented in docs/trades/architecture.md.
 
 GET endpoints only ever read what's already cached on disk — they never
-make a network call, with one exception: `GET /api/symbols/search` is a
+make a network call, with one exception: `GET /api/v1/trades/symbols/search` is a
 live Yahoo Finance lookup for the benchmark picker's search box, which by
 its nature needs a live answer rather than a cached one. `POST /sync` is
 the endpoint that touches the network for the app's own data as a whole
 (an IBKR pull plus a price/CPI/HYSA-rate cache refresh); that's what makes
 the frontend's "Sync" button a real, explicit action instead of something
 that silently happens on every page load. `POST
-/api/symbols/{symbol}/ensure-priced` is the narrow exception to that: it
+/api/v1/trades/symbols/{symbol}/ensure-priced` is the narrow exception to that: it
 refreshes a single symbol's price cache on the spot, so picking a new
 benchmark takes effect without waiting for a full sync.
 
@@ -51,7 +51,13 @@ _authenticated = [Depends(require_clerk_session)]
 # own routers. A router file therefore spells only the part of the path that
 # is about the resource it serves, and moving the whole module's routes is
 # this one string.
-_trades_router = APIRouter(prefix="/api")
+#
+# `/api/v1/trades` mirrors `/api/v1/accounting` — see that prefix's own note
+# in `accounting.api.api` for why the version sits under `/api` and why the
+# namespace is per-module rather than resource-first. `/health`, `/docs`,
+# `/redoc` and `/openapi.json` below stay unversioned: none of them is part of
+# the API contract a client codes against.
+_trades_router = APIRouter(prefix="/api/v1/trades")
 _trades_router.include_router(dashboard.router)
 _trades_router.include_router(settings.router)
 _trades_router.include_router(market_data.router)

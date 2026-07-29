@@ -38,7 +38,7 @@ only exists because a request can commit mid-flight.
 **Why deferred (again, out of the API-contract PR):** two concrete blockers, not
 just size.
 
-1. `POST /api/sync` deliberately depends on mid-request commits for
+1. `POST /api/v1/trades/sync` deliberately depends on mid-request commits for
    partial-success semantics: `sync_ibkr_account` commits per successful step and
    rolls back per failed one, then `src/trades/api/routers/sync.py:150` re-arms
    RLS and keeps reading. One commit at request end would turn a partly-successful

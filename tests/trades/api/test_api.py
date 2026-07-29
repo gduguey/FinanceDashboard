@@ -123,7 +123,7 @@ def client():
 
 
 def test_overview_reports_value_and_gain(client) -> None:
-    response = client.get("/api/overview", params={"as_of": "2026-01-03"})
+    response = client.get("/api/v1/trades/overview", params={"as_of": "2026-01-03"})
     assert response.status_code == 200
     body = response.json()
     assert body["value_usd"] == pytest.approx(1 * 560.0 + 1550.0)
@@ -134,24 +134,24 @@ def test_overview_no_ledger_is_a_404(client, db_session) -> None:
     # isolated_config's autouse fixture always seeds a ledger — undo that
     # for this one test by overwriting it with nothing.
     _write_ledger(pl.DataFrame(schema=LedgerEvent.polars_schema), db_session, user_id=DEFAULT_USER_ID)
-    assert client.get("/api/overview").status_code == 404
+    assert client.get("/api/v1/trades/overview").status_code == 404
 
 
 def test_dollar_chart_returns_series_and_reallocation_markers(client) -> None:
-    body = client.get("/api/chart/dollar", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/chart/dollar", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert len(body["series"]) == 3
     assert body["series"][0]["date"] == "2026-01-01"
     assert body["reallocation_markers"] == []
 
 
 def test_growth_of_100_chart_returns_one_entry_per_day(client) -> None:
-    body = client.get("/api/chart/growth-of-100", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/chart/growth-of-100", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert len(body) == 3
     assert body[0]["portfolio_index"] == pytest.approx(100.0)
 
 
 def test_cash_history_returns_one_entry_per_day(client) -> None:
-    body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert [row["cash"] for row in body] == pytest.approx([2000.0, 1000.0, 1550.0])
 
 
@@ -161,7 +161,7 @@ def test_cash_history_includes_a_benchmark_counterfactual_for_cash_received(clie
     # open. Jan 3: the price rises to 560 and a $550 SELL creates a second,
     # separate lot -> live value is both lots' current worth: 1000*(560/500)
     # + 550*(560/560) = 1670; nothing further gets consumed, so realized stays 0.
-    body = client.get("/api/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/chart/cash-history", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert [row["benchmark_live_usd"] for row in body] == pytest.approx([2000.0, 1000.0, 1670.0])
     assert [row["benchmark_realized_usd"] for row in body] == pytest.approx([0.0, 0.0, 0.0])
     assert all(row["hysa_live_usd"] > 0 for row in body)
@@ -172,7 +172,7 @@ def test_statements_export_returns_a_zip_of_every_archived_flex_statement(client
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / "2026-01-01T00-00-00.xml").write_text("<FlexQueryResponse />")
 
-    response = client.get("/api/statements/export")
+    response = client.get("/api/v1/trades/statements/export")
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
     zip_file = zipfile.ZipFile(io.BytesIO(response.content))
@@ -180,7 +180,7 @@ def test_statements_export_returns_a_zip_of_every_archived_flex_statement(client
 
 
 def test_cash_sitting_reports_current_balance_and_when_it_last_dropped(client) -> None:
-    body = client.get("/api/cash-sitting").json()
+    body = client.get("/api/v1/trades/cash-sitting").json()
     assert body["cash_usd"] == pytest.approx(1550.0)
     # $1000 of the original Jan 1 lot is still open (Jan 2's BUY only
     # consumed $1000 of it); Jan 3's SELL proceeds are a separate, newer
@@ -190,39 +190,41 @@ def test_cash_sitting_reports_current_balance_and_when_it_last_dropped(client) -
 
 
 def test_monthly_pnl_returns_one_entry_for_january(client) -> None:
-    body = client.get("/api/chart/monthly-pnl", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/chart/monthly-pnl", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert len(body) == 1
     assert body[0]["month"] == "2026-01"
 
 
 def test_monthly_pnl_by_symbol_returns_one_row_per_symbol_per_month(client) -> None:
-    body = client.get("/api/chart/monthly-pnl/by-symbol", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get(
+        "/api/v1/trades/chart/monthly-pnl/by-symbol", params={"start": "2026-01-01", "end": "2026-01-03"}
+    ).json()
     symbols = {row["symbol"] for row in body}
     assert symbols == {"VOO", "CASH"}
 
 
 def test_allocation_reports_voo_and_cash(client) -> None:
-    body = client.get("/api/allocation", params={"as_of": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/allocation", params={"as_of": "2026-01-03"}).json()
     symbols = {row["symbol"] for row in body}
     assert symbols == {"VOO", "CASH"}
 
 
 def test_target_allocation_defaults_to_empty(client) -> None:
-    assert client.get("/api/settings/target-allocation").json() == {}
+    assert client.get("/api/v1/trades/settings/target-allocation").json() == {}
 
 
 def test_target_allocation_put_then_get_round_trips(client) -> None:
     """The endpoint returns the bare `symbol -> pct` map — no envelope, since there is no version to carry."""
-    put_response = client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    put_response = client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
     assert put_response.status_code == 200
     assert put_response.json() == {"VOO": 80.0}
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 80.0}
 
 
 def test_target_allocation_put_preserves_other_settings(client) -> None:
-    client.put("/api/settings/hysa", json={"bank_id": "marcus"})
-    client.put("/api/settings/target-allocation", json={"VOO": 80.0})
-    assert client.get("/api/settings/hysa").json()["bank_id"] == "marcus"
+    client.put("/api/v1/trades/settings/hysa", json={"bank_id": "marcus"})
+    client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
+    assert client.get("/api/v1/trades/settings/hysa").json()["bank_id"] == "marcus"
 
 
 def test_a_settings_save_never_conflicts_with_a_sibling_settings_save(client) -> None:
@@ -231,54 +233,54 @@ def test_a_settings_save_never_conflicts_with_a_sibling_settings_save(client) ->
     The shared settings-row counter is gone (see `trades.dashboard.settings.save_settings`), so a
     target-allocation save followed by an unrelated hysa save just both land.
     """
-    assert client.put("/api/settings/target-allocation", json={"VOO": 80.0}).status_code == 200
+    assert client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0}).status_code == 200
 
-    followup = client.put("/api/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
+    followup = client.put("/api/v1/trades/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
     assert followup.status_code == 200
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 80.0}
 
 
 def test_hysa_settings_default_to_no_override(client) -> None:
-    assert client.get("/api/settings/hysa").json() == {"bank_id": None, "fixed_rate_pct": None}
+    assert client.get("/api/v1/trades/settings/hysa").json() == {"bank_id": None, "fixed_rate_pct": None}
 
 
 def test_hysa_settings_put_then_get_round_trips(client) -> None:
-    put_response = client.put("/api/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
+    put_response = client.put("/api/v1/trades/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
     assert put_response.status_code == 200
-    assert client.get("/api/settings/hysa").json() == {"bank_id": "marcus", "fixed_rate_pct": None}
+    assert client.get("/api/v1/trades/settings/hysa").json() == {"bank_id": "marcus", "fixed_rate_pct": None}
 
 
 def test_hysa_settings_put_preserves_target_allocation(client) -> None:
-    client.put("/api/settings/target-allocation", json={"VOO": 80.0})
-    client.put("/api/settings/hysa", json={"fixed_rate_pct": 5.0})
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
+    client.put("/api/v1/trades/settings/hysa", json={"fixed_rate_pct": 5.0})
+    assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 80.0}
 
 
 def test_a_settings_save_after_an_unrelated_one_still_succeeds(client) -> None:
     """The case the shared counter used to 409: an unrelated save landing between a read and a write."""
-    client.get("/api/settings/hysa")
+    client.get("/api/v1/trades/settings/hysa")
     # Someone else's save lands first.
-    client.put("/api/settings/benchmark", json={"symbol_override": "QQQ"})
+    client.put("/api/v1/trades/settings/benchmark", json={"symbol_override": "QQQ"})
 
-    response = client.put("/api/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
+    response = client.put("/api/v1/trades/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
     assert response.status_code == 200
-    assert client.get("/api/settings/benchmark").json()["symbol_override"] == "QQQ"
+    assert client.get("/api/v1/trades/settings/benchmark").json()["symbol_override"] == "QQQ"
 
 
 def test_benchmark_setting_defaults_to_no_override(client) -> None:
-    body = client.get("/api/settings/benchmark").json()
+    body = client.get("/api/v1/trades/settings/benchmark").json()
     assert body["symbol_override"] is None
     assert body["default_symbol"]
 
 
 def test_benchmark_setting_put_then_get_round_trips(client) -> None:
-    put_response = client.put("/api/settings/benchmark", json={"symbol_override": "QQQ"})
+    put_response = client.put("/api/v1/trades/settings/benchmark", json={"symbol_override": "QQQ"})
     assert put_response.status_code == 200
-    assert client.get("/api/settings/benchmark").json()["symbol_override"] == "QQQ"
+    assert client.get("/api/v1/trades/settings/benchmark").json()["symbol_override"] == "QQQ"
 
 
 def test_tax_settings_default_to_disabled_and_resident(client) -> None:
-    body = client.get("/api/settings/tax").json()
+    body = client.get("/api/v1/trades/settings/tax").json()
     assert body == {
         "tax_enabled": False,
         "tax_regime": None,
@@ -295,7 +297,7 @@ def test_tax_settings_default_to_disabled_and_resident(client) -> None:
 
 def test_tax_settings_put_then_get_round_trips(client) -> None:
     put_response = client.put(
-        "/api/settings/tax",
+        "/api/v1/trades/settings/tax",
         json={
             "tax_enabled": True,
             "tax_regime": "NRA",
@@ -307,7 +309,7 @@ def test_tax_settings_put_then_get_round_trips(client) -> None:
         },
     )
     assert put_response.status_code == 200
-    body = client.get("/api/settings/tax").json()
+    body = client.get("/api/v1/trades/settings/tax").json()
     assert body == {
         "tax_enabled": True,
         "tax_regime": "NRA",
@@ -323,9 +325,9 @@ def test_tax_settings_put_then_get_round_trips(client) -> None:
 
 
 def test_tax_settings_put_preserves_target_allocation(client) -> None:
-    client.put("/api/settings/target-allocation", json={"VOO": 80.0})
+    client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
     client.put(
-        "/api/settings/tax",
+        "/api/v1/trades/settings/tax",
         json={
             "tax_enabled": True,
             "tax_regime": None,
@@ -336,41 +338,45 @@ def test_tax_settings_put_preserves_target_allocation(client) -> None:
             "qualified_ltcg_rate_pct": None,
         },
     )
-    assert client.get("/api/settings/target-allocation").json() == {"VOO": 80.0}
+    assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 80.0}
 
 
 def test_ibkr_settings_default_to_no_override(client) -> None:
-    body = client.get("/api/settings/ibkr").json()
+    body = client.get("/api/v1/trades/settings/ibkr").json()
     assert body["token_set"] is False
     assert body["query_id_set"] is False
 
 
 def test_ibkr_settings_put_then_get_round_trips(client) -> None:
-    put_response = client.put("/api/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
+    put_response = client.put("/api/v1/trades/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
     assert put_response.status_code == 200
     assert put_response.json() == {"configured": True, "token_set": True, "query_id_set": True}
-    assert client.get("/api/settings/ibkr").json() == {"configured": True, "token_set": True, "query_id_set": True}
+    assert client.get("/api/v1/trades/settings/ibkr").json() == {
+        "configured": True,
+        "token_set": True,
+        "query_id_set": True,
+    }
 
 
 def test_ibkr_settings_put_merges_a_partial_update(client) -> None:
-    client.put("/api/settings/ibkr", json={"token": "my-token"})
-    client.put("/api/settings/ibkr", json={"query_id": "99999"})
-    body = client.get("/api/settings/ibkr").json()
+    client.put("/api/v1/trades/settings/ibkr", json={"token": "my-token"})
+    client.put("/api/v1/trades/settings/ibkr", json={"query_id": "99999"})
+    body = client.get("/api/v1/trades/settings/ibkr").json()
     assert body["token_set"] is True
     assert body["query_id_set"] is True
 
 
 def test_ibkr_settings_delete_clears_the_override(client) -> None:
-    client.put("/api/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
-    delete_response = client.delete("/api/settings/ibkr")
+    client.put("/api/v1/trades/settings/ibkr", json={"token": "my-token", "query_id": "99999"})
+    delete_response = client.delete("/api/v1/trades/settings/ibkr")
     assert delete_response.status_code == 200
-    body = client.get("/api/settings/ibkr").json()
+    body = client.get("/api/v1/trades/settings/ibkr").json()
     assert body["token_set"] is False
     assert body["query_id_set"] is False
 
 
 def test_tax_report_returns_the_realized_gain_and_an_open_lot_preview(client) -> None:
-    body = client.get("/api/tax/report", params={"as_of": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/tax/report", params={"as_of": "2026-01-03"}).json()
     annual_row = next(row for row in body["annual"] if row["year"] == 2026)
     assert annual_row["short_term_gain_usd"] == pytest.approx(50.0)
     assert body["wash_sales"] == []
@@ -379,7 +385,7 @@ def test_tax_report_returns_the_realized_gain_and_an_open_lot_preview(client) ->
 
 
 def test_tax_report_includes_tax_owed_and_liquidation_value(client) -> None:
-    body = client.get("/api/tax/report", params={"as_of": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/tax/report", params={"as_of": "2026-01-03"}).json()
     owed_row = next(row for row in body["tax_owed"] if row["year"] == 2026)
     assert owed_row["capital_gains_tax_usd"] == pytest.approx(50.0 * 0.24)
     assert "balance_due_usd" in owed_row
@@ -391,7 +397,7 @@ def test_tax_report_includes_tax_owed_and_liquidation_value(client) -> None:
 
 
 def test_hysa_rates_lists_banks_and_history(client) -> None:
-    body = client.get("/api/hysa-rates").json()
+    body = client.get("/api/v1/trades/hysa-rates").json()
     bank_ids = {bank["bank_id"] for bank in body["banks"]}
     assert bank_ids == {"ally-bank", "marcus"}
     assert len(body["history"]) == 2
@@ -407,7 +413,7 @@ def test_symbol_search_passes_the_query_through(client, monkeypatch) -> None:
             calls.append(query) or [{"symbol": "VOO", "name": "Vanguard S&P 500", "exchange": "NYSE"}]
         ),
     )
-    body = client.get("/api/symbols/search", params={"q": "voo"}).json()
+    body = client.get("/api/v1/trades/symbols/search", params={"q": "voo"}).json()
     assert calls == ["voo"]
     assert body == [{"symbol": "VOO", "name": "Vanguard S&P 500", "exchange": "NYSE"}]
 
@@ -423,7 +429,7 @@ def test_ensure_symbol_priced_refreshes_raw_and_adjusted_caches(client, monkeypa
         ),
     )
 
-    body = client.post("/api/symbols/AAPL/ensure-priced").json()
+    body = client.post("/api/v1/trades/symbols/AAPL/ensure-priced").json()
 
     assert calls == [False, True]
     assert body == {"symbol": "AAPL", "was_stale": True, "last_price_date": "2026-01-05"}
@@ -440,7 +446,7 @@ def test_ensure_symbol_priced_reports_not_stale_when_cache_already_covers_today(
         trades_api.prices, "update_price_cache", lambda symbol, since, as_of, config, adjusted=False: cached
     )
 
-    body = client.post("/api/symbols/VOO/ensure-priced").json()
+    body = client.post("/api/v1/trades/symbols/VOO/ensure-priced").json()
 
     assert body["was_stale"] is False
 
@@ -454,31 +460,31 @@ def test_ensure_symbol_priced_maps_unknown_symbol_to_422(client, monkeypatch) ->
 
     monkeypatch.setattr(trades_api.prices, "update_price_cache", raise_unknown_symbol)
 
-    response = client.post("/api/symbols/NOTASYMBOL/ensure-priced")
+    response = client.post("/api/v1/trades/symbols/NOTASYMBOL/ensure-priced")
     assert response.status_code == 422
 
 
 def test_lots_reports_open_and_closed_lots(client) -> None:
-    body = client.get("/api/lots", params={"as_of": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/lots", params={"as_of": "2026-01-03"}).json()
     assert len(body["open_lots"]) == 1
     assert len(body["closed_lots"]) == 1
     assert len(body["symbol_rollup"]) == 1
 
 
 def test_risk_reports_max_drawdown(client) -> None:
-    body = client.get("/api/risk", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
+    body = client.get("/api/v1/trades/risk", params={"start": "2026-01-01", "end": "2026-01-03"}).json()
     assert body["max_drawdown_pct"] <= 0.0
 
 
 def test_data_quality_includes_held_and_benchmark_symbols(client) -> None:
-    body = client.get("/api/data-quality").json()
+    body = client.get("/api/v1/trades/data-quality").json()
     symbols = {row["symbol"] for row in body}
     assert symbols == {"VOO"}
     assert body[0]["last_price_date"] == "2026-01-03"
 
 
 def test_ledger_export_returns_every_row(client) -> None:
-    body = client.get("/api/ledger/export").json()
+    body = client.get("/api/v1/trades/ledger/export").json()
     assert len(body) == len(LEDGER_ROWS)
 
 
@@ -502,7 +508,7 @@ def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_sess
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
 
     def _must_not_be_called(*args, **kwargs):
-        message = "these caches now refresh via a standalone cron job, not /api/sync"
+        message = "these caches now refresh via a standalone cron job, not /api/v1/trades/sync"
         raise AssertionError(message)
 
     monkeypatch.setattr(trades_api.prices, "update_price_caches", _must_not_be_called)
@@ -510,7 +516,7 @@ def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_sess
     monkeypatch.setattr(trades_api.cpi_module, "update_cpi_cache", _must_not_be_called)
     monkeypatch.setattr(trades_api.hysa_rates_module, "update_hysa_rates_cache", _must_not_be_called)
 
-    response = client.post("/api/sync")
+    response = client.post("/api/v1/trades/sync")
 
     assert response.status_code == 200
     assert len(sync_calls) == 1
@@ -520,7 +526,7 @@ def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_sess
 
 
 def test_sync_progress_defaults_to_idle_and_done(client) -> None:
-    body = client.get("/api/sync/progress").json()
+    body = client.get("/api/v1/trades/sync/progress").json()
     assert body == {"step": "Idle", "percent": 0.0, "done": True, "error": None}
 
 
@@ -542,9 +548,9 @@ def test_sync_progress_reflects_done_after_a_successful_sync(client, monkeypatch
 
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
 
-    client.post("/api/sync")
+    client.post("/api/v1/trades/sync")
 
-    body = client.get("/api/sync/progress").json()
+    body = client.get("/api/v1/trades/sync/progress").json()
     assert body == {"step": "Done", "percent": 100.0, "done": True, "error": None}
 
 
@@ -562,7 +568,7 @@ def test_sync_reports_a_failed_step_when_ibkr_fails(client, db_session, monkeypa
 
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", failing_sync)
 
-    response = client.post("/api/sync")
+    response = client.post("/api/v1/trades/sync")
 
     assert response.status_code == 200
     body = response.json()
@@ -574,7 +580,7 @@ def test_sync_reports_a_failed_step_when_ibkr_fails(client, db_session, monkeypa
 
     # The sync as a *whole* still finished normally — only the individual
     # leg is what failed.
-    progress = client.get("/api/sync/progress").json()
+    progress = client.get("/api/v1/trades/sync/progress").json()
     assert progress == {"step": "Done", "percent": 100.0, "done": True, "error": None}
 
 
@@ -602,15 +608,15 @@ def test_sync_progress_is_not_shared_between_users(client, monkeypatch) -> None:
     monkeypatch.setattr(trades_api.main, "sync_ibkr_account", fake_sync)
 
     # DEFAULT_USER_ID (the client fixture's own identity) runs a sync to completion.
-    client.post("/api/sync")
-    assert client.get("/api/sync/progress").json()["step"] == "Done"
+    client.post("/api/v1/trades/sync")
+    assert client.get("/api/v1/trades/sync/progress").json()["step"] == "Done"
 
     # A second, different user who never synced must still see "Idle" — not
     # DEFAULT_USER_ID's "Done", and not DEFAULT_USER_ID's percent/error either.
     other_user_id = uuid.uuid4()
     trades_api.app.dependency_overrides[get_current_user_id] = lambda: other_user_id
     try:
-        progress = client.get("/api/sync/progress").json()
+        progress = client.get("/api/v1/trades/sync/progress").json()
     finally:
         trades_api.app.dependency_overrides[get_current_user_id] = lambda: DEFAULT_USER_ID
     assert progress == {"step": "Idle", "percent": 0.0, "done": True, "error": None}

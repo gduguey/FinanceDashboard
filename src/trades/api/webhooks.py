@@ -152,6 +152,12 @@ def _deactivate_user(clerk_user_id: str) -> None:
             session.commit()
 
 
+# Spelled out here rather than inherited from a router prefix, and deliberately
+# left out of the `/api/v1` versioning every other route took: this URL is
+# configured in Clerk's own Dashboard, not by this repo. Renaming it here
+# silently stops Clerk delivering `user.created`, which breaks sign-ups for
+# every new invitee — so a rename needs the Clerk Dashboard updated out of band,
+# in the same change. Don't "fix" the inconsistency with the versioned routes.
 @router.post("/api/webhooks/clerk")
 async def handle_clerk_webhook(request: Request) -> dict[str, str]:
     """Verify and handle one Clerk webhook delivery.

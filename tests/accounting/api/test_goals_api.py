@@ -64,7 +64,7 @@ def client():
 
 def _create_account(client, **overrides) -> dict:
     payload = {"name": "Test Account", "kind": "checking", "institution": "Chase", "currency": "USD", **overrides}
-    response = client.post("/api/accounting/accounts", json=payload)
+    response = client.post("/api/v1/accounting/accounts", json=payload)
     assert response.status_code == 200
     return response.json()
 
@@ -72,7 +72,7 @@ def _create_account(client, **overrides) -> dict:
 def _import_checking(client) -> str:
     account = _create_account(client, name="Chase Checking", kind="checking", institution="Chase")
     response = client.post(
-        "/api/accounting/import",
+        "/api/v1/accounting/import",
         files={"file": ("Chase9579.csv", CHECKING_CSV, "text/csv")},
         data={
             "institution": "Chase",
@@ -87,7 +87,7 @@ def _import_checking(client) -> str:
 
 def _create_goal(client, goal_id: str = "emergency-fund") -> None:
     response = client.put(
-        "/api/accounting/goals",
+        "/api/v1/accounting/goals",
         json={
             goal_id: {
                 "goal_id": goal_id,
@@ -105,13 +105,13 @@ def _create_goal(client, goal_id: str = "emergency-fund") -> None:
 
 def test_put_goals_persists_and_is_returned_by_store(client) -> None:
     _create_goal(client)
-    store = client.get("/api/accounting/store").json()
+    store = client.get("/api/v1/accounting/store").json()
     assert store["goals"]["emergency-fund"]["name"] == "Emergency Fund"
 
 
 def test_post_goal_creates_one_with_a_server_generated_id(client) -> None:
     response = client.post(
-        "/api/accounting/goals",
+        "/api/v1/accounting/goals",
         json={"name": "Emergency fund", "target_amount": 10000.0, "target_date": "2027-01-01T00:00:00"},
     )
     assert response.status_code == 200
@@ -124,19 +124,19 @@ def test_post_goal_creates_one_with_a_server_generated_id(client) -> None:
 
 def test_post_goal_twice_with_the_same_name_creates_two_distinct_goals(client) -> None:
     payload = {"name": "Emergency fund", "target_amount": 10000.0, "target_date": "2027-01-01T00:00:00"}
-    first = client.post("/api/accounting/goals", json=payload).json()
-    second = client.post("/api/accounting/goals", json=payload).json()
+    first = client.post("/api/v1/accounting/goals", json=payload).json()
+    second = client.post("/api/v1/accounting/goals", json=payload).json()
     assert first["goal_id"] != second["goal_id"]
-    assert len(client.get("/api/accounting/store").json()["goals"]) == 2
+    assert len(client.get("/api/v1/accounting/store").json()["goals"]) == 2
 
 
 def test_post_goal_picks_a_color_distinct_from_existing_goals(client) -> None:
     first = client.post(
-        "/api/accounting/goals",
+        "/api/v1/accounting/goals",
         json={"name": "Goal A", "target_amount": 100.0, "target_date": "2027-01-01T00:00:00"},
     ).json()
     second = client.post(
-        "/api/accounting/goals",
+        "/api/v1/accounting/goals",
         json={"name": "Goal B", "target_amount": 100.0, "target_date": "2027-01-01T00:00:00"},
     ).json()
     assert first["color"] != second["color"]
@@ -144,11 +144,11 @@ def test_post_goal_picks_a_color_distinct_from_existing_goals(client) -> None:
 
 def test_patch_goal_updates_fields_and_increments_version(client) -> None:
     _create_goal(client)
-    goal = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    goal = client.get("/api/v1/accounting/store").json()["goals"]["emergency-fund"]
     assert goal["version"] == 1
 
     response = client.patch(
-        "/api/accounting/goals/emergency-fund",
+        "/api/v1/accounting/goals/emergency-fund",
         json={
             "name": "New Car",
             "target_amount": 20000.0,
@@ -166,7 +166,7 @@ def test_patch_goal_updates_fields_and_increments_version(client) -> None:
     assert updated["version"] == 2
     assert updated["created_at"] == "2026-06-01T00:00:00Z"  # untouched by the update; UTC-aware since the tz migration
 
-    persisted = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    persisted = client.get("/api/v1/accounting/store").json()["goals"]["emergency-fund"]
     assert persisted["name"] == "New Car"
     assert persisted["version"] == 2
 
@@ -174,7 +174,7 @@ def test_patch_goal_updates_fields_and_increments_version(client) -> None:
 def test_patch_goal_with_a_stale_expected_version_gets_409(client) -> None:
     _create_goal(client)
     response = client.patch(
-        "/api/accounting/goals/emergency-fund",
+        "/api/v1/accounting/goals/emergency-fund",
         json={
             "name": "New Car",
             "target_amount": 20000.0,
@@ -186,14 +186,14 @@ def test_patch_goal_with_a_stale_expected_version_gets_409(client) -> None:
     )
     assert response.status_code == 409
 
-    unchanged = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    unchanged = client.get("/api/v1/accounting/store").json()["goals"]["emergency-fund"]
     assert unchanged["name"] == "Emergency Fund"
     assert unchanged["version"] == 1
 
 
 def test_patch_goal_that_does_not_exist_gets_404(client) -> None:
     response = client.patch(
-        "/api/accounting/goals/does-not-exist",
+        "/api/v1/accounting/goals/does-not-exist",
         json={
             "name": "New Car",
             "target_amount": 20000.0,
@@ -208,13 +208,13 @@ def test_patch_goal_that_does_not_exist_gets_404(client) -> None:
 
 def test_delete_goal_removes_it(client) -> None:
     _create_goal(client)
-    response = client.delete("/api/accounting/goals/emergency-fund")
+    response = client.delete("/api/v1/accounting/goals/emergency-fund")
     assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["goals"] == {}
+    assert client.get("/api/v1/accounting/store").json()["goals"] == {}
 
 
 def test_delete_goal_that_is_already_gone_gets_404(client) -> None:
-    response = client.delete("/api/accounting/goals/does-not-exist")
+    response = client.delete("/api/v1/accounting/goals/does-not-exist")
     assert response.status_code == 404
 
 
@@ -228,12 +228,12 @@ def test_two_patches_on_different_goals_do_not_clobber_each_other(client) -> Non
     # to add a goal alongside the first — `POST /goals` is the additive create.
     _create_goal(client, goal_id="emergency-fund")
     new_car = client.post(
-        "/api/accounting/goals",
+        "/api/v1/accounting/goals",
         json={"name": "New Car", "target_amount": 20000.0, "target_date": "2028-01-01T00:00:00"},
     ).json()
 
     response_a = client.patch(
-        "/api/accounting/goals/emergency-fund",
+        "/api/v1/accounting/goals/emergency-fund",
         json={
             "name": "Renamed Emergency Fund",
             "target_amount": 10000.0,
@@ -244,7 +244,7 @@ def test_two_patches_on_different_goals_do_not_clobber_each_other(client) -> Non
         },
     )
     response_b = client.patch(
-        f"/api/accounting/goals/{new_car['goal_id']}",
+        f"/api/v1/accounting/goals/{new_car['goal_id']}",
         json={
             "name": "Renamed New Car",
             "target_amount": 10000.0,
@@ -257,7 +257,7 @@ def test_two_patches_on_different_goals_do_not_clobber_each_other(client) -> Non
     assert response_a.status_code == 200
     assert response_b.status_code == 200
 
-    goals = client.get("/api/accounting/store").json()["goals"]
+    goals = client.get("/api/v1/accounting/store").json()["goals"]
     assert goals["emergency-fund"]["name"] == "Renamed Emergency Fund"
     assert goals[new_car["goal_id"]]["name"] == "Renamed New Car"
 
@@ -265,7 +265,7 @@ def test_two_patches_on_different_goals_do_not_clobber_each_other(client) -> Non
 def test_creating_an_unrelated_goal_does_not_reset_another_goals_version(client) -> None:
     _create_goal(client, goal_id="emergency-fund")
     patched = client.patch(
-        "/api/accounting/goals/emergency-fund",
+        "/api/v1/accounting/goals/emergency-fund",
         json={
             "name": "Renamed",
             "target_amount": 10000.0,
@@ -278,15 +278,15 @@ def test_creating_an_unrelated_goal_does_not_reset_another_goals_version(client)
     assert patched["version"] == 2
 
     client.post(
-        "/api/accounting/goals",
+        "/api/v1/accounting/goals",
         json={"name": "New Car", "target_amount": 20000.0, "target_date": "2028-01-01T00:00:00"},
     )
 
-    persisted = client.get("/api/accounting/store").json()["goals"]["emergency-fund"]
+    persisted = client.get("/api/v1/accounting/store").json()["goals"]["emergency-fund"]
     assert persisted["version"] == 2
 
     response = client.patch(
-        "/api/accounting/goals/emergency-fund",
+        "/api/v1/accounting/goals/emergency-fund",
         json={
             "name": "Renamed Again",
             "target_amount": 10000.0,
@@ -303,7 +303,7 @@ def test_goals_summary_reports_balance_and_unallocated(client) -> None:
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={
             "c1": {
                 "contribution_id": "c1",
@@ -314,7 +314,7 @@ def test_goals_summary_reports_balance_and_unallocated(client) -> None:
             }
         },
     )
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
     # 3000 income - 500 allocated to the goal = 2500 unallocated
     assert summary["unallocated"] == pytest.approx(2500.0)
@@ -328,7 +328,7 @@ def test_put_goal_contributions_referencing_a_nonexistent_goal_fails() -> None:
     """
     client = TestClient(trades_api.app, raise_server_exceptions=False)
     response = client.put(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={
             "c1": {
                 "contribution_id": "c1",
@@ -346,7 +346,7 @@ def test_post_goal_contribution_creates_one_with_a_server_generated_id(client) -
     _create_goal(client)
 
     response = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
     )
 
@@ -356,7 +356,7 @@ def test_post_goal_contribution_creates_one_with_a_server_generated_id(client) -
     assert created["amount"] == pytest.approx(500.0)
     assert created["origin"] == "manual"
 
-    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert set(contributions.keys()) == {created["contribution_id"]}
 
 
@@ -367,7 +367,7 @@ def test_post_goal_contribution_round_trips_the_account_the_money_sits_in(client
     account = _create_account(client, name="Vault", kind="savings", institution="SoFi")
 
     created = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={
             "goal_id": "emergency-fund",
             "date": "2026-06-10T00:00:00",
@@ -378,17 +378,17 @@ def test_post_goal_contribution_round_trips_the_account_the_money_sits_in(client
     ).json()
     assert created["account_id"] == account["account_id"]
 
-    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert contributions[created["contribution_id"]]["account_id"] == account["account_id"]
 
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
 
 
 def test_post_goal_contribution_defaults_the_account_to_none(client) -> None:
     _create_goal(client)
     created = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
     ).json()
     assert created["account_id"] is None
@@ -398,27 +398,27 @@ def test_post_goal_contribution_twice_creates_two_distinct_rows(client) -> None:
     _create_goal(client)
     body = {"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"}
 
-    first = client.post("/api/accounting/goal-contributions", json=body)
-    second = client.post("/api/accounting/goal-contributions", json=body)
+    first = client.post("/api/v1/accounting/goal-contributions", json=body)
+    second = client.post("/api/v1/accounting/goal-contributions", json=body)
 
     assert first.json()["contribution_id"] != second.json()["contribution_id"]
-    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert len(contributions) == 2
 
 
 def test_put_goal_contribution_replaces_one_without_touching_others(client) -> None:
     _create_goal(client)
     created = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
     ).json()
     other = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-11T00:00:00", "amount": 100.0, "currency": "USD"},
     ).json()
 
     response = client.put(
-        f"/api/accounting/goal-contributions/{created['contribution_id']}",
+        f"/api/v1/accounting/goal-contributions/{created['contribution_id']}",
         json={
             "goal_id": "emergency-fund",
             "date": "2026-06-10T00:00:00",
@@ -430,7 +430,7 @@ def test_put_goal_contribution_replaces_one_without_touching_others(client) -> N
 
     assert response.status_code == 200
     assert response.json()["amount"] == pytest.approx(750.0)
-    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert contributions[created["contribution_id"]]["amount"] == pytest.approx(750.0)
     assert contributions[other["contribution_id"]]["amount"] == pytest.approx(100.0)
 
@@ -438,7 +438,7 @@ def test_put_goal_contribution_replaces_one_without_touching_others(client) -> N
 def test_put_goal_contribution_404s_for_an_unknown_id(client) -> None:
     _create_goal(client)
     response = client.put(
-        "/api/accounting/goal-contributions/does-not-exist",
+        "/api/v1/accounting/goal-contributions/does-not-exist",
         json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 750.0, "currency": "USD"},
     )
     assert response.status_code == 404
@@ -447,23 +447,23 @@ def test_put_goal_contribution_404s_for_an_unknown_id(client) -> None:
 def test_delete_goal_contribution_removes_only_that_one(client) -> None:
     _create_goal(client)
     created = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
     ).json()
     other = client.post(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-11T00:00:00", "amount": 100.0, "currency": "USD"},
     ).json()
 
-    response = client.delete(f"/api/accounting/goal-contributions/{created['contribution_id']}")
+    response = client.delete(f"/api/v1/accounting/goal-contributions/{created['contribution_id']}")
 
     assert response.status_code == 200
-    contributions = client.get("/api/accounting/store").json()["goal_contributions"]
+    contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert set(contributions.keys()) == {other["contribution_id"]}
 
 
 def test_delete_goal_contribution_404s_for_an_unknown_id(client) -> None:
-    response = client.delete("/api/accounting/goal-contributions/does-not-exist")
+    response = client.delete("/api/v1/accounting/goal-contributions/does-not-exist")
     assert response.status_code == 404
 
 
@@ -475,7 +475,7 @@ def test_goals_summary_converts_into_the_requested_display_currency(client, monk
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={
             "c1": {
                 "contribution_id": "c1",
@@ -486,7 +486,7 @@ def test_goals_summary_converts_into_the_requested_display_currency(client, monk
             }
         },
     )
-    summary = client.get("/api/accounting/goals/summary", params={"display_currency": "EUR"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"display_currency": "EUR"}).json()
     # 1 EUR = 2 USD (smoothed), so 500 USD converts to 250 EUR.
     assert summary["balances"]["emergency-fund"] == pytest.approx(250.0)
     # 3000 USD income -> 1500 EUR, minus 250 EUR contributed = 1250 EUR unallocated.
@@ -497,7 +497,7 @@ def test_run_contribution_automations_writes_a_contribution_once_due(client) -> 
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json=[
             {
                 "automation_id": "auto:emergency-fund",
@@ -512,7 +512,7 @@ def test_run_contribution_automations_writes_a_contribution_once_due(client) -> 
             }
         ],
     )
-    response = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
+    response = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
     assert response.status_code == 200
     written = response.json()
     assert len(written) == 1
@@ -520,7 +520,7 @@ def test_run_contribution_automations_writes_a_contribution_once_due(client) -> 
     assert written[0]["amount"] == pytest.approx(500.0)
     assert written[0]["origin"] == "automation"
 
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
 
 
@@ -538,7 +538,7 @@ def test_run_contribution_automations_funds_two_schedules_on_one_goal_separately
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json=[
             {
                 "automation_id": f"auto:emergency-fund:{index}",
@@ -555,7 +555,7 @@ def test_run_contribution_automations_funds_two_schedules_on_one_goal_separately
         ],
     )
 
-    written = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"}).json()
+    written = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"}).json()
 
     # One contribution per schedule, each carrying its own automation's amount.
     assert len(written) == 2
@@ -567,7 +567,7 @@ def test_run_contribution_automations_funds_two_schedules_on_one_goal_separately
     assert by_id["auto:auto:emergency-fund:0:2026-06-05"]["amount"] == pytest.approx(300.0)
     assert by_id["auto:auto:emergency-fund:1:2026-06-05"]["amount"] == pytest.approx(200.0)
 
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
 
 
@@ -575,7 +575,7 @@ def test_run_contribution_automations_is_idempotent_within_the_same_month(client
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json=[
             {
                 "automation_id": "auto:emergency-fund",
@@ -590,11 +590,11 @@ def test_run_contribution_automations_is_idempotent_within_the_same_month(client
             }
         ],
     )
-    client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
-    second_run = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-20"})
+    client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
+    second_run = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-20"})
     assert second_run.json() == []
 
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)  # not double-funded
 
 
@@ -602,7 +602,7 @@ def test_run_contribution_automations_supports_a_weekly_schedule(client) -> None
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json=[
             {
                 "automation_id": "auto:emergency-fund",
@@ -617,16 +617,16 @@ def test_run_contribution_automations_supports_a_weekly_schedule(client) -> None
             }
         ],
     )
-    first = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-01"})
+    first = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-01"})
     assert len(first.json()) == 1
     # Same week — already funded, so a second call the same week is a no-op...
-    same_week = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-05"})
+    same_week = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-05"})
     assert same_week.json() == []
     # ...but the next week's occurrence is a brand-new, separately-funded contribution.
-    next_week = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-08"})
+    next_week = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-08"})
     assert len(next_week.json()) == 1
 
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(200.0)
 
 
@@ -634,7 +634,7 @@ def test_run_contribution_automations_stops_after_the_end_date(client) -> None:
     _import_checking(client)
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json=[
             {
                 "automation_id": "auto:emergency-fund",
@@ -650,11 +650,11 @@ def test_run_contribution_automations_stops_after_the_end_date(client) -> None:
             }
         ],
     )
-    client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-03"})
-    past_end = client.post("/api/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
+    client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-03"})
+    past_end = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
     assert past_end.json() == []  # already funded through the end date — nothing new to add
 
-    summary = client.get("/api/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(50.0)
 
 
@@ -663,14 +663,14 @@ def test_put_contribution_automations_rejects_a_withdrawal_in_the_body(client) -
     # own direction's rows — a mixed body would silently drop the mismatched
     # entries, so it is refused outright.
     _create_goal(client)
-    response = client.put("/api/accounting/goal-automations/contributions", json=[_withdrawal("emergency-fund", 0)])
+    response = client.put("/api/v1/accounting/goal-automations/contributions", json=[_withdrawal("emergency-fund", 0)])
     assert response.status_code == 400
 
 
 def test_put_withdrawal_automations_rejects_a_contribution_in_the_body(client) -> None:
     _create_goal(client)
     response = client.put(
-        "/api/accounting/goal-automations/withdrawals",
+        "/api/v1/accounting/goal-automations/withdrawals",
         json=[
             {
                 "automation_id": "auto:emergency-fund",
@@ -691,7 +691,7 @@ def test_put_withdrawal_automations_rejects_a_contribution_in_the_body(client) -
 def test_replacing_one_direction_leaves_the_other_untouched(client) -> None:
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json=[
             {
                 "automation_id": "auto:emergency-fund",
@@ -706,17 +706,17 @@ def test_replacing_one_direction_leaves_the_other_untouched(client) -> None:
             }
         ],
     )
-    client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
-    client.put("/api/accounting/goal-automations/contributions", json=[])
+    client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    client.put("/api/v1/accounting/goal-automations/contributions", json=[])
 
-    automations = client.get("/api/accounting/store").json()["goal_automations"]
+    automations = client.get("/api/v1/accounting/store").json()["goal_automations"]
     assert [automation["direction"] for automation in automations] == ["withdrawal"]
 
 
 def test_post_goal_automation_creates_one_with_a_server_generated_id(client) -> None:
     _create_goal(client)
     response = client.post(
-        "/api/accounting/goal-automations/contributions",
+        "/api/v1/accounting/goal-automations/contributions",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -743,8 +743,8 @@ def test_post_goal_automation_appends_after_existing_ones_by_priority(client) ->
         "value": 500.0,
         "currency": "USD",
     }
-    first = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
-    second = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    first = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
+    second = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
     assert first["automation_id"] != second["automation_id"]
     assert first["priority"] == 0
     assert second["priority"] == 1
@@ -760,11 +760,11 @@ def test_patch_goal_automation_edits_one_without_touching_another(client) -> Non
         "value": 500.0,
         "currency": "USD",
     }
-    first = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
-    second = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    first = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
+    second = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
 
     response = client.patch(
-        f"/api/accounting/goal-automations/{first['automation_id']}",
+        f"/api/v1/accounting/goal-automations/{first['automation_id']}",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -778,7 +778,7 @@ def test_patch_goal_automation_edits_one_without_touching_another(client) -> Non
     assert response.status_code == 200
     assert response.json()["value"] == pytest.approx(750.0)
 
-    additions = {a["automation_id"]: a for a in client.get("/api/accounting/store").json()["goal_automations"]}
+    additions = {a["automation_id"]: a for a in client.get("/api/v1/accounting/store").json()["goal_automations"]}
     assert additions[first["automation_id"]]["value"] == pytest.approx(750.0)
     assert additions[second["automation_id"]]["value"] == pytest.approx(500.0)  # untouched
 
@@ -786,7 +786,7 @@ def test_patch_goal_automation_edits_one_without_touching_another(client) -> Non
 def test_patch_goal_automation_404s_for_an_unknown_id(client) -> None:
     _create_goal(client)
     response = client.patch(
-        "/api/accounting/goal-automations/nope",
+        "/api/v1/accounting/goal-automations/nope",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -811,10 +811,10 @@ def test_patch_goal_automation_404s_for_a_withdrawal_id(client) -> None:
     so this was reachable by anyone holding a goal id.
     """
     _create_goal(client)
-    client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
 
     response = client.patch(
-        "/api/accounting/goal-automations/withdrawal:emergency-fund",
+        "/api/v1/accounting/goal-automations/withdrawal:emergency-fund",
         json={
             "goal_id": "emergency-fund",
             "start_date": "2026-06-05",
@@ -827,7 +827,7 @@ def test_patch_goal_automation_404s_for_a_withdrawal_id(client) -> None:
     )
 
     assert response.status_code == 404
-    withdrawals = client.get("/api/accounting/store").json()["goal_automations"]
+    withdrawals = client.get("/api/v1/accounting/store").json()["goal_automations"]
     still_a_withdrawal = [a for a in withdrawals if a["automation_id"] == "withdrawal:emergency-fund"]
     assert len(still_a_withdrawal) == 1
     assert still_a_withdrawal[0]["direction"] == "withdrawal"
@@ -843,17 +843,17 @@ def test_delete_goal_automation_removes_only_that_one(client) -> None:
         "value": 500.0,
         "currency": "USD",
     }
-    first = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
-    second = client.post("/api/accounting/goal-automations/contributions", json=payload).json()
+    first = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
+    second = client.post("/api/v1/accounting/goal-automations/contributions", json=payload).json()
 
-    response = client.delete(f"/api/accounting/goal-automations/{first['automation_id']}")
+    response = client.delete(f"/api/v1/accounting/goal-automations/{first['automation_id']}")
     assert response.status_code == 200
-    remaining = {a["automation_id"] for a in client.get("/api/accounting/store").json()["goal_automations"]}
+    remaining = {a["automation_id"] for a in client.get("/api/v1/accounting/store").json()["goal_automations"]}
     assert remaining == {second["automation_id"]}
 
 
 def test_delete_goal_automation_that_is_already_gone_gets_404(client) -> None:
-    assert client.delete("/api/accounting/goal-automations/nope").status_code == 404
+    assert client.delete("/api/v1/accounting/goal-automations/nope").status_code == 404
 
 
 _BIG_EXPENSE_CSV = (
@@ -865,7 +865,7 @@ _BIG_EXPENSE_CSV = (
 def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negative(client) -> None:
     account = _create_account(client, name="Chase Checking", kind="checking", institution="Chase")
     response = client.post(
-        "/api/accounting/import",
+        "/api/v1/accounting/import",
         files={"file": ("Chase9579.csv", _BIG_EXPENSE_CSV, "text/csv")},
         data={
             "institution": "Chase",
@@ -877,7 +877,7 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
     assert response.status_code == 200
     _create_goal(client)
     client.put(
-        "/api/accounting/goal-contributions",
+        "/api/v1/accounting/goal-contributions",
         json={
             "c1": {
                 "contribution_id": "c1",
@@ -888,9 +888,9 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
             }
         },
     )
-    client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
 
-    response = client.post("/api/accounting/goals/run-withdrawal-automation", params={"as_of": "2026-06-25"})
+    response = client.post("/api/v1/accounting/goals/run-withdrawal-automation", params={"as_of": "2026-06-25"})
     assert response.status_code == 200
     body = response.json()
     assert len(body["withdrawals"]) == 1
@@ -909,7 +909,7 @@ def test_put_withdrawal_automations_never_conflicts(client) -> None:
     """
     _create_goal(client)
     client.patch(
-        "/api/accounting/goals/emergency-fund",
+        "/api/v1/accounting/goals/emergency-fund",
         json={
             "name": "Emergency Fund",
             "target_amount": 20000.0,
@@ -919,8 +919,8 @@ def test_put_withdrawal_automations_never_conflicts(client) -> None:
             "expected_version": 1,
         },
     )
-    first = client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
-    second = client.put("/api/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 1)])
+    first = client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    second = client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 1)])
     assert first.status_code == 200
     assert second.status_code == 200
 
@@ -929,7 +929,7 @@ def test_simulate_contribution_flags_exceeding_unallocated(client) -> None:
     _import_checking(client)
     _create_goal(client)
     response = client.post(
-        "/api/accounting/goals/simulate-contribution",
+        "/api/v1/accounting/goals/simulate-contribution",
         json={"goal_id": "emergency-fund", "date": "2026-06-15", "amount": 5000.0},
     )
     assert response.status_code == 200
@@ -942,7 +942,7 @@ def test_simulate_contribution_within_unallocated_does_not_flag(client) -> None:
     _import_checking(client)
     _create_goal(client)
     response = client.post(
-        "/api/accounting/goals/simulate-contribution",
+        "/api/v1/accounting/goals/simulate-contribution",
         json={"goal_id": "emergency-fund", "date": "2026-06-15", "amount": 500.0},
     )
     assert response.json()["exceeds_unallocated"] is False

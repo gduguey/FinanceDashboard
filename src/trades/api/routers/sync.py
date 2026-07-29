@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # One lock per user, created on first use — not a single shared lock.
-# /api/sync writes only to that user's own ledger rows, so two different
+# /api/v1/trades/sync writes only to that user's own ledger rows, so two different
 # users syncing at the same time never touch the same data and must never
 # block each other; the same user opening two tabs and clicking Sync twice
 # still needs serializing against their own concurrent writes, which is
@@ -81,7 +81,7 @@ def get_sync_progress(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)
     """Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
 
     Polled by the frontend's progress bar while a sync is running.
-    `POST /api/sync` runs in FastAPI's thread pool (it's a plain `def`,
+    `POST /api/v1/trades/sync` runs in FastAPI's thread pool (it's a plain `def`,
     not `async def`), so this GET is served concurrently on its own
     thread rather than queued behind the sync request.
 
@@ -177,7 +177,7 @@ def sync(
     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
     here — they run on their own cron schedule instead. Reports progress to
     this user's own entry in `app.state.sync_progress` throughout, readable
-    via `GET /api/sync/progress` — the IBKR pull can take a while, so a
+    via `GET /api/v1/trades/sync/progress` — the IBKR pull can take a while, so a
     bare spinner isn't good enough feedback.
 
     Concurrent requests for the *same* user are serialized by that user's

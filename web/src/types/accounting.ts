@@ -45,7 +45,7 @@ export type CompoundingFrequency = SimulatorScenario['compounding_frequency']
 export type ProjectionPoint = components['schemas']['ProjectionPoint']
 export type InterestAccountRow = components['schemas']['InterestAccountRow']
 
-// `GET /api/accounting/postings` bolts three display-only fields
+// `GET /api/v1/accounting/postings` bolts three display-only fields
 // (`pending_source`, `pending_selected`, `resolved_by_transfer_rule_id`)
 // onto the stored posting — that richer shape is `PostingRow`, which is
 // what every consumer of this `Posting` alias actually reads. The bare
@@ -114,7 +114,7 @@ export type TransferLink = components['schemas']['TransferLink']
 export type TransferLinkCreate = components['schemas']['TransferLinkCreate']
 export type LlmProviderUsage = components['schemas']['LlmProviderUsage']
 
-// `GET /api/accounting/llm-usage` returns a bare `symbol -> LlmProviderUsage`
+// `GET /api/v1/accounting/llm-usage` returns a bare `symbol -> LlmProviderUsage`
 // map with no fixed keys (one per configured provider) — there's no named
 // response model for openapi-typescript to generate a component for.
 export type LlmUsage = Record<string, LlmProviderUsage>

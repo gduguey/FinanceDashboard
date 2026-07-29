@@ -44,7 +44,14 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
     from starlette.responses import Response
 
-router: APIRouter = APIRouter(prefix="/api/accounting")
+# `/api/v1/accounting`, not `/v1/accounting`: `/api` is the boundary that keeps
+# a versioned API path from being swallowed by the SPA catch-all route
+# (`trades.api.api`'s `/{full_path:path}`), which serves `index.html` for
+# anything not matched earlier. `/v1/...` would look like a frontend route.
+# The namespace is per-module rather than resource-first because `/settings`,
+# `/ledger/export` and `/statements/export` all exist in both this module and
+# `trades` — three real collisions a flat resource namespace could not hold.
+router: APIRouter = APIRouter(prefix="/api/v1/accounting")
 router.include_router(bootstrap.router)
 router.include_router(categories.router)
 router.include_router(tags.router)

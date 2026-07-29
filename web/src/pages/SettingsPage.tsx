@@ -22,8 +22,8 @@ import {
   useIbkrSettings,
   useSetIbkrSettings,
 } from '@/hooks/usePortfolioData'
-import { accountingApi } from '@/lib/accountingApi'
-import { api } from '@/lib/api'
+import { ACCOUNTING_API_BASE, accountingApi } from '@/lib/accountingApi'
+import { api, TRADES_API_BASE } from '@/lib/api'
 import { downloadCsv, downloadFromUrl, downloadJson, downloadMultipleCsv, exportStamp } from '@/lib/download'
 
 // Walks through creating a Flex Query on IBKR's own site, since neither
@@ -390,7 +390,7 @@ function ExportTab() {
           <ExportRow
             label="Raw statements"
             description="Every Flex statement archived from a sync, verbatim, as a .zip of the original XML files."
-            exports={[{ label: 'Export', onExport: () => downloadFromUrl('/api/statements/export') }]}
+            exports={[{ label: 'Export', onExport: () => downloadFromUrl(`${TRADES_API_BASE}/statements/export`) }]}
           />
         </CardContent>
       </Card>
@@ -442,7 +442,7 @@ function ExportTab() {
           <ExportRow
             label="Raw statements"
             description="Every bank/card CSV or statement PDF you've ever uploaded, verbatim, as a .zip."
-            exports={[{ label: 'Export', onExport: () => downloadFromUrl('/api/accounting/statements/export') }]}
+            exports={[{ label: 'Export', onExport: () => downloadFromUrl(`${ACCOUNTING_API_BASE}/statements/export`) }]}
           />
         </CardContent>
       </Card>

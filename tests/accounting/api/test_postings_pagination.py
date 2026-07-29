@@ -50,7 +50,7 @@ def client():
 
 def _page(client, **params) -> dict:
     """One whole `PostingPage` envelope from `GET /postings`, window fields included."""
-    response = client.get("/api/accounting/postings", params=params)
+    response = client.get("/api/v1/accounting/postings", params=params)
     assert response.status_code == 200
     return response.json()
 
@@ -80,14 +80,14 @@ def _seed_transactions(client, count: int) -> str:
     and `len(items)` (postings) genuinely different numbers.
     """
     account = client.post(
-        "/api/accounting/accounts",
+        "/api/v1/accounting/accounts",
         json={"name": "Generic Checking", "kind": "checking", "institution": "Generic Bank", "currency": "USD"},
     ).json()
     rows = "".join(
         f"{date(2026, 1, 1) + timedelta(days=index)},Purchase {index},-{index + 1}.00\n" for index in range(count)
     )
     response = client.post(
-        "/api/accounting/import/canonical",
+        "/api/v1/accounting/import/canonical",
         files={"file": ("generic.csv", f"Date,Description,Amount\n{rows}", "text/csv")},
         data={
             "institution": "Generic Bank",
@@ -128,14 +128,14 @@ def test_a_limit_above_the_cap_is_clamped_rather_than_rejected(client) -> None:
 def test_a_limit_below_one_is_rejected(client) -> None:
     _seed_transactions(client, 3)
 
-    assert client.get("/api/accounting/postings", params={"limit": 0}).status_code == 422
-    assert client.get("/api/accounting/postings", params={"limit": -1}).status_code == 422
+    assert client.get("/api/v1/accounting/postings", params={"limit": 0}).status_code == 422
+    assert client.get("/api/v1/accounting/postings", params={"limit": -1}).status_code == 422
 
 
 def test_a_negative_offset_is_rejected(client) -> None:
     _seed_transactions(client, 3)
 
-    assert client.get("/api/accounting/postings", params={"offset": -1}).status_code == 422
+    assert client.get("/api/v1/accounting/postings", params={"offset": -1}).status_code == 422
     assert _page(client, offset=0)["offset"] == 0
 
 
@@ -165,7 +165,7 @@ def test_a_page_still_holds_the_transactions_asked_for_after_a_merge(client) -> 
     kept, duplicate = newest_first[0], newest_first[1]
 
     response = client.post(
-        "/api/accounting/posting-merges",
+        "/api/v1/accounting/posting-merges",
         json={"kept_transaction_id": kept, "duplicate_transaction_ids": [duplicate]},
     )
     assert response.status_code == 200
@@ -202,7 +202,7 @@ def test_every_leg_of_a_transaction_lands_on_the_same_page(client) -> None:
         posting for posting in _page(client, limit=PAGE_LIMIT_MAX)["items"] if posting["account_id"] == account_id
     )
     split_response = client.put(
-        f"/api/accounting/postings/{real_leg['posting_id']}/split",
+        f"/api/v1/accounting/postings/{real_leg['posting_id']}/split",
         json=[{"amount": real_leg["amount"] + 1.0}, {"amount": -1.0}],
     )
     assert split_response.status_code == 200

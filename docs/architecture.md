@@ -32,11 +32,11 @@ app.include_router(accounting_router)  # from accounting.api
 ```
 
 `accounting/api.py` never constructs its own `FastAPI()` — it only
-defines `router = APIRouter(prefix="/api/accounting")`, an ordinary
+defines `router = APIRouter(prefix="/api/v1/accounting")`, an ordinary
 FastAPI router with no opinion about which app it ends up mounted on.
 `trades.api` imports that router and mounts it onto its own `app` at
 import time. The result, at runtime, is one process, one port, one
-`uvicorn trades.api:app` — every `/api/...` and `/api/accounting/...`
+`uvicorn trades.api:app` — every `/api/...` and `/api/v1/accounting/...`
 route is served by the same app, the same event loop, the same process.
 
 This isn't an accident of convenience; it's deliberate insurance.

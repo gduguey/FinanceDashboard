@@ -69,7 +69,7 @@ def _all_user_ids() -> list[uuid.UUID]:
 def run_price_sync(config: AppConfig | None = None) -> list[str]:
     """Refresh the raw and adjusted price caches for every symbol any real user holds, plus every chosen benchmark.
 
-    Replicates the price-refresh legs `POST /api/sync` used to run on
+    Replicates the price-refresh legs `POST /api/v1/trades/sync` used to run on
     every click — the raw cache for every symbol ever held by *any* user
     (excluding `config.ledger.cash_symbol`) plus every user's own chosen
     benchmark symbol, and the dividend/split-adjusted cache for that same

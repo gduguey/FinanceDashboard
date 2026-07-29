@@ -31,7 +31,7 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
 }
 ```
 
-`GET /api/accounting/supported-import-kinds` exposes exactly this table's
+`GET /api/v1/accounting/supported-import-kinds` exposes exactly this table's
 keys, and the Import page's account list cross-references every account
 against it — an account whose `(institution, kind)` pair isn't a key here
 gets the amber warning icon, because uploading a CSV for it would have

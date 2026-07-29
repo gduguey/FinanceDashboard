@@ -71,6 +71,13 @@ import type {
   VerifyResult,
 } from '@/types/accounting'
 
+// Where this module's endpoints live, declared once rather than repeated in
+// every path below — the mirror image of `accounting.api.api`'s own router
+// prefix, so the two move together. See `api.ts`'s `TRADES_API_BASE` for the
+// shape; exported for the same reason (a browser-driven CSV download needs the
+// URL, not a parsed response).
+export const ACCOUNTING_API_BASE = '/api/v1/accounting'
+
 // One request path for every accounting endpoint. Nothing store-wide is
 // sent or cached here: a write that needs conflict detection carries its
 // own row's `expected_version` in the request body (goals, transfer
@@ -80,7 +87,7 @@ import type {
 // `RowVersionConflictError` says and what App.tsx's one global handler
 // turns into a reload prompt.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const response = await fetch(`${ACCOUNTING_API_BASE}${path}`, init)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     const message = body?.detail ?? `${response.status} ${response.statusText}`
@@ -181,107 +188,94 @@ function queryString(params: Record<string, string | number | undefined>): strin
 }
 
 export const accountingApi = {
-  store: () => request<AccountingStore>('/api/accounting/store'),
-  currencies: () => request<Currency[]>('/api/accounting/currencies'),
-  llmUsage: () => request<LlmUsage>('/api/accounting/llm-usage'),
-  llmSettings: () => request<LlmSettings>('/api/accounting/settings/llm'),
+  store: () => request<AccountingStore>('/store'),
+  currencies: () => request<Currency[]>('/currencies'),
+  llmUsage: () => request<LlmUsage>('/llm-usage'),
+  llmSettings: () => request<LlmSettings>('/settings/llm'),
   setLlmSettings: (update: LlmSettingsUpdate) =>
-    request<LlmSettings>('/api/accounting/settings/llm', {
+    request<LlmSettings>('/settings/llm', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
     }),
-  clearLlmSettings: () => request<LlmSettings>('/api/accounting/settings/llm', { method: 'DELETE' }),
+  clearLlmSettings: () => request<LlmSettings>('/settings/llm', { method: 'DELETE' }),
   verifyLlmSettings: (provider: 'gemini' | 'mistral') =>
-    request<VerifyResult>(`/api/accounting/settings/llm/verify?provider=${provider}`, { method: 'POST' }),
+    request<VerifyResult>(`/settings/llm/verify?provider=${provider}`, { method: 'POST' }),
   currentExchangeRate: (currency: string) =>
-    request<CurrentExchangeRate>(`/api/accounting/exchange-rates/current${queryString({ currency })}`),
+    request<CurrentExchangeRate>(`/exchange-rates/current${queryString({ currency })}`),
   exchangeRateHistory: (currency: string) =>
-    request<ExchangeRateHistoryPoint[]>(`/api/accounting/exchange-rates/history${queryString({ currency })}`),
+    request<ExchangeRateHistoryPoint[]>(`/exchange-rates/history${queryString({ currency })}`),
   putCategories: (categories: Record<string, Category>) =>
-    request<Record<string, Category>>('/api/accounting/categories', jsonInit('PUT', categories)),
-  createCategory: (category: CategoryCreate) =>
-    request<Category>('/api/accounting/categories', jsonInit('POST', category)),
+    request<Record<string, Category>>('/categories', jsonInit('PUT', categories)),
+  createCategory: (category: CategoryCreate) => request<Category>('/categories', jsonInit('POST', category)),
   createSubcategory: (parentId: string, subcategory: SubcategoryCreate) =>
-    request<Category>(
-      `/api/accounting/categories/${encodeURIComponent(parentId)}/subcategories`,
-      jsonInit('POST', subcategory),
-    ),
+    request<Category>(`/categories/${encodeURIComponent(parentId)}/subcategories`, jsonInit('POST', subcategory)),
   categoryRenamePreview: (categoryId: string, name: string) =>
     request<CategoryRenamePreview>(
-      `/api/accounting/categories/${encodeURIComponent(categoryId)}/rename-preview${queryString({ name })}`,
+      `/categories/${encodeURIComponent(categoryId)}/rename-preview${queryString({ name })}`,
     ),
   renameCategory: (categoryId: string, name: string) =>
     request<{ categories: Record<string, Category>; merged: boolean }>(
-      `/api/accounting/categories/${encodeURIComponent(categoryId)}/rename`,
+      `/categories/${encodeURIComponent(categoryId)}/rename`,
       jsonInit('POST', { name }),
     ),
   categoryDeletePreview: (categoryId: string) =>
-    request<CategoryDeletePreview>(`/api/accounting/categories/${encodeURIComponent(categoryId)}/delete-preview`),
+    request<CategoryDeletePreview>(`/categories/${encodeURIComponent(categoryId)}/delete-preview`),
   deleteCategory: (categoryId: string) =>
     request<{ categories: Record<string, Category>; uncategorized_posting_count: number }>(
-      `/api/accounting/categories/${encodeURIComponent(categoryId)}`,
+      `/categories/${encodeURIComponent(categoryId)}`,
       { method: 'DELETE' },
     ),
-  createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),
-  deleteTag: (tagId: string) =>
-    request<{ tag_id: string }>(`/api/accounting/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
+  createTag: (tag: TagCreate) => request<Tag>('/tags', jsonInit('POST', tag)),
+  deleteTag: (tagId: string) => request<{ tag_id: string }>(`/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
   tagRenamePreview: (tagId: string, name: string) =>
-    request<TagRenamePreview>(
-      `/api/accounting/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`,
-    ),
+    request<TagRenamePreview>(`/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`),
   renameTag: (tagId: string, name: string) =>
     request<{ tags: Record<string, Tag>; merged: boolean }>(
-      `/api/accounting/tags/${encodeURIComponent(tagId)}/rename`,
+      `/tags/${encodeURIComponent(tagId)}/rename`,
       jsonInit('POST', { name }),
     ),
-  createTransferRule: (rule: TransferRuleCreate) =>
-    request<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
+  createTransferRule: (rule: TransferRuleCreate) => request<TransferRule>('/transfer-rules', jsonInit('POST', rule)),
   patchTransferRule: (ruleId: string, update: TransferRuleUpdate) =>
-    request<TransferRule>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, jsonInit('PATCH', update)),
+    request<TransferRule>(`/transfer-rules/${encodeURIComponent(ruleId)}`, jsonInit('PATCH', update)),
   deleteTransferRule: (ruleId: string) =>
-    request<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
+    request<{ rule_id: string }>(`/transfer-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
-  createOtherAsset: (asset: OtherAssetCreate) =>
-    request<OtherAsset>('/api/accounting/other-assets', jsonInit('POST', asset)),
+  createOtherAsset: (asset: OtherAssetCreate) => request<OtherAsset>('/other-assets', jsonInit('POST', asset)),
   deleteOtherAsset: (assetId: string) =>
-    request<{ asset_id: string }>(`/api/accounting/other-assets/${encodeURIComponent(assetId)}`, {
+    request<{ asset_id: string }>(`/other-assets/${encodeURIComponent(assetId)}`, {
       method: 'DELETE',
     }),
-  postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
+  postAccount: (account: AccountCreate) => request<Account>('/accounts', jsonInit('POST', account)),
   putAccount: (accountId: string, update: AccountUpdate) =>
-    request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
+    request<Account>(`/accounts/${encodeURIComponent(accountId)}`, jsonInit('PUT', update)),
   deleteAccount: (accountId: string) =>
-    request<{ account_id: string }>(`/api/accounting/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
+    request<{ account_id: string }>(`/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }),
   putOpeningBalance: (accountId: string, openingBalance: OpeningBalance) =>
     request<OpeningBalance>(
-      `/api/accounting/accounts/${encodeURIComponent(accountId)}/opening-balance`,
+      `/accounts/${encodeURIComponent(accountId)}/opening-balance`,
       jsonInit('PUT', openingBalance),
     ),
   deleteOpeningBalance: (accountId: string) =>
-    request<{ account_id: string }>(`/api/accounting/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
+    request<{ account_id: string }>(`/accounts/${encodeURIComponent(accountId)}/opening-balance`, {
       method: 'DELETE',
     }),
   closeAccount: (accountId: string, transfers: ManualTransfer[]) =>
     request<{ account: Account; manual_transfers: ManualTransfer[] }>(
-      `/api/accounting/accounts/${encodeURIComponent(accountId)}/close`,
+      `/accounts/${encodeURIComponent(accountId)}/close`,
       jsonInit('POST', { transfers }),
     ),
   reopenAccount: (accountId: string) =>
-    request<Account>(`/api/accounting/accounts/${encodeURIComponent(accountId)}/reopen`, { method: 'POST' }),
+    request<Account>(`/accounts/${encodeURIComponent(accountId)}/reopen`, { method: 'POST' }),
   detect: (header: string[], filename: string, firstDataRow?: Record<string, string>) =>
-    request<DetectedAccount | null>(
-      '/api/accounting/detect',
-      jsonInit('POST', { header, filename, first_data_row: firstDataRow }),
-    ),
-  supportedImportKinds: () =>
-    request<{ institution: string; account_kind: string }[]>('/api/accounting/supported-import-kinds'),
+    request<DetectedAccount | null>('/detect', jsonInit('POST', { header, filename, first_data_row: firstDataRow })),
+  supportedImportKinds: () => request<{ institution: string; account_kind: string }[]>('/supported-import-kinds'),
   importCsv: (file: File, accountId: string) => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('account_id', accountId)
-    return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
+    return request<ImportResult>('/import', { method: 'POST', body: formData })
   },
   previewCanonicalImport: (
     file: File,
@@ -296,7 +290,7 @@ export const accountingApi = {
     formData.append('currency', currency)
     if (separator) formData.append('separator', separator)
     if (dateOrder) formData.append('date_order', dateOrder)
-    return request<CanonicalImportPreview>('/api/accounting/import/canonical/preview', {
+    return request<CanonicalImportPreview>('/import/canonical/preview', {
       method: 'POST',
       body: formData,
     })
@@ -314,19 +308,19 @@ export const accountingApi = {
     if (separator) formData.append('separator', separator)
     if (dateOrder) formData.append('date_order', dateOrder)
     if (categoryOverrides) formData.append('category_overrides', JSON.stringify(categoryOverrides))
-    return request<CanonicalImportResult>('/api/accounting/import/canonical', { method: 'POST', body: formData })
+    return request<CanonicalImportResult>('/import/canonical', { method: 'POST', body: formData })
   },
   importPaystub: (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
-    return request<PaystubReconciliationResult>('/api/accounting/import/paystub', { method: 'POST', body: formData })
+    return request<PaystubReconciliationResult>('/import/paystub', { method: 'POST', body: formData })
   },
   previewCategorizeFromFile: (file: File, separator?: string, dateOrder?: string) => {
     const formData = new FormData()
     formData.append('file', file)
     if (separator) formData.append('separator', separator)
     if (dateOrder) formData.append('date_order', dateOrder)
-    return request<CategorizeFromFilePreview>('/api/accounting/import/categorize-from-file/preview', {
+    return request<CategorizeFromFilePreview>('/import/categorize-from-file/preview', {
       method: 'POST',
       body: formData,
     })
@@ -337,12 +331,12 @@ export const accountingApi = {
     formData.append('confirmed_row_numbers', JSON.stringify(confirmedRowNumbers))
     if (separator) formData.append('separator', separator)
     if (dateOrder) formData.append('date_order', dateOrder)
-    return request<CategorizeFromFileApplyResult>('/api/accounting/import/categorize-from-file/apply', {
+    return request<CategorizeFromFileApplyResult>('/import/categorize-from-file/apply', {
       method: 'POST',
       body: formData,
     })
   },
-  rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
+  rebuild: () => request<{ total_posting_count: number }>('/rebuild', { method: 'POST' }),
   // Pages through the collection until it is exhausted, rather than asking
   // for one page. The server caps any single page (`PAGE_LIMIT_MAX`), so a
   // single request cannot return a large user's whole ledger — and returning
@@ -364,7 +358,7 @@ export const accountingApi = {
     let offset = 0
     let total = 0
     do {
-      const page = await request<PostingPage>(`/api/accounting/postings${queryString({ limit, offset })}`)
+      const page = await request<PostingPage>(`/postings${queryString({ limit, offset })}`)
       items.push(...page.items)
       total = page.total
       offset += pageStride(page.limit)
@@ -381,7 +375,7 @@ export const accountingApi = {
     let offset = 0
     let total = 0
     do {
-      const page = await request<LedgerExportPage>(`/api/accounting/ledger/export${queryString({ limit, offset })}`)
+      const page = await request<LedgerExportPage>(`/ledger/export${queryString({ limit, offset })}`)
       items.push(...page.items)
       total = page.total
       offset += pageStride(page.limit)
@@ -393,104 +387,92 @@ export const accountingApi = {
   // fields left out, so the request body is a genuine partial, unlike
   // the full `ManualOverride` this endpoint returns once merged.
   putPostingOverride: (postingId: string, override: Partial<ManualOverride>) =>
-    request<ManualOverride>(
-      `/api/accounting/postings/${encodeURIComponent(postingId)}/override`,
-      jsonInit('PUT', override),
-    ),
+    request<ManualOverride>(`/postings/${encodeURIComponent(postingId)}/override`, jsonInit('PUT', override)),
   putPostingSplit: (postingId: string, legs: PostingSplitLeg[]) =>
     request<{ posting_id: string; legs: PostingSplitLeg[] }>(
-      `/api/accounting/postings/${encodeURIComponent(postingId)}/split`,
+      `/postings/${encodeURIComponent(postingId)}/split`,
       jsonInit('PUT', legs),
     ),
   deletePostingSplit: (postingId: string) =>
-    request<{ posting_id: string }>(`/api/accounting/postings/${encodeURIComponent(postingId)}/split`, {
+    request<{ posting_id: string }>(`/postings/${encodeURIComponent(postingId)}/split`, {
       method: 'DELETE',
     }),
   aiSuggestCategory: (postingId: string, lockCategoryId?: string | null) =>
     request<{ category_id: string | null; subcategory_id: string | null; applied: boolean }>(
-      `/api/accounting/postings/${encodeURIComponent(postingId)}/ai-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
+      `/postings/${encodeURIComponent(postingId)}/ai-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
       { method: 'POST' },
     ),
   patternSuggestCategory: (postingId: string, lockCategoryId?: string | null) =>
     request<{ category_id: string | null; subcategory_id: string | null; applied: boolean }>(
-      `/api/accounting/postings/${encodeURIComponent(postingId)}/pattern-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
+      `/postings/${encodeURIComponent(postingId)}/pattern-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
       { method: 'POST' },
     ),
   patternSuggestCategoryBulk: (postingIds: string[]) =>
     request<{ applied: number }>(
-      '/api/accounting/postings/pattern-suggest-category/bulk',
+      '/postings/pattern-suggest-category/bulk',
       jsonInit('POST', { posting_ids: postingIds }),
     ),
   validatePending: (postingIds: string[]) =>
     request<{ accepted: number; reverted: number }>(
-      '/api/accounting/postings/validate-pending',
+      '/postings/validate-pending',
       jsonInit('POST', { posting_ids: postingIds }),
     ),
   createCategoryPattern: (pattern: CategoryPatternCreate) =>
-    request<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
+    request<CategoryPattern>('/category-patterns', jsonInit('POST', pattern)),
   patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
-    request<CategoryPattern>(
-      `/api/accounting/category-patterns/${encodeURIComponent(patternId)}`,
-      jsonInit('PATCH', update),
-    ),
+    request<CategoryPattern>(`/category-patterns/${encodeURIComponent(patternId)}`, jsonInit('PATCH', update)),
   deleteCategoryPattern: (patternId: string) =>
-    request<{ pattern_id: string }>(`/api/accounting/category-patterns/${encodeURIComponent(patternId)}`, {
+    request<{ pattern_id: string }>(`/category-patterns/${encodeURIComponent(patternId)}`, {
       method: 'DELETE',
     }),
   transferSuggestions: (windowDays?: number) =>
-    request<TransferSuggestion[]>(`/api/accounting/transfer-suggestions${queryString({ window_days: windowDays })}`),
+    request<TransferSuggestion[]>(`/transfer-suggestions${queryString({ window_days: windowDays })}`),
   duplicateSuggestions: (windowDays?: number) =>
-    request<DuplicateGroup[]>(`/api/accounting/duplicate-suggestions${queryString({ window_days: windowDays })}`),
-  dismissedSuggestions: () => request<DismissedSuggestion[]>('/api/accounting/dismissed-suggestions'),
+    request<DuplicateGroup[]>(`/duplicate-suggestions${queryString({ window_days: windowDays })}`),
+  dismissedSuggestions: () => request<DismissedSuggestion[]>('/dismissed-suggestions'),
   dismissSuggestion: (body: DismissSuggestionRequest) =>
-    request<DismissedSuggestion>('/api/accounting/dismissed-suggestions', jsonInit('POST', body)),
+    request<DismissedSuggestion>('/dismissed-suggestions', jsonInit('POST', body)),
   restoreSuggestion: (suggestionId: string) =>
-    request<{ suggestion_id: string }>(`/api/accounting/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
+    request<{ suggestion_id: string }>(`/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
       method: 'DELETE',
     }),
-  createPostingMerge: (merge: PostingMergeUpsert) =>
-    request<PostingMerge>('/api/accounting/posting-merges', jsonInit('POST', merge)),
+  createPostingMerge: (merge: PostingMergeUpsert) => request<PostingMerge>('/posting-merges', jsonInit('POST', merge)),
   removePostingMerge: (mergeId: string) =>
-    request<{ merge_id: string }>(`/api/accounting/posting-merges/${encodeURIComponent(mergeId)}`, {
+    request<{ merge_id: string }>(`/posting-merges/${encodeURIComponent(mergeId)}`, {
       method: 'DELETE',
     }),
-  createTransferLink: (link: TransferLinkCreate) =>
-    request<TransferLink>('/api/accounting/transfer-links', jsonInit('POST', link)),
+  createTransferLink: (link: TransferLinkCreate) => request<TransferLink>('/transfer-links', jsonInit('POST', link)),
   removeTransferLink: (linkId: string) =>
-    request<{ link_id: string }>(`/api/accounting/transfer-links/${encodeURIComponent(linkId)}`, {
+    request<{ link_id: string }>(`/transfer-links/${encodeURIComponent(linkId)}`, {
       method: 'DELETE',
     }),
   netWorth: (asOf?: string, displayCurrency?: string) =>
-    request<NetWorthSummary>(
-      `/api/accounting/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`,
-    ),
+    request<NetWorthSummary>(`/net-worth${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
     request<NetWorthHistoryPoint[]>(
-      `/api/accounting/net-worth/history${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
+      `/net-worth/history${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
     ),
   netWorthHistoryByAccount: (start: string, end: string, intervalDays?: number, displayCurrency?: string) =>
     request<NetWorthHistoryByAccountPoint[]>(
-      `/api/accounting/net-worth/history/by-account${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
+      `/net-worth/history/by-account${queryString({ start, end, interval_days: intervalDays, display_currency: displayCurrency })}`,
     ),
   categoryTotals: (start: string, end: string, accountIds?: string[], tagId?: string, displayCurrency?: string) =>
     request<CategoryTotalRow[]>(
-      `/api/accounting/income-statement/category-totals${queryString({ start, end, account_ids: accountIds?.join(','), tag_id: tagId, display_currency: displayCurrency })}`,
+      `/income-statement/category-totals${queryString({ start, end, account_ids: accountIds?.join(','), tag_id: tagId, display_currency: displayCurrency })}`,
     ),
   monthlyIncomeExpense: (start: string, end: string, displayCurrency?: string) =>
     request<MonthlyIncomeExpenseRow[]>(
-      `/api/accounting/income-statement/monthly${queryString({ start, end, display_currency: displayCurrency })}`,
+      `/income-statement/monthly${queryString({ start, end, display_currency: displayCurrency })}`,
     ),
   spendCurve: (month: string, lookbackMonths?: number, displayCurrency?: string) =>
     request<SpendCurvePoint[]>(
-      `/api/accounting/income-statement/spend-curve${queryString({ month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
+      `/income-statement/spend-curve${queryString({ month, lookback_months: lookbackMonths, display_currency: displayCurrency })}`,
     ),
-  setBudget: (budget: BudgetUpsert) => request<Budget>('/api/accounting/budgets', jsonInit('POST', budget)),
+  setBudget: (budget: BudgetUpsert) => request<Budget>('/budgets', jsonInit('POST', budget)),
   removeBudget: (budgetId: string) =>
-    request<{ budget_id: string }>(`/api/accounting/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
+    request<{ budget_id: string }>(`/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
   budgetComparison: (month: string, displayCurrency?: string) =>
-    request<BudgetComparisonRow[]>(
-      `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,
-    ),
+    request<BudgetComparisonRow[]>(`/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`),
   suggestedBudgetAmount: (
     categoryId: string,
     month: string,
@@ -499,14 +481,13 @@ export const accountingApi = {
     displayCurrency?: string,
   ) =>
     request<{ suggested_amount: number }>(
-      `/api/accounting/budgets/suggested-amount${queryString({ category_id: categoryId, month, lookback_months: lookbackMonths, subcategory_id: subcategoryId, display_currency: displayCurrency })}`,
+      `/budgets/suggested-amount${queryString({ category_id: categoryId, month, lookback_months: lookbackMonths, subcategory_id: subcategoryId, display_currency: displayCurrency })}`,
     ),
-  interestSummary: (asOf?: string) =>
-    request<InterestAccountRow[]>(`/api/accounting/interest-summary${queryString({ as_of: asOf })}`),
+  interestSummary: (asOf?: string) => request<InterestAccountRow[]>(`/interest-summary${queryString({ as_of: asOf })}`),
   createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
-    request<SimulatorScenario>('/api/accounting/simulator/scenarios', jsonInit('POST', scenario)),
+    request<SimulatorScenario>('/simulator/scenarios', jsonInit('POST', scenario)),
   deleteSimulatorScenario: (scenarioId: string) =>
-    request<{ scenario_id: string }>(`/api/accounting/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
+    request<{ scenario_id: string }>(`/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
       method: 'DELETE',
     }),
   simulatorProject: (
@@ -517,7 +498,7 @@ export const accountingApi = {
     compoundingFrequency: SimulatorScenario['compounding_frequency'],
   ) =>
     request<ProjectionPoint[]>(
-      `/api/accounting/simulator/project${queryString({
+      `/simulator/project${queryString({
         initial_capital: initialCapital,
         monthly_contribution: monthlyContribution,
         horizon_years: horizonYears,
@@ -525,49 +506,44 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  createGoal: (goal: GoalCreate) => request<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
+  createGoal: (goal: GoalCreate) => request<Goal>('/goals', jsonInit('POST', goal)),
   patchGoal: (goalId: string, update: GoalUpdate) =>
-    request<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
+    request<Goal>(`/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
   deleteGoal: (goalId: string) =>
-    request<{ goal_id: string }>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
+    request<{ goal_id: string }>(`/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
   createGoalContribution: (contribution: GoalContributionCreate) =>
-    request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
+    request<GoalContribution>('/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
     request<GoalContribution>(
-      `/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`,
+      `/goal-contributions/${encodeURIComponent(contributionId)}`,
       jsonInit('PUT', contribution),
     ),
   removeGoalContribution: (contributionId: string) =>
-    request<{ contribution_id: string }>(`/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`, {
+    request<{ contribution_id: string }>(`/goal-contributions/${encodeURIComponent(contributionId)}`, {
       method: 'DELETE',
     }),
   putContributionAutomations: (automations: GoalAutomation[]) =>
-    request<GoalAutomation[]>('/api/accounting/goal-automations/contributions', jsonInit('PUT', automations)),
+    request<GoalAutomation[]>('/goal-automations/contributions', jsonInit('PUT', automations)),
   createContributionAutomation: (automation: GoalAutomationCreate) =>
-    request<GoalAutomation>('/api/accounting/goal-automations/contributions', jsonInit('POST', automation)),
+    request<GoalAutomation>('/goal-automations/contributions', jsonInit('POST', automation)),
   patchGoalAutomation: (automationId: string, update: GoalAutomationUpdate) =>
-    request<GoalAutomation>(
-      `/api/accounting/goal-automations/${encodeURIComponent(automationId)}`,
-      jsonInit('PATCH', update),
-    ),
+    request<GoalAutomation>(`/goal-automations/${encodeURIComponent(automationId)}`, jsonInit('PATCH', update)),
   deleteGoalAutomation: (automationId: string) =>
-    request<{ automation_id: string }>(`/api/accounting/goal-automations/${encodeURIComponent(automationId)}`, {
+    request<{ automation_id: string }>(`/goal-automations/${encodeURIComponent(automationId)}`, {
       method: 'DELETE',
     }),
   putWithdrawalAutomations: (automations: GoalAutomation[]) =>
-    request<GoalAutomation[]>('/api/accounting/goal-automations/withdrawals', jsonInit('PUT', automations)),
-  syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
+    request<GoalAutomation[]>('/goal-automations/withdrawals', jsonInit('PUT', automations)),
+  syncStatus: () => request<SyncStatus>('/sync-status'),
   goalsSummary: (asOf?: string, displayCurrency?: string) =>
-    request<GoalsSummary>(
-      `/api/accounting/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`,
-    ),
+    request<GoalsSummary>(`/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`),
   runRecurringAdditions: (asOf?: string) =>
-    request<GoalContribution[]>(`/api/accounting/goals/run-recurring-additions${queryString({ as_of: asOf })}`, {
+    request<GoalContribution[]>(`/goals/run-recurring-additions${queryString({ as_of: asOf })}`, {
       method: 'POST',
     }),
   runWithdrawalAutomation: (asOf?: string) =>
     request<{ withdrawals: GoalContribution[]; remaining_shortfall: number }>(
-      `/api/accounting/goals/run-withdrawal-automation${queryString({ as_of: asOf })}`,
+      `/goals/run-withdrawal-automation${queryString({ as_of: asOf })}`,
       { method: 'POST' },
     ),
   simulateContribution: (goalId: string, date: string, amount: number) =>
@@ -576,5 +552,5 @@ export const accountingApi = {
       exceeds_unallocated: boolean
       projected_next_run_unallocated: number
       would_go_negative: boolean
-    }>('/api/accounting/goals/simulate-contribution', jsonInit('POST', { goal_id: goalId, date, amount })),
+    }>('/goals/simulate-contribution', jsonInit('POST', { goal_id: goalId, date, amount })),
 }

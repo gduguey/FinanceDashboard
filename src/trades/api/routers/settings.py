@@ -208,7 +208,7 @@ def put_timezone_setting(
     Returns
     -------
     TimezoneSetting
-        Same shape as `GET /api/settings/timezone`, reflecting what was
+        Same shape as `GET /api/v1/trades/settings/timezone`, reflecting what was
         just persisted.
     """
     updated = dashboard.load_settings(session, user_id).model_copy(update={"local_zone": update.local_zone})
@@ -275,7 +275,7 @@ def put_tax_settings(
     Returns
     -------
     TaxSettings
-        Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
+        Same shape as `GET /api/v1/trades/settings/tax`, reflecting what was just persisted.
     """
     config = _config()
     updated = dashboard.load_settings(session, user_id).model_copy(
@@ -344,7 +344,7 @@ def put_ibkr_settings(
     Returns
     -------
     IbkrSettings
-        Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
+        Same shape as `GET /api/v1/trades/settings/ibkr`, reflecting what was just persisted.
     """
     save_ibkr_credentials(session, user_id, token=update.token, query_id=update.query_id)
     fields = ibkr_credential_fields(session, user_id)
@@ -365,7 +365,7 @@ def delete_ibkr_settings(
     Returns
     -------
     IbkrSettings
-        Same shape as `GET /api/settings/ibkr`.
+        Same shape as `GET /api/v1/trades/settings/ibkr`.
     """
     clear_ibkr_credentials(session, user_id)
     return IbkrSettings(configured=False, token_set=False, query_id_set=False)

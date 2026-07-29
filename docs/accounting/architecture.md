@@ -277,7 +277,7 @@ doesn't sync with) never reaches into `trades` at all.
 The column is a real foreign key into `trades.broker_connections`, not the
 bare string `external_ref = "trades"` it replaces (DB-audit D7 / move #1),
 so the frontend offers only connections that actually exist
-(`GET /api/broker-connections`) and an account can never point at one that
+(`GET /api/v1/trades/broker-connections`) and an account can never point at one that
 doesn't. A `CHECK` pins the link to the `external_investment` kind, which
 is why `net_worth.is_trades_linked` tests one column rather than two.
 

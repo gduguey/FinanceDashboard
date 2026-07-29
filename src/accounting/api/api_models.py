@@ -134,7 +134,7 @@ class BudgetToDeletePreview(BaseModel):
 
 
 class BudgetUpsert(BaseModel):
-    """Request body for `POST /api/accounting/budgets` — sets one target for one category.
+    """Request body for `POST /api/v1/accounting/budgets` — sets one target for one category.
 
     `month` is what picks which kind of target this is: `"YYYY-MM"` sets
     that one month's, and omitting it (`null`) sets the general,
@@ -158,7 +158,7 @@ class BudgetUpsert(BaseModel):
 
 
 class TransferRuleCreate(BaseModel):
-    """Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+    """Request body for `POST /api/v1/accounting/transfer-rules` — creates one new rule.
 
     `rule_id` is never taken from the client — derived server-side from
     `(description_contains, account_id, counterparty_account_id)`, the
@@ -176,7 +176,7 @@ class TransferRuleCreate(BaseModel):
 
 
 class TransferRuleUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+    """Request body for `PATCH /api/v1/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
 
     Unlike `TransferRuleCreate`, this never changes which rule is being
     edited — the rule stays identified by the `rule_id` path param even if
@@ -202,7 +202,7 @@ class TransferRuleUpdate(BaseModel):
 
 
 class CategoryPatternCreate(BaseModel):
-    """Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+    """Request body for `POST /api/v1/accounting/category-patterns` — creates one new pattern.
 
     `pattern_id` is derived server-side the same way `TransferRuleCreate`
     derives `rule_id` — from `(description_contains, category_id,
@@ -216,7 +216,7 @@ class CategoryPatternCreate(BaseModel):
 
 
 class CategoryPatternUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+    """Request body for `PATCH /api/v1/accounting/category-patterns/{pattern_id}` — updates one in place.
 
     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
@@ -234,7 +234,7 @@ class CategoryPatternUpdate(BaseModel):
 
 
 class GoalCreate(BaseModel):
-    """Request body for `POST /api/accounting/goals` — creates one new goal.
+    """Request body for `POST /api/v1/accounting/goals` — creates one new goal.
 
     `goal_id`, `color`, and `created_at` are never taken from the client —
     a goal is an arbitrary user record with no natural key two "the same"
@@ -252,7 +252,7 @@ class GoalCreate(BaseModel):
 
 
 class GoalUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+    """Request body for `PATCH /api/v1/accounting/goals/{goal_id}` — updates one existing goal in place.
 
     Unlike `GoalCreate`, this never mints a new id or color — the goal
     stays identified by the `goal_id` path param, and `color` is an
@@ -272,7 +272,7 @@ class GoalUpdate(BaseModel):
 
 
 class SimulatorScenarioCreate(BaseModel):
-    """Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+    """Request body for `POST /api/v1/accounting/simulator/scenarios` — creates one new saved scenario.
 
     `scenario_id` is never taken from the client — two scenarios can
     validly share every input field (a user comparing "what if I ran this
@@ -290,7 +290,7 @@ class SimulatorScenarioCreate(BaseModel):
 
 
 class GoalAutomationCreate(BaseModel):
-    """Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
+    """Request body for `POST /api/v1/accounting/goal-automations/contributions` — one new scheduled contribution.
 
     Only the `contribution` direction is creatable one at a time: a
     withdrawal automation has no fields of its own beyond its goal and its
@@ -315,7 +315,7 @@ class GoalAutomationCreate(BaseModel):
 
 
 class GoalAutomationUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
+    """Request body for `PATCH /api/v1/accounting/goal-automations/{automation_id}` — edits one rule in place.
 
     A single-rule field edit (amount, dates, frequency, mode, goal),
     scoped to its own `automation_id` so it never blanket-reinserts every
@@ -340,7 +340,7 @@ class GoalAutomationUpdate(BaseModel):
 
 
 class OtherAssetCreate(BaseModel):
-    """Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+    """Request body for `POST /api/v1/accounting/other-assets` — creates one new manually-entered asset.
 
     `asset_id` is server-minted, same reasoning as `GoalCreate` — two
     assets can validly share a name (e.g. two rental properties).
@@ -470,7 +470,7 @@ class ProjectionPoint(BaseModel):
 
 
 class AccountCreate(BaseModel):
-    """Request body for `POST /api/accounting/accounts` — everything but the server-generated `account_id`."""
+    """Request body for `POST /api/v1/accounting/accounts` — everything but the server-generated `account_id`."""
 
     name: str = Field(min_length=1)
     kind: AccountKind
@@ -483,7 +483,7 @@ class AccountCreate(BaseModel):
 
 
 class AccountUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/accounts/{account_id}`.
+    """Request body for `PUT /api/v1/accounting/accounts/{account_id}`.
 
     `institution`, `kind`, and `currency` may only differ from the
     account's current values while it has no postings yet — enforced in
@@ -514,20 +514,20 @@ class AccountIdResponse(BaseModel):
 
 
 class AccountCloseRequest(BaseModel):
-    """Request body for `POST /api/accounting/accounts/{account_id}/close`."""
+    """Request body for `POST /api/v1/accounting/accounts/{account_id}/close`."""
 
     transfers: list[ManualTransfer] = Field(default_factory=list)
 
 
 class AccountCloseResponse(BaseModel):
-    """Response body for `POST /api/accounting/accounts/{account_id}/close`."""
+    """Response body for `POST /api/v1/accounting/accounts/{account_id}/close`."""
 
     account: Account
     manual_transfers: list[ManualTransfer]
 
 
 class DetectRequest(BaseModel):
-    """Request body for `POST /api/accounting/detect`."""
+    """Request body for `POST /api/v1/accounting/detect`."""
 
     header: list[str]
     filename: str
@@ -765,7 +765,7 @@ class PostingIdResponse(BaseModel):
 
 
 class PostingMergeUpsert(BaseModel):
-    """Request body for `POST /api/accounting/posting-merges` — records one duplicate-resolution decision.
+    """Request body for `POST /api/v1/accounting/posting-merges` — records one duplicate-resolution decision.
 
     `merge_id` is never taken from the client — derived server-side from
     `kept_transaction_id`, since a transaction can only ever be the kept
@@ -785,7 +785,9 @@ class PostingMergeIdResponse(BaseModel):
 
 
 class TransferLinkCreate(BaseModel):
-    """Request body for `POST /api/accounting/transfer-links` — confirms two transactions as one transfer's two sides.
+    """Request body for `POST /api/v1/accounting/transfer-links`.
+
+    Confirms two transactions as one transfer's two sides.
 
     `link_id`/ordering are never taken from the client — derived
     server-side from the two ids sorted once (see
@@ -804,7 +806,7 @@ class TransferLinkIdResponse(BaseModel):
 
 
 class GoalContributionCreate(BaseModel):
-    """Request body for `POST /api/accounting/goal-contributions` — records one new dated allocation.
+    """Request body for `POST /api/v1/accounting/goal-contributions` — records one new dated allocation.
 
     `contribution_id` is never taken from the client — unlike a budget's
     `(month, category_id)`, a contribution is an arbitrary event with no
@@ -827,7 +829,7 @@ class GoalContributionCreate(BaseModel):
 
 
 class GoalContributionUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
+    """Request body for `PUT /api/v1/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
 
     Every field is required, mirroring `PUT /accounts/{account_id}` — the
     caller already merges its patch into the existing row client-side
@@ -875,7 +877,7 @@ class VerifyResult(BaseModel):
 
 
 class LLMSettingsUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/settings/llm`.
+    """Request body for `PUT /api/v1/accounting/settings/llm`.
 
     Either field left `None` leaves that one exactly as it was — entering
     a Gemini key doesn't clear an existing Mistral one.
@@ -964,7 +966,7 @@ class DuplicateGroup(BaseModel):
 
 
 class DismissSuggestionRequest(BaseModel):
-    """Request body for `POST /api/accounting/dismissed-suggestions`."""
+    """Request body for `POST /api/v1/accounting/dismissed-suggestions`."""
 
     suggestion_id: str
     kind: Literal["transfer", "duplicate"]

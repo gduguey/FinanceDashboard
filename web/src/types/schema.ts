@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-  '/api/accounting/store': {
+  '/api/v1/accounting/store': {
     parameters: {
       query?: never
       header?: never
@@ -29,7 +29,7 @@ export interface paths {
      *         and posting merges are deliberately absent — see
      *         `AccountingStoreResponse` for why.
      */
-    get: operations['get_store_api_accounting_store_get']
+    get: operations['get_store_api_v1_accounting_store_get']
     put?: never
     post?: never
     delete?: never
@@ -38,7 +38,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/currencies': {
+  '/api/v1/accounting/currencies': {
     parameters: {
       query?: never
       header?: never
@@ -54,7 +54,7 @@ export interface paths {
      *     list[Currency]
      *         One entry per supported currency.
      */
-    get: operations['get_currencies_api_accounting_currencies_get']
+    get: operations['get_currencies_api_v1_accounting_currencies_get']
     put?: never
     post?: never
     delete?: never
@@ -63,7 +63,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories': {
+  '/api/v1/accounting/categories': {
     parameters: {
       query?: never
       header?: never
@@ -82,7 +82,7 @@ export interface paths {
      *         include an "Other" subcategory the caller didn't submit, or omit
      *         one it did (see `taxonomy.normalize_categories`).
      */
-    put: operations['put_categories_api_accounting_categories_put']
+    put: operations['put_categories_api_v1_accounting_categories_put']
     /**
      * Post Category
      * @description Create a new top-level category, refusing a same-classification, same-name duplicate.
@@ -103,14 +103,14 @@ export interface paths {
      *         409 if a top-level category of the same classification already
      *         has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
      */
-    post: operations['post_category_api_accounting_categories_post']
+    post: operations['post_category_api_v1_accounting_categories_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{parent_id}/subcategories': {
+  '/api/v1/accounting/categories/{parent_id}/subcategories': {
     parameters: {
       query?: never
       header?: never
@@ -134,14 +134,14 @@ export interface paths {
      *         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
      *         already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
      */
-    post: operations['post_subcategory_api_accounting_categories__parent_id__subcategories_post']
+    post: operations['post_subcategory_api_v1_accounting_categories__parent_id__subcategories_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{category_id}/delete-preview': {
+  '/api/v1/accounting/categories/{category_id}/delete-preview': {
     parameters: {
       query?: never
       header?: never
@@ -165,7 +165,7 @@ export interface paths {
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    get: operations['get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get']
+    get: operations['get_category_delete_preview_api_v1_accounting_categories__category_id__delete_preview_get']
     put?: never
     post?: never
     delete?: never
@@ -174,7 +174,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{category_id}': {
+  '/api/v1/accounting/categories/{category_id}': {
     parameters: {
       query?: never
       header?: never
@@ -214,13 +214,13 @@ export interface paths {
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    delete: operations['delete_category_api_accounting_categories__category_id__delete']
+    delete: operations['delete_category_api_v1_accounting_categories__category_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{category_id}/rename-preview': {
+  '/api/v1/accounting/categories/{category_id}/rename-preview': {
     parameters: {
       query?: never
       header?: never
@@ -254,7 +254,7 @@ export interface paths {
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    get: operations['get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get']
+    get: operations['get_category_rename_preview_api_v1_accounting_categories__category_id__rename_preview_get']
     put?: never
     post?: never
     delete?: never
@@ -263,7 +263,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{category_id}/rename': {
+  '/api/v1/accounting/categories/{category_id}/rename': {
     parameters: {
       query?: never
       header?: never
@@ -305,14 +305,14 @@ export interface paths {
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    post: operations['post_category_rename_api_accounting_categories__category_id__rename_post']
+    post: operations['post_category_rename_api_v1_accounting_categories__category_id__rename_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags': {
+  '/api/v1/accounting/tags': {
     parameters: {
       query?: never
       header?: never
@@ -329,7 +329,7 @@ export interface paths {
      *     dict[str, Tag]
      *         The tags just persisted, keyed by `tag_id`.
      */
-    put: operations['put_tags_api_accounting_tags_put']
+    put: operations['put_tags_api_v1_accounting_tags_put']
     /**
      * Post Tag
      * @description Create a new tag, refusing a same-name (case-insensitive) duplicate.
@@ -350,14 +350,14 @@ export interface paths {
      *         409 if a tag with this name (case-insensitive) already exists, or a
      *         distinct name collides with an existing tag's slug id.
      */
-    post: operations['post_tag_api_accounting_tags_post']
+    post: operations['post_tag_api_v1_accounting_tags_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags/{tag_id}': {
+  '/api/v1/accounting/tags/{tag_id}': {
     parameters: {
       query?: never
       header?: never
@@ -386,13 +386,13 @@ export interface paths {
      *     HTTPException
      *         404 if no tag with `tag_id` exists.
      */
-    delete: operations['delete_tag_route_api_accounting_tags__tag_id__delete']
+    delete: operations['delete_tag_route_api_v1_accounting_tags__tag_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags/{tag_id}/rename-preview': {
+  '/api/v1/accounting/tags/{tag_id}/rename-preview': {
     parameters: {
       query?: never
       header?: never
@@ -420,7 +420,7 @@ export interface paths {
      *     HTTPException
      *         404 if `tag_id` doesn't exist.
      */
-    get: operations['get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get']
+    get: operations['get_tag_rename_preview_api_v1_accounting_tags__tag_id__rename_preview_get']
     put?: never
     post?: never
     delete?: never
@@ -429,7 +429,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags/{tag_id}/rename': {
+  '/api/v1/accounting/tags/{tag_id}/rename': {
     parameters: {
       query?: never
       header?: never
@@ -460,14 +460,14 @@ export interface paths {
      *     HTTPException
      *         404 if `tag_id` doesn't exist.
      */
-    post: operations['post_tag_rename_api_accounting_tags__tag_id__rename_post']
+    post: operations['post_tag_rename_api_v1_accounting_tags__tag_id__rename_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-rules': {
+  '/api/v1/accounting/transfer-rules': {
     parameters: {
       query?: never
       header?: never
@@ -497,14 +497,14 @@ export interface paths {
      *     HTTPException
      *         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
      */
-    post: operations['post_transfer_rule_api_accounting_transfer_rules_post']
+    post: operations['post_transfer_rule_api_v1_accounting_transfer_rules_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-rules/{rule_id}': {
+  '/api/v1/accounting/transfer-rules/{rule_id}': {
     parameters: {
       query?: never
       header?: never
@@ -539,7 +539,7 @@ export interface paths {
      *     HTTPException
      *         404 if no rule with `rule_id` exists.
      */
-    delete: operations['delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete']
+    delete: operations['delete_transfer_rule_route_api_v1_accounting_transfer_rules__rule_id__delete']
     options?: never
     head?: never
     /**
@@ -563,10 +563,10 @@ export interface paths {
      *     HTTPException
      *         404 if no rule with `rule_id` exists.
      */
-    patch: operations['patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch']
+    patch: operations['patch_transfer_rule_api_v1_accounting_transfer_rules__rule_id__patch']
     trace?: never
   }
-  '/api/accounting/category-patterns': {
+  '/api/v1/accounting/category-patterns': {
     parameters: {
       query?: never
       header?: never
@@ -583,7 +583,7 @@ export interface paths {
      *     dict[str, CategoryPattern]
      *         The patterns just persisted, keyed by `pattern_id`.
      */
-    put: operations['put_category_patterns_api_accounting_category_patterns_put']
+    put: operations['put_category_patterns_api_v1_accounting_category_patterns_put']
     /**
      * Post Category Pattern
      * @description Create one new category pattern, without touching any other pattern already saved.
@@ -596,14 +596,14 @@ export interface paths {
      *     CategoryPattern
      *         The pattern just persisted.
      */
-    post: operations['post_category_pattern_api_accounting_category_patterns_post']
+    post: operations['post_category_pattern_api_v1_accounting_category_patterns_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/category-patterns/{pattern_id}': {
+  '/api/v1/accounting/category-patterns/{pattern_id}': {
     parameters: {
       query?: never
       header?: never
@@ -629,7 +629,7 @@ export interface paths {
      *     HTTPException
      *         404 if no pattern with `pattern_id` exists.
      */
-    delete: operations['delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete']
+    delete: operations['delete_category_pattern_route_api_v1_accounting_category_patterns__pattern_id__delete']
     options?: never
     head?: never
     /**
@@ -649,10 +649,10 @@ export interface paths {
      *     HTTPException
      *         404 if no pattern with `pattern_id` exists.
      */
-    patch: operations['patch_category_pattern_api_accounting_category_patterns__pattern_id__patch']
+    patch: operations['patch_category_pattern_api_v1_accounting_category_patterns__pattern_id__patch']
     trace?: never
   }
-  '/api/accounting/other-assets': {
+  '/api/v1/accounting/other-assets': {
     parameters: {
       query?: never
       header?: never
@@ -669,7 +669,7 @@ export interface paths {
      *     list[OtherAsset]
      *         The assets just persisted.
      */
-    put: operations['put_other_assets_api_accounting_other_assets_put']
+    put: operations['put_other_assets_api_v1_accounting_other_assets_put']
     /**
      * Post Other Asset
      * @description Create one new manually-entered asset, without touching any other asset already saved.
@@ -683,14 +683,14 @@ export interface paths {
      *     OtherAsset
      *         The asset just persisted.
      */
-    post: operations['post_other_asset_api_accounting_other_assets_post']
+    post: operations['post_other_asset_api_v1_accounting_other_assets_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/other-assets/{asset_id}': {
+  '/api/v1/accounting/other-assets/{asset_id}': {
     parameters: {
       query?: never
       header?: never
@@ -717,13 +717,13 @@ export interface paths {
      *     HTTPException
      *         404 if no asset with `asset_id` exists.
      */
-    delete: operations['delete_other_asset_route_api_accounting_other_assets__asset_id__delete']
+    delete: operations['delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/budgets': {
+  '/api/v1/accounting/budgets': {
     parameters: {
       query?: never
       header?: never
@@ -740,7 +740,7 @@ export interface paths {
      *     list[Budget]
      *         The budgets just persisted.
      */
-    put: operations['put_budgets_api_accounting_budgets_put']
+    put: operations['put_budgets_api_v1_accounting_budgets_put']
     /**
      * Post Budget
      * @description Set one spending target for one category (or subcategory), replacing any prior target for it.
@@ -759,14 +759,14 @@ export interface paths {
      *     Budget
      *         The budget just persisted.
      */
-    post: operations['post_budget_api_accounting_budgets_post']
+    post: operations['post_budget_api_v1_accounting_budgets_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/budgets/{budget_id}': {
+  '/api/v1/accounting/budgets/{budget_id}': {
     parameters: {
       query?: never
       header?: never
@@ -790,13 +790,13 @@ export interface paths {
      *     HTTPException
      *         404 if no budget has this id.
      */
-    delete: operations['delete_budget_api_accounting_budgets__budget_id__delete']
+    delete: operations['delete_budget_api_v1_accounting_budgets__budget_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/simulator/scenarios': {
+  '/api/v1/accounting/simulator/scenarios': {
     parameters: {
       query?: never
       header?: never
@@ -813,7 +813,7 @@ export interface paths {
      *     list[SimulatorScenario]
      *         The scenarios just persisted.
      */
-    put: operations['put_simulator_scenarios_api_accounting_simulator_scenarios_put']
+    put: operations['put_simulator_scenarios_api_v1_accounting_simulator_scenarios_put']
     /**
      * Post Simulator Scenario
      * @description Create one new saved scenario, without touching any other scenario already saved.
@@ -827,14 +827,14 @@ export interface paths {
      *     SimulatorScenario
      *         The scenario just persisted.
      */
-    post: operations['post_simulator_scenario_api_accounting_simulator_scenarios_post']
+    post: operations['post_simulator_scenario_api_v1_accounting_simulator_scenarios_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/simulator/scenarios/{scenario_id}': {
+  '/api/v1/accounting/simulator/scenarios/{scenario_id}': {
     parameters: {
       query?: never
       header?: never
@@ -861,13 +861,13 @@ export interface paths {
      *     HTTPException
      *         404 if no scenario with `scenario_id` exists.
      */
-    delete: operations['delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete']
+    delete: operations['delete_simulator_scenario_route_api_v1_accounting_simulator_scenarios__scenario_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts': {
+  '/api/v1/accounting/accounts': {
     parameters: {
       query?: never
       header?: never
@@ -892,14 +892,14 @@ export interface paths {
      *         exist, or if `broker_connection_id` names a connection that doesn't;
      *         400 if a broker connection is named on a non-investment account.
      */
-    post: operations['post_account_api_accounting_accounts_post']
+    post: operations['post_account_api_v1_accounting_accounts_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}': {
+  '/api/v1/accounting/accounts/{account_id}': {
     parameters: {
       query?: never
       header?: never
@@ -924,7 +924,7 @@ export interface paths {
      *         an account that already has postings, or a broker connection is
      *         named on a non-investment account.
      */
-    put: operations['put_account_api_accounting_accounts__account_id__put']
+    put: operations['put_account_api_v1_accounting_accounts__account_id__put']
     post?: never
     /**
      * Delete Account
@@ -940,13 +940,13 @@ export interface paths {
      *     HTTPException
      *         404 if the account doesn't exist; 400 if it already has postings.
      */
-    delete: operations['delete_account_api_accounting_accounts__account_id__delete']
+    delete: operations['delete_account_api_v1_accounting_accounts__account_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}/close': {
+  '/api/v1/accounting/accounts/{account_id}/close': {
     parameters: {
       query?: never
       header?: never
@@ -977,14 +977,14 @@ export interface paths {
      *         404 if the account doesn't exist; 400 if a transfer doesn't move
      *         money out of `account_id`, or names an unknown `to_account_id`.
      */
-    post: operations['close_account_api_accounting_accounts__account_id__close_post']
+    post: operations['close_account_api_v1_accounting_accounts__account_id__close_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}/reopen': {
+  '/api/v1/accounting/accounts/{account_id}/reopen': {
     parameters: {
       query?: never
       header?: never
@@ -1007,14 +1007,14 @@ export interface paths {
      *     HTTPException
      *         404 if the account doesn't exist.
      */
-    post: operations['reopen_account_api_accounting_accounts__account_id__reopen_post']
+    post: operations['reopen_account_api_v1_accounting_accounts__account_id__reopen_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}/opening-balance': {
+  '/api/v1/accounting/accounts/{account_id}/opening-balance': {
     parameters: {
       query?: never
       header?: never
@@ -1036,7 +1036,7 @@ export interface paths {
      *     HTTPException
      *         404 if the account doesn't exist; 400 if `opening_balance.account_id` doesn't match the path.
      */
-    put: operations['put_opening_balance_api_accounting_accounts__account_id__opening_balance_put']
+    put: operations['put_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_put']
     post?: never
     /**
      * Delete Opening Balance
@@ -1047,13 +1047,13 @@ export interface paths {
      *     AccountIdResponse
      *         The account whose opening balance was cleared.
      */
-    delete: operations['delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete']
+    delete: operations['delete_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/exchange-rates/current': {
+  '/api/v1/accounting/exchange-rates/current': {
     parameters: {
       query?: never
       header?: never
@@ -1068,7 +1068,7 @@ export interface paths {
      *     -------
      *     CurrentExchangeRate
      */
-    get: operations['get_current_exchange_rate_api_accounting_exchange_rates_current_get']
+    get: operations['get_current_exchange_rate_api_v1_accounting_exchange_rates_current_get']
     put?: never
     post?: never
     delete?: never
@@ -1077,7 +1077,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/exchange-rates/history': {
+  '/api/v1/accounting/exchange-rates/history': {
     parameters: {
       query?: never
       header?: never
@@ -1098,7 +1098,7 @@ export interface paths {
      *     HTTPException
      *         400 if exchange rates have never been synced.
      */
-    get: operations['get_exchange_rate_history_api_accounting_exchange_rates_history_get']
+    get: operations['get_exchange_rate_history_api_v1_accounting_exchange_rates_history_get']
     put?: never
     post?: never
     delete?: never
@@ -1107,7 +1107,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/detect': {
+  '/api/v1/accounting/detect': {
     parameters: {
       query?: never
       header?: never
@@ -1125,14 +1125,14 @@ export interface paths {
      *     DetectedAccount or None
      *         The best guess, or `None` if nothing matched.
      */
-    post: operations['post_detect_api_accounting_detect_post']
+    post: operations['post_detect_api_v1_accounting_detect_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/supported-import-kinds': {
+  '/api/v1/accounting/supported-import-kinds': {
     parameters: {
       query?: never
       header?: never
@@ -1149,7 +1149,7 @@ export interface paths {
      *         Lets the UI flag any registered account that has no importer able
      *         to actually parse a statement for it.
      */
-    get: operations['get_supported_import_kinds_api_accounting_supported_import_kinds_get']
+    get: operations['get_supported_import_kinds_api_v1_accounting_supported_import_kinds_get']
     put?: never
     post?: never
     delete?: never
@@ -1158,7 +1158,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/sync-status': {
+  '/api/v1/accounting/sync-status': {
     parameters: {
       query?: never
       header?: never
@@ -1174,7 +1174,7 @@ export interface paths {
      *     SyncStatus
      *         `last_import_at` is `None` if nothing has ever been imported.
      */
-    get: operations['get_sync_status_api_accounting_sync_status_get']
+    get: operations['get_sync_status_api_v1_accounting_sync_status_get']
     put?: never
     post?: never
     delete?: never
@@ -1183,7 +1183,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/import': {
+  '/api/v1/accounting/import': {
     parameters: {
       query?: never
       header?: never
@@ -1212,14 +1212,14 @@ export interface paths {
      *         422 if `account_id` doesn't already exist; 400 if no importer exists
      *         for this institution/account-kind combination.
      */
-    post: operations['post_import_api_accounting_import_post']
+    post: operations['post_import_api_v1_accounting_import_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/canonical/preview': {
+  '/api/v1/accounting/import/canonical/preview': {
     parameters: {
       query?: never
       header?: never
@@ -1249,14 +1249,14 @@ export interface paths {
      *     HTTPException
      *         422 if the file couldn't be parsed.
      */
-    post: operations['post_canonical_import_preview_api_accounting_import_canonical_preview_post']
+    post: operations['post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/canonical': {
+  '/api/v1/accounting/import/canonical': {
     parameters: {
       query?: never
       header?: never
@@ -1297,14 +1297,14 @@ export interface paths {
      *         can never be canonically imported into, the same guarantee the
      *         bank-specific `/import` route already has by construction.
      */
-    post: operations['post_canonical_import_api_accounting_import_canonical_post']
+    post: operations['post_canonical_import_api_v1_accounting_import_canonical_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/categorize-from-file/preview': {
+  '/api/v1/accounting/import/categorize-from-file/preview': {
     parameters: {
       query?: never
       header?: never
@@ -1347,14 +1347,14 @@ export interface paths {
      *     HTTPException
      *         422 if the file couldn't be parsed.
      */
-    post: operations['post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post']
+    post: operations['post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/categorize-from-file/apply': {
+  '/api/v1/accounting/import/categorize-from-file/apply': {
     parameters: {
       query?: never
       header?: never
@@ -1400,14 +1400,14 @@ export interface paths {
      *     HTTPException
      *         422 if the file couldn't be parsed.
      */
-    post: operations['post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post']
+    post: operations['post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/paystub': {
+  '/api/v1/accounting/import/paystub': {
     parameters: {
       query?: never
       header?: never
@@ -1439,14 +1439,14 @@ export interface paths {
      *         400 if the PDF's text doesn't match this module's expected paystub layout — see `importers.paystub`'s
      *         docstring: its patterns are a generic starting point, not tuned against every payroll provider.
      */
-    post: operations['post_paystub_reconciliation_api_accounting_import_paystub_post']
+    post: operations['post_paystub_reconciliation_api_v1_accounting_import_paystub_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/rebuild': {
+  '/api/v1/accounting/rebuild': {
     parameters: {
       query?: never
       header?: never
@@ -1468,14 +1468,14 @@ export interface paths {
      *     HTTPException
      *         404 if nothing has ever been imported.
      */
-    post: operations['post_rebuild_api_accounting_rebuild_post']
+    post: operations['post_rebuild_api_v1_accounting_rebuild_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings': {
+  '/api/v1/accounting/postings': {
     parameters: {
       query?: never
       header?: never
@@ -1525,7 +1525,7 @@ export interface paths {
      *         The page's postings, plus the total transaction count a client needs
      *         in order to ask for the next page.
      */
-    get: operations['get_postings_api_accounting_postings_get']
+    get: operations['get_postings_api_v1_accounting_postings_get']
     put?: never
     post?: never
     delete?: never
@@ -1534,7 +1534,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/ledger/export': {
+  '/api/v1/accounting/ledger/export': {
     parameters: {
       query?: never
       header?: never
@@ -1572,7 +1572,7 @@ export interface paths {
      *         rule/override/split/merge is applied on top — what the Transactions
      *         page actually shows.
      */
-    get: operations['get_ledger_export_api_accounting_ledger_export_get']
+    get: operations['get_ledger_export_api_v1_accounting_ledger_export_get']
     put?: never
     post?: never
     delete?: never
@@ -1581,7 +1581,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/statements/export': {
+  '/api/v1/accounting/statements/export': {
     parameters: {
       query?: never
       header?: never
@@ -1598,7 +1598,7 @@ export interface paths {
      *         A `.zip` attachment, one entry per archived file, empty if
      *         nothing has been imported yet.
      */
-    get: operations['get_statements_export_api_accounting_statements_export_get']
+    get: operations['get_statements_export_api_v1_accounting_statements_export_get']
     put?: never
     post?: never
     delete?: never
@@ -1607,7 +1607,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/override': {
+  '/api/v1/accounting/postings/{posting_id}/override': {
     parameters: {
       query?: never
       header?: never
@@ -1633,7 +1633,7 @@ export interface paths {
      *     ManualOverride
      *         The override just persisted, merged with any prior one.
      */
-    put: operations['put_posting_override_api_accounting_postings__posting_id__override_put']
+    put: operations['put_posting_override_api_v1_accounting_postings__posting_id__override_put']
     post?: never
     delete?: never
     options?: never
@@ -1641,7 +1641,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/split': {
+  '/api/v1/accounting/postings/{posting_id}/split': {
     parameters: {
       query?: never
       header?: never
@@ -1668,7 +1668,7 @@ export interface paths {
      *     HTTPException
      *         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
      */
-    put: operations['put_posting_split_api_accounting_postings__posting_id__split_put']
+    put: operations['put_posting_split_api_v1_accounting_postings__posting_id__split_put']
     post?: never
     /**
      * Delete Posting Split Route
@@ -1678,13 +1678,13 @@ export interface paths {
      *     -------
      *     PostingIdResponse
      */
-    delete: operations['delete_posting_split_route_api_accounting_postings__posting_id__split_delete']
+    delete: operations['delete_posting_split_route_api_v1_accounting_postings__posting_id__split_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/posting-merges': {
+  '/api/v1/accounting/posting-merges': {
     parameters: {
       query?: never
       header?: never
@@ -1701,7 +1701,7 @@ export interface paths {
      *     dict[str, PostingMerge]
      *         The merges just persisted.
      */
-    put: operations['put_posting_merges_api_accounting_posting_merges_put']
+    put: operations['put_posting_merges_api_v1_accounting_posting_merges_put']
     /**
      * Post Posting Merge
      * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
@@ -1711,14 +1711,14 @@ export interface paths {
      *     PostingMerge
      *         The merge just persisted.
      */
-    post: operations['post_posting_merge_api_accounting_posting_merges_post']
+    post: operations['post_posting_merge_api_v1_accounting_posting_merges_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/posting-merges/{merge_id}': {
+  '/api/v1/accounting/posting-merges/{merge_id}': {
     parameters: {
       query?: never
       header?: never
@@ -1741,13 +1741,13 @@ export interface paths {
      *     HTTPException
      *         404 if no merge with this id exists.
      */
-    delete: operations['delete_posting_merge_api_accounting_posting_merges__merge_id__delete']
+    delete: operations['delete_posting_merge_api_v1_accounting_posting_merges__merge_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-links': {
+  '/api/v1/accounting/transfer-links': {
     parameters: {
       query?: never
       header?: never
@@ -1784,14 +1784,14 @@ export interface paths {
      *         rule. Re-raised untouched rather than folded into the 409, so a
      *         genuinely unexpected violation stays a loud 500.
      */
-    post: operations['post_transfer_link_api_accounting_transfer_links_post']
+    post: operations['post_transfer_link_api_v1_accounting_transfer_links_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-links/{link_id}': {
+  '/api/v1/accounting/transfer-links/{link_id}': {
     parameters: {
       query?: never
       header?: never
@@ -1814,13 +1814,13 @@ export interface paths {
      *     HTTPException
      *         404 if no link with this id exists.
      */
-    delete: operations['delete_transfer_link_api_accounting_transfer_links__link_id__delete']
+    delete: operations['delete_transfer_link_api_v1_accounting_transfer_links__link_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/validate-pending': {
+  '/api/v1/accounting/postings/validate-pending': {
     parameters: {
       query?: never
       header?: never
@@ -1843,14 +1843,14 @@ export interface paths {
      *     -------
      *     ValidatePendingResult
      */
-    post: operations['post_validate_pending_api_accounting_postings_validate_pending_post']
+    post: operations['post_validate_pending_api_v1_accounting_postings_validate_pending_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-suggestions': {
+  '/api/v1/accounting/transfer-suggestions': {
     parameters: {
       query?: never
       header?: never
@@ -1876,7 +1876,7 @@ export interface paths {
      *         never applied automatically. Excludes any pair already dismissed
      *         (see `POST /dismissed-suggestions`).
      */
-    get: operations['get_transfer_suggestions_api_accounting_transfer_suggestions_get']
+    get: operations['get_transfer_suggestions_api_v1_accounting_transfer_suggestions_get']
     put?: never
     post?: never
     delete?: never
@@ -1885,7 +1885,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/duplicate-suggestions': {
+  '/api/v1/accounting/duplicate-suggestions': {
     parameters: {
       query?: never
       header?: never
@@ -1908,7 +1908,7 @@ export interface paths {
      *         Each carries a `suggestion_id` for dismissing it. Excludes any
      *         group already dismissed (see `POST /dismissed-suggestions`).
      */
-    get: operations['get_duplicate_suggestions_api_accounting_duplicate_suggestions_get']
+    get: operations['get_duplicate_suggestions_api_v1_accounting_duplicate_suggestions_get']
     put?: never
     post?: never
     delete?: never
@@ -1917,7 +1917,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/dismissed-suggestions': {
+  '/api/v1/accounting/dismissed-suggestions': {
     parameters: {
       query?: never
       header?: never
@@ -1932,7 +1932,7 @@ export interface paths {
      *     -------
      *     list[DismissedSuggestion]
      */
-    get: operations['get_dismissed_suggestions_api_accounting_dismissed_suggestions_get']
+    get: operations['get_dismissed_suggestions_api_v1_accounting_dismissed_suggestions_get']
     put?: never
     /**
      * Post Dismissed Suggestion
@@ -1943,14 +1943,14 @@ export interface paths {
      *     DismissedSuggestion
      *         The archived entry just persisted.
      */
-    post: operations['post_dismissed_suggestion_api_accounting_dismissed_suggestions_post']
+    post: operations['post_dismissed_suggestion_api_v1_accounting_dismissed_suggestions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/dismissed-suggestions/{suggestion_id}': {
+  '/api/v1/accounting/dismissed-suggestions/{suggestion_id}': {
     parameters: {
       query?: never
       header?: never
@@ -1974,13 +1974,13 @@ export interface paths {
      *     HTTPException
      *         404 if no archived entry has this id.
      */
-    delete: operations['delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete']
+    delete: operations['delete_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/llm-usage': {
+  '/api/v1/accounting/llm-usage': {
     parameters: {
       query?: never
       header?: never
@@ -1998,7 +1998,7 @@ export interface paths {
      *         the provider's own error text from the last refused call, `None`
      *         if it hasn't been refused since its count last reset.
      */
-    get: operations['get_llm_usage_api_accounting_llm_usage_get']
+    get: operations['get_llm_usage_api_v1_accounting_llm_usage_get']
     put?: never
     post?: never
     delete?: never
@@ -2007,7 +2007,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/settings/llm/verify': {
+  '/api/v1/accounting/settings/llm/verify': {
     parameters: {
       query?: never
       header?: never
@@ -2039,14 +2039,14 @@ export interface paths {
      *     HTTPException
      *         400 if `provider` isn't `"gemini"` or `"mistral"`.
      */
-    post: operations['verify_llm_settings_api_accounting_settings_llm_verify_post']
+    post: operations['verify_llm_settings_api_v1_accounting_settings_llm_verify_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/settings/llm': {
+  '/api/v1/accounting/settings/llm': {
     parameters: {
       query?: never
       header?: never
@@ -2064,7 +2064,7 @@ export interface paths {
      *         `.env` fallback left to also reflect (see `GET /llm-usage`'s own
      *         `configured`, which now means exactly the same thing).
      */
-    get: operations['get_llm_settings_api_accounting_settings_llm_get']
+    get: operations['get_llm_settings_api_v1_accounting_settings_llm_get']
     /**
      * Put Llm Settings
      * @description Persist an LLM API key update (merges into whatever's already saved).
@@ -2074,7 +2074,7 @@ export interface paths {
      *     LlmSettings
      *         Same shape as `GET /settings/llm`, reflecting what was just persisted.
      */
-    put: operations['put_llm_settings_api_accounting_settings_llm_put']
+    put: operations['put_llm_settings_api_v1_accounting_settings_llm_put']
     post?: never
     /**
      * Delete Llm Settings
@@ -2085,13 +2085,13 @@ export interface paths {
      *     LlmSettings
      *         Same shape as `GET /settings/llm`.
      */
-    delete: operations['delete_llm_settings_api_accounting_settings_llm_delete']
+    delete: operations['delete_llm_settings_api_v1_accounting_settings_llm_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/ai-suggest-category': {
+  '/api/v1/accounting/postings/{posting_id}/ai-suggest-category': {
     parameters: {
       query?: never
       header?: never
@@ -2134,14 +2134,14 @@ export interface paths {
      *     HTTPException
      *         404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
      */
-    post: operations['post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post']
+    post: operations['post_ai_suggest_category_api_v1_accounting_postings__posting_id__ai_suggest_category_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/pattern-suggest-category': {
+  '/api/v1/accounting/postings/{posting_id}/pattern-suggest-category': {
     parameters: {
       query?: never
       header?: never
@@ -2179,14 +2179,14 @@ export interface paths {
      *     HTTPException
      *         404 if the posting doesn't exist.
      */
-    post: operations['post_pattern_suggest_category_api_accounting_postings__posting_id__pattern_suggest_category_post']
+    post: operations['post_pattern_suggest_category_api_v1_accounting_postings__posting_id__pattern_suggest_category_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/pattern-suggest-category/bulk': {
+  '/api/v1/accounting/postings/pattern-suggest-category/bulk': {
     parameters: {
       query?: never
       header?: never
@@ -2223,14 +2223,14 @@ export interface paths {
      *     BulkSuggestResult
      *         How many postings got a staged suggestion.
      */
-    post: operations['post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post']
+    post: operations['post_pattern_suggest_category_bulk_api_v1_accounting_postings_pattern_suggest_category_bulk_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/simulator/project': {
+  '/api/v1/accounting/simulator/project': {
     parameters: {
       query?: never
       header?: never
@@ -2245,7 +2245,7 @@ export interface paths {
      *     -------
      *     list[ProjectionPoint]
      */
-    get: operations['get_simulator_projection_api_accounting_simulator_project_get']
+    get: operations['get_simulator_projection_api_v1_accounting_simulator_project_get']
     put?: never
     post?: never
     delete?: never
@@ -2254,7 +2254,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/interest-summary': {
+  '/api/v1/accounting/interest-summary': {
     parameters: {
       query?: never
       header?: never
@@ -2269,7 +2269,7 @@ export interface paths {
      *     -------
      *     list[InterestAccountRow]
      */
-    get: operations['get_interest_summary_api_accounting_interest_summary_get']
+    get: operations['get_interest_summary_api_v1_accounting_interest_summary_get']
     put?: never
     post?: never
     delete?: never
@@ -2278,7 +2278,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/net-worth': {
+  '/api/v1/accounting/net-worth': {
     parameters: {
       query?: never
       header?: never
@@ -2293,7 +2293,7 @@ export interface paths {
      *     -------
      *     NetWorthSummary
      */
-    get: operations['get_net_worth_api_accounting_net_worth_get']
+    get: operations['get_net_worth_api_v1_accounting_net_worth_get']
     put?: never
     post?: never
     delete?: never
@@ -2302,7 +2302,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/net-worth/history': {
+  '/api/v1/accounting/net-worth/history': {
     parameters: {
       query?: never
       header?: never
@@ -2323,7 +2323,7 @@ export interface paths {
      *     list[NetWorthHistoryPoint]
      *         Oldest first.
      */
-    get: operations['get_net_worth_history_api_accounting_net_worth_history_get']
+    get: operations['get_net_worth_history_api_v1_accounting_net_worth_history_get']
     put?: never
     post?: never
     delete?: never
@@ -2332,7 +2332,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/net-worth/history/by-account': {
+  '/api/v1/accounting/net-worth/history/by-account': {
     parameters: {
       query?: never
       header?: never
@@ -2353,7 +2353,7 @@ export interface paths {
      *     list[NetWorthHistoryByAccountPoint]
      *         `balance` already converted into `display_currency`.
      */
-    get: operations['get_net_worth_history_by_account_api_accounting_net_worth_history_by_account_get']
+    get: operations['get_net_worth_history_by_account_api_v1_accounting_net_worth_history_by_account_get']
     put?: never
     post?: never
     delete?: never
@@ -2362,7 +2362,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/income-statement/category-totals': {
+  '/api/v1/accounting/income-statement/category-totals': {
     parameters: {
       query?: never
       header?: never
@@ -2377,7 +2377,7 @@ export interface paths {
      *     -------
      *     list[CategoryTotalRow]
      */
-    get: operations['get_category_totals_api_accounting_income_statement_category_totals_get']
+    get: operations['get_category_totals_api_v1_accounting_income_statement_category_totals_get']
     put?: never
     post?: never
     delete?: never
@@ -2386,7 +2386,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/income-statement/monthly': {
+  '/api/v1/accounting/income-statement/monthly': {
     parameters: {
       query?: never
       header?: never
@@ -2401,7 +2401,7 @@ export interface paths {
      *     -------
      *     list[MonthlyIncomeExpenseRow]
      */
-    get: operations['get_monthly_income_expense_api_accounting_income_statement_monthly_get']
+    get: operations['get_monthly_income_expense_api_v1_accounting_income_statement_monthly_get']
     put?: never
     post?: never
     delete?: never
@@ -2410,7 +2410,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/income-statement/spend-curve': {
+  '/api/v1/accounting/income-statement/spend-curve': {
     parameters: {
       query?: never
       header?: never
@@ -2425,7 +2425,7 @@ export interface paths {
      *     -------
      *     list[SpendCurvePoint]
      */
-    get: operations['get_spend_curve_api_accounting_income_statement_spend_curve_get']
+    get: operations['get_spend_curve_api_v1_accounting_income_statement_spend_curve_get']
     put?: never
     post?: never
     delete?: never
@@ -2434,7 +2434,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/budgets/comparison': {
+  '/api/v1/accounting/budgets/comparison': {
     parameters: {
       query?: never
       header?: never
@@ -2454,7 +2454,7 @@ export interface paths {
      *     HTTPException
      *         400 if `month` isn't `"YYYY-MM"`.
      */
-    get: operations['get_budget_comparison_api_accounting_budgets_comparison_get']
+    get: operations['get_budget_comparison_api_v1_accounting_budgets_comparison_get']
     put?: never
     post?: never
     delete?: never
@@ -2463,7 +2463,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/budgets/suggested-amount': {
+  '/api/v1/accounting/budgets/suggested-amount': {
     parameters: {
       query?: never
       header?: never
@@ -2483,7 +2483,7 @@ export interface paths {
      *     HTTPException
      *         400 if `month` isn't `"YYYY-MM"`.
      */
-    get: operations['get_suggested_budget_amount_api_accounting_budgets_suggested_amount_get']
+    get: operations['get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get']
     put?: never
     post?: never
     delete?: never
@@ -2492,7 +2492,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals': {
+  '/api/v1/accounting/goals': {
     parameters: {
       query?: never
       header?: never
@@ -2509,7 +2509,7 @@ export interface paths {
      *     dict[str, Goal]
      *         The goals just persisted, keyed by `goal_id`.
      */
-    put: operations['put_goals_api_accounting_goals_put']
+    put: operations['put_goals_api_v1_accounting_goals_put']
     /**
      * Post Goal
      * @description Create one new goal, without touching any other goal already saved.
@@ -2525,14 +2525,14 @@ export interface paths {
      *     Goal
      *         The goal just persisted.
      */
-    post: operations['post_goal_api_accounting_goals_post']
+    post: operations['post_goal_api_v1_accounting_goals_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/{goal_id}': {
+  '/api/v1/accounting/goals/{goal_id}': {
     parameters: {
       query?: never
       header?: never
@@ -2560,7 +2560,7 @@ export interface paths {
      *     HTTPException
      *         404 if no goal with `goal_id` exists.
      */
-    delete: operations['delete_goal_route_api_accounting_goals__goal_id__delete']
+    delete: operations['delete_goal_route_api_v1_accounting_goals__goal_id__delete']
     options?: never
     head?: never
     /**
@@ -2582,10 +2582,10 @@ export interface paths {
      *     HTTPException
      *         404 if no goal with `goal_id` exists.
      */
-    patch: operations['patch_goal_api_accounting_goals__goal_id__patch']
+    patch: operations['patch_goal_api_v1_accounting_goals__goal_id__patch']
     trace?: never
   }
-  '/api/accounting/goal-contributions': {
+  '/api/v1/accounting/goal-contributions': {
     parameters: {
       query?: never
       header?: never
@@ -2602,7 +2602,7 @@ export interface paths {
      *     dict[str, GoalContribution]
      *         The contributions just persisted, keyed by `contribution_id`.
      */
-    put: operations['put_goal_contributions_api_accounting_goal_contributions_put']
+    put: operations['put_goal_contributions_api_v1_accounting_goal_contributions_put']
     /**
      * Post Goal Contribution
      * @description Record one new dated allocation, without touching any other contribution already recorded.
@@ -2618,14 +2618,14 @@ export interface paths {
      *     GoalContribution
      *         The contribution just persisted.
      */
-    post: operations['post_goal_contribution_api_accounting_goal_contributions_post']
+    post: operations['post_goal_contribution_api_v1_accounting_goal_contributions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goal-contributions/{contribution_id}': {
+  '/api/v1/accounting/goal-contributions/{contribution_id}': {
     parameters: {
       query?: never
       header?: never
@@ -2652,7 +2652,7 @@ export interface paths {
      *     HTTPException
      *         404 if no contribution with this id exists.
      */
-    put: operations['put_goal_contribution_api_accounting_goal_contributions__contribution_id__put']
+    put: operations['put_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__put']
     post?: never
     /**
      * Delete Goal Contribution
@@ -2667,13 +2667,13 @@ export interface paths {
      *     HTTPException
      *         404 if no contribution with this id exists.
      */
-    delete: operations['delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete']
+    delete: operations['delete_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goal-automations/contributions': {
+  '/api/v1/accounting/goal-automations/contributions': {
     parameters: {
       query?: never
       header?: never
@@ -2699,7 +2699,7 @@ export interface paths {
      *         The automations just persisted. Answers 400 if any entry is not a
      *         `contribution`, or if the `remainder` invariant is broken.
      */
-    put: operations['put_goal_contribution_automations_api_accounting_goal_automations_contributions_put']
+    put: operations['put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put']
     /**
      * Post Goal Automation
      * @description Create one new scheduled contribution automation, appended after every one already saved.
@@ -2716,14 +2716,14 @@ export interface paths {
      *     GoalAutomation
      *         The automation just persisted.
      */
-    post: operations['post_goal_automation_api_accounting_goal_automations_contributions_post']
+    post: operations['post_goal_automation_api_v1_accounting_goal_automations_contributions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goal-automations/{automation_id}': {
+  '/api/v1/accounting/goal-automations/{automation_id}': {
     parameters: {
       query?: never
       header?: never
@@ -2747,7 +2747,7 @@ export interface paths {
      *     HTTPException
      *         404 if no automation with `automation_id` exists.
      */
-    delete: operations['delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete']
+    delete: operations['delete_goal_automation_route_api_v1_accounting_goal_automations__automation_id__delete']
     options?: never
     head?: never
     /**
@@ -2768,10 +2768,10 @@ export interface paths {
      *     HTTPException
      *         404 if no *contribution* automation with `automation_id` exists.
      */
-    patch: operations['patch_goal_automation_api_accounting_goal_automations__automation_id__patch']
+    patch: operations['patch_goal_automation_api_v1_accounting_goal_automations__automation_id__patch']
     trace?: never
   }
-  '/api/accounting/goal-automations/withdrawals': {
+  '/api/v1/accounting/goal-automations/withdrawals': {
     parameters: {
       query?: never
       header?: never
@@ -2795,7 +2795,7 @@ export interface paths {
      *         The withdrawal automations just persisted. Answers 400 if any
      *         entry is not a `withdrawal`.
      */
-    put: operations['put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put']
+    put: operations['put_goal_withdrawal_automations_api_v1_accounting_goal_automations_withdrawals_put']
     post?: never
     delete?: never
     options?: never
@@ -2803,7 +2803,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/summary': {
+  '/api/v1/accounting/goals/summary': {
     parameters: {
       query?: never
       header?: never
@@ -2821,7 +2821,7 @@ export interface paths {
      *     -------
      *     GoalsSummary
      */
-    get: operations['get_goals_summary_api_accounting_goals_summary_get']
+    get: operations['get_goals_summary_api_v1_accounting_goals_summary_get']
     put?: never
     post?: never
     delete?: never
@@ -2830,7 +2830,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/run-recurring-additions': {
+  '/api/v1/accounting/goals/run-recurring-additions': {
     parameters: {
       query?: never
       header?: never
@@ -2857,14 +2857,14 @@ export interface paths {
      *     list[GoalContribution]
      *         The new contributions just written (empty if nothing was due).
      */
-    post: operations['post_run_recurring_additions_api_accounting_goals_run_recurring_additions_post']
+    post: operations['post_run_recurring_additions_api_v1_accounting_goals_run_recurring_additions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/run-withdrawal-automation': {
+  '/api/v1/accounting/goals/run-withdrawal-automation': {
     parameters: {
       query?: never
       header?: never
@@ -2890,14 +2890,14 @@ export interface paths {
      *         The contributions just written, and however much of the shortfall
      *         (if any) no goal had enough left to cover.
      */
-    post: operations['post_run_withdrawal_automation_api_accounting_goals_run_withdrawal_automation_post']
+    post: operations['post_run_withdrawal_automation_api_v1_accounting_goals_run_withdrawal_automation_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/simulate-contribution': {
+  '/api/v1/accounting/goals/simulate-contribution': {
     parameters: {
       query?: never
       header?: never
@@ -2922,14 +2922,14 @@ export interface paths {
      *         running once more, with this contribution already applied, so the
      *         user can see if it sets up a shortfall soon after (non-blocking).
      */
-    post: operations['post_simulate_contribution_api_accounting_goals_simulate_contribution_post']
+    post: operations['post_simulate_contribution_api_v1_accounting_goals_simulate_contribution_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/overview': {
+  '/api/v1/trades/overview': {
     parameters: {
       query?: never
       header?: never
@@ -2950,7 +2950,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_overview_api_overview_get']
+    get: operations['get_overview_api_v1_trades_overview_get']
     put?: never
     post?: never
     delete?: never
@@ -2959,7 +2959,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/dollar': {
+  '/api/v1/trades/chart/dollar': {
     parameters: {
       query?: never
       header?: never
@@ -2980,7 +2980,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_dollar_chart_api_chart_dollar_get']
+    get: operations['get_dollar_chart_api_v1_trades_chart_dollar_get']
     put?: never
     post?: never
     delete?: never
@@ -2989,7 +2989,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/growth-of-100': {
+  '/api/v1/trades/chart/growth-of-100': {
     parameters: {
       query?: never
       header?: never
@@ -3010,7 +3010,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_growth_of_100_chart_api_chart_growth_of_100_get']
+    get: operations['get_growth_of_100_chart_api_v1_trades_chart_growth_of_100_get']
     put?: never
     post?: never
     delete?: never
@@ -3019,7 +3019,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/cash-history': {
+  '/api/v1/trades/chart/cash-history': {
     parameters: {
       query?: never
       header?: never
@@ -3046,7 +3046,7 @@ export interface paths {
      *     HTTPException
      *         Via `_load_ledger`, if no ledger is cached yet (404).
      */
-    get: operations['get_cash_history_api_chart_cash_history_get']
+    get: operations['get_cash_history_api_v1_trades_chart_cash_history_get']
     put?: never
     post?: never
     delete?: never
@@ -3055,7 +3055,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/cash-sitting': {
+  '/api/v1/trades/cash-sitting': {
     parameters: {
       query?: never
       header?: never
@@ -3076,7 +3076,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_cash_sitting_api_cash_sitting_get']
+    get: operations['get_cash_sitting_api_v1_trades_cash_sitting_get']
     put?: never
     post?: never
     delete?: never
@@ -3085,7 +3085,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/monthly-pnl': {
+  '/api/v1/trades/chart/monthly-pnl': {
     parameters: {
       query?: never
       header?: never
@@ -3106,7 +3106,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_monthly_pnl_api_chart_monthly_pnl_get']
+    get: operations['get_monthly_pnl_api_v1_trades_chart_monthly_pnl_get']
     put?: never
     post?: never
     delete?: never
@@ -3115,7 +3115,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/monthly-pnl/by-symbol': {
+  '/api/v1/trades/chart/monthly-pnl/by-symbol': {
     parameters: {
       query?: never
       header?: never
@@ -3136,7 +3136,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_monthly_pnl_by_symbol_api_chart_monthly_pnl_by_symbol_get']
+    get: operations['get_monthly_pnl_by_symbol_api_v1_trades_chart_monthly_pnl_by_symbol_get']
     put?: never
     post?: never
     delete?: never
@@ -3145,7 +3145,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/allocation': {
+  '/api/v1/trades/allocation': {
     parameters: {
       query?: never
       header?: never
@@ -3166,7 +3166,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_allocation_api_allocation_get']
+    get: operations['get_allocation_api_v1_trades_allocation_get']
     put?: never
     post?: never
     delete?: never
@@ -3175,7 +3175,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/tax/report': {
+  '/api/v1/trades/tax/report': {
     parameters: {
       query?: never
       header?: never
@@ -3203,7 +3203,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_tax_report_api_tax_report_get']
+    get: operations['get_tax_report_api_v1_trades_tax_report_get']
     put?: never
     post?: never
     delete?: never
@@ -3212,7 +3212,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/lots': {
+  '/api/v1/trades/lots': {
     parameters: {
       query?: never
       header?: never
@@ -3233,7 +3233,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_lots_api_lots_get']
+    get: operations['get_lots_api_v1_trades_lots_get']
     put?: never
     post?: never
     delete?: never
@@ -3242,7 +3242,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/risk': {
+  '/api/v1/trades/risk': {
     parameters: {
       query?: never
       header?: never
@@ -3263,7 +3263,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_risk_api_risk_get']
+    get: operations['get_risk_api_v1_trades_risk_get']
     put?: never
     post?: never
     delete?: never
@@ -3272,7 +3272,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/data-quality': {
+  '/api/v1/trades/data-quality': {
     parameters: {
       query?: never
       header?: never
@@ -3288,7 +3288,7 @@ export interface paths {
      *     list[DataQualityRow]
      *         One entry per symbol.
      */
-    get: operations['get_data_quality_api_data_quality_get']
+    get: operations['get_data_quality_api_v1_trades_data_quality_get']
     put?: never
     post?: never
     delete?: never
@@ -3297,7 +3297,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/ledger/export': {
+  '/api/v1/trades/ledger/export': {
     parameters: {
       query?: never
       header?: never
@@ -3313,7 +3313,7 @@ export interface paths {
      *     list[LedgerEvent]
      *         Every ledger row.
      */
-    get: operations['get_ledger_export_api_ledger_export_get']
+    get: operations['get_ledger_export_api_v1_trades_ledger_export_get']
     put?: never
     post?: never
     delete?: never
@@ -3322,7 +3322,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/target-allocation': {
+  '/api/v1/trades/settings/target-allocation': {
     parameters: {
       query?: never
       header?: never
@@ -3338,7 +3338,7 @@ export interface paths {
      *     dict[str, Rate]
      *         Symbol -> target percentage.
      */
-    get: operations['get_target_allocation_api_settings_target_allocation_get']
+    get: operations['get_target_allocation_api_v1_trades_settings_target_allocation_get']
     /**
      * Put Target Allocation
      * @description Persist a new target allocation, set from the frontend.
@@ -3352,7 +3352,7 @@ export interface paths {
      *     dict[str, Rate]
      *         The persisted target allocation.
      */
-    put: operations['put_target_allocation_api_settings_target_allocation_put']
+    put: operations['put_target_allocation_api_v1_trades_settings_target_allocation_put']
     post?: never
     delete?: never
     options?: never
@@ -3360,7 +3360,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/hysa': {
+  '/api/v1/trades/settings/hysa': {
     parameters: {
       query?: never
       header?: never
@@ -3376,7 +3376,7 @@ export interface paths {
      *     HysaSettings
      *         `bank_id`, `fixed_rate_pct` — both None if never set.
      */
-    get: operations['get_hysa_settings_api_settings_hysa_get']
+    get: operations['get_hysa_settings_api_v1_trades_settings_hysa_get']
     /**
      * Put Hysa Settings
      * @description Persist a HYSA bank selection and/or fixed-rate override (merges into existing settings).
@@ -3386,7 +3386,7 @@ export interface paths {
      *     HysaSettings
      *         `bank_id`, `fixed_rate_pct` as persisted.
      */
-    put: operations['put_hysa_settings_api_settings_hysa_put']
+    put: operations['put_hysa_settings_api_v1_trades_settings_hysa_put']
     post?: never
     delete?: never
     options?: never
@@ -3394,7 +3394,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/benchmark': {
+  '/api/v1/trades/settings/benchmark': {
     parameters: {
       query?: never
       header?: never
@@ -3412,7 +3412,7 @@ export interface paths {
      *         frontend needs the latter to display a concrete symbol even when
      *         no override is set.
      */
-    get: operations['get_benchmark_setting_api_settings_benchmark_get']
+    get: operations['get_benchmark_setting_api_v1_trades_settings_benchmark_get']
     /**
      * Put Benchmark Setting
      * @description Persist a benchmark symbol override (merges into existing settings).
@@ -3422,7 +3422,7 @@ export interface paths {
      *     BenchmarkSetting
      *         `symbol_override` as persisted, plus `default_symbol`.
      */
-    put: operations['put_benchmark_setting_api_settings_benchmark_put']
+    put: operations['put_benchmark_setting_api_v1_trades_settings_benchmark_put']
     post?: never
     delete?: never
     options?: never
@@ -3430,7 +3430,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/timezone': {
+  '/api/v1/trades/settings/timezone': {
     parameters: {
       query?: never
       header?: never
@@ -3448,7 +3448,7 @@ export interface paths {
      *         user yet), `resolved_local_zone` (what timestamps actually display
      *         in — `config.timezone.local_zone` until it has).
      */
-    get: operations['get_timezone_setting_api_settings_timezone_get']
+    get: operations['get_timezone_setting_api_v1_trades_settings_timezone_get']
     /**
      * Put Timezone Setting
      * @description Persist the browser-reported display timezone (merges into existing settings).
@@ -3460,10 +3460,10 @@ export interface paths {
      *     Returns
      *     -------
      *     TimezoneSetting
-     *         Same shape as `GET /api/settings/timezone`, reflecting what was
+     *         Same shape as `GET /api/v1/trades/settings/timezone`, reflecting what was
      *         just persisted.
      */
-    put: operations['put_timezone_setting_api_settings_timezone_put']
+    put: operations['put_timezone_setting_api_v1_trades_settings_timezone_put']
     post?: never
     delete?: never
     options?: never
@@ -3471,7 +3471,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/tax': {
+  '/api/v1/trades/settings/tax': {
     parameters: {
       query?: never
       header?: never
@@ -3493,7 +3493,7 @@ export interface paths {
      *         alongside their `resolved_*_pct` counterparts (what the tax report
      *         actually uses — the code default when no override was made).
      */
-    get: operations['get_tax_settings_api_settings_tax_get']
+    get: operations['get_tax_settings_api_v1_trades_settings_tax_get']
     /**
      * Put Tax Settings
      * @description Persist tax-reporting settings (merges into existing settings).
@@ -3501,9 +3501,9 @@ export interface paths {
      *     Returns
      *     -------
      *     TaxSettings
-     *         Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
+     *         Same shape as `GET /api/v1/trades/settings/tax`, reflecting what was just persisted.
      */
-    put: operations['put_tax_settings_api_settings_tax_put']
+    put: operations['put_tax_settings_api_v1_trades_settings_tax_put']
     post?: never
     delete?: never
     options?: never
@@ -3511,7 +3511,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/broker-connections': {
+  '/api/v1/trades/broker-connections': {
     parameters: {
       query?: never
       header?: never
@@ -3528,7 +3528,7 @@ export interface paths {
      *         Ordered by broker then id, so the frontend's list is stable across
      *         requests. Empty until a sync has actually created a connection.
      */
-    get: operations['get_broker_connections_api_broker_connections_get']
+    get: operations['get_broker_connections_api_v1_trades_broker_connections_get']
     put?: never
     post?: never
     delete?: never
@@ -3537,7 +3537,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/ibkr': {
+  '/api/v1/trades/settings/ibkr': {
     parameters: {
       query?: never
       header?: never
@@ -3555,7 +3555,7 @@ export interface paths {
      *         this user in Postgres — there is no `.env` fallback), `token_set`
      *         and `query_id_set` (whether each field individually is saved).
      */
-    get: operations['get_ibkr_settings_api_settings_ibkr_get']
+    get: operations['get_ibkr_settings_api_v1_trades_settings_ibkr_get']
     /**
      * Put Ibkr Settings
      * @description Persist an IBKR credential update (merges into whatever's already saved).
@@ -3563,9 +3563,9 @@ export interface paths {
      *     Returns
      *     -------
      *     IbkrSettings
-     *         Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
+     *         Same shape as `GET /api/v1/trades/settings/ibkr`, reflecting what was just persisted.
      */
-    put: operations['put_ibkr_settings_api_settings_ibkr_put']
+    put: operations['put_ibkr_settings_api_v1_trades_settings_ibkr_put']
     post?: never
     /**
      * Delete Ibkr Settings
@@ -3574,15 +3574,15 @@ export interface paths {
      *     Returns
      *     -------
      *     IbkrSettings
-     *         Same shape as `GET /api/settings/ibkr`.
+     *         Same shape as `GET /api/v1/trades/settings/ibkr`.
      */
-    delete: operations['delete_ibkr_settings_api_settings_ibkr_delete']
+    delete: operations['delete_ibkr_settings_api_v1_trades_settings_ibkr_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/settings/ibkr/verify': {
+  '/api/v1/trades/settings/ibkr/verify': {
     parameters: {
       query?: never
       header?: never
@@ -3605,14 +3605,14 @@ export interface paths {
      *         `ok` (whether IBKR accepted the token/query id) and `error`
      *         (IBKR's own message, or a generic one, only when `ok` is false).
      */
-    post: operations['verify_ibkr_settings_api_settings_ibkr_verify_post']
+    post: operations['verify_ibkr_settings_api_v1_trades_settings_ibkr_verify_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/hysa-rates': {
+  '/api/v1/trades/hysa-rates': {
     parameters: {
       query?: never
       header?: never
@@ -3628,7 +3628,7 @@ export interface paths {
      *     HysaRates
      *         `banks` (id/name pairs), `history` (every rate-change row), `default_bank_id`.
      */
-    get: operations['get_hysa_rates_api_hysa_rates_get']
+    get: operations['get_hysa_rates_api_v1_trades_hysa_rates_get']
     put?: never
     post?: never
     delete?: never
@@ -3637,7 +3637,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/symbols/search': {
+  '/api/v1/trades/symbols/search': {
     parameters: {
       query?: never
       header?: never
@@ -3656,7 +3656,7 @@ export interface paths {
      *     list[SymbolSearchResult]
      *         One entry per match: `symbol`, `name`, `exchange`.
      */
-    get: operations['get_symbol_search_api_symbols_search_get']
+    get: operations['get_symbol_search_api_v1_trades_symbols_search_get']
     put?: never
     post?: never
     delete?: never
@@ -3665,7 +3665,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/symbols/{symbol}/ensure-priced': {
+  '/api/v1/trades/symbols/{symbol}/ensure-priced': {
     parameters: {
       query?: never
       header?: never
@@ -3693,14 +3693,14 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if Yahoo Finance has no data for `symbol`.
      */
-    post: operations['ensure_symbol_priced_api_symbols__symbol__ensure_priced_post']
+    post: operations['ensure_symbol_priced_api_v1_trades_symbols__symbol__ensure_priced_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/statements/export': {
+  '/api/v1/trades/statements/export': {
     parameters: {
       query?: never
       header?: never
@@ -3717,7 +3717,7 @@ export interface paths {
      *         A `.zip` attachment, one entry per archived statement, empty if
      *         nothing has ever been synced.
      */
-    get: operations['get_statements_export_api_statements_export_get']
+    get: operations['get_statements_export_api_v1_trades_statements_export_get']
     put?: never
     post?: never
     delete?: never
@@ -3726,7 +3726,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/sync/progress': {
+  '/api/v1/trades/sync/progress': {
     parameters: {
       query?: never
       header?: never
@@ -3738,7 +3738,7 @@ export interface paths {
      * @description Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
      *
      *     Polled by the frontend's progress bar while a sync is running.
-     *     `POST /api/sync` runs in FastAPI's thread pool (it's a plain `def`,
+     *     `POST /api/v1/trades/sync` runs in FastAPI's thread pool (it's a plain `def`,
      *     not `async def`), so this GET is served concurrently on its own
      *     thread rather than queued behind the sync request.
      *
@@ -3748,7 +3748,7 @@ export interface paths {
      *         `step`, `percent`, `done`, `error` — `"Idle"`/`0.0`/`True`/`None`
      *         if this user has never triggered a sync.
      */
-    get: operations['get_sync_progress_api_sync_progress_get']
+    get: operations['get_sync_progress_api_v1_trades_sync_progress_get']
     put?: never
     post?: never
     delete?: never
@@ -3757,7 +3757,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/sync': {
+  '/api/v1/trades/sync': {
     parameters: {
       query?: never
       header?: never
@@ -3773,7 +3773,7 @@ export interface paths {
      *     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
      *     here — they run on their own cron schedule instead. Reports progress to
      *     this user's own entry in `app.state.sync_progress` throughout, readable
-     *     via `GET /api/sync/progress` — the IBKR pull can take a while, so a
+     *     via `GET /api/v1/trades/sync/progress` — the IBKR pull can take a while, so a
      *     bare spinner isn't good enough feedback.
      *
      *     Concurrent requests for the *same* user are serialized by that user's
@@ -3788,7 +3788,7 @@ export interface paths {
      *         `synced_at`, `new_event_count`, `total_event_count`, and `steps`
      *         — the one IBKR leg's own `label`/`ok`/`error`.
      */
-    post: operations['sync_api_sync_post']
+    post: operations['sync_api_v1_trades_sync_post']
     delete?: never
     options?: never
     head?: never
@@ -3910,7 +3910,7 @@ export interface components {
     }
     /**
      * AccountCloseRequest
-     * @description Request body for `POST /api/accounting/accounts/{account_id}/close`.
+     * @description Request body for `POST /api/v1/accounting/accounts/{account_id}/close`.
      */
     AccountCloseRequest: {
       /** Transfers */
@@ -3918,7 +3918,7 @@ export interface components {
     }
     /**
      * AccountCloseResponse
-     * @description Response body for `POST /api/accounting/accounts/{account_id}/close`.
+     * @description Response body for `POST /api/v1/accounting/accounts/{account_id}/close`.
      */
     AccountCloseResponse: {
       account: components['schemas']['Account']
@@ -3927,7 +3927,7 @@ export interface components {
     }
     /**
      * AccountCreate
-     * @description Request body for `POST /api/accounting/accounts` — everything but the server-generated `account_id`.
+     * @description Request body for `POST /api/v1/accounting/accounts` — everything but the server-generated `account_id`.
      */
     AccountCreate: {
       /** Name */
@@ -3975,7 +3975,7 @@ export interface components {
     }
     /**
      * AccountUpdate
-     * @description Request body for `PUT /api/accounting/accounts/{account_id}`.
+     * @description Request body for `PUT /api/v1/accounting/accounts/{account_id}`.
      *
      *     `institution`, `kind`, and `currency` may only differ from the
      *     account's current values while it has no postings yet — enforced in
@@ -4143,14 +4143,14 @@ export interface components {
     }
     /**
      * BenchmarkSettingUpdate
-     * @description Request body for `PUT /api/settings/benchmark`.
+     * @description Request body for `PUT /api/v1/trades/settings/benchmark`.
      */
     BenchmarkSettingUpdate: {
       /** Symbol Override */
       symbol_override?: string | null
     }
-    /** Body_post_canonical_import_api_accounting_import_canonical_post */
-    Body_post_canonical_import_api_accounting_import_canonical_post: {
+    /** Body_post_canonical_import_api_v1_accounting_import_canonical_post */
+    Body_post_canonical_import_api_v1_accounting_import_canonical_post: {
       /** File */
       file: string
       /** Account Id */
@@ -4165,8 +4165,8 @@ export interface components {
       /** Category Overrides */
       category_overrides?: string | null
     }
-    /** Body_post_canonical_import_preview_api_accounting_import_canonical_preview_post */
-    Body_post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
+    /** Body_post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post */
+    Body_post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post: {
       /** File */
       file: string
       /** Account Id */
@@ -4184,8 +4184,8 @@ export interface components {
        */
       date_order: string
     }
-    /** Body_post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post */
-    Body_post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
+    /** Body_post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post */
+    Body_post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post: {
       /** File */
       file: string
       /** Confirmed Row Numbers */
@@ -4207,8 +4207,8 @@ export interface components {
       /** Category Overrides */
       category_overrides?: string | null
     }
-    /** Body_post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post */
-    Body_post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
+    /** Body_post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post */
+    Body_post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post: {
       /** File */
       file: string
       /** Account Ids */
@@ -4226,15 +4226,15 @@ export interface components {
        */
       window_days: number
     }
-    /** Body_post_import_api_accounting_import_post */
-    Body_post_import_api_accounting_import_post: {
+    /** Body_post_import_api_v1_accounting_import_post */
+    Body_post_import_api_v1_accounting_import_post: {
       /** File */
       file: string
       /** Account Id */
       account_id: string
     }
-    /** Body_post_paystub_reconciliation_api_accounting_import_paystub_post */
-    Body_post_paystub_reconciliation_api_accounting_import_paystub_post: {
+    /** Body_post_paystub_reconciliation_api_v1_accounting_import_paystub_post */
+    Body_post_paystub_reconciliation_api_v1_accounting_import_paystub_post: {
       /** File */
       file: string
     }
@@ -4363,7 +4363,7 @@ export interface components {
     }
     /**
      * BudgetUpsert
-     * @description Request body for `POST /api/accounting/budgets` — sets one target for one category.
+     * @description Request body for `POST /api/v1/accounting/budgets` — sets one target for one category.
      *
      *     `month` is what picks which kind of target this is: `"YYYY-MM"` sets
      *     that one month's, and omitting it (`null`) sets the general,
@@ -4637,7 +4637,7 @@ export interface components {
     }
     /**
      * CategoryPatternCreate
-     * @description Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+     * @description Request body for `POST /api/v1/accounting/category-patterns` — creates one new pattern.
      *
      *     `pattern_id` is derived server-side the same way `TransferRuleCreate`
      *     derives `rule_id` — from `(description_contains, category_id,
@@ -4666,7 +4666,7 @@ export interface components {
     }
     /**
      * CategoryPatternUpdate
-     * @description Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+     * @description Request body for `PATCH /api/v1/accounting/category-patterns/{pattern_id}` — updates one in place.
      *
      *     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
      *     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
@@ -4883,7 +4883,7 @@ export interface components {
     }
     /**
      * DetectRequest
-     * @description Request body for `POST /api/accounting/detect`.
+     * @description Request body for `POST /api/v1/accounting/detect`.
      */
     DetectRequest: {
       /** Header */
@@ -4920,7 +4920,7 @@ export interface components {
     }
     /**
      * DismissSuggestionRequest
-     * @description Request body for `POST /api/accounting/dismissed-suggestions`.
+     * @description Request body for `POST /api/v1/accounting/dismissed-suggestions`.
      */
     DismissSuggestionRequest: {
       /** Suggestion Id */
@@ -5206,7 +5206,7 @@ export interface components {
     }
     /**
      * GoalAutomationCreate
-     * @description Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
+     * @description Request body for `POST /api/v1/accounting/goal-automations/contributions` — one new scheduled contribution.
      *
      *     Only the `contribution` direction is creatable one at a time: a
      *     withdrawal automation has no fields of its own beyond its goal and its
@@ -5262,7 +5262,7 @@ export interface components {
     }
     /**
      * GoalAutomationUpdate
-     * @description Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
+     * @description Request body for `PATCH /api/v1/accounting/goal-automations/{automation_id}` — edits one rule in place.
      *
      *     A single-rule field edit (amount, dates, frequency, mode, goal),
      *     scoped to its own `automation_id` so it never blanket-reinserts every
@@ -5373,7 +5373,7 @@ export interface components {
     }
     /**
      * GoalContributionCreate
-     * @description Request body for `POST /api/accounting/goal-contributions` — records one new dated allocation.
+     * @description Request body for `POST /api/v1/accounting/goal-contributions` — records one new dated allocation.
      *
      *     `contribution_id` is never taken from the client — unlike a budget's
      *     `(month, category_id)`, a contribution is an arbitrary event with no
@@ -5430,7 +5430,7 @@ export interface components {
     }
     /**
      * GoalContributionUpdate
-     * @description Request body for `PUT /api/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
+     * @description Request body for `PUT /api/v1/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
      *
      *     Every field is required, mirroring `PUT /accounts/{account_id}` — the
      *     caller already merges its patch into the existing row client-side
@@ -5475,7 +5475,7 @@ export interface components {
     }
     /**
      * GoalCreate
-     * @description Request body for `POST /api/accounting/goals` — creates one new goal.
+     * @description Request body for `POST /api/v1/accounting/goals` — creates one new goal.
      *
      *     `goal_id`, `color`, and `created_at` are never taken from the client —
      *     a goal is an arbitrary user record with no natural key two "the same"
@@ -5512,7 +5512,7 @@ export interface components {
     }
     /**
      * GoalUpdate
-     * @description Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+     * @description Request body for `PATCH /api/v1/accounting/goals/{goal_id}` — updates one existing goal in place.
      *
      *     Unlike `GoalCreate`, this never mints a new id or color — the goal
      *     stays identified by the `goal_id` path param, and `color` is an
@@ -5632,7 +5632,7 @@ export interface components {
     }
     /**
      * HysaSettingsUpdate
-     * @description Request body for `PUT /api/settings/hysa`.
+     * @description Request body for `PUT /api/v1/trades/settings/hysa`.
      */
     HysaSettingsUpdate: {
       /** Bank Id */
@@ -5642,11 +5642,11 @@ export interface components {
     }
     /**
      * IbkrCredentialsUpdate
-     * @description Request body for `PUT /api/settings/ibkr`.
+     * @description Request body for `PUT /api/v1/trades/settings/ibkr`.
      *
      *     Either field left `None` leaves that one exactly as it was — a query
      *     id entered with no token doesn't clear an existing token, the same
-     *     partial-merge convention `PUT /api/settings/benchmark`/`/tax` use.
+     *     partial-merge convention `PUT /api/v1/trades/settings/benchmark`/`/tax` use.
      */
     IbkrCredentialsUpdate: {
       /** Token */
@@ -5712,7 +5712,7 @@ export interface components {
     }
     /**
      * LLMSettingsUpdate
-     * @description Request body for `PUT /api/accounting/settings/llm`.
+     * @description Request body for `PUT /api/v1/accounting/settings/llm`.
      *
      *     Either field left `None` leaves that one exactly as it was — entering
      *     a Gemini key doesn't clear an existing Mistral one.
@@ -6135,7 +6135,7 @@ export interface components {
     }
     /**
      * OtherAssetCreate
-     * @description Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+     * @description Request body for `POST /api/v1/accounting/other-assets` — creates one new manually-entered asset.
      *
      *     `asset_id` is server-minted, same reasoning as `GoalCreate` — two
      *     assets can validly share a name (e.g. two rental properties).
@@ -6334,7 +6334,7 @@ export interface components {
     }
     /**
      * PostingMergeUpsert
-     * @description Request body for `POST /api/accounting/posting-merges` — records one duplicate-resolution decision.
+     * @description Request body for `POST /api/v1/accounting/posting-merges` — records one duplicate-resolution decision.
      *
      *     `merge_id` is never taken from the client — derived server-side from
      *     `kept_transaction_id`, since a transaction can only ever be the kept
@@ -6633,7 +6633,7 @@ export interface components {
     }
     /**
      * SimulatorScenarioCreate
-     * @description Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+     * @description Request body for `POST /api/v1/accounting/simulator/scenarios` — creates one new saved scenario.
      *
      *     `scenario_id` is never taken from the client — two scenarios can
      *     validly share every input field (a user comparing "what if I ran this
@@ -6987,7 +6987,7 @@ export interface components {
     }
     /**
      * TaxSettingsUpdate
-     * @description Request body for `PUT /api/settings/tax`.
+     * @description Request body for `PUT /api/v1/trades/settings/tax`.
      */
     TaxSettingsUpdate: {
       /** Tax Enabled */
@@ -7017,7 +7017,7 @@ export interface components {
     }
     /**
      * TimezoneSettingUpdate
-     * @description Request body for `PUT /api/settings/timezone`.
+     * @description Request body for `PUT /api/v1/trades/settings/timezone`.
      *
      *     `local_zone` is the browser's own IANA zone name
      *     (`Intl.DateTimeFormat().resolvedOptions().timeZone`), reported once per
@@ -7072,7 +7072,9 @@ export interface components {
     }
     /**
      * TransferLinkCreate
-     * @description Request body for `POST /api/accounting/transfer-links` — confirms two transactions as one transfer's two sides.
+     * @description Request body for `POST /api/v1/accounting/transfer-links`.
+     *
+     *     Confirms two transactions as one transfer's two sides.
      *
      *     `link_id`/ordering are never taken from the client — derived
      *     server-side from the two ids sorted once (see
@@ -7161,7 +7163,7 @@ export interface components {
     }
     /**
      * TransferRuleCreate
-     * @description Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+     * @description Request body for `POST /api/v1/accounting/transfer-rules` — creates one new rule.
      *
      *     `rule_id` is never taken from the client — derived server-side from
      *     `(description_contains, account_id, counterparty_account_id)`, the
@@ -7198,7 +7200,7 @@ export interface components {
     }
     /**
      * TransferRuleUpdate
-     * @description Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+     * @description Request body for `PATCH /api/v1/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
      *
      *     Unlike `TransferRuleCreate`, this never changes which rule is being
      *     edited — the rule stays identified by the `rule_id` path param even if
@@ -7386,7 +7388,7 @@ export interface components {
 }
 export type $defs = Record<string, never>
 export interface operations {
-  get_store_api_accounting_store_get: {
+  get_store_api_v1_accounting_store_get: {
     parameters: {
       query?: never
       header?: never
@@ -7406,7 +7408,7 @@ export interface operations {
       }
     }
   }
-  get_currencies_api_accounting_currencies_get: {
+  get_currencies_api_v1_accounting_currencies_get: {
     parameters: {
       query?: never
       header?: never
@@ -7426,7 +7428,7 @@ export interface operations {
       }
     }
   }
-  put_categories_api_accounting_categories_put: {
+  put_categories_api_v1_accounting_categories_put: {
     parameters: {
       query?: never
       header?: never
@@ -7463,7 +7465,7 @@ export interface operations {
       }
     }
   }
-  post_category_api_accounting_categories_post: {
+  post_category_api_v1_accounting_categories_post: {
     parameters: {
       query?: never
       header?: never
@@ -7496,7 +7498,7 @@ export interface operations {
       }
     }
   }
-  post_subcategory_api_accounting_categories__parent_id__subcategories_post: {
+  post_subcategory_api_v1_accounting_categories__parent_id__subcategories_post: {
     parameters: {
       query?: never
       header?: never
@@ -7531,7 +7533,7 @@ export interface operations {
       }
     }
   }
-  get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get: {
+  get_category_delete_preview_api_v1_accounting_categories__category_id__delete_preview_get: {
     parameters: {
       query?: never
       header?: never
@@ -7562,7 +7564,7 @@ export interface operations {
       }
     }
   }
-  delete_category_api_accounting_categories__category_id__delete: {
+  delete_category_api_v1_accounting_categories__category_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -7593,7 +7595,7 @@ export interface operations {
       }
     }
   }
-  get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get: {
+  get_category_rename_preview_api_v1_accounting_categories__category_id__rename_preview_get: {
     parameters: {
       query: {
         name: string
@@ -7626,7 +7628,7 @@ export interface operations {
       }
     }
   }
-  post_category_rename_api_accounting_categories__category_id__rename_post: {
+  post_category_rename_api_v1_accounting_categories__category_id__rename_post: {
     parameters: {
       query?: never
       header?: never
@@ -7661,7 +7663,7 @@ export interface operations {
       }
     }
   }
-  put_tags_api_accounting_tags_put: {
+  put_tags_api_v1_accounting_tags_put: {
     parameters: {
       query?: never
       header?: never
@@ -7698,7 +7700,7 @@ export interface operations {
       }
     }
   }
-  post_tag_api_accounting_tags_post: {
+  post_tag_api_v1_accounting_tags_post: {
     parameters: {
       query?: never
       header?: never
@@ -7731,7 +7733,7 @@ export interface operations {
       }
     }
   }
-  delete_tag_route_api_accounting_tags__tag_id__delete: {
+  delete_tag_route_api_v1_accounting_tags__tag_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -7762,7 +7764,7 @@ export interface operations {
       }
     }
   }
-  get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get: {
+  get_tag_rename_preview_api_v1_accounting_tags__tag_id__rename_preview_get: {
     parameters: {
       query: {
         name: string
@@ -7795,7 +7797,7 @@ export interface operations {
       }
     }
   }
-  post_tag_rename_api_accounting_tags__tag_id__rename_post: {
+  post_tag_rename_api_v1_accounting_tags__tag_id__rename_post: {
     parameters: {
       query?: never
       header?: never
@@ -7830,7 +7832,7 @@ export interface operations {
       }
     }
   }
-  post_transfer_rule_api_accounting_transfer_rules_post: {
+  post_transfer_rule_api_v1_accounting_transfer_rules_post: {
     parameters: {
       query?: never
       header?: never
@@ -7863,7 +7865,7 @@ export interface operations {
       }
     }
   }
-  delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete: {
+  delete_transfer_rule_route_api_v1_accounting_transfer_rules__rule_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -7894,7 +7896,7 @@ export interface operations {
       }
     }
   }
-  patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch: {
+  patch_transfer_rule_api_v1_accounting_transfer_rules__rule_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -7929,7 +7931,7 @@ export interface operations {
       }
     }
   }
-  put_category_patterns_api_accounting_category_patterns_put: {
+  put_category_patterns_api_v1_accounting_category_patterns_put: {
     parameters: {
       query?: never
       header?: never
@@ -7966,7 +7968,7 @@ export interface operations {
       }
     }
   }
-  post_category_pattern_api_accounting_category_patterns_post: {
+  post_category_pattern_api_v1_accounting_category_patterns_post: {
     parameters: {
       query?: never
       header?: never
@@ -7999,7 +8001,7 @@ export interface operations {
       }
     }
   }
-  delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete: {
+  delete_category_pattern_route_api_v1_accounting_category_patterns__pattern_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8030,7 +8032,7 @@ export interface operations {
       }
     }
   }
-  patch_category_pattern_api_accounting_category_patterns__pattern_id__patch: {
+  patch_category_pattern_api_v1_accounting_category_patterns__pattern_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -8065,7 +8067,7 @@ export interface operations {
       }
     }
   }
-  put_other_assets_api_accounting_other_assets_put: {
+  put_other_assets_api_v1_accounting_other_assets_put: {
     parameters: {
       query?: never
       header?: never
@@ -8098,7 +8100,7 @@ export interface operations {
       }
     }
   }
-  post_other_asset_api_accounting_other_assets_post: {
+  post_other_asset_api_v1_accounting_other_assets_post: {
     parameters: {
       query?: never
       header?: never
@@ -8131,7 +8133,7 @@ export interface operations {
       }
     }
   }
-  delete_other_asset_route_api_accounting_other_assets__asset_id__delete: {
+  delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8162,7 +8164,7 @@ export interface operations {
       }
     }
   }
-  put_budgets_api_accounting_budgets_put: {
+  put_budgets_api_v1_accounting_budgets_put: {
     parameters: {
       query?: never
       header?: never
@@ -8195,7 +8197,7 @@ export interface operations {
       }
     }
   }
-  post_budget_api_accounting_budgets_post: {
+  post_budget_api_v1_accounting_budgets_post: {
     parameters: {
       query?: never
       header?: never
@@ -8228,7 +8230,7 @@ export interface operations {
       }
     }
   }
-  delete_budget_api_accounting_budgets__budget_id__delete: {
+  delete_budget_api_v1_accounting_budgets__budget_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8259,7 +8261,7 @@ export interface operations {
       }
     }
   }
-  put_simulator_scenarios_api_accounting_simulator_scenarios_put: {
+  put_simulator_scenarios_api_v1_accounting_simulator_scenarios_put: {
     parameters: {
       query?: never
       header?: never
@@ -8292,7 +8294,7 @@ export interface operations {
       }
     }
   }
-  post_simulator_scenario_api_accounting_simulator_scenarios_post: {
+  post_simulator_scenario_api_v1_accounting_simulator_scenarios_post: {
     parameters: {
       query?: never
       header?: never
@@ -8325,7 +8327,7 @@ export interface operations {
       }
     }
   }
-  delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete: {
+  delete_simulator_scenario_route_api_v1_accounting_simulator_scenarios__scenario_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8356,7 +8358,7 @@ export interface operations {
       }
     }
   }
-  post_account_api_accounting_accounts_post: {
+  post_account_api_v1_accounting_accounts_post: {
     parameters: {
       query?: never
       header?: never
@@ -8389,7 +8391,7 @@ export interface operations {
       }
     }
   }
-  put_account_api_accounting_accounts__account_id__put: {
+  put_account_api_v1_accounting_accounts__account_id__put: {
     parameters: {
       query?: never
       header?: never
@@ -8424,7 +8426,7 @@ export interface operations {
       }
     }
   }
-  delete_account_api_accounting_accounts__account_id__delete: {
+  delete_account_api_v1_accounting_accounts__account_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8455,7 +8457,7 @@ export interface operations {
       }
     }
   }
-  close_account_api_accounting_accounts__account_id__close_post: {
+  close_account_api_v1_accounting_accounts__account_id__close_post: {
     parameters: {
       query?: never
       header?: never
@@ -8490,7 +8492,7 @@ export interface operations {
       }
     }
   }
-  reopen_account_api_accounting_accounts__account_id__reopen_post: {
+  reopen_account_api_v1_accounting_accounts__account_id__reopen_post: {
     parameters: {
       query?: never
       header?: never
@@ -8521,7 +8523,7 @@ export interface operations {
       }
     }
   }
-  put_opening_balance_api_accounting_accounts__account_id__opening_balance_put: {
+  put_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_put: {
     parameters: {
       query?: never
       header?: never
@@ -8556,7 +8558,7 @@ export interface operations {
       }
     }
   }
-  delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete: {
+  delete_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_delete: {
     parameters: {
       query?: never
       header?: never
@@ -8587,7 +8589,7 @@ export interface operations {
       }
     }
   }
-  get_current_exchange_rate_api_accounting_exchange_rates_current_get: {
+  get_current_exchange_rate_api_v1_accounting_exchange_rates_current_get: {
     parameters: {
       query: {
         currency: 'USD' | 'EUR'
@@ -8618,7 +8620,7 @@ export interface operations {
       }
     }
   }
-  get_exchange_rate_history_api_accounting_exchange_rates_history_get: {
+  get_exchange_rate_history_api_v1_accounting_exchange_rates_history_get: {
     parameters: {
       query: {
         currency: 'USD' | 'EUR'
@@ -8649,7 +8651,7 @@ export interface operations {
       }
     }
   }
-  post_detect_api_accounting_detect_post: {
+  post_detect_api_v1_accounting_detect_post: {
     parameters: {
       query?: never
       header?: never
@@ -8682,7 +8684,7 @@ export interface operations {
       }
     }
   }
-  get_supported_import_kinds_api_accounting_supported_import_kinds_get: {
+  get_supported_import_kinds_api_v1_accounting_supported_import_kinds_get: {
     parameters: {
       query?: never
       header?: never
@@ -8702,7 +8704,7 @@ export interface operations {
       }
     }
   }
-  get_sync_status_api_accounting_sync_status_get: {
+  get_sync_status_api_v1_accounting_sync_status_get: {
     parameters: {
       query?: never
       header?: never
@@ -8722,7 +8724,7 @@ export interface operations {
       }
     }
   }
-  post_import_api_accounting_import_post: {
+  post_import_api_v1_accounting_import_post: {
     parameters: {
       query?: never
       header?: never
@@ -8731,7 +8733,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'multipart/form-data': components['schemas']['Body_post_import_api_accounting_import_post']
+        'multipart/form-data': components['schemas']['Body_post_import_api_v1_accounting_import_post']
       }
     }
     responses: {
@@ -8755,7 +8757,7 @@ export interface operations {
       }
     }
   }
-  post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
+  post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post: {
     parameters: {
       query?: never
       header?: never
@@ -8764,7 +8766,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'multipart/form-data': components['schemas']['Body_post_canonical_import_preview_api_accounting_import_canonical_preview_post']
+        'multipart/form-data': components['schemas']['Body_post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post']
       }
     }
     responses: {
@@ -8788,7 +8790,7 @@ export interface operations {
       }
     }
   }
-  post_canonical_import_api_accounting_import_canonical_post: {
+  post_canonical_import_api_v1_accounting_import_canonical_post: {
     parameters: {
       query?: never
       header?: never
@@ -8797,7 +8799,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'multipart/form-data': components['schemas']['Body_post_canonical_import_api_accounting_import_canonical_post']
+        'multipart/form-data': components['schemas']['Body_post_canonical_import_api_v1_accounting_import_canonical_post']
       }
     }
     responses: {
@@ -8821,7 +8823,7 @@ export interface operations {
       }
     }
   }
-  post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
+  post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post: {
     parameters: {
       query?: never
       header?: never
@@ -8830,7 +8832,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post']
+        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post']
       }
     }
     responses: {
@@ -8854,7 +8856,7 @@ export interface operations {
       }
     }
   }
-  post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
+  post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post: {
     parameters: {
       query?: never
       header?: never
@@ -8863,7 +8865,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post']
+        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post']
       }
     }
     responses: {
@@ -8887,7 +8889,7 @@ export interface operations {
       }
     }
   }
-  post_paystub_reconciliation_api_accounting_import_paystub_post: {
+  post_paystub_reconciliation_api_v1_accounting_import_paystub_post: {
     parameters: {
       query?: never
       header?: never
@@ -8896,7 +8898,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'multipart/form-data': components['schemas']['Body_post_paystub_reconciliation_api_accounting_import_paystub_post']
+        'multipart/form-data': components['schemas']['Body_post_paystub_reconciliation_api_v1_accounting_import_paystub_post']
       }
     }
     responses: {
@@ -8920,7 +8922,7 @@ export interface operations {
       }
     }
   }
-  post_rebuild_api_accounting_rebuild_post: {
+  post_rebuild_api_v1_accounting_rebuild_post: {
     parameters: {
       query?: never
       header?: never
@@ -8940,7 +8942,7 @@ export interface operations {
       }
     }
   }
-  get_postings_api_accounting_postings_get: {
+  get_postings_api_v1_accounting_postings_get: {
     parameters: {
       query?: {
         /** @description How many transactions to return, newest first. */
@@ -8974,7 +8976,7 @@ export interface operations {
       }
     }
   }
-  get_ledger_export_api_accounting_ledger_export_get: {
+  get_ledger_export_api_v1_accounting_ledger_export_get: {
     parameters: {
       query?: {
         /** @description How many postings to return, oldest first. */
@@ -9008,7 +9010,7 @@ export interface operations {
       }
     }
   }
-  get_statements_export_api_accounting_statements_export_get: {
+  get_statements_export_api_v1_accounting_statements_export_get: {
     parameters: {
       query?: never
       header?: never
@@ -9028,7 +9030,7 @@ export interface operations {
       }
     }
   }
-  put_posting_override_api_accounting_postings__posting_id__override_put: {
+  put_posting_override_api_v1_accounting_postings__posting_id__override_put: {
     parameters: {
       query?: never
       header?: never
@@ -9063,7 +9065,7 @@ export interface operations {
       }
     }
   }
-  put_posting_split_api_accounting_postings__posting_id__split_put: {
+  put_posting_split_api_v1_accounting_postings__posting_id__split_put: {
     parameters: {
       query?: never
       header?: never
@@ -9098,7 +9100,7 @@ export interface operations {
       }
     }
   }
-  delete_posting_split_route_api_accounting_postings__posting_id__split_delete: {
+  delete_posting_split_route_api_v1_accounting_postings__posting_id__split_delete: {
     parameters: {
       query?: never
       header?: never
@@ -9129,7 +9131,7 @@ export interface operations {
       }
     }
   }
-  put_posting_merges_api_accounting_posting_merges_put: {
+  put_posting_merges_api_v1_accounting_posting_merges_put: {
     parameters: {
       query?: never
       header?: never
@@ -9166,7 +9168,7 @@ export interface operations {
       }
     }
   }
-  post_posting_merge_api_accounting_posting_merges_post: {
+  post_posting_merge_api_v1_accounting_posting_merges_post: {
     parameters: {
       query?: never
       header?: never
@@ -9199,7 +9201,7 @@ export interface operations {
       }
     }
   }
-  delete_posting_merge_api_accounting_posting_merges__merge_id__delete: {
+  delete_posting_merge_api_v1_accounting_posting_merges__merge_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -9230,7 +9232,7 @@ export interface operations {
       }
     }
   }
-  post_transfer_link_api_accounting_transfer_links_post: {
+  post_transfer_link_api_v1_accounting_transfer_links_post: {
     parameters: {
       query?: never
       header?: never
@@ -9263,7 +9265,7 @@ export interface operations {
       }
     }
   }
-  delete_transfer_link_api_accounting_transfer_links__link_id__delete: {
+  delete_transfer_link_api_v1_accounting_transfer_links__link_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -9294,7 +9296,7 @@ export interface operations {
       }
     }
   }
-  post_validate_pending_api_accounting_postings_validate_pending_post: {
+  post_validate_pending_api_v1_accounting_postings_validate_pending_post: {
     parameters: {
       query?: never
       header?: never
@@ -9327,7 +9329,7 @@ export interface operations {
       }
     }
   }
-  get_transfer_suggestions_api_accounting_transfer_suggestions_get: {
+  get_transfer_suggestions_api_v1_accounting_transfer_suggestions_get: {
     parameters: {
       query?: {
         window_days?: number
@@ -9358,7 +9360,7 @@ export interface operations {
       }
     }
   }
-  get_duplicate_suggestions_api_accounting_duplicate_suggestions_get: {
+  get_duplicate_suggestions_api_v1_accounting_duplicate_suggestions_get: {
     parameters: {
       query?: {
         window_days?: number
@@ -9389,7 +9391,7 @@ export interface operations {
       }
     }
   }
-  get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
+  get_dismissed_suggestions_api_v1_accounting_dismissed_suggestions_get: {
     parameters: {
       query?: never
       header?: never
@@ -9409,7 +9411,7 @@ export interface operations {
       }
     }
   }
-  post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
+  post_dismissed_suggestion_api_v1_accounting_dismissed_suggestions_post: {
     parameters: {
       query?: never
       header?: never
@@ -9442,7 +9444,7 @@ export interface operations {
       }
     }
   }
-  delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
+  delete_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -9473,7 +9475,7 @@ export interface operations {
       }
     }
   }
-  get_llm_usage_api_accounting_llm_usage_get: {
+  get_llm_usage_api_v1_accounting_llm_usage_get: {
     parameters: {
       query?: never
       header?: never
@@ -9495,7 +9497,7 @@ export interface operations {
       }
     }
   }
-  verify_llm_settings_api_accounting_settings_llm_verify_post: {
+  verify_llm_settings_api_v1_accounting_settings_llm_verify_post: {
     parameters: {
       query: {
         provider: string
@@ -9526,7 +9528,7 @@ export interface operations {
       }
     }
   }
-  get_llm_settings_api_accounting_settings_llm_get: {
+  get_llm_settings_api_v1_accounting_settings_llm_get: {
     parameters: {
       query?: never
       header?: never
@@ -9546,7 +9548,7 @@ export interface operations {
       }
     }
   }
-  put_llm_settings_api_accounting_settings_llm_put: {
+  put_llm_settings_api_v1_accounting_settings_llm_put: {
     parameters: {
       query?: never
       header?: never
@@ -9579,7 +9581,7 @@ export interface operations {
       }
     }
   }
-  delete_llm_settings_api_accounting_settings_llm_delete: {
+  delete_llm_settings_api_v1_accounting_settings_llm_delete: {
     parameters: {
       query?: never
       header?: never
@@ -9599,7 +9601,7 @@ export interface operations {
       }
     }
   }
-  post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post: {
+  post_ai_suggest_category_api_v1_accounting_postings__posting_id__ai_suggest_category_post: {
     parameters: {
       query?: {
         lock_category_id?: string | null
@@ -9632,7 +9634,7 @@ export interface operations {
       }
     }
   }
-  post_pattern_suggest_category_api_accounting_postings__posting_id__pattern_suggest_category_post: {
+  post_pattern_suggest_category_api_v1_accounting_postings__posting_id__pattern_suggest_category_post: {
     parameters: {
       query?: {
         lock_category_id?: string | null
@@ -9665,7 +9667,7 @@ export interface operations {
       }
     }
   }
-  post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post: {
+  post_pattern_suggest_category_bulk_api_v1_accounting_postings_pattern_suggest_category_bulk_post: {
     parameters: {
       query?: never
       header?: never
@@ -9698,7 +9700,7 @@ export interface operations {
       }
     }
   }
-  get_simulator_projection_api_accounting_simulator_project_get: {
+  get_simulator_projection_api_v1_accounting_simulator_project_get: {
     parameters: {
       query: {
         initial_capital: number
@@ -9733,7 +9735,7 @@ export interface operations {
       }
     }
   }
-  get_interest_summary_api_accounting_interest_summary_get: {
+  get_interest_summary_api_v1_accounting_interest_summary_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -9764,7 +9766,7 @@ export interface operations {
       }
     }
   }
-  get_net_worth_api_accounting_net_worth_get: {
+  get_net_worth_api_v1_accounting_net_worth_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -9796,7 +9798,7 @@ export interface operations {
       }
     }
   }
-  get_net_worth_history_api_accounting_net_worth_history_get: {
+  get_net_worth_history_api_v1_accounting_net_worth_history_get: {
     parameters: {
       query: {
         start: string
@@ -9830,7 +9832,7 @@ export interface operations {
       }
     }
   }
-  get_net_worth_history_by_account_api_accounting_net_worth_history_by_account_get: {
+  get_net_worth_history_by_account_api_v1_accounting_net_worth_history_by_account_get: {
     parameters: {
       query: {
         start: string
@@ -9864,7 +9866,7 @@ export interface operations {
       }
     }
   }
-  get_category_totals_api_accounting_income_statement_category_totals_get: {
+  get_category_totals_api_v1_accounting_income_statement_category_totals_get: {
     parameters: {
       query: {
         start: string
@@ -9899,7 +9901,7 @@ export interface operations {
       }
     }
   }
-  get_monthly_income_expense_api_accounting_income_statement_monthly_get: {
+  get_monthly_income_expense_api_v1_accounting_income_statement_monthly_get: {
     parameters: {
       query: {
         start: string
@@ -9932,7 +9934,7 @@ export interface operations {
       }
     }
   }
-  get_spend_curve_api_accounting_income_statement_spend_curve_get: {
+  get_spend_curve_api_v1_accounting_income_statement_spend_curve_get: {
     parameters: {
       query: {
         month: string
@@ -9965,7 +9967,7 @@ export interface operations {
       }
     }
   }
-  get_budget_comparison_api_accounting_budgets_comparison_get: {
+  get_budget_comparison_api_v1_accounting_budgets_comparison_get: {
     parameters: {
       query: {
         month: string
@@ -9997,7 +9999,7 @@ export interface operations {
       }
     }
   }
-  get_suggested_budget_amount_api_accounting_budgets_suggested_amount_get: {
+  get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get: {
     parameters: {
       query: {
         category_id: string
@@ -10032,7 +10034,7 @@ export interface operations {
       }
     }
   }
-  put_goals_api_accounting_goals_put: {
+  put_goals_api_v1_accounting_goals_put: {
     parameters: {
       query?: never
       header?: never
@@ -10069,7 +10071,7 @@ export interface operations {
       }
     }
   }
-  post_goal_api_accounting_goals_post: {
+  post_goal_api_v1_accounting_goals_post: {
     parameters: {
       query?: never
       header?: never
@@ -10102,7 +10104,7 @@ export interface operations {
       }
     }
   }
-  delete_goal_route_api_accounting_goals__goal_id__delete: {
+  delete_goal_route_api_v1_accounting_goals__goal_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -10133,7 +10135,7 @@ export interface operations {
       }
     }
   }
-  patch_goal_api_accounting_goals__goal_id__patch: {
+  patch_goal_api_v1_accounting_goals__goal_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -10168,7 +10170,7 @@ export interface operations {
       }
     }
   }
-  put_goal_contributions_api_accounting_goal_contributions_put: {
+  put_goal_contributions_api_v1_accounting_goal_contributions_put: {
     parameters: {
       query?: never
       header?: never
@@ -10205,7 +10207,7 @@ export interface operations {
       }
     }
   }
-  post_goal_contribution_api_accounting_goal_contributions_post: {
+  post_goal_contribution_api_v1_accounting_goal_contributions_post: {
     parameters: {
       query?: never
       header?: never
@@ -10238,7 +10240,7 @@ export interface operations {
       }
     }
   }
-  put_goal_contribution_api_accounting_goal_contributions__contribution_id__put: {
+  put_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__put: {
     parameters: {
       query?: never
       header?: never
@@ -10273,7 +10275,7 @@ export interface operations {
       }
     }
   }
-  delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete: {
+  delete_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -10304,7 +10306,7 @@ export interface operations {
       }
     }
   }
-  put_goal_contribution_automations_api_accounting_goal_automations_contributions_put: {
+  put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put: {
     parameters: {
       query?: never
       header?: never
@@ -10337,7 +10339,7 @@ export interface operations {
       }
     }
   }
-  post_goal_automation_api_accounting_goal_automations_contributions_post: {
+  post_goal_automation_api_v1_accounting_goal_automations_contributions_post: {
     parameters: {
       query?: never
       header?: never
@@ -10370,7 +10372,7 @@ export interface operations {
       }
     }
   }
-  delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete: {
+  delete_goal_automation_route_api_v1_accounting_goal_automations__automation_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -10401,7 +10403,7 @@ export interface operations {
       }
     }
   }
-  patch_goal_automation_api_accounting_goal_automations__automation_id__patch: {
+  patch_goal_automation_api_v1_accounting_goal_automations__automation_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -10436,7 +10438,7 @@ export interface operations {
       }
     }
   }
-  put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put: {
+  put_goal_withdrawal_automations_api_v1_accounting_goal_automations_withdrawals_put: {
     parameters: {
       query?: never
       header?: never
@@ -10469,7 +10471,7 @@ export interface operations {
       }
     }
   }
-  get_goals_summary_api_accounting_goals_summary_get: {
+  get_goals_summary_api_v1_accounting_goals_summary_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10501,7 +10503,7 @@ export interface operations {
       }
     }
   }
-  post_run_recurring_additions_api_accounting_goals_run_recurring_additions_post: {
+  post_run_recurring_additions_api_v1_accounting_goals_run_recurring_additions_post: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10532,7 +10534,7 @@ export interface operations {
       }
     }
   }
-  post_run_withdrawal_automation_api_accounting_goals_run_withdrawal_automation_post: {
+  post_run_withdrawal_automation_api_v1_accounting_goals_run_withdrawal_automation_post: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10563,7 +10565,7 @@ export interface operations {
       }
     }
   }
-  post_simulate_contribution_api_accounting_goals_simulate_contribution_post: {
+  post_simulate_contribution_api_v1_accounting_goals_simulate_contribution_post: {
     parameters: {
       query?: never
       header?: never
@@ -10596,7 +10598,7 @@ export interface operations {
       }
     }
   }
-  get_overview_api_overview_get: {
+  get_overview_api_v1_trades_overview_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10627,7 +10629,7 @@ export interface operations {
       }
     }
   }
-  get_dollar_chart_api_chart_dollar_get: {
+  get_dollar_chart_api_v1_trades_chart_dollar_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10659,7 +10661,7 @@ export interface operations {
       }
     }
   }
-  get_growth_of_100_chart_api_chart_growth_of_100_get: {
+  get_growth_of_100_chart_api_v1_trades_chart_growth_of_100_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10691,7 +10693,7 @@ export interface operations {
       }
     }
   }
-  get_cash_history_api_chart_cash_history_get: {
+  get_cash_history_api_v1_trades_chart_cash_history_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10723,7 +10725,7 @@ export interface operations {
       }
     }
   }
-  get_cash_sitting_api_cash_sitting_get: {
+  get_cash_sitting_api_v1_trades_cash_sitting_get: {
     parameters: {
       query?: never
       header?: never
@@ -10743,7 +10745,7 @@ export interface operations {
       }
     }
   }
-  get_monthly_pnl_api_chart_monthly_pnl_get: {
+  get_monthly_pnl_api_v1_trades_chart_monthly_pnl_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10775,7 +10777,7 @@ export interface operations {
       }
     }
   }
-  get_monthly_pnl_by_symbol_api_chart_monthly_pnl_by_symbol_get: {
+  get_monthly_pnl_by_symbol_api_v1_trades_chart_monthly_pnl_by_symbol_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10807,7 +10809,7 @@ export interface operations {
       }
     }
   }
-  get_allocation_api_allocation_get: {
+  get_allocation_api_v1_trades_allocation_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10838,7 +10840,7 @@ export interface operations {
       }
     }
   }
-  get_tax_report_api_tax_report_get: {
+  get_tax_report_api_v1_trades_tax_report_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10869,7 +10871,7 @@ export interface operations {
       }
     }
   }
-  get_lots_api_lots_get: {
+  get_lots_api_v1_trades_lots_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10900,7 +10902,7 @@ export interface operations {
       }
     }
   }
-  get_risk_api_risk_get: {
+  get_risk_api_v1_trades_risk_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10932,7 +10934,7 @@ export interface operations {
       }
     }
   }
-  get_data_quality_api_data_quality_get: {
+  get_data_quality_api_v1_trades_data_quality_get: {
     parameters: {
       query?: never
       header?: never
@@ -10952,7 +10954,7 @@ export interface operations {
       }
     }
   }
-  get_ledger_export_api_ledger_export_get: {
+  get_ledger_export_api_v1_trades_ledger_export_get: {
     parameters: {
       query?: never
       header?: never
@@ -10972,7 +10974,7 @@ export interface operations {
       }
     }
   }
-  get_target_allocation_api_settings_target_allocation_get: {
+  get_target_allocation_api_v1_trades_settings_target_allocation_get: {
     parameters: {
       query?: never
       header?: never
@@ -10994,7 +10996,7 @@ export interface operations {
       }
     }
   }
-  put_target_allocation_api_settings_target_allocation_put: {
+  put_target_allocation_api_v1_trades_settings_target_allocation_put: {
     parameters: {
       query?: never
       header?: never
@@ -11031,7 +11033,7 @@ export interface operations {
       }
     }
   }
-  get_hysa_settings_api_settings_hysa_get: {
+  get_hysa_settings_api_v1_trades_settings_hysa_get: {
     parameters: {
       query?: never
       header?: never
@@ -11051,7 +11053,7 @@ export interface operations {
       }
     }
   }
-  put_hysa_settings_api_settings_hysa_put: {
+  put_hysa_settings_api_v1_trades_settings_hysa_put: {
     parameters: {
       query?: never
       header?: never
@@ -11084,7 +11086,7 @@ export interface operations {
       }
     }
   }
-  get_benchmark_setting_api_settings_benchmark_get: {
+  get_benchmark_setting_api_v1_trades_settings_benchmark_get: {
     parameters: {
       query?: never
       header?: never
@@ -11104,7 +11106,7 @@ export interface operations {
       }
     }
   }
-  put_benchmark_setting_api_settings_benchmark_put: {
+  put_benchmark_setting_api_v1_trades_settings_benchmark_put: {
     parameters: {
       query?: never
       header?: never
@@ -11137,7 +11139,7 @@ export interface operations {
       }
     }
   }
-  get_timezone_setting_api_settings_timezone_get: {
+  get_timezone_setting_api_v1_trades_settings_timezone_get: {
     parameters: {
       query?: never
       header?: never
@@ -11157,7 +11159,7 @@ export interface operations {
       }
     }
   }
-  put_timezone_setting_api_settings_timezone_put: {
+  put_timezone_setting_api_v1_trades_settings_timezone_put: {
     parameters: {
       query?: never
       header?: never
@@ -11190,7 +11192,7 @@ export interface operations {
       }
     }
   }
-  get_tax_settings_api_settings_tax_get: {
+  get_tax_settings_api_v1_trades_settings_tax_get: {
     parameters: {
       query?: never
       header?: never
@@ -11210,7 +11212,7 @@ export interface operations {
       }
     }
   }
-  put_tax_settings_api_settings_tax_put: {
+  put_tax_settings_api_v1_trades_settings_tax_put: {
     parameters: {
       query?: never
       header?: never
@@ -11243,7 +11245,7 @@ export interface operations {
       }
     }
   }
-  get_broker_connections_api_broker_connections_get: {
+  get_broker_connections_api_v1_trades_broker_connections_get: {
     parameters: {
       query?: never
       header?: never
@@ -11263,7 +11265,7 @@ export interface operations {
       }
     }
   }
-  get_ibkr_settings_api_settings_ibkr_get: {
+  get_ibkr_settings_api_v1_trades_settings_ibkr_get: {
     parameters: {
       query?: never
       header?: never
@@ -11283,7 +11285,7 @@ export interface operations {
       }
     }
   }
-  put_ibkr_settings_api_settings_ibkr_put: {
+  put_ibkr_settings_api_v1_trades_settings_ibkr_put: {
     parameters: {
       query?: never
       header?: never
@@ -11316,7 +11318,7 @@ export interface operations {
       }
     }
   }
-  delete_ibkr_settings_api_settings_ibkr_delete: {
+  delete_ibkr_settings_api_v1_trades_settings_ibkr_delete: {
     parameters: {
       query?: never
       header?: never
@@ -11336,7 +11338,7 @@ export interface operations {
       }
     }
   }
-  verify_ibkr_settings_api_settings_ibkr_verify_post: {
+  verify_ibkr_settings_api_v1_trades_settings_ibkr_verify_post: {
     parameters: {
       query?: never
       header?: never
@@ -11356,7 +11358,7 @@ export interface operations {
       }
     }
   }
-  get_hysa_rates_api_hysa_rates_get: {
+  get_hysa_rates_api_v1_trades_hysa_rates_get: {
     parameters: {
       query?: never
       header?: never
@@ -11376,7 +11378,7 @@ export interface operations {
       }
     }
   }
-  get_symbol_search_api_symbols_search_get: {
+  get_symbol_search_api_v1_trades_symbols_search_get: {
     parameters: {
       query: {
         q: string
@@ -11407,7 +11409,7 @@ export interface operations {
       }
     }
   }
-  ensure_symbol_priced_api_symbols__symbol__ensure_priced_post: {
+  ensure_symbol_priced_api_v1_trades_symbols__symbol__ensure_priced_post: {
     parameters: {
       query?: never
       header?: never
@@ -11438,7 +11440,7 @@ export interface operations {
       }
     }
   }
-  get_statements_export_api_statements_export_get: {
+  get_statements_export_api_v1_trades_statements_export_get: {
     parameters: {
       query?: never
       header?: never
@@ -11458,7 +11460,7 @@ export interface operations {
       }
     }
   }
-  get_sync_progress_api_sync_progress_get: {
+  get_sync_progress_api_v1_trades_sync_progress_get: {
     parameters: {
       query?: never
       header?: never
@@ -11478,7 +11480,7 @@ export interface operations {
       }
     }
   }
-  sync_api_sync_post: {
+  sync_api_v1_trades_sync_post: {
     parameters: {
       query?: never
       header?: never
