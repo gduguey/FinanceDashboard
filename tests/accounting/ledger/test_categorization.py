@@ -12,7 +12,7 @@ from accounting.ledger.categorization import (
     resolved_transfer_rule_ids_by_transaction,
 )
 from accounting.models import Account, ManualOverride, PostingMerge, PostingSplit, PostingSplitLeg, TransferRule
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 
 def _leg(amount: float, description: str, currency: str = "USD") -> RawLeg:

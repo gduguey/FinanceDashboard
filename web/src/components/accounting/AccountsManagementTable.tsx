@@ -21,7 +21,7 @@ import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, ManualTransfer } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see
-// `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
+// `accounting.taxonomy.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
 // aren't a real account or counterparty a user manages — they're re-seeded
 // by the backend if ever missing — so they're the only accounts hidden here.
 // Every other `income_source`/`expense_payee` counterparty a user creates

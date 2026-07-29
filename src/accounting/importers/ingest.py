@@ -31,7 +31,7 @@ from accounting.ledger.replay import validate_balanced
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS
 from accounting.repositories.taxonomy import replace_categories
-from accounting.store import load_store, normalize_categories
+from accounting.taxonomy import normalize_categories, seeded_accounts, seeded_categories
 from accounting.utils.statement_archive import StatementArchive
 from db.base import derive_id, natural_keys_by_id
 
@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
     from accounting.models import Account, Category, TransactionOrigin
-    from accounting.store import AccountingStore
 
 _Fingerprint = tuple[str, datetime, float, str]
 """`(account_id, posted_at, amount, description)` — two transactions with the same fingerprint look identical."""
@@ -503,7 +502,7 @@ def _fallback_to_canonical_csv(
     session: Session,
     user_id: uuid.UUID,
 ) -> tuple[pl.DataFrame, SkippedRowsInfo | None]:
-    """Standardize via the canonical CSV importer, merging any newly-created categories into the store.
+    """Standardize via the canonical CSV importer, persisting any category it had to create along the way.
 
     Parameters
     ----------
@@ -514,17 +513,17 @@ def _fallback_to_canonical_csv(
     session
         An open database session.
     user_id
-        Whose store the newly-created categories are merged into.
+        Whose category tree the newly-created categories are merged into.
 
     Returns
     -------
     tuple[pl.DataFrame, SkippedRowsInfo | None]
         The standardized postings, and info about any skipped rows.
     """
-    store = load_store(session, user_id=user_id)
-    canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
+    categories = seeded_categories(session, user_id)
+    canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", categories)
     if canonical_result.new_categories:
-        merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
+        merged_categories = normalize_categories({**categories, **canonical_result.new_categories})
         # Additive only — an import can mint a category it met in a file, never
         # remove one — so the merged tree is upserted without a prune.
         replace_categories(session, user_id, merged_categories.values(), prune=False)
@@ -569,7 +568,7 @@ def ingest_csv(
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
 
     Returns
     -------
@@ -690,7 +689,7 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
     separator
         The column separator to use, overriding auto-detection.
     date_order
@@ -704,15 +703,15 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     CanonicalIngestResult
         How many postings were newly added, and any categories created.
     """
-    store = load_store(session, user_id=user_id)
-    account = store.accounts[account_id]
+    account = seeded_accounts(session, user_id)[account_id]
     _reject_non_importable_kind(account, account_id)
+    categories = seeded_categories(session, user_id)
 
     _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config, user_id)
     outcome = standardize_canonical_csv(
-        csv_text, account_id, account.currency, store.categories, separator, date_order, category_overrides
+        csv_text, account_id, account.currency, categories, separator, date_order, category_overrides
     )
-    return _apply_canonical_outcome(outcome, account_id, store, session, user_id=user_id)
+    return _apply_canonical_outcome(outcome, account_id, categories, session, user_id=user_id)
 
 
 def ingest_canonical_excel(
@@ -741,7 +740,7 @@ def ingest_canonical_excel(
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
     date_order
         Whether an ambiguous, all-numeric date reads month-first or day-first.
     category_overrides
@@ -753,32 +752,44 @@ def ingest_canonical_excel(
     CanonicalIngestResult
         How many postings were newly added, and any categories created.
     """
-    store = load_store(session, user_id=user_id)
-    account = store.accounts[account_id]
+    account = seeded_accounts(session, user_id)[account_id]
     _reject_non_importable_kind(account, account_id)
+    categories = seeded_categories(session, user_id)
 
     _archive_raw_statement(account.institution, account_id, file_bytes, config, user_id, suffix="xlsx")
     outcome = standardize_canonical_excel(
-        file_bytes, account_id, account.currency, store.categories, date_order, category_overrides
+        file_bytes, account_id, account.currency, categories, date_order, category_overrides
     )
-    return _apply_canonical_outcome(outcome, account_id, store, session, user_id=user_id)
+    return _apply_canonical_outcome(outcome, account_id, categories, session, user_id=user_id)
 
 
 def _apply_canonical_outcome(
     outcome: CanonicalImportResult,
     account_id: str,
-    store: AccountingStore,
+    categories: dict[str, Category],
     session: Session,
     user_id: uuid.UUID,
 ) -> CanonicalIngestResult:
     """Persist a canonical parse's new categories and merge its postings into the ledger — shared by CSV and Excel.
+
+    Parameters
+    ----------
+    outcome
+        What the canonical parser produced.
+    account_id
+        The account these rows belong to.
+    categories
+        The category tree as it stood before the parse, for the new
+        categories to be merged into.
+    session, user_id
+        An open database session, and whose ledger this is.
 
     Returns
     -------
     CanonicalIngestResult
     """
     if outcome.new_categories:
-        merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
+        merged_categories = normalize_categories({**categories, **outcome.new_categories})
         # Additive only, same as `_standardize_canonical`'s own new categories.
         replace_categories(session, user_id, merged_categories.values(), prune=False)
         session.commit()
@@ -856,7 +867,7 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
 
     Returns
     -------
@@ -876,7 +887,7 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
         message = f"No archived raw statements under {config.raw_statement_dir}"
         raise FileNotFoundError(message)
 
-    store = load_store(session, user_id=user_id)
+    accounts = seeded_accounts(session, user_id)
     frames = [pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)]
     for relative_path in csv_relative_paths:
         institution, account_id, _filename = relative_path.split("/")
@@ -884,7 +895,7 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
         # case to degrade gracefully for — `delete_account` already refuses to
         # delete any account with postings, and every archived raw statement
         # implies postings were ingested from it, so indexing directly is safe.
-        account = store.accounts[account_id]
+        account = accounts[account_id]
         standardizer = _STANDARDIZERS.get((institution, account.kind))
         if standardizer is None:
             message = f"No importer for institution={institution!r}, account_kind={account.kind!r}."

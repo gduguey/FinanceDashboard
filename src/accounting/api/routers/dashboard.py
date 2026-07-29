@@ -25,8 +25,9 @@ from accounting.api.api_models import (
     SuggestedBudgetAmount,
 )
 from accounting.api.dependencies import (
+    _currencies_in_use,
     _display_currency,
-    _resolved_postings_and_store,
+    _resolved_postings,
     _resolved_postings_for_aggregation,
 )
 from accounting.dashboard import budgets, income_statement, interest, simulator
@@ -34,6 +35,10 @@ from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import convert
 from accounting.ledger.replay import account_balances_over_time
 from accounting.models import CurrencyCode
+from accounting.repositories.accounts import load_opening_balances
+from accounting.repositories.planning import load_budgets
+from accounting.repositories.taxonomy import load_categories, load_other_assets
+from accounting.taxonomy import seeded_accounts
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -155,10 +160,13 @@ def get_interest_summary(
     -------
     list[InterestAccountRow]
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
+    postings = _resolved_postings(session, user_id)
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     rows = interest.interest_summary(
-        postings, store.accounts, resolved_as_of, _benchmark_apy_pct(resolved_as_of, session, user_id)
+        postings,
+        seeded_accounts(session, user_id),
+        resolved_as_of,
+        _benchmark_apy_pct(resolved_as_of, session, user_id),
     )
     return [InterestAccountRow(**vars(row)) for row in rows]
 
@@ -177,20 +185,21 @@ def get_net_worth(
     -------
     NetWorthSummary
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
-    has_external_investment = any(account.broker_connection_id is not None for account in store.accounts.values())
+    postings = _resolved_postings(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    has_external_investment = any(account.broker_connection_id is not None for account in accounts.values())
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     external_values = (
         _external_investment_values([resolved_as_of], session, user_id) if has_external_investment else None
     )
     summary = net_worth_summary(
         postings,
-        store.accounts,
-        store.other_assets,
+        accounts,
+        load_other_assets(session, user_id),
         resolved_as_of,
-        _display_currency(display_currency, store, resolved_as_of),
+        _display_currency(display_currency, _currencies_in_use(session, user_id), resolved_as_of),
         external_investment_value=(external_values or {}).get(resolved_as_of) if external_values else None,
-        opening_balances=store.opening_balances,
+        opening_balances=load_opening_balances(session, user_id),
     )
     return NetWorthSummary(
         as_of=summary.as_of,
@@ -226,8 +235,12 @@ def get_net_worth_history(
     list[NetWorthHistoryPoint]
         Oldest first.
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
-    has_external_investment = any(account.broker_connection_id is not None for account in store.accounts.values())
+    postings = _resolved_postings(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    other_assets = load_other_assets(session, user_id)
+    opening_balances = load_opening_balances(session, user_id)
+    currencies = _currencies_in_use(session, user_id)
+    has_external_investment = any(account.broker_connection_id is not None for account in accounts.values())
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     external_values = _external_investment_values(dates, session, user_id) if has_external_investment else None
     return [
@@ -235,12 +248,12 @@ def get_net_worth_history(
             date=day,
             net_worth=net_worth_summary(
                 postings,
-                store.accounts,
-                store.other_assets,
+                accounts,
+                other_assets,
                 day,
-                _display_currency(display_currency, store, day),
+                _display_currency(display_currency, currencies, day),
                 external_investment_value=(external_values or {}).get(day, 0.0) if external_values else None,
-                opening_balances=store.opening_balances,
+                opening_balances=opening_balances,
             ).net_worth,
         )
         for day in dates
@@ -269,11 +282,13 @@ def get_net_worth_history_by_account(
     list[NetWorthHistoryByAccountPoint]
         `balance` already converted into `display_currency`.
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
+    postings = _resolved_postings(session, user_id)
+    opening_balances = load_opening_balances(session, user_id)
+    currencies = _currencies_in_use(session, user_id)
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
     real_accounts = {
         account_id: account
-        for account_id, account in store.accounts.items()
+        for account_id, account in seeded_accounts(session, user_id).items()
         if account.kind not in _VIRTUAL_ACCOUNT_KINDS
     }
     has_external_investment = any(account.broker_connection_id is not None for account in real_accounts.values())
@@ -284,13 +299,13 @@ def get_net_worth_history_by_account(
 
     rows: list[NetWorthHistoryByAccountPoint] = []
     for day in dates:
-        display = _display_currency(display_currency, store, day)
+        display = _display_currency(display_currency, currencies, day)
         for account_id, account in real_accounts.items():
             if account.broker_connection_id is not None:
                 native = (external_values or {}).get(day, 0.0)
             else:
                 native = balance_lookup.get((account_id, day), 0.0)
-                opening = store.opening_balances.get(account_id)
+                opening = opening_balances.get(account_id)
                 if opening is not None and day >= opening.as_of_date.date():
                     native += opening.amount
             rows.append(
@@ -321,17 +336,17 @@ def get_category_totals(
     -------
     list[CategoryTotalRow]
     """
-    postings, store = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
+    postings = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
     parsed_account_ids = account_ids.split(",") if account_ids else None
     totals = collect_if_lazy(
         income_statement.category_totals(
             postings,
-            store.accounts,
-            store.categories,
+            seeded_accounts(session, user_id),
+            load_categories(session, user_id),
             start,
             end,
             income_statement.Scope(parsed_account_ids, tag_id),
-            _display_currency(display_currency, store),
+            _display_currency(display_currency, _currencies_in_use(session, user_id)),
         )
     )
     return [CategoryTotalRow(**row) for row in totals.to_dicts()]
@@ -352,10 +367,14 @@ def get_monthly_income_expense(
     -------
     list[MonthlyIncomeExpenseRow]
     """
-    postings, store = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
+    postings = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
     rows = collect_if_lazy(
         income_statement.monthly_income_expense(
-            postings, store.accounts, start, end, _display_currency(display_currency, store)
+            postings,
+            seeded_accounts(session, user_id),
+            start,
+            end,
+            _display_currency(display_currency, _currencies_in_use(session, user_id)),
         )
     )
     return [MonthlyIncomeExpenseRow(**row) for row in rows.to_dicts()]
@@ -377,10 +396,14 @@ def get_spend_curve(
     list[SpendCurvePoint]
     """
     since, until = income_statement.spend_curve_window(month, lookback_months)
-    postings, store = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
+    postings = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     rows = collect_if_lazy(
         income_statement.spend_curve_vs_average(
-            postings, store.accounts, month, lookback_months, _display_currency(display_currency, store)
+            postings,
+            seeded_accounts(session, user_id),
+            month,
+            lookback_months,
+            _display_currency(display_currency, _currencies_in_use(session, user_id)),
         )
     )
     return [SpendCurvePoint(**row) for row in rows.to_dicts()]
@@ -408,9 +431,14 @@ def get_budget_comparison(
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     since, until = budgets.month_bounds(month)
-    postings, store = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
+    postings = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     rows = budgets.budget_comparison(
-        postings, store.accounts, store.categories, store.budgets, month, _display_currency(display_currency, store)
+        postings,
+        seeded_accounts(session, user_id),
+        load_categories(session, user_id),
+        load_budgets(session, user_id),
+        month,
+        _display_currency(display_currency, _currencies_in_use(session, user_id)),
     )
     return [BudgetComparisonRow(**vars(row)) for row in rows]
 
@@ -441,14 +469,14 @@ def get_suggested_budget_amount(
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     window = budgets.suggested_budget_amount_window(month, lookback_months)
     since, until = window if window is not None else (None, None)
-    postings, store = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
+    postings = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     amount = budgets.suggested_budget_amount(
         postings,
-        store.accounts,
+        seeded_accounts(session, user_id),
         category_id,
         month,
         lookback_months,
         subcategory_id,
-        _display_currency(display_currency, store),
+        _display_currency(display_currency, _currencies_in_use(session, user_id)),
     )
     return SuggestedBudgetAmount(suggested_amount=amount)

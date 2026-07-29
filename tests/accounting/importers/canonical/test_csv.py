@@ -7,7 +7,11 @@ from accounting.importers.canonical.csv import (
     standardize_canonical_csv,
 )
 from accounting.models import Category
-from accounting.store import CATEGORY_COLOR_PALETTE, UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import (
+    CATEGORY_COLOR_PALETTE,
+    UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
+    UNCATEGORIZED_INCOME_ACCOUNT_ID,
+)
 
 ACCOUNT_ID = "generic-bank:checking:0001"
 

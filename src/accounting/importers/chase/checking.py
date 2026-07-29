@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from accounting.importers.chase.models import ChaseCheckingRow
 from accounting.importers.common import RawLeg, parse_us_date, posting_pair, postings_to_frame, row_hash
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     import polars as pl

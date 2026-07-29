@@ -1,11 +1,15 @@
 """One module per aggregate root — each loads and writes its own tables, independently.
 
-This package replaces the single `AccountingStore` load-mutate-save cycle
-that used to front every accounting table at once (VISION-AUDIT T2). That
+This package replaced the single whole-store load-mutate-save cycle that
+used to front every accounting table at once (VISION-AUDIT T2). That
 shape forced three costs on every caller: a read of ~25 tables to change
 one row, a blanket `DELETE`-and-reinsert of ~16 tables to write it back,
 and a single whole-store version counter that made two unrelated edits
-conflict with each other.
+conflict with each other. None of it survives — not the save, not the
+counter, and not the whole-store read either: a caller now names the
+collections it actually uses, and `GET /store` is a router-level
+recomposition of these `load_*` functions rather than a type anything
+passes around.
 
 The boundaries here are the aggregate roots the DB-design audit's target
 shape names, not the tables themselves:

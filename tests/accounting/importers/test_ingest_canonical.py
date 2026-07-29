@@ -17,8 +17,8 @@ from accounting.importers.ingest import (
 from accounting.ledger.categorization import apply_category_redirects
 from accounting.models import Account, AccountKind
 from accounting.repositories.accounts import replace_accounts
-from accounting.repositories.taxonomy import load_category_redirects, retire_categories
-from accounting.store import load_store
+from accounting.repositories.taxonomy import load_categories, load_category_redirects, retire_categories
+from accounting.taxonomy import seed_new_user_defaults
 
 if TYPE_CHECKING:
     import uuid
@@ -34,7 +34,7 @@ def _config(tmp_path) -> AccountingConfig:
 
 
 def _register_account(session: Session, user_id: uuid.UUID, kind: AccountKind = "checking") -> None:
-    load_store(session, user_id=user_id)  # seeds a brand-new user's defaults, exactly as a router would
+    seed_new_user_defaults(session, user_id)  # seeds a brand-new user's defaults, exactly as a router would
     account = Account(
         account_id=ACCOUNT_ID, name="Generic Checking", kind=kind, institution="Generic Bank", currency="USD"
     )
@@ -72,8 +72,7 @@ def test_ingest_canonical_csv_persists_newly_created_categories(
     category = next(iter(result.new_categories.values()))
     assert category.name == "Groceries"
 
-    store = load_store(db_session, user_id=test_user_id)
-    assert category.category_id in store.categories
+    assert category.category_id in load_categories(db_session, test_user_id)
 
 
 def test_retiring_a_baked_in_category_resolves_it_without_rewriting_the_stored_posting(
@@ -112,7 +111,7 @@ def test_ingest_canonical_csv_raises_when_the_account_isnt_registered(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     config = _config(tmp_path)
-    load_store(db_session, user_id=test_user_id)  # seeds defaults, but never registers ACCOUNT_ID
+    seed_new_user_defaults(db_session, test_user_id)  # seeds defaults, but never registers ACCOUNT_ID
     with pytest.raises(KeyError):
         ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
 

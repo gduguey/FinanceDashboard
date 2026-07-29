@@ -44,7 +44,7 @@ export const CategorySelect = memo(function CategorySelect({
 })
 
 // Once a category has any subcategories, the backend guarantees it also has
-// an "Other" catch-all (see `accounting.store.normalize_categories`) — so
+// an "Other" catch-all (see `accounting.taxonomy.normalize_categories`) — so
 // "None" is never offered here: a category with subcategories always has a
 // selectable one, even if it's just "Other".
 //

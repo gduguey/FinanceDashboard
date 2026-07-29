@@ -1,7 +1,7 @@
 import type { Account } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see
-// `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
+// `accounting.taxonomy.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
 // aren't things a transfer rule (or a manual "mark as transfer") ever
 // repoints a posting *to* — the whole point is repointing a posting away
 // from one of these, so they're excluded from the counterparty picker.

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame, row_hash
 from accounting.importers.sofi.models import SofiCsvRow, SofiRow
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     import polars as pl

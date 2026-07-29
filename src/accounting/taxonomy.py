@@ -1,17 +1,26 @@
-"""The category and tag tree's pure domain logic, plus the whole-store read every dashboard starts from.
+"""The category/tag/account taxonomy's domain logic: naming, merging, deleting, and the defaults a new user starts on.
 
-Nothing here writes a row. Persistence for each of these entities lives in
-`accounting.repositories` — one module per aggregate root, each owning its
-own tables (see that package's own docstring). What's left in this module
-is the two things that aren't persistence:
+Nothing here writes a row except `seed_new_user_defaults`, and that only
+ever *adds* a brand-new user's starting rows. Persistence for each of
+these entities lives in `accounting.repositories` — one module per
+aggregate root, each owning its own tables (see that package's own
+docstring). What's left in this module is the part that isn't
+persistence:
 
 - the *pure* tree logic a category or tag edit runs before anything is
   saved — `normalize_categories`, `plan_category_rename`,
-  `plan_tag_rename`, `category_ids_to_delete`, and the color palette they
-  assign from;
-- `AccountingStore`/`load_store`, the one-shot read that composes every
-  repository's `load_*` into the single snapshot `GET /store` and the
-  dashboard's own derivations are written against.
+  `plan_tag_rename`, `category_ids_to_delete`, `remap_category_ids`,
+  `uncategorize_category_ids`, and the color palette they assign from;
+- the defaults themselves — `default_categories`, `default_accounts`,
+  and `seed_new_user_defaults`, which puts them in front of a user who
+  has neither yet.
+
+`seeded_categories`/`seeded_accounts` are the two reads that pair with
+that seeding: a caller asking for the tree (or the accounts) on what may
+be a user's very first request gets the defaults backfilled rather than
+an empty dict. They are all that survives of the whole-store read this
+module used to hold; every other collection is read straight from its
+own repository by whoever actually needs it.
 """
 
 from __future__ import annotations
@@ -29,20 +38,12 @@ from accounting.models import (
     Category,
     CategoryClassification,
     CategoryPattern,
-    Goal,
-    GoalAutomation,
-    GoalContribution,
-    ManualTransfer,
-    OpeningBalance,
-    OtherAsset,
-    PostingMerge,
     PostingSplit,
-    SimulatorScenario,
     Tag,
-    TransferLink,
-    TransferRule,
 )
-from accounting.repositories import accounts, interpretation, planning, taxonomy
+from accounting.repositories.accounts import load_accounts, replace_accounts
+from accounting.repositories.planning import budget_row_key
+from accounting.repositories.taxonomy import load_categories, replace_categories
 
 if TYPE_CHECKING:
     import uuid
@@ -330,16 +331,40 @@ def plan_category_rename(
     return normalize_categories(result), id_remap
 
 
-def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> AccountingStore:
-    """Repoint every category/subcategory reference elsewhere in the store after a merge.
+class CategoryReferences(BaseModel):
+    """Every row that names a category by id and isn't the category tree itself — what a rename or delete has to fix.
 
-    Doesn't touch `store.categories` itself (the caller already applied
+    These three travel together because a category merge repoints all of
+    them and a category delete clears all of them, in one pass each (see
+    `remap_category_ids`/`uncategorize_category_ids`), and because the
+    router that runs either then writes all three back through their own
+    repositories. `TransferRule` is deliberately absent: it has no
+    category fields of its own (see its own docstring).
+
+    Two other places also reference a category and are deliberately *not*
+    here: the raw postings (never rewritten — a retired `categories` row
+    with a successor is what repoints those, see
+    `repositories.taxonomy.load_category_redirects`) and the manual
+    per-posting overrides (rewritten one posting at a time, so that only
+    the postings a rename actually touches are written).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    category_patterns: dict[str, CategoryPattern] = Field(default_factory=dict)
+    budgets: list[Budget] = Field(default_factory=list)
+    """Every spending target, per-month and general (`month is None`) alike — one list, one table."""
+    posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
+
+
+def remap_category_ids(references: CategoryReferences, id_remap: dict[str, str]) -> CategoryReferences:
+    """Repoint every category/subcategory reference outside the category tree after a merge.
+
+    Doesn't touch the tree itself (the caller already applied
     `plan_category_rename`'s own result there) — this only fixes the other
     places a category id is stored: category patterns, budgets (per-month
-    and general alike), and posting splits. `TransferRule` has no
-    category fields of its own (see its own docstring). The raw ledger
-    cache and manual per-posting overrides live outside `AccountingStore`
-    entirely and must be remapped separately.
+    and general alike), and posting splits. See `CategoryReferences` for
+    what's deliberately not in that set.
 
     A budget's `budget_id` *is* its `(month, category_id,
     subcategory_id)` triple (see `repositories.planning.budget_row_key`),
@@ -354,26 +379,26 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
     survivor's own existing entry always wins, since there's no
     principled way to combine two different budgeted amounts. A caller
     that wants to warn about this before committing to the merge should
-    call this same function itself and diff `store.budgets` against the
-    result (see `api.routers.store.get_category_rename_preview`).
+    call this same function itself and diff `references.budgets` against
+    the result (see `api.routers.store.get_category_rename_preview`).
 
     Parameters
     ----------
-    store
-        The store, with `store.categories` already updated by the merge.
+    references
+        Every category-referencing row, as loaded from its own repository.
     id_remap
         `old_id -> new_id`, as returned by `plan_category_rename` — a
-        no-op (returns `store` unchanged) when empty.
+        no-op (returns `references` unchanged) when empty.
 
     Returns
     -------
-    AccountingStore
-        The same store, with every `category_id`/`subcategory_id` field
+    CategoryReferences
+        The same rows, with every `category_id`/`subcategory_id` field
         referencing a merged-away id repointed to its replacement, and
         any now-colliding budget entry dropped in favor of the survivor's.
     """
     if not id_remap:
-        return store
+        return references
 
     def remap(category_id: str | None) -> str | None:
         """Look up `category_id`'s new id, or leave it unchanged if it wasn't merged away.
@@ -397,13 +422,13 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
         pattern_id: pattern.model_copy(
             update={"category_id": remap(pattern.category_id), "subcategory_id": remap(pattern.subcategory_id)}
         )
-        for pattern_id, pattern in store.category_patterns.items()
+        for pattern_id, pattern in references.category_patterns.items()
     }
     budgets_by_key: dict[tuple[str | None, str, str | None], Budget] = {}
     # Sorted so a budget the merge doesn't touch (including the survivor's own)
     # claims its key first — a colliding merged-away budget is then skipped
     # instead of overwriting it.
-    for budget in sorted(store.budgets, key=lambda b: was_remapped(b.category_id, b.subcategory_id)):
+    for budget in sorted(references.budgets, key=lambda b: was_remapped(b.category_id, b.subcategory_id)):
         category_id = id_remap.get(budget.category_id, budget.category_id)
         subcategory_id = remap(budget.subcategory_id)
         budget_key = budget.month, category_id, subcategory_id
@@ -411,7 +436,7 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
             continue
         budgets_by_key[budget_key] = budget.model_copy(
             update={
-                "budget_id": planning.budget_row_key(budget.month, category_id, subcategory_id),
+                "budget_id": budget_row_key(budget.month, category_id, subcategory_id),
                 "category_id": category_id,
                 "subcategory_id": subcategory_id,
             }
@@ -427,14 +452,10 @@ def remap_category_ids(store: AccountingStore, id_remap: dict[str, str]) -> Acco
                 ]
             }
         )
-        for posting_id, split in store.posting_splits.items()
+        for posting_id, split in references.posting_splits.items()
     }
-    return store.model_copy(
-        update={
-            "category_patterns": patterns,
-            "budgets": list(budgets_by_key.values()),
-            "posting_splits": posting_splits,
-        }
+    return CategoryReferences(
+        category_patterns=patterns, budgets=list(budgets_by_key.values()), posting_splits=posting_splits
     )
 
 
@@ -465,14 +486,14 @@ def category_ids_to_delete(categories: dict[str, Category], category_id: str) ->
     return {category_id} | children
 
 
-def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) -> AccountingStore:
+def uncategorize_category_ids(references: CategoryReferences, category_ids: set[str]) -> CategoryReferences:
     """Strip every reference to `category_ids` from everything a category delete doesn't already remove.
 
-    Doesn't touch `store.categories` itself (the caller removes
+    Doesn't touch the category tree itself (the caller removes
     `category_ids` from it separately — see `category_ids_to_delete`) or
-    the ledger/manual overrides, which live outside `AccountingStore`
-    entirely (see `importers.ingest.uncategorize_ledger_postings` and the
-    router's own override pass, mirroring `remap_category_ids`'s split).
+    the postings/manual overrides, which are deliberately outside
+    `CategoryReferences` (the router runs its own scoped override pass,
+    mirroring `remap_category_ids`'s split).
 
     `PostingSplitLeg` has nullable `category_id`/`subcategory_id` fields,
     so a reference there is simply cleared — unlike a merge, there's no
@@ -487,17 +508,17 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
 
     Parameters
     ----------
-    store
-        The store, with `store.categories` not yet updated.
+    references
+        Every category-referencing row, as loaded from its own repository.
     category_ids
         Every category id being deleted (see `category_ids_to_delete`).
 
     Returns
     -------
-    AccountingStore
+    CategoryReferences
     """
     if not category_ids:
-        return store
+        return references
 
     def clear(field_id: str | None) -> str | None:
         """Return `None` if `field_id` is one of the ids being deleted, otherwise leave it unchanged.
@@ -510,7 +531,7 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
 
     patterns = {
         pattern_id: pattern.model_copy(update={"subcategory_id": clear(pattern.subcategory_id)})
-        for pattern_id, pattern in store.category_patterns.items()
+        for pattern_id, pattern in references.category_patterns.items()
         if pattern.category_id not in category_ids
     }
     budgets_by_key: dict[tuple[str | None, str, str | None], Budget] = {}
@@ -521,7 +542,7 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
     # the same survivor-wins arbitration `remap_category_ids` makes, and what
     # keeps the table's own (user, month, category, subcategory) unique index
     # satisfiable afterwards.
-    for budget in sorted(store.budgets, key=lambda b: b.subcategory_id in category_ids):
+    for budget in sorted(references.budgets, key=lambda b: b.subcategory_id in category_ids):
         if budget.category_id in category_ids:
             continue
         subcategory_id = clear(budget.subcategory_id)
@@ -530,7 +551,7 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
             continue
         budgets_by_key[budget_key] = budget.model_copy(
             update={
-                "budget_id": planning.budget_row_key(budget.month, budget.category_id, subcategory_id),
+                "budget_id": budget_row_key(budget.month, budget.category_id, subcategory_id),
                 "subcategory_id": subcategory_id,
             }
         )
@@ -545,14 +566,10 @@ def uncategorize_category_ids(store: AccountingStore, category_ids: set[str]) ->
                 ]
             }
         )
-        for posting_id, split in store.posting_splits.items()
+        for posting_id, split in references.posting_splits.items()
     }
-    return store.model_copy(
-        update={
-            "category_patterns": patterns,
-            "budgets": list(budgets_by_key.values()),
-            "posting_splits": posting_splits,
-        }
+    return CategoryReferences(
+        category_patterns=patterns, budgets=list(budgets_by_key.values()), posting_splits=posting_splits
     )
 
 
@@ -661,45 +678,6 @@ def default_accounts() -> dict[str, Account]:
     }
 
 
-class AccountingStore(BaseModel):
-    """Every persisted accounting entity that isn't a posting: accounts, categories, tags, rules, other assets.
-
-    Exchange rates are not stored here — they're fetched and cached by
-    `market_data.exchange_rates`, keyed by date, not something this store
-    holds a single current value of. Dismissed suggestions aren't stored
-    here either, for a different reason: every other entity is read as
-    "give me the whole list," cheap since each stays bounded by how much a
-    person is actually organizing (dozens of accounts, categories, rules).
-    Dismissed suggestions are the one exception — only ever checked as
-    "has this one been dismissed," and unbounded over time — so routing
-    that table through `load_store` would make every unrelated store
-    mutation pay to load a table that only ever grows. See
-    `dismissed_suggestion_ids`/`list_dismissed_suggestions`/
-    `dismiss_suggestion`/`undismiss_suggestion`, which query it directly.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    accounts: dict[str, Account] = Field(default_factory=dict)
-    categories: dict[str, Category] = Field(default_factory=dict)
-    tags: dict[str, Tag] = Field(default_factory=dict)
-    rules: list[TransferRule] = Field(default_factory=list)
-    category_patterns: dict[str, CategoryPattern] = Field(default_factory=dict)
-    other_assets: list[OtherAsset] = Field(default_factory=list)
-    opening_balances: dict[str, OpeningBalance] = Field(default_factory=dict)
-    manual_transfers: list[ManualTransfer] = Field(default_factory=list)
-    budgets: list[Budget] = Field(default_factory=list)
-    """Every spending target, per-month and general (`month is None`) alike — one list, one table."""
-    simulator_scenarios: list[SimulatorScenario] = Field(default_factory=list)
-    posting_splits: dict[str, PostingSplit] = Field(default_factory=dict)
-    posting_merges: dict[str, PostingMerge] = Field(default_factory=dict)
-    transfer_links: list[TransferLink] = Field(default_factory=list)
-    goals: dict[str, Goal] = Field(default_factory=dict)
-    goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
-    goal_automations: list[GoalAutomation] = Field(default_factory=list)
-    """Every automation moving money into or out of a goal — `direction` tells the two apart."""
-
-
 def seed_new_user_defaults(session: Session, user_id: uuid.UUID) -> None:
     """Give a brand-new user the two uncategorized placeholder accounts and the default category tree.
 
@@ -732,55 +710,61 @@ def seed_new_user_defaults(session: Session, user_id: uuid.UUID) -> None:
     # user owns neither table's rows, so there is nothing a prune could remove
     # — and asking for one would only invite a repository to delete rows a
     # future caller might legitimately have seeded separately.
-    accounts.replace_accounts(session, user_id, default_accounts().values(), prune=False)
-    taxonomy.replace_categories(session, user_id, default_categories().values(), prune=False)
+    replace_accounts(session, user_id, default_accounts().values(), prune=False)
+    replace_categories(session, user_id, default_categories().values(), prune=False)
     session.commit()
 
 
-def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:
-    """Read every persisted accounting entity at once, seeding sensible defaults the first time.
+def seeded_categories(session: Session, user_id: uuid.UUID) -> dict[str, Category]:
+    """Read the whole category tree, seeding a brand-new user's defaults first so it is never empty.
 
-    Composed entirely out of the repositories' own `load_*` functions —
-    this holds no row-to-model translation of its own. It stays a single
-    whole-store read because that's what the dashboard genuinely needs:
-    almost every derivation (net worth, the income statement, budget
-    progress) spans several of these at once. Writes are the opposite, and
-    no longer go through here at all: each repository writes only the rows
-    a request actually names.
+    Every caller that reads the tree to *decide* something — is this name
+    a duplicate, what does this file's category column resolve to, which
+    categories would this delete take down — goes through here rather
+    than `repositories.taxonomy.load_categories`, because seeing an empty
+    tree would make each of those decisions differently (and, worse,
+    persist that decision, permanently disqualifying the user from ever
+    being seeded: `seed_new_user_defaults` only fires for someone holding
+    neither an account nor a category).
 
     Parameters
     ----------
     session
-        An open database session.
+        An open database session; committed if defaults were seeded.
     user_id
-        Whose store to load.
+        Whose tree to read.
 
     Returns
     -------
-    AccountingStore
-        The persisted store, with default accounts/categories backfilled if missing.
+    dict[str, Category]
+        Every category and subcategory, keyed by `category_id`.
     """
     seed_new_user_defaults(session, user_id)
-    store = AccountingStore(
-        accounts=accounts.load_accounts(session, user_id),
-        categories=taxonomy.load_categories(session, user_id),
-        tags=taxonomy.load_tags(session, user_id),
-        rules=interpretation.load_transfer_rules(session, user_id),
-        category_patterns=interpretation.load_category_patterns(session, user_id),
-        other_assets=taxonomy.load_other_assets(session, user_id),
-        opening_balances=accounts.load_opening_balances(session, user_id),
-        manual_transfers=accounts.load_manual_transfers(session, user_id),
-        budgets=planning.load_budgets(session, user_id),
-        simulator_scenarios=taxonomy.load_simulator_scenarios(session, user_id),
-        posting_splits=interpretation.load_posting_splits(session, user_id),
-        posting_merges=interpretation.load_posting_merges(session, user_id),
-        transfer_links=interpretation.load_transfer_links(session, user_id),
-        goals=planning.load_goals(session, user_id),
-        goal_contributions=planning.load_goal_contributions(session, user_id),
-        goal_automations=planning.load_goal_automations(session, user_id),
-    )
+    return load_categories(session, user_id)
 
-    missing_accounts = {k: v for k, v in default_accounts().items() if k not in store.accounts}
-    if missing_accounts:
-        store = store.model_copy(update={"accounts": {**store.accounts, **missing_accounts}})
-    return store
+
+def seeded_accounts(session: Session, user_id: uuid.UUID) -> dict[str, Account]:
+    """Read every account, seeding a brand-new user's defaults and backfilling either missing placeholder.
+
+    The backfill is in-memory only and covers the case seeding can't: a
+    user who *has* accounts (so `seed_new_user_defaults` is a no-op for
+    them) but deleted a placeholder counterparty while it had no postings
+    on it. Every import needs both to point at, so they are always
+    present in what a caller sees, whatever the table holds.
+
+    Parameters
+    ----------
+    session
+        An open database session; committed if defaults were seeded.
+    user_id
+        Whose accounts to read.
+
+    Returns
+    -------
+    dict[str, Account]
+        Every account, keyed by `account_id`.
+    """
+    seed_new_user_defaults(session, user_id)
+    stored = load_accounts(session, user_id)
+    missing = {account_id: account for account_id, account in default_accounts().items() if account_id not in stored}
+    return {**stored, **missing} if missing else stored

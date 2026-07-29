@@ -138,12 +138,11 @@ accounting write paths, and picking the wrong one for a new table is a
 real mistake, not just a style preference — see "Which technique to use"
 below.
 
-There used to be exactly one write path: `accounting.store.save_store`,
-which every mutating endpoint funnelled through, always passing the
-complete desired end-state of *every* table. It is gone. Every accounting
-table is now owned by one per-aggregate repository under
-`accounting.repositories`, each writing only the rows a request actually
-names:
+There used to be exactly one write path — a single whole-store save every
+mutating endpoint funnelled through, always passing the complete desired
+end-state of *every* table. It is gone. Every accounting table is now
+owned by one per-aggregate repository under `accounting.repositories`,
+each writing only the rows a request actually names:
 
 - `accounting.repositories.accounts` owns `accounts` and
   `opening_balances` (and projects manual transfers on and off the
@@ -158,14 +157,22 @@ names:
   `transfer_links`, `transfer_linked_transactions`, `posting_overrides`,
   `posting_override_tags`, `suggestions`.
 
-`accounting.store.load_store` still *reads* all four groups into one
-`AccountingStore` — the dashboard genuinely needs most of them at once —
-so the read path is unchanged. Only the write side split up. One
-consequence worth knowing: the whole-store save counter went with
-`save_store`, since its granularity is exactly what made two unrelated
-edits conflict, and its `accounting.store_versions` table is gone. Writes
-are now guarded by row scope, or by a per-row `version` column where a
-real lost-update risk exists.
+The read side went the same way. There is no whole-store read either:
+each repository exposes its own `load_*`, and a caller asks for the
+collections it actually uses — the resolution pipeline takes the five
+overlay tables plus accounts, a net-worth request takes accounts,
+opening balances and other assets, and `GET /store` is a router-level
+recomposition of every `load_*` rather than a type anything passes
+around (see `accounting.api.routers.store.get_store`). What survives of
+the old whole-store read is `accounting.taxonomy.seeded_categories`/
+`seeded_accounts`: the same `load_*`, with a brand-new user's defaults
+seeded first.
+
+One consequence worth knowing: the whole-store save counter went with
+the whole-store save, since its granularity is exactly what made two
+unrelated edits conflict, and its `accounting.store_versions` table is
+gone. Writes are now guarded by row scope, or by a per-row `version`
+column where a real lost-update risk exists.
 
 That per-row column is the **only** optimistic-concurrency mechanism left
 in this repo: `db.base.check_and_bump_row_version`, against the `version`

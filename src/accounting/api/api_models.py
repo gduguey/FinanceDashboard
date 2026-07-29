@@ -50,13 +50,19 @@ from db.money import ZERO, Money, Rate
 class AccountingStoreResponse(BaseModel):
     """Every persisted accounting entity: accounts, categories, tags, rules, other assets.
 
-    Mirrors `store.AccountingStore` field-for-field, except `rules` is
-    exposed as `transfer_rules` (the name every other endpoint and the
-    frontend already use for it). Dismissed suggestions aren't part of
-    `AccountingStore` at all — see `GET /dismissed-suggestions` and
-    `store.list_dismissed_suggestions`/`dismissed_suggestion_ids`, which
-    query that table directly rather than through the whole-store
-    round-trip every other entity here goes through.
+    One field per repository `load_*`, recomposed at the router (see
+    `api.routers.store.get_store`) — this response model is the only
+    place the whole set is named together; nothing server-side passes it
+    around. `transfer_rules` is `repositories.interpretation`'s
+    `load_transfer_rules`, under the name every other endpoint and the
+    frontend already use for it.
+
+    Dismissed suggestions are deliberately not here: unlike every entity
+    that is, they're never read as "give me the whole list to build
+    something", only ever checked as "has this one already been
+    dismissed" — see `GET /dismissed-suggestions` and
+    `repositories.interpretation.dismissed_suggestion_ids`, which query
+    that table directly.
     """
 
     accounts: dict[str, Account]

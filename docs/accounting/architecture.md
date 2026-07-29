@@ -60,8 +60,8 @@ file that uses them.
   of any real file or service. Anything that *does* need to touch disk or
   the network — reading an uploaded CSV, fetching an exchange rate, calling
   an LLM — is confined to `importers/`, `market_data/`, `llm/`, and the
-  handful of `load_*`/`save_*` functions in `store.py`, which pure logic
-  never calls directly (it's handed already-loaded data instead).
+  `load_*`/write functions in `repositories/`, which pure logic never
+  calls directly (it's handed already-loaded data instead).
 - **TransferRule** vs. **category pattern** — two different,
   easily-confused mechanisms, covered in full in `categorization.md`. In
   short: a `TransferRule` resolves a posting's *counterparty account* (and
@@ -145,9 +145,9 @@ src/accounting/
                          CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
                          ManualTransfer, PostingMerge, DismissedSuggestion, Currency —
                          canonical, declared once
-  store.py              load_store — one whole-store read composed from repositories/, plus
-                         the pure category/tag tree logic (normalize, rename, delete plans)
-                         and the seeded defaults every new user starts with
+  taxonomy.py           the pure category/tag/account tree logic (normalize, rename, delete
+                         plans, the color palette) plus the defaults every new user is
+                         seeded with — and the two seeded reads that pair with them
   repositories/         one module per aggregate root, each owning its own tables' reads
                          and writes: accounts, taxonomy, planning, interpretation
   db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
@@ -214,7 +214,8 @@ src/accounting/
     api.py                  router registration
     dependencies.py          shared per-request helpers (config, resolved postings)
     api_models.py            request/response pydantic models
-    routers/                 dashboard.py, store.py, postings.py, imports.py,
+    routers/                 dashboard.py, store.py (GET /store + entity CRUD),
+                              postings.py, imports.py,
                               goals.py, llm.py, exchange_rates.py — one file per
                               concern, each Depends(get_current_user_id)-scoped
 

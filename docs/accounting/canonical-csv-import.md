@@ -56,7 +56,7 @@ set — no need to reformat the file.
 
 ## Category and subcategory auto-creation
 
-A `Category`/`Subcategory` column value is matched against the store's
+A `Category`/`Subcategory` column value is matched against the user's
 existing categories by name, case- and trailing-whitespace-insensitively
 (so `"Groceries "` and `"Groceries"` are the same category) — a match
 reuses that category's id; anything unmatched is created automatically.
@@ -74,10 +74,10 @@ anything needs renaming or merging afterward.
 `importers.canonical.csv.standardize_canonical_csv` does the parsing and
 returns a `CanonicalImportResult` (postings + newly-encountered
 categories); `importers.ingest.ingest_canonical_csv` is the layer that
-archives the raw file, calls it, persists the new categories into the
-store, and merges the postings into the ledger — mirroring `ingest_csv`'s
-archive-then-merge shape, but also touching the category store, which
-`ingest_csv` never needs to. Two API endpoints cover this path:
+archives the raw file, calls it, persists the new categories through
+`repositories.taxonomy`, and merges the postings into the ledger —
+mirroring `ingest_csv`'s archive-then-merge shape, but also touching the
+category tree, which `ingest_csv` never needs to. Two API endpoints cover this path:
 `POST /api/accounting/import/canonical/preview` parses without persisting
 anything (for previewing which categories a file would create before
 committing), and `POST /api/accounting/import/canonical` actually imports.

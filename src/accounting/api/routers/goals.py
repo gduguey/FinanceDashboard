@@ -24,7 +24,7 @@ from accounting.api.api_models import (
     SimulateContributionResult,
     WithdrawalAutomationResult,
 )
-from accounting.api.dependencies import _display_currency, _resolved_postings_and_store
+from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
@@ -39,6 +39,7 @@ from accounting.repositories.planning import (
     insert_goal,
     insert_goal_contributions,
     load_goal_automations,
+    load_goal_contributions,
     load_goals,
     remove_goal_automation,
     remove_goal_contribution,
@@ -49,7 +50,7 @@ from accounting.repositories.planning import (
     upsert_goal_automation,
     upsert_goal_contribution,
 )
-from accounting.store import next_available_color
+from accounting.taxonomy import next_available_color, seeded_accounts
 from db.current_user import get_current_user_id
 from db.money import quantize_money
 from db.session import get_db
@@ -68,7 +69,7 @@ def post_goal(
     `goal_id` is server-minted — two goals can validly share a name, so
     there's no natural key two "the same" goal would collide on. `color`
     is picked to be distinct from every color already assigned to an
-    existing goal, the same `store.next_available_color` helper
+    existing goal, the same `taxonomy.next_available_color` helper
     categories already use for the same purpose.
 
     Returns
@@ -531,12 +532,12 @@ def get_goals_summary(
     -------
     GoalsSummary
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
+    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    display = _display_currency(display_currency, store, as_of_date)
-    contributions = contributions_to_frame(store.goal_contributions)
-    balances = all_goal_balances(contributions, list(store.goals.keys()), as_of_date, display)
-    unallocated = unallocated_balance(postings, store.accounts, contributions, as_of_date, display)
+    display = _display_currency(display_currency, _currencies_in_use(session, user_id), as_of_date)
+    contributions = contributions_to_frame(load_goal_contributions(session, user_id))
+    balances = all_goal_balances(contributions, list(load_goals(session, user_id).keys()), as_of_date, display)
+    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions, as_of_date, display)
     return GoalsSummary(balances=balances, unallocated=unallocated)
 
 
@@ -578,10 +579,13 @@ def post_run_recurring_additions(
     list[GoalContribution]
         The new contributions just written (empty if nothing was due).
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
+    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    existing_ids = set(store.goal_contributions.keys())
-    scheduled = [automation for automation in store.goal_automations if automation.direction == "contribution"]
+    contributions = load_goal_contributions(session, user_id)
+    existing_ids = set(contributions.keys())
+    scheduled = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
+    ]
 
     occurrences: dict[str, date] = {}
     for automation in scheduled:
@@ -596,8 +600,8 @@ def post_run_recurring_additions(
     if not due:
         return []
 
-    contributions_frame = contributions_to_frame(store.goal_contributions)
-    unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
+    contributions_frame = contributions_to_frame(contributions)
+    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
     funded = run_recurring_additions(due, unallocated)
 
     by_goal_automation = {automation.goal_id: automation for automation in due}
@@ -644,19 +648,22 @@ def post_run_withdrawal_automation(
         The contributions just written, and however much of the shortfall
         (if any) no goal had enough left to cover.
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
+    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    contributions_frame = contributions_to_frame(store.goal_contributions)
-    unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
+    contributions = load_goal_contributions(session, user_id)
+    contributions_frame = contributions_to_frame(contributions)
+    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
     if unallocated >= 0:
         return WithdrawalAutomationResult(withdrawals=[], remaining_shortfall=0.0)
 
     shortfall = -unallocated
-    balances = all_goal_balances(contributions_frame, list(store.goals.keys()), as_of_date)
-    withdrawals = [automation for automation in store.goal_automations if automation.direction == "withdrawal"]
+    balances = all_goal_balances(contributions_frame, list(load_goals(session, user_id).keys()), as_of_date)
+    withdrawals = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "withdrawal"
+    ]
     drawn = run_withdrawal_automation(withdrawals, balances, shortfall)
 
-    existing_ids = set(store.goal_contributions.keys())
+    existing_ids = set(contributions.keys())
     new_contributions: dict[str, GoalContribution] = {}
     for goal_id, amount in drawn:
         contribution_id = _next_contribution_id(existing_ids, f"auto-withdrawal:{goal_id}:{as_of_date.isoformat()}")
@@ -698,15 +705,18 @@ def post_simulate_contribution(
         running once more, with this contribution already applied, so the
         user can see if it sets up a shortfall soon after (non-blocking).
     """
-    postings, store = _resolved_postings_and_store(session, user_id)
-    contributions_frame = contributions_to_frame(store.goal_contributions)
-    unallocated_as_of_date = unallocated_balance(postings, store.accounts, contributions_frame, payload.date)
+    postings = _resolved_postings(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    contributions_frame = contributions_to_frame(load_goal_contributions(session, user_id))
+    unallocated_as_of_date = unallocated_balance(postings, accounts, contributions_frame, payload.date)
     exceeds_unallocated = payload.amount > unallocated_as_of_date
 
     today = datetime.now(UTC).date()
-    unallocated_today = unallocated_balance(postings, store.accounts, contributions_frame, today)
+    unallocated_today = unallocated_balance(postings, accounts, contributions_frame, today)
     projected_before_run = unallocated_today - payload.amount
-    scheduled = [automation for automation in store.goal_automations if automation.direction == "contribution"]
+    scheduled = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
+    ]
     funded_next_run = run_recurring_additions(scheduled, max(projected_before_run, 0.0))
     projected_next_run_unallocated = projected_before_run - sum(amount for _, amount in funded_next_run)
 

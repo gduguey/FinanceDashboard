@@ -18,8 +18,13 @@ from accounting.importers.ingest import (
 )
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Account, ManualTransfer, Posting
-from accounting.repositories.accounts import insert_manual_transfers, load_manual_transfers, replace_accounts
-from accounting.store import load_store
+from accounting.repositories.accounts import (
+    insert_manual_transfers,
+    load_accounts,
+    load_manual_transfers,
+    replace_accounts,
+)
+from accounting.taxonomy import seed_new_user_defaults
 
 if TYPE_CHECKING:
     import uuid
@@ -62,7 +67,7 @@ def _register_account(
     """Register an account through the accounts repository first — exactly what `api.py`'s upload endpoint
     does before ever calling `ingest_csv`, since a posting can only reference an account that already exists.
     """
-    load_store(session, user_id=user_id)  # seeds a brand-new user's defaults, exactly as a router would
+    seed_new_user_defaults(session, user_id)  # seeds a brand-new user's defaults, exactly as a router would
     account = Account(
         account_id=account_id,
         name=account_id,
@@ -395,7 +400,7 @@ def test_rebuild_from_raw_statements_ignores_archived_non_csv_files(
 
     assert "chase:checking:1234" in set(rebuilt["account_id"].unique().to_list())
     assert not any(account_id.startswith("sofi:") for account_id in rebuilt["account_id"].unique().to_list())
-    assert "sofi:savings:3680" not in load_store(db_session, user_id=test_user_id).accounts
+    assert "sofi:savings:3680" not in load_accounts(db_session, test_user_id)
 
 
 def test_rebuild_from_raw_statements_with_only_archived_non_csv_files_raises(

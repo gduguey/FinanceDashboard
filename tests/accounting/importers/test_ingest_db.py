@@ -44,6 +44,9 @@ from accounting.models import (
 )
 from accounting.repositories.interpretation import (
     insert_transfer_links,
+    load_posting_merges,
+    load_transfer_links,
+    load_transfer_rules,
     replace_posting_merges,
     replace_rule_exclusions,
     replace_transfer_rules,
@@ -57,7 +60,7 @@ from accounting.repositories.taxonomy import (
     replace_tags,
     retire_categories,
 )
-from accounting.store import load_store
+from accounting.taxonomy import seed_new_user_defaults, seeded_accounts, seeded_categories
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -88,8 +91,7 @@ def _posting(
 
 
 def _register_account(session: Session, user_id: uuid.UUID, account_id: str = "checking:test") -> None:
-    store = load_store(session, user_id=user_id)
-    if account_id not in store.accounts:
+    if account_id not in seeded_accounts(session, user_id):
         replace_accounts(
             session,
             user_id,
@@ -212,7 +214,7 @@ def test_nothing_retired_leaves_every_category_resolving_to_itself(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)  # seeds "expense:food-drink" for the posting to reference
+    seed_new_user_defaults(db_session, test_user_id)  # seeds "expense:food-drink" for the posting to reference
     _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
 
     assert load_category_redirects(db_session, test_user_id) == {}
@@ -224,8 +226,8 @@ def test_a_merged_category_resolves_to_its_successor_without_the_posting_changin
 ) -> None:
     _register_account(db_session, test_user_id)
     # All four already exist among the seeded defaults — a real merge (see
-    # `store.plan_category_rename`) always retires onto another real category.
-    load_store(db_session, user_id=test_user_id)
+    # `taxonomy.plan_category_rename`) always retires onto another real category.
+    seed_new_user_defaults(db_session, test_user_id)
     _write_ledger(
         _frame(_posting("p1", "t1", category_id="expense:food-drink", subcategory_id="expense:food-drink:groceries")),
         db_session,
@@ -249,14 +251,14 @@ def test_a_merged_category_resolves_to_its_successor_without_the_posting_changin
 
 def test_a_deleted_category_resolves_to_uncategorized(db_session: Session, test_user_id: uuid.UUID) -> None:
     _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)
+    seed_new_user_defaults(db_session, test_user_id)
     _write_ledger(
         _frame(_posting("p1", "t1", category_id="expense:food-drink", subcategory_id="expense:food-drink:groceries")),
         db_session,
         user_id=test_user_id,
     )
     # A real caller passes the already-cascaded set from
-    # `store.category_ids_to_delete` — deleting the parent includes its
+    # `taxonomy.category_ids_to_delete` — deleting the parent includes its
     # subcategories, and a delete retires with no successor at all.
     retire_categories(db_session, test_user_id, dict.fromkeys(["expense:food-drink", "expense:food-drink:groceries"]))
     db_session.commit()
@@ -270,7 +272,7 @@ def test_deleting_only_the_subcategory_leaves_the_parent_category_resolving(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)
+    seed_new_user_defaults(db_session, test_user_id)
     _write_ledger(
         _frame(_posting("p1", "t1", category_id="expense:food-drink", subcategory_id="expense:food-drink:groceries")),
         db_session,
@@ -288,7 +290,7 @@ def test_retirement_leaves_postings_under_other_categories_untouched(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)
+    seed_new_user_defaults(db_session, test_user_id)
     _write_ledger(
         _frame(
             _posting("p1", "t1", category_id="expense:food-drink"),
@@ -310,7 +312,7 @@ def test_a_retired_category_leaves_the_live_tree_but_keeps_its_row(
 ) -> None:
     """What makes a delete structurally safe: the row a posting foreign-keys into never goes away."""
     _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)
+    seed_new_user_defaults(db_session, test_user_id)
     _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
     retire_categories(db_session, test_user_id, {"expense:food-drink": None})
     db_session.commit()
@@ -325,7 +327,7 @@ def test_retiring_a_successor_collapses_the_earlier_merge_onto_the_new_one(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     """A tombstone never names another tombstone, so resolution stays one hop."""
-    load_store(db_session, user_id=test_user_id)
+    seed_new_user_defaults(db_session, test_user_id)
     retire_categories(db_session, test_user_id, {"expense:food-drink": "expense:transport"})
     retire_categories(db_session, test_user_id, {"expense:transport": "expense:shopping"})
     db_session.commit()
@@ -338,7 +340,7 @@ def test_retiring_a_successor_collapses_the_earlier_merge_onto_the_new_one(
 def test_deleting_a_categorys_successor_turns_the_earlier_merge_into_a_delete(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    load_store(db_session, user_id=test_user_id)
+    seed_new_user_defaults(db_session, test_user_id)
     retire_categories(db_session, test_user_id, {"expense:food-drink": "expense:transport"})
     retire_categories(db_session, test_user_id, {"expense:transport": None})
     db_session.commit()
@@ -347,11 +349,11 @@ def test_deleting_a_categorys_successor_turns_the_earlier_merge_into_a_delete(
 
 
 def test_writing_a_retired_category_again_brings_it_back(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
+    categories = seeded_categories(db_session, test_user_id)
     retire_categories(db_session, test_user_id, {"expense:food-drink": None})
     db_session.commit()
 
-    replace_categories(db_session, test_user_id, [store.categories["expense:food-drink"]], prune=False)
+    replace_categories(db_session, test_user_id, [categories["expense:food-drink"]], prune=False)
     db_session.commit()
 
     assert "expense:food-drink" in load_categories(db_session, test_user_id)
@@ -427,7 +429,7 @@ def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_link_delet
     # the same link with it rather than leaving a link with only one side.
     _write_ledger(_frame(_posting("p2", "t2")), db_session, user_id=test_user_id)
 
-    assert load_store(db_session, user_id=test_user_id).transfer_links == []
+    assert load_transfer_links(db_session, test_user_id) == []
 
 
 def test_write_ledger_dropping_a_transaction_kept_by_a_posting_merge_deletes_the_whole_merge(
@@ -445,7 +447,7 @@ def test_write_ledger_dropping_a_transaction_kept_by_a_posting_merge_deletes_the
     # names a surviving transaction).
     _write_ledger(_frame(_posting("p2", "t2")), db_session, user_id=test_user_id)
 
-    assert load_store(db_session, user_id=test_user_id).posting_merges == {}
+    assert load_posting_merges(db_session, test_user_id) == {}
 
 
 def test_write_ledger_dropping_a_duplicate_transaction_removes_just_that_one_from_its_merge(
@@ -463,7 +465,7 @@ def test_write_ledger_dropping_a_duplicate_transaction_removes_just_that_one_fro
     # (kept_transaction_id=t1, still-real duplicate t3) survives untouched.
     _write_ledger(_frame(_posting("p1", "t1"), _posting("p3", "t3")), db_session, user_id=test_user_id)
 
-    reloaded = load_store(db_session, user_id=test_user_id).posting_merges["m1"]
+    reloaded = load_posting_merges(db_session, test_user_id)["m1"]
     assert reloaded.kept_transaction_id == "t1"
     assert reloaded.duplicate_transaction_ids == ["t3"]
 
@@ -482,7 +484,7 @@ def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_rule_exclu
     # exclusion row is single-transaction, nothing else to keep in sync.
     _write_ledger(_frame(), db_session, user_id=test_user_id)
 
-    reloaded = load_store(db_session, user_id=test_user_id).rules[0]
+    reloaded = load_transfer_rules(db_session, test_user_id)[0]
     assert reloaded.excluded_transaction_ids == []
 
 

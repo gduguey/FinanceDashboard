@@ -9,7 +9,7 @@ from accounting.importers.sofi.csv import (
     standardize_sofi_checking,
     standardize_sofi_savings,
 )
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 # A real "Emergency Fund" vault export, SoFi's newer, wider CSV shape (also
 # covers checking/savings accounts — see `importers.sofi.csv`).

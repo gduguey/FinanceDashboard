@@ -221,8 +221,8 @@ def test_delete_goal_that_is_already_gone_gets_404(client) -> None:
 def test_two_patches_on_different_goals_do_not_clobber_each_other(client) -> None:
     """Reproduces the audit's actual finding for `useSetGoals`: editing two *different* goals used to
 
-    round-trip through the same whole-store `save_store` call — a scoped, row-versioned `PATCH` for one
-    goal must never touch, let alone revert, a sibling goal's own fields.
+    round-trip through the same whole-store save — a scoped, row-versioned `PATCH` for one goal must
+    never touch, let alone revert, a sibling goal's own fields.
     """
     # `_create_goal` goes through `PUT /goals` (a whole-list replace), so the second call can't be used
     # to add a goal alongside the first — `POST /goals` is the additive create.

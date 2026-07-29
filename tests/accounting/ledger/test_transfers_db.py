@@ -2,9 +2,9 @@
 
 Complements `tests/accounting/ledger/test_transfers.py` (the pure
 `reconcile_rule_links`/`apply_transfer_links` logic) — this exercises the
-actual persistence boundary: loading the store, proposing links, and
-saving them back, including the DB-enforced "a transaction is never in
-more than one link" invariant.
+actual persistence boundary: loading the rules and accounts, proposing
+links, and saving them back, including the DB-enforced "a transaction is
+never in more than one link" invariant.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import Account, Posting, TransferRule
 from accounting.repositories.accounts import replace_accounts
-from accounting.repositories.interpretation import replace_transfer_rules
-from accounting.store import load_store
+from accounting.repositories.interpretation import load_transfer_links, replace_transfer_rules
+from accounting.taxonomy import seeded_accounts
 
 if TYPE_CHECKING:
     import uuid
@@ -29,8 +29,7 @@ if TYPE_CHECKING:
 
 
 def _register_account(session: Session, user_id: uuid.UUID, account_id: str, kind: str) -> None:
-    store = load_store(session, user_id=user_id)
-    if account_id in store.accounts:
+    if account_id in seeded_accounts(session, user_id):
         return
     replace_accounts(
         session,
@@ -101,8 +100,7 @@ def test_reconcile_and_persist_rule_links_persists_a_new_link(db_session: Sessio
 
     assert len(new_links) == 1
     assert new_links[0].source == "rule"
-    reloaded = load_store(db_session, user_id=test_user_id)
-    assert reloaded.transfer_links == new_links
+    assert load_transfer_links(db_session, test_user_id) == new_links
 
 
 def test_reconcile_and_persist_rule_links_is_idempotent(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -121,7 +119,7 @@ def test_reconcile_and_persist_rule_links_is_idempotent(db_session: Session, tes
     assert len(first) == 1
     second = reconcile_and_persist_rule_links(raw, db_session, test_user_id)
     assert second == []
-    assert len(load_store(db_session, user_id=test_user_id).transfer_links) == 1
+    assert len(load_transfer_links(db_session, test_user_id)) == 1
 
 
 def test_reconcile_and_persist_rule_links_finds_nothing_when_no_rule_matches(
@@ -131,4 +129,4 @@ def test_reconcile_and_persist_rule_links_finds_nothing_when_no_rule_matches(
     raw = load_ledger(db_session, user_id=test_user_id)
     new_links = reconcile_and_persist_rule_links(raw, db_session, test_user_id)
     assert new_links == []
-    assert load_store(db_session, user_id=test_user_id).transfer_links == []
+    assert load_transfer_links(db_session, test_user_id) == []

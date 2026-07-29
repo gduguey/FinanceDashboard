@@ -1050,7 +1050,7 @@ def _transfer_link_from_row(
     if len(natural_keys) != 2:  # noqa: PLR2004 — a transfer link is by definition exactly two transactions
         # A link is always exactly two transactions; a malformed membership set
         # should fail with a clear message naming the row, not a bare unpacking
-        # ValueError that takes down the whole load_store for this user.
+        # ValueError that takes down every read of this user's links.
         message = f"TransferLink {row.natural_key!r} has {len(natural_keys)} membership rows, expected exactly 2"
         raise ValueError(message)
     first, second = natural_keys
@@ -1545,15 +1545,14 @@ def _dismissed_at(row: adb.Suggestion) -> datetime:
 def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_ids: Iterable[str]) -> set[str]:
     """Which of `suggestion_ids` have already been dismissed, without loading anything else.
 
-    The dismissed half of `suggestions` lives outside `AccountingStore`
-    entirely — unlike every other entity there, it's never read as "give me
-    the whole list to build something," only ever checked as "has this one
-    already been dismissed" against a handful of candidate suggestion
-    ids computed fresh on every request (see `postings.get_transfer_suggestions`/
-    `get_duplicate_suggestions`). Routing it through `load_store`'s full
-    read would mean every unrelated store mutation — editing a budget,
-    adding a goal — pays the cost of loading rows that only ever grow,
-    never shrink, for no benefit.
+    The dismissed half of `suggestions` has no `load_*` of its own for a
+    reason — unlike every other entity in this package, it's never read as
+    "give me the whole list to build something," only ever checked as "has
+    this one already been dismissed" against a handful of candidate
+    suggestion ids computed fresh on every request (see
+    `postings.get_transfer_suggestions`/`get_duplicate_suggestions`).
+    Offering a whole-table read would invite a caller to pay the cost of
+    loading rows that only ever grow, never shrink, for no benefit.
 
     Parameters
     ----------

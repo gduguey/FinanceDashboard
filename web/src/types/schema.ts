@@ -75,7 +75,7 @@ export interface paths {
      *     dict[str, Category]
      *         The categories just persisted, keyed by `category_id` — may
      *         include an "Other" subcategory the caller didn't submit, or omit
-     *         one it did (see `store.normalize_categories`).
+     *         one it did (see `taxonomy.normalize_categories`).
      */
     put: operations['put_categories_api_accounting_categories_put']
     /**
@@ -195,10 +195,10 @@ export interface paths {
      *
      *     Anything else referencing the deleted id(s) *is* rewritten, because
      *     those references are the user's own decisions rather than raw
-     *     provenance: cleared where the field is optional (`TransferRule`,
-     *     `PostingSplitLeg`) or dropped entirely where it isn't (`Budget`,
-     *     `CategoryPattern` both require a `category_id`) — see
-     *     `store.uncategorize_category_ids`.
+     *     provenance: cleared where the field is optional (`PostingSplitLeg`,
+     *     and any `subcategory_id`) or dropped entirely where it isn't
+     *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
+     *     `taxonomy.uncategorize_category_ids`.
      *
      *     Returns
      *     -------
@@ -242,7 +242,7 @@ export interface paths {
      *         `budgets_to_delete` lists every `Budget` entry (per-month or
      *         general) the merged-away category holds that the merge target
      *         already has one for, and which would therefore be discarded (see
-     *         `store.remap_category_ids`).
+     *         `taxonomy.remap_category_ids`).
      *
      *     Raises
      *     ------
@@ -279,12 +279,12 @@ export interface paths {
      *     the category one was imported under is raw provenance, and the
      *     retirement's own successor is what makes it resolve to the survivor
      *     from now on (`repositories.taxonomy.load_category_redirects`). See
-     *     `store.plan_category_rename` for the exact matching rules: a top-level
+     *     `taxonomy.plan_category_rename` for the exact matching rules: a top-level
      *     category only merges into another top-level category of the same
      *     classification; a subcategory only merges into a sibling under the
      *     same parent. If the merge target already has a budget for a month the
      *     merged-away category also budgeted, the merged-away category's budget
-     *     is discarded (see `store.remap_category_ids`) — call
+     *     is discarded (see `taxonomy.remap_category_ids`) — call
      *     `GET /categories/{category_id}/rename-preview` first to warn about
      *     that before committing to the rename.
      *
@@ -368,7 +368,7 @@ export interface paths {
      *
      *     Replaces deleting a tag by re-sending the whole tag list minus one
      *     (which risked a stale second delete resurrecting a just-removed tag);
-     *     see `accounting.store.delete_tag`. A tag still applied to postings is
+     *     see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
      *     removed from them too, via the `posting_tags` FK cascade.
      *
      *     Returns
@@ -439,7 +439,7 @@ export interface paths {
      *
      *     A merge repoints every reference to the merged-away id — the
      *     `posting_tags` and `posting_override_tags` join tables (see
-     *     `store.remap_tag_ids`) — before the merged-away tag itself is
+     *     `repositories.taxonomy.remap_tag_ids`) — before the merged-away tag itself is
      *     deleted, so a foreign key never briefly points at a row about to
      *     disappear.
      *
@@ -516,11 +516,11 @@ export interface paths {
      *     Deleting a rule cascades to the links it produced: a rule-created link
      *     (`source == "rule"`) is a consequence of the rule, so it must not outlive
      *     it. Manually-confirmed links are never swept up (see
-     *     `accounting.store.remove_rule_transfer_links`). The follow-up
+     *     `repositories.interpretation.remove_rule_transfer_links`). The follow-up
      *     `reconcile_and_persist_rule_links` re-proposes only from the *remaining*
      *     rules, so the deleted rule's links stay gone rather than being re-derived.
      *
-     *     No version check — see `accounting.store.delete_transfer_rule`'s own
+     *     No version check — see `repositories.interpretation.delete_transfer_rule`'s own
      *     docstring for why deleting an already-gone rule is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
@@ -543,7 +543,7 @@ export interface paths {
      *
      *     A true per-resource write — unlike `POST /transfer-rules`, this
      *     never round-trips through a whole-store rewrite; see
-     *     `accounting.store.update_transfer_rule`. Guarded by
+     *     `repositories.interpretation.update_transfer_rule`. Guarded by
      *     `request.expected_version`, this rule's own row version, so an edit
      *     to this one rule can never spuriously conflict with — or be silently
      *     overwritten by — an unrelated save elsewhere in the store.
@@ -612,7 +612,7 @@ export interface paths {
      * Delete Category Pattern Route
      * @description Delete one category pattern, without touching any other pattern already saved.
      *
-     *     No version check — see `accounting.store.delete_category_pattern`.
+     *     No version check — see `repositories.interpretation.delete_category_pattern`.
      *
      *     Returns
      *     -------
@@ -631,7 +631,7 @@ export interface paths {
      * Patch Category Pattern
      * @description Update one existing category pattern in place, without touching any other pattern already saved.
      *
-     *     A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
+     *     A true per-resource write — see `repositories.interpretation.update_category_pattern`. Guarded by
      *     `request.expected_version`, this pattern's own row version.
      *
      *     Returns
@@ -700,7 +700,7 @@ export interface paths {
      * @description Delete one manually-entered asset, without touching any other. Idempotent, no version check.
      *
      *     Replaces deleting an asset by re-sending the whole list minus one; see
-     *     `accounting.store.delete_other_asset`.
+     *     `repositories.taxonomy.delete_other_asset`.
      *
      *     Returns
      *     -------
@@ -844,7 +844,7 @@ export interface paths {
      * @description Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
      *
      *     Replaces deleting a scenario by re-sending the whole list minus one;
-     *     see `accounting.store.delete_simulator_scenario`.
+     *     see `repositories.taxonomy.delete_simulator_scenario`.
      *
      *     Returns
      *     -------
@@ -1492,7 +1492,7 @@ export interface paths {
      *     "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
      *     manual override always wins if both somehow apply to the same
      *     transaction (it's applied after rules — see
-     *     `api.dependencies._resolved_postings_and_store`), so
+     *     `api.dependencies._resolved_postings`), so
      *     `resolved_by_transfer_rule_id` is suppressed whenever
      *     `manual_transfer_override_posting_id` is set for that transaction —
      *     see `PostingRow`'s own docstring.
@@ -2108,7 +2108,7 @@ export interface paths {
      *     The description-match/suggest-don't-apply counterpart to
      *     `post_ai_suggest_category` — same staged-pending flow (see
      *     `ledger.pending`), same `lock_category_id` guarantee, just matched
-     *     against `store.category_patterns` instead of calling an LLM.
+     *     against the user's own `CategoryPattern` rows instead of calling an LLM.
      *
      *     Parameters
      *     ----------
@@ -2468,7 +2468,7 @@ export interface paths {
      *     `goal_id` is server-minted — two goals can validly share a name, so
      *     there's no natural key two "the same" goal would collide on. `color`
      *     is picked to be distinct from every color already assigned to an
-     *     existing goal, the same `store.next_available_color` helper
+     *     existing goal, the same `taxonomy.next_available_color` helper
      *     categories already use for the same purpose.
      *
      *     Returns
@@ -4011,13 +4011,19 @@ export interface components {
      * AccountingStoreResponse
      * @description Every persisted accounting entity: accounts, categories, tags, rules, other assets.
      *
-     *     Mirrors `store.AccountingStore` field-for-field, except `rules` is
-     *     exposed as `transfer_rules` (the name every other endpoint and the
-     *     frontend already use for it). Dismissed suggestions aren't part of
-     *     `AccountingStore` at all — see `GET /dismissed-suggestions` and
-     *     `store.list_dismissed_suggestions`/`dismissed_suggestion_ids`, which
-     *     query that table directly rather than through the whole-store
-     *     round-trip every other entity here goes through.
+     *     One field per repository `load_*`, recomposed at the router (see
+     *     `api.routers.store.get_store`) — this response model is the only
+     *     place the whole set is named together; nothing server-side passes it
+     *     around. `transfer_rules` is `repositories.interpretation`'s
+     *     `load_transfer_rules`, under the name every other endpoint and the
+     *     frontend already use for it.
+     *
+     *     Dismissed suggestions are deliberately not here: unlike every entity
+     *     that is, they're never read as "give me the whole list to build
+     *     something", only ever checked as "has this one already been
+     *     dismissed" — see `GET /dismissed-suggestions` and
+     *     `repositories.interpretation.dismissed_suggestion_ids`, which query
+     *     that table directly.
      */
     AccountingStoreResponse: {
       /** Accounts */
@@ -6977,11 +6983,14 @@ export interface components {
      *     `TransferRule` found a safe, unique match for at write time (see
      *     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
      *     resolution itself. `rule_id`, set only when `source == "rule"`, names
-     *     *which* rule found it — a plain historical label, not a foreign key
-     *     enforced anywhere: if that rule is later deleted, this link keeps
-     *     remembering which one originally created it rather than the id turning
-     *     meaningless, the same way a bank statement keeps a routing number that
-     *     later stops being valid.
+     *     *which* rule found it. It used to be a plain historical label deliberately
+     *     left un-foreign-keyed, on the theory that a link should keep remembering
+     *     the rule that made it even after that rule is gone; it is a real foreign
+     *     key now (DB-audit D7's "Keyless Entry"), because a label naming a row
+     *     nobody can look up is not provenance. `ON DELETE SET NULL` keeps what was
+     *     actually worth keeping: the link survives its rule, `source` still records
+     *     that a rule rather than the user proposed it, and only the reference that
+     *     no longer resolves is cleared.
      */
     TransferLink: {
       /** Link Id */

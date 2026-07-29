@@ -25,7 +25,7 @@ from accounting.importers.canonical.parsing import find_column, parse_amount_fle
 from accounting.importers.common import row_hash
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Category, Posting
-from accounting.store import (
+from accounting.taxonomy import (
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     next_available_color,

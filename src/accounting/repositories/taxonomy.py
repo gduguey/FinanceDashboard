@@ -17,7 +17,7 @@ aggregate for either yet; when it does, they move.
 
 The *pure* category/tag tree logic — `normalize_categories`,
 `plan_category_rename`, `plan_tag_rename`, the color palette — is domain
-logic, not persistence, and stays in `accounting.store`. Only the row
+logic, not persistence, and lives in `accounting.taxonomy`. Only the row
 reads and writes live here.
 """
 

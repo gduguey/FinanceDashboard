@@ -3046,7 +3046,7 @@ def test_accounts_are_isolated_between_users(client, db_session) -> None:
     """Proof that `store.py`'s account CRUD is genuinely per-user, not a shared global store.
 
     Regression test for the FK-violation/cross-user-leak sweep: before every
-    endpoint threaded a real `user_id` through `load_store`/`save_store`,
+    endpoint threaded a real `user_id` through its own repository calls,
     this router had no way to keep two users' accounts apart at all.
     """
     other_user_id = uuid.uuid4()

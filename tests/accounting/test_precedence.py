@@ -15,7 +15,6 @@ import re
 import accounting.db  # noqa: F401 — registers every accounting table on the shared metadata
 from accounting.api.dependencies import _overlay_appliers
 from accounting.precedence import OVERLAY_PRECEDENCE, OverlayStage
-from accounting.store import load_store
 from db.base import Base
 
 _STAGE_CHECK_VALUE = re.compile(r"'([^']+)'")
@@ -64,7 +63,7 @@ def test_the_precedence_tuple_is_the_vocabulary_itself() -> None:
 
 def test_every_declared_stage_has_an_applier(db_session, test_user_id) -> None:
     """A stage with no applier is an overlay that silently never runs."""
-    appliers = _overlay_appliers(db_session, test_user_id, load_store(db_session, user_id=test_user_id))
+    appliers = _overlay_appliers(db_session, test_user_id)
     assert set(appliers) == set(OVERLAY_PRECEDENCE)
 
 
@@ -91,7 +90,7 @@ def test_category_resolution_is_not_an_overlay_and_declares_no_stage() -> None:
 
     Resolving a posting's imported category through the taxonomy's own
     retirements runs before the first stage (see
-    `api.dependencies._resolved_postings_and_store`), and deliberately
+    `api.dependencies._resolved_postings`), and deliberately
     carries no `stage` column: giving it one would declare a precedence
     relative to the overlays that it does not have, since every overlay's
     own `category_id` is a foreign key into the same table.

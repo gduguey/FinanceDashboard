@@ -9,10 +9,10 @@ wipe-and-reinsert/upsert-and-prune background these mechanisms build on.
 
 ## Category rename → merge
 
-`POST /categories/{category_id}/rename` (`accounting.api.routers.store.post_category_rename:408`).
+`POST /categories/{category_id}/rename` (`accounting.api.routers.store.post_category_rename:570`).
 Renaming "Dining" to an existing category's name, "Food & Drink", merges
-the two. The matching rule itself lives in `store.plan_category_rename`
-(`:250`) and isn't repeated here — a top-level category only ever merges
+the two. The matching rule itself lives in `taxonomy.plan_category_rename`
+(`:249`) and isn't repeated here — a top-level category only ever merges
 into another top-level category of the same `classification`; a
 subcategory only ever merges into a sibling under the same
 `parent_category_id`.
@@ -25,11 +25,11 @@ subcategory only ever merges into a sibling under the same
    a same-named sibling already under "Food & Drink" or get reparented
    onto it (`parent_category_id` updated, same id kept).
 
-2. **`GET /categories/{category_id}/rename-preview`** (`:348`) — before
+2. **`GET /categories/{category_id}/rename-preview`** (`:493`) — before
    the real rename is ever called, the frontend calls this to find out
    whether it *would* merge. It runs step 1 (`plan_category_rename`) plus
-   step 3 below (`remap_category_ids`) against the *current* store,
-   without persisting anything, and diffs `store.budgets` before and
+   step 3 below (`remap_category_ids`) against the rows as they stand,
+   without persisting anything, and diffs the budgets before and
    after to report exactly which entries would be discarded
    (`api_models.BudgetToDeletePreview`) — matched on the
    `(month, category_id, subcategory_id)` identity rather than on
@@ -37,15 +37,17 @@ subcategory only ever merges into a sibling under the same
    discarded rather than repointed. The UI shows this in
    a confirmation dialog before the user commits to the real rename.
 
-3. **`store.remap_category_ids`** (`:335`) — four in-memory collections
-   get every `category_id`/`subcategory_id` field pointing at "Dining"
-   swapped to "Food & Drink": `store.rules` (`TransferRule.category_id`/
-   `subcategory_id`), `store.category_patterns`
-   (`CategoryPattern.category_id`/`subcategory_id`), `store.budgets`
+3. **`taxonomy.remap_category_ids`** (`:360`) — the three collections
+   that name a category and aren't the tree itself (loaded together as a
+   `taxonomy.CategoryReferences`, one repository `load_*` each) get every
+   `category_id`/`subcategory_id` field pointing at "Dining" swapped to
+   "Food & Drink": `category_patterns`
+   (`CategoryPattern.category_id`/`subcategory_id`), `budgets`
    (`Budget.category_id`/`subcategory_id` — per-month and general rows
-   alike, since a general budget is just a `Budget` with no `month`),
-   `store.posting_splits`
-   (`PostingSplitLeg.category_id`/`subcategory_id`). A repointed budget's
+   alike, since a general budget is just a `Budget` with no `month`), and
+   `posting_splits`
+   (`PostingSplitLeg.category_id`/`subcategory_id`). A `TransferRule` has
+   no category fields of its own, so there is nothing there to repoint. A repointed budget's
    `budget_id` is **rebuilt** from its new
    `(month, category_id, subcategory_id)` triple (see
    `repositories.planning.budget_row_key`) rather than left naming the
@@ -73,10 +75,10 @@ subcategory only ever merges into a sibling under the same
    therefore still shows the merged-away id, and `GET /postings` shows the
    survivor; that difference is the whole point.
 
-5. **Manual overrides**, inline in `post_category_rename` (`:408`, right
+5. **Manual overrides**, inline in `post_category_rename` (`:570`, right
    after step 4) — `PostingOverride.category_id`/`subcategory_id` (a
-   person's by-hand re-categorization, stored outside `AccountingStore`
-   too) get the same old-id → new-id swap via `load_overrides`/
+   person's by-hand re-categorization, deliberately outside
+   `CategoryReferences` too) get the same old-id → new-id swap via `load_overrides`/
    `save_overrides`, which fully deletes and reinserts every
    `posting_overrides` row for this user (same pattern as the 16
    wipe-and-reinsert tables in `src/db/README.md`).
@@ -84,9 +86,9 @@ subcategory only ever merges into a sibling under the same
 6. **The scoped repository writes, then `retire_categories`, then
    `replace_categories`.** Everything step 3 repointed *except* the
    categories dict itself is written by its own aggregate's repository,
-   and runs right after step 3: `store.budgets` through
+   and runs right after step 3: `budgets` through
    `repositories.planning.replace_budgets`, and
-   `store.category_patterns`/`posting_splits` through
+   `category_patterns`/`posting_splits` through
    `repositories.interpretation.replace_category_patterns`/
    `replace_posting_splits`. Then
    `repositories.taxonomy.retire_categories` takes "Dining" out of the
@@ -107,25 +109,25 @@ subcategory only ever merges into a sibling under the same
 ## Category delete
 
 `DELETE /categories/{category_id}` (`accounting.api.routers.store.
-delete_category:287`). Deleting "Dining" outright, not merging it into
+delete_category:410`). Deleting "Dining" outright, not merging it into
 anything.
 
-1. **`store.category_ids_to_delete`** (`:446`) — a subcategory's delete
+1. **`taxonomy.category_ids_to_delete`** (`:462`) — a subcategory's delete
    never cascades (it has none of its own); a top-level category's delete
    takes every one of its subcategories down with it. Returns the full set
    of ids being removed, e.g. `{"expense:dining"}`, or
    `{"expense:dining", "expense:dining:fast-food"}` if "Dining" had a
    subcategory.
 
-2. **`GET /categories/{category_id}/delete-preview`** (`:258`) — counts
+2. **`GET /categories/{category_id}/delete-preview`** (`:381`) — counts
    how many raw ledger postings currently carry any id from step 1 as
    their own `category_id` or `subcategory_id`
-   (`_posting_count_for_categories`, `:243`), without deleting anything.
+   (`_posting_count_for_categories`, `:366`), without deleting anything.
    The frontend shows this count in a confirmation dialog ("N transactions
    will become uncategorized") only when it's greater than zero — deleting
    a category with no postings just happens immediately, no popup.
 
-3. **`store.uncategorize_category_ids`** (`:473`) — the delete-side
+3. **`taxonomy.uncategorize_category_ids`** (`:489`) — the delete-side
    counterpart to `remap_category_ids` (step 3 above), except there's no
    replacement id to repoint at, so references are either cleared or the
    whole row is dropped, depending on whether the field is optional:
@@ -150,7 +152,7 @@ anything.
    with *no* successor is exactly "resolves to uncategorized", which is
    the same state a posting that was never categorized is already in.
 
-5. **Manual overrides**, inline in `delete_category` (`:287`, right after
+5. **Manual overrides**, inline in `delete_category` (`:410`, right after
    step 4) — any `PostingOverride.category_id`/`subcategory_id` pointing
    at a deleted id is cleared the same way, via `load_overrides`/
    `save_overrides`.
@@ -170,18 +172,18 @@ anything.
 ## Tag rename → merge
 
 `POST /tags/{tag_id}/rename` (`accounting.api.routers.store.
-post_tag_rename:569`). Renaming tag "Trip" to an existing tag's name,
+post_tag_rename:784`). Renaming tag "Trip" to an existing tag's name,
 "Travel", merges the two. Built from scratch for this — nothing like it
 existed before; the only way to "rename" a tag used to be delete-and-
 recreate, which orphaned every reference to the old id.
 
-1. **`store.plan_tag_rename`** (`:561`) — pure name match, case-
+1. **`taxonomy.plan_tag_rename`** (`:576`) — pure name match, case-
    insensitive, no classification or parent to scope it by (`Tag` has
    neither). No collision → `name` updated in place, same `tag_id`, empty
    remap. Collision → "Trip" removed from the tags dict, returns
    `{"tag:trip": "tag:travel"}`.
 
-2. **`GET /tags/{tag_id}/rename-preview`** (`:533`) — same idea as the
+2. **`GET /tags/{tag_id}/rename-preview`** (`:748`) — same idea as the
    category preview: runs step 1 without persisting, reports whether it
    would merge and into what, for the same confirm-before-merge dialog.
 

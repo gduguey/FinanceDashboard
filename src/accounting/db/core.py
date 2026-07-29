@@ -3,7 +3,7 @@
 Every table's primary key is a surrogate `id`, never `(user_id, ..._id)` —
 see `db.base.derive_id`'s docstring for why a deterministic hash of the old
 human-chosen string, not a random default, is what makes that safe for
-tables `accounting.store` rewrites wholesale on every save. `natural_key`
+tables `accounting.repositories` rewrites wholesale. `natural_key`
 is that human-chosen string (what used to be `account_id`, `category_id`,
 ...), kept as a plain column with a `UNIQUE(user_id, natural_key)`
 constraint instead of being the primary key itself.

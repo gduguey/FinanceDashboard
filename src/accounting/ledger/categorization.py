@@ -31,7 +31,7 @@ import polars as pl
 
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, PostingMerge, PostingSplit
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     from accounting.models import TransferRule

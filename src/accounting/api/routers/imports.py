@@ -27,7 +27,7 @@ from accounting.api.api_models import (
     SupportedImportKind,
     SyncStatus,
 )
-from accounting.api.dependencies import _resolved_postings_and_store, state
+from accounting.api.dependencies import _resolved_postings, state
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
@@ -58,7 +58,7 @@ from accounting.importers.ingest import (
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
 from accounting.models import CurrencyCode, PostingSplitLeg
 from accounting.repositories.taxonomy import replace_categories
-from accounting.store import load_store
+from accounting.taxonomy import seeded_accounts, seeded_categories
 from db.current_user import get_current_user_id
 from db.session import get_db
 
@@ -132,8 +132,7 @@ async def post_import(
         422 if `account_id` doesn't already exist; 400 if no importer exists
         for this institution/account-kind combination.
     """
-    store = load_store(session, user_id)
-    account = store.accounts.get(account_id)
+    account = seeded_accounts(session, user_id).get(account_id)
     if account is None:
         message = f"Account {account_id!r} does not exist — create this account first, then import."
         raise HTTPException(status_code=422, detail=message)
@@ -229,18 +228,18 @@ async def post_canonical_import_preview(
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session, user_id)
+    categories = seeded_categories(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     try:
         if is_excel:
             outcome = standardize_canonical_excel(
-                await file.read(), account_id, cast("CurrencyCode", currency), store.categories, date_order_literal
+                await file.read(), account_id, cast("CurrencyCode", currency), categories, date_order_literal
             )
         else:
             csv_text = (await file.read()).decode("utf-8-sig")
             outcome = standardize_canonical_csv(
-                csv_text, account_id, cast("CurrencyCode", currency), store.categories, separator, date_order_literal
+                csv_text, account_id, cast("CurrencyCode", currency), categories, separator, date_order_literal
             )
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -288,8 +287,7 @@ async def post_canonical_import(
         can never be canonically imported into, the same guarantee the
         bank-specific `/import` route already has by construction.
     """
-    store = load_store(session, user_id)
-    if account_id not in store.accounts:
+    if account_id not in seeded_accounts(session, user_id):
         message = f"Account {account_id!r} does not exist — create this account first, then import."
         raise HTTPException(status_code=422, detail=message)
 
@@ -391,7 +389,7 @@ async def post_categorize_from_file_preview(
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session, user_id)
+    categories = seeded_categories(session, user_id)
     ledger = load_ledger(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
@@ -400,7 +398,7 @@ async def post_categorize_from_file_preview(
         preview = preview_categorize_from_file(
             await file.read(),
             is_excel=is_excel,
-            existing_categories=store.categories,
+            existing_categories=categories,
             ledger=ledger,
             account_ids=ids,
             separator=separator,
@@ -465,7 +463,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session, user_id)
+    categories = seeded_categories(session, user_id)
     ledger = load_ledger(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
@@ -475,7 +473,7 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
         preview = preview_categorize_from_file(
             await file.read(),
             is_excel=is_excel,
-            existing_categories=store.categories,
+            existing_categories=categories,
             ledger=ledger,
             account_ids=ids,
             separator=separator,
@@ -543,8 +541,8 @@ async def post_paystub_reconciliation(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    postings, store = _resolved_postings_and_store(session, user_id)
-    result = reconcile_earnings_statement(statement, postings, store.accounts)
+    postings = _resolved_postings(session, user_id)
+    result = reconcile_earnings_statement(statement, postings, seeded_accounts(session, user_id))
     proposed_splits = propose_posting_splits(statement, result.matches)
     return PaystubReconciliationResult(
         statement=statement,
