@@ -57,7 +57,8 @@ from accounting.importers.ingest import (
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
 from accounting.models import CurrencyCode, PostingSplitLeg
-from accounting.store import load_store, save_store
+from accounting.repositories.taxonomy import replace_categories
+from accounting.store import load_store
 from db.current_user import get_current_user_id
 from db.session import get_db
 
@@ -486,8 +487,10 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     if preview.new_categories:
-        store = store.model_copy(update={"categories": {**store.categories, **preview.new_categories}})
-        save_store(store, session, user_id)
+        # Additive only: these are categories the uploaded file introduced, so
+        # nothing already in the tree is rewritten and nothing is pruned.
+        replace_categories(session, user_id, preview.new_categories.values(), prune=False)
+        session.commit()
 
     wanted_row_numbers = set(json.loads(confirmed_row_numbers))
     to_apply = [

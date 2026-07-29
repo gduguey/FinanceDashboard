@@ -121,13 +121,15 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     Reads an expected version from `session.info["expected_dashboard_settings_version"]`
     — stashed once per request by `trades.api.dependencies`'s
     `_stash_expected_dashboard_settings_version`, from the client's own
-    `X-Expected-Dashboard-Settings-Version` header — the same optimistic-
-    concurrency mechanism `accounting.store.save_store` uses (see
-    `db.base.check_and_bump_version`), since every one of this module's
-    five settings endpoints reads-modifies-writes the same one shared row.
+    `X-Expected-Dashboard-Settings-Version` header — via the shared
+    `db.base.check_and_bump_version`, since every one of this module's five
+    settings endpoints reads-modifies-writes the same one shared row. (This
+    is now that primitive's only caller: the accounting module's equivalent
+    whole-store counter went away with `accounting.store.save_store`, since
+    a per-user counter over ~25 tables made unrelated edits conflict —
+    which is not a problem one shared settings row has.)
     Re-stashes the freshly-bumped version back into `session.info` after a
-    successful check, the same defensive reason
-    `accounting.store._check_and_bump_store_version` does — so that if any
+    successful check, defensively — so that if any
     endpoint here ever calls `save_settings` more than once in one request,
     a later call checks against the version this call just bumped to,
     not the stale one the client originally submitted.

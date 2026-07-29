@@ -266,6 +266,59 @@ def natural_keys_by_id(
     return dict(rows)
 
 
+def upsert_and_prune(
+    session: Session,
+    model: Any,  # noqa: ANN401 — generic helper shared across every model with an id/natural_key/user_id shape
+    user_id: uuid.UUID,
+    rows: Iterable[Base],
+    keep_natural_keys: set[str],
+) -> None:
+    """Insert-or-update every one of `rows`, then delete this user's rows of `model` not in `keep_natural_keys`.
+
+    The write technique for any table something else foreign-keys into —
+    `accounts`, `categories`, `tags` (see
+    `accounting.repositories.accounts`/`taxonomy`), all three referenced by
+    the ledger's own `postings`/`posting_tags`. Blindly deleting and
+    reinserting one of these would mean, for one instant mid-transaction, a
+    category a real posting still points at doesn't exist; Postgres rejects
+    that outright. This instead leaves every still-wanted row in place and
+    deletes only the ones genuinely gone, so a delete that *would* orphan
+    real history fails loudly on the foreign key instead of silently
+    dropping it.
+
+    `session.merge()` (not `add()`) is what makes this an upsert rather
+    than a duplicate-key error on a row that already exists — matching on
+    `id`, which `derive_id` makes stable across calls for the same natural
+    key.
+
+    Parameters
+    ----------
+    session
+        An open database session; the caller commits.
+    model
+        The ORM model being written, e.g. `accounting.db.core.Account`.
+    user_id
+        Whose rows these are.
+    rows
+        The ORM rows to insert-or-update.
+    keep_natural_keys
+        Every natural key that should survive — anything else this user
+        owns in `model` is deleted. Not necessarily the same set as
+        `rows`' own keys: a multi-pass caller (see
+        `accounting.repositories.accounts.replace_accounts`) passes the
+        complete desired set on every pass while upserting only part of it.
+    """
+    for row in rows:
+        session.merge(row)
+    session.flush()
+    existing_natural_keys = {existing.natural_key for existing in session.query(model).filter_by(user_id=user_id)}
+    removed_natural_keys = existing_natural_keys - keep_natural_keys
+    if removed_natural_keys:
+        session.query(model).filter_by(user_id=user_id).filter(model.natural_key.in_(removed_natural_keys)).delete(
+            synchronize_session=False
+        )
+
+
 class VersionConflictError(Exception):
     """Raised by `check_and_bump_version` when a caller's remembered version no longer matches what's persisted.
 

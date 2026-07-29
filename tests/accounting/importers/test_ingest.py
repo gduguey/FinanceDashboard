@@ -18,7 +18,8 @@ from accounting.importers.ingest import (
 )
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Account, Posting
-from accounting.store import load_store, save_store
+from accounting.repositories.accounts import replace_accounts
+from accounting.store import load_store
 
 if TYPE_CHECKING:
     import uuid
@@ -58,10 +59,10 @@ def _register_account(
     kind: str = "checking",
     parent_account_id: str | None = None,
 ) -> None:
-    """Register an account through the store first — exactly what `api.py`'s upload endpoint does before
-    ever calling `ingest_csv`, since a posting can only reference an account that already exists.
+    """Register an account through the accounts repository first — exactly what `api.py`'s upload endpoint
+    does before ever calling `ingest_csv`, since a posting can only reference an account that already exists.
     """
-    store = load_store(session, user_id=user_id)
+    load_store(session, user_id=user_id)  # seeds a brand-new user's defaults, exactly as a router would
     account = Account(
         account_id=account_id,
         name=account_id,
@@ -70,7 +71,8 @@ def _register_account(
         currency="USD",
         parent_account_id=parent_account_id,
     )
-    save_store(store.model_copy(update={"accounts": {**store.accounts, account_id: account}}), session, user_id=user_id)
+    replace_accounts(session, user_id, [account], prune=False)
+    session.commit()
 
 
 def test_ingest_csv_archives_the_raw_file_verbatim(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:

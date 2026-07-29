@@ -127,7 +127,7 @@ def set_rls_user(session: Session, user_id: uuid.UUID) -> None:
     the transaction this was set in. Any code that calls `session.commit()`
     mid-request and then runs a *further* RLS-protected query on that same
     session (e.g. `ledger.transfers.reconcile_and_persist_rule_links`,
-    called after `store.save_store`'s own commit) must call this again
+    called after a repository write's own commit) must call this again
     first, or every RLS policy's own `(current_setting(...))::uuid` cast
     fails outright on the empty string — confirmed empirically, not
     theoretical (see `tests.db.test_session`).

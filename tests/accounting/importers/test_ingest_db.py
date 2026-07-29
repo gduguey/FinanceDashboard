@@ -31,8 +31,10 @@ from accounting.repositories.interpretation import (
     replace_rule_exclusions,
     replace_transfer_rules,
 )
+from accounting.repositories.accounts import replace_accounts
 from accounting.repositories.planning import insert_goal, load_goal_contributions, upsert_goal_contribution
-from accounting.store import load_store, save_store
+from accounting.repositories.taxonomy import replace_tags
+from accounting.store import load_store
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -65,17 +67,13 @@ def _posting(
 def _register_account(session: Session, user_id: uuid.UUID, account_id: str = "checking:test") -> None:
     store = load_store(session, user_id=user_id)
     if account_id not in store.accounts:
-        store = store.model_copy(
-            update={
-                "accounts": {
-                    **store.accounts,
-                    account_id: Account(
-                        account_id=account_id, name="Test", kind="checking", institution="x", currency="USD"
-                    ),
-                }
-            }
+        replace_accounts(
+            session,
+            user_id,
+            [Account(account_id=account_id, name="Test", kind="checking", institution="x", currency="USD")],
+            prune=False,
         )
-        save_store(store, session, user_id=user_id)
+        session.commit()
 
 
 def _frame(*postings: Posting) -> pl.DataFrame:
@@ -106,9 +104,8 @@ def test_write_then_load_ledger_round_trips_a_posting(db_session: Session, test_
 
 def test_write_then_load_ledger_round_trips_tag_ids(db_session: Session, test_user_id: uuid.UUID) -> None:
     _register_account(db_session, test_user_id)
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(update={"tags": {**store.tags, "trip": Tag(tag_id="trip", name="Trip")}})
-    save_store(store, db_session, user_id=test_user_id)
+    replace_tags(db_session, test_user_id, [Tag(tag_id="trip", name="Trip")], prune=False)
+    db_session.commit()
 
     _write_ledger(_frame(_posting("p1", "t1", tag_ids=["trip"])), db_session, user_id=test_user_id)
     reloaded = load_ledger(db_session, user_id=test_user_id)

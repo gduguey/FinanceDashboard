@@ -140,9 +140,11 @@ src/accounting/
                          CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
                          ManualTransfer, PostingMerge, DismissedSuggestion, Currency —
                          canonical, declared once
-  store.py              load_store/save_store — persisted accounts/categories/tags/rules/
-                         goals/budgets/etc., in Postgres (see db/ below); seeded defaults,
-                         not fetched data
+  store.py              load_store — one whole-store read composed from repositories/, plus
+                         the pure category/tag tree logic (normalize, rename, delete plans)
+                         and the seeded defaults every new user starts with
+  repositories/         one module per aggregate root, each owning its own tables' reads
+                         and writes: accounts, taxonomy, planning, interpretation
   db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
                          core.py (accounts/categories/tags/postings/transactions),
                          budgets.py, goals.py, automation.py (recurring additions,

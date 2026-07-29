@@ -6,27 +6,33 @@ and both deserve their own focused, tested change rather than being bundled into
 a larger PR. Surfaced during the CodeRabbit review sweep of the decomposed
 branches.
 
-## 1. Category delete/rename can leave a half-applied state on a concurrent conflict
+## 1. Category delete/rename still commits its side-effect writes as it goes
 
 **Where:** `delete_category` / `post_category_rename` in
 `src/accounting/api/routers/store.py`.
 
-**What:** These clear the deleted/renamed category off every posting (and rewrite
-the affected overrides) *before* `save_store` runs the whole-store version check.
-Those side-effect writes commit as they go, so if the version check then fails
-(someone else changed the store since the page loaded), the postings are already
-uncategorized/remapped but the category-list save is rejected — an inconsistent
-in-between state.
+**What (originally):** these clear the deleted/renamed category off every posting
+(and rewrite the affected overrides) *before* `save_store` ran the whole-store
+version check, so a conflict at that check left the postings already
+uncategorized/remapped with the category-list save rejected.
 
-**Fix direction:** run the store-version check at the *start* of the handler,
-before the side-effect writes, so a conflict aborts before anything is committed.
-Fiddly because that check also bumps and re-stashes the version (see
-`docs/app-stack/optimistic-concurrency-versioning.md`), so it needs its own tests
-for the conflict path to make sure it doesn't reject saves that are actually fine.
+**Status:** the version-conflict half of this is gone — `save_store` and its
+whole-store counter were removed when the accounts and taxonomy aggregates moved
+into `src/accounting/repositories/`, so there is no late check left to reject a
+handler that has already written. What remains is narrower: each of these
+handlers still spans several repository writes that commit as they go
+(`replace_budgets`, `uncategorize_ledger_postings`, `save_overrides_for_postings`,
+then `replace_categories`), so a *failure* partway through — an unexpected
+`IntegrityError`, a dropped connection — leaves the earlier ones committed.
 
-**Why deferred:** narrow race (two writes touching the same store at the same
-instant) and, pre-launch, there's no real concurrent load — too risky to bundle
-with unrelated fixes.
+**Fix direction:** run the whole handler in one transaction, committing once at
+the end, instead of letting each repository call commit for itself. That means
+giving the repositories a "flush, don't commit" contract everywhere (several
+already have it) and moving the commit up to the router.
+
+**Why deferred:** it's a cross-cutting change to every repository's transaction
+contract, not something to bundle into an aggregate extraction, and it needs its
+own failure-injection tests to be worth anything.
 
 ## 2. First-login lockout if the Clerk `user.created` webhook is slow or lost
 

@@ -1,4 +1,13 @@
-"""A per-user save counter — the backbone of optimistic concurrency for `accounting.store.save_store`."""
+"""A per-user save counter, kept only so `GET /store` can still report a `version` field.
+
+Nothing bumps this any more. It was the backbone of optimistic concurrency
+for `accounting.store.save_store`, which wrote every accounting table at
+once; that function is gone, and with it the one thing whose scope this
+counter's whole-store granularity ever matched. Per-row optimistic
+concurrency (`db.base.check_and_bump_row_version`, and the `version`
+column on `goals`/`transfer_rules`/`category_patterns`) is what guards a
+real lost-update risk now.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +23,7 @@ SCHEMA = "accounting"
 
 
 class StoreVersion(Base, Timestamped):
-    """One user's save counter, bumped by exactly one on every successful `save_store` call.
+    """One user's save counter, frozen at whatever the last `save_store` call left it at.
 
     Exactly zero or one row per user (a singleton counter) — `user_id` is
     the primary key directly, the same shape as

@@ -1,4 +1,4 @@
-"""`load_store`/`save_store`/`load_overrides`/`save_overrides` against real Postgres.
+"""`load_store` and the accounts/taxonomy repositories against real Postgres.
 
 Complements `test_accounting_store.py`, which covers the pure in-memory
 logic (`plan_category_rename`, `normalize_categories`, ...) that never
@@ -41,6 +41,11 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
+from accounting.repositories.accounts import (
+    replace_accounts,
+    replace_manual_transfers,
+    replace_opening_balances,
+)
 from accounting.repositories.planning import (
     insert_goal,
     replace_budgets,
@@ -69,14 +74,18 @@ from accounting.repositories.interpretation import (
     upsert_posting_merge,
     upsert_transfer_rule,
 )
+from accounting.repositories.taxonomy import (
+    remap_tag_ids,
+    replace_categories,
+    replace_other_assets,
+    replace_simulator_scenarios,
+    replace_tags,
+)
 from accounting.store import (
-    StoreVersionConflictError,
     UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
     UNCATEGORIZED_INCOME_ACCOUNT_ID,
     get_store_version,
     load_store,
-    remap_tag_ids,
-    save_store,
 )
 
 if TYPE_CHECKING:
@@ -86,29 +95,23 @@ if TYPE_CHECKING:
 def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, posting_id: str) -> None:
     """Insert the minimal Account/Transaction/Posting rows a PostingSplit/PostingMerge/GoalContribution can FK to.
 
-    The account is registered *through* `load_store`/`save_store`, not by
-    inserting an `adb.Account` row directly — in real usage, every account a
-    posting can reference was already created that way (that's the only way
-    an account comes to exist at all), and `load_store` relies on that to
-    tell "brand new user" apart from "existing user with no accounts left"
-    (see its own docstring). Bypassing the store here would make this an
-    unrealistic scenario the app itself can never produce. Safe to call more
-    than once per test (e.g. one posting per transaction) — the shared
-    "checking:test" account is only added to the store the first time.
+    The account is registered *through* the accounts repository, not by
+    inserting an `adb.Account` row directly — in real usage, that's the only
+    way an account comes to exist at all. `load_store` runs first for the
+    same reason every router does: it seeds a brand-new user's default
+    category tree, which the overrides and splits below FK into. Safe to
+    call more than once per test (e.g. one posting per transaction) — the
+    shared "checking:test" account is only registered the first time.
     """
     store = load_store(session, user_id=user_id)
     if "checking:test" not in store.accounts:
-        store = store.model_copy(
-            update={
-                "accounts": {
-                    **store.accounts,
-                    "checking:test": Account(
-                        account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD"
-                    ),
-                }
-            }
+        replace_accounts(
+            session,
+            user_id,
+            [Account(account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD")],
+            prune=False,
         )
-        save_store(store, session, user_id=user_id)
+        session.commit()
     transaction_uuid = derive_id(user_id, "transactions", transaction_id)
     session.add(adb.Transaction(id=transaction_uuid, user_id=user_id, natural_key=transaction_id))
     session.flush()
@@ -129,11 +132,8 @@ def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, pos
 
 def _seed_tags(session: Session, user_id: uuid.UUID, *tag_ids_and_names: tuple[str, str]) -> None:
     """Persist real `Tag` rows so a `PostingTag`/override can FK or reference them by natural key."""
-    store = load_store(session, user_id=user_id)
-    store = store.model_copy(
-        update={"tags": {**store.tags, **{tag_id: Tag(tag_id=tag_id, name=name) for tag_id, name in tag_ids_and_names}}}
-    )
-    save_store(store, session, user_id=user_id)
+    replace_tags(session, user_id, [Tag(tag_id=tag_id, name=name) for tag_id, name in tag_ids_and_names], prune=False)
+    session.commit()
 
 
 def _seed_posting_tag(session: Session, user_id: uuid.UUID, posting_id: str, tag_id: str) -> None:
@@ -236,18 +236,20 @@ def test_load_store_seeds_only_once_and_persists(db_session: Session, test_user_
     assert {a.natural_key for a in persisted} >= {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID}
 
 
-def test_save_then_load_store_round_trips_a_custom_category(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    updated = store.model_copy(update={"categories": {}})
-    save_store(updated, db_session, user_id=test_user_id)
+def test_replace_categories_with_an_empty_tree_prunes_every_category(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    load_store(db_session, user_id=test_user_id)  # seeds the default tree
+    replace_categories(db_session, test_user_id, [])
+    db_session.commit()
     reloaded = load_store(db_session, user_id=test_user_id)
     assert reloaded.categories == {}
 
 
 def test_load_store_backfills_a_missing_placeholder_account(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    stripped = store.model_copy(update={"accounts": {}})
-    save_store(stripped, db_session, user_id=test_user_id)
+    load_store(db_session, user_id=test_user_id)
+    replace_accounts(db_session, test_user_id, [])
+    db_session.commit()
 
     reloaded = load_store(db_session, user_id=test_user_id)
     assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in reloaded.accounts
@@ -259,9 +261,8 @@ def test_store_data_is_scoped_per_user(db_session: Session, test_user_id: uuid.U
     db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
     db_session.commit()
 
-    mine = load_store(db_session, user_id=test_user_id)
-    mine = mine.model_copy(update={"tags": {"trip": Tag(tag_id="trip", name="Trip")}})
-    save_store(mine, db_session, user_id=test_user_id)
+    replace_tags(db_session, test_user_id, [Tag(tag_id="trip", name="Trip")], prune=False)
+    db_session.commit()
 
     theirs = load_store(db_session, user_id=other_user_id)
     assert "trip" not in theirs.tags
@@ -397,54 +398,66 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
 
     store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "accounts": {
-                **store.accounts,
-                "savings:vault-parent": Account(
-                    account_id="savings:vault-parent", name="Savings", kind="savings", institution="x", currency="USD"
-                ),
-                "savings:vault-parent:trip": Account(
-                    account_id="savings:vault-parent:trip",
-                    name="Trip vault",
-                    kind="vault",
-                    institution="x",
-                    currency="USD",
-                    parent_account_id="savings:vault-parent",
-                ),
-            },
-            "tags": {"trip": Tag(tag_id="trip", name="Trip")},
-            "other_assets": [OtherAsset(asset_id="oa1", name="Car", value=5000)],
-            "opening_balances": {
-                "checking:test": OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1))
-            },
-            "manual_transfers": [
-                ManualTransfer(
-                    transfer_id="mt1",
-                    date=datetime(2026, 1, 2),
-                    from_account_id="checking:test",
-                    to_account_id="savings:vault-parent",
-                    from_amount=50,
-                    to_amount=50,
-                )
-            ],
-            "simulator_scenarios": [
-                SimulatorScenario(
-                    scenario_id="s1",
-                    name="Retirement",
-                    initial_capital=1000,
-                    monthly_contribution=100,
-                    horizon_years=10,
-                    annual_rate_pct=5,
-                )
-            ],
-        }
+
+    # The accounts aggregate. A child account goes in the same call as its
+    # parent on purpose: `replace_accounts` two-passes so the self-referencing
+    # FK resolves. Opening balances and manual transfers FK into `accounts`, so
+    # they can only be written once those rows exist.
+    replace_accounts(
+        db_session,
+        test_user_id,
+        [
+            *store.accounts.values(),
+            Account(account_id="savings:vault-parent", name="Savings", kind="savings", institution="x", currency="USD"),
+            Account(
+                account_id="savings:vault-parent:trip",
+                name="Trip vault",
+                kind="vault",
+                institution="x",
+                currency="USD",
+                parent_account_id="savings:vault-parent",
+            ),
+        ],
+    )
+    replace_opening_balances(
+        db_session,
+        test_user_id,
+        [OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1))],
+    )
+    replace_manual_transfers(
+        db_session,
+        test_user_id,
+        [
+            ManualTransfer(
+                transfer_id="mt1",
+                date=datetime(2026, 1, 2),
+                from_account_id="checking:test",
+                to_account_id="savings:vault-parent",
+                from_amount=50,
+                to_amount=50,
+            )
+        ],
     )
 
-    save_store(store, db_session, user_id=test_user_id)
+    # The taxonomy aggregate.
+    replace_tags(db_session, test_user_id, [Tag(tag_id="trip", name="Trip")])
+    replace_other_assets(db_session, test_user_id, [OtherAsset(asset_id="oa1", name="Car", value=5000)])
+    replace_simulator_scenarios(
+        db_session,
+        test_user_id,
+        [
+            SimulatorScenario(
+                scenario_id="s1",
+                name="Retirement",
+                initial_capital=1000,
+                monthly_contribution=100,
+                horizon_years=10,
+                annual_rate_pct=5,
+            )
+        ],
+    )
 
-    # The interpretation aggregate is written by its own repository, never by
-    # `save_store` — see `accounting.repositories.interpretation`.
+    # The interpretation aggregate.
     replace_transfer_rules(
         db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="uber", priority=1)]
     )
@@ -472,8 +485,7 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
         [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
     )
 
-    # The planning aggregate is written by its own repository, never by
-    # `save_store` — see `accounting.repositories.planning`.
+    # The planning aggregate.
     replace_budgets(
         db_session,
         test_user_id,
@@ -537,21 +549,17 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
 
 
 def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "accounts": {
-                **store.accounts,
-                "checking:test": Account(
-                    account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD"
-                ),
-                "employer:eqore": Account(
-                    account_id="employer:eqore", name="Eqore", kind="income_source", institution="x", currency="USD"
-                ),
-            },
-        }
+    load_store(db_session, user_id=test_user_id)
+    replace_accounts(
+        db_session,
+        test_user_id,
+        [
+            Account(account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD"),
+            Account(account_id="employer:eqore", name="Eqore", kind="income_source", institution="x", currency="USD"),
+        ],
+        prune=False,
     )
-    save_store(store, db_session, user_id=test_user_id)
+    db_session.commit()
     replace_transfer_rules(
         db_session,
         test_user_id,
@@ -711,13 +719,15 @@ def test_transfer_link_naming_an_already_linked_transaction_raises(
         )
 
 
-def test_save_store_no_longer_writes_any_interpretation_row(db_session: Session, test_user_id: uuid.UUID) -> None:
-    """The whole point of the extraction: a stale whole-store save can't clobber interpretation data.
+def test_writing_accounts_and_taxonomy_never_touches_any_interpretation_row(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The whole point of the extraction: a stale accounts/taxonomy write can't clobber interpretation data.
 
     Replaces the old round-trip assertions, which persisted rules/patterns/splits/merges/links *through*
-    `save_store` and so only held because it blanket-reinserted them. Now a caller holding a snapshot
-    taken before any of this data existed can save it back without erasing a single row — which is
-    exactly what every unrelated request (adding an account, renaming a tag) does.
+    the whole-store save and so only held because it blanket-reinserted them. Now a caller holding a
+    snapshot taken before any of this data existed can write its own aggregate back without erasing a
+    single row — which is exactly what every unrelated request (adding an account, renaming a tag) does.
     """
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
@@ -749,8 +759,13 @@ def test_save_store_no_longer_writes_any_interpretation_row(db_session: Session,
     )
     db_session.commit()
 
-    # The snapshot taken above still carries none of it — the old `save_store` would wipe all five.
-    save_store(stale, db_session, user_id=test_user_id)
+    # The snapshot taken above still carries none of it — the old whole-store save would wipe all five.
+    replace_accounts(db_session, test_user_id, stale.accounts.values())
+    replace_categories(db_session, test_user_id, stale.categories.values())
+    replace_tags(db_session, test_user_id, stale.tags.values())
+    replace_other_assets(db_session, test_user_id, stale.other_assets)
+    replace_simulator_scenarios(db_session, test_user_id, stale.simulator_scenarios)
+    db_session.commit()
 
     reloaded = load_store(db_session, user_id=test_user_id)
     assert [r.rule_id for r in reloaded.rules] == ["r1"]
@@ -816,56 +831,12 @@ def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
         db_session.commit()
 
 
-def test_get_store_version_is_zero_for_a_user_who_has_never_saved(db_session: Session, test_user_id: uuid.UUID) -> None:
+def test_get_store_version_is_zero_now_that_nothing_bumps_the_whole_store_counter(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`GET /store` still reports a version; no write path bumps it any more (see `get_store_version`)."""
+    load_store(db_session, user_id=test_user_id)
     assert get_store_version(db_session, user_id=test_user_id) == 0
-
-
-def test_save_store_bumps_the_version_by_one_each_time(db_session: Session, test_user_id: uuid.UUID) -> None:
-    # `load_store` itself does one internal save to seed a brand-new user's
-    # defaults, so the baseline after it is already 1, not 0.
-    store = load_store(db_session, user_id=test_user_id)
-    baseline = get_store_version(db_session, user_id=test_user_id)
-    save_store(store, db_session, user_id=test_user_id)
-    assert get_store_version(db_session, user_id=test_user_id) == baseline + 1
-    save_store(store, db_session, user_id=test_user_id)
-    assert get_store_version(db_session, user_id=test_user_id) == baseline + 2
-
-
-def test_save_store_with_no_expected_version_set_skips_the_check(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    save_store(store, db_session, user_id=test_user_id)
-    before = get_store_version(db_session, user_id=test_user_id)
-    db_session.info.pop("expected_store_version", None)
-    save_store(store, db_session, user_id=test_user_id)
-    assert get_store_version(db_session, user_id=test_user_id) == before + 1
-
-
-def test_save_store_with_the_current_expected_version_succeeds_and_bumps(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    save_store(store, db_session, user_id=test_user_id)
-    current = get_store_version(db_session, user_id=test_user_id)
-    db_session.info["expected_store_version"] = current
-    save_store(store, db_session, user_id=test_user_id)
-    assert get_store_version(db_session, user_id=test_user_id) == current + 1
-
-
-def test_save_store_with_a_stale_expected_version_raises_and_does_not_bump(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    save_store(store, db_session, user_id=test_user_id)
-    stale = get_store_version(db_session, user_id=test_user_id)
-    db_session.info["expected_store_version"] = stale
-    save_store(store, db_session, user_id=test_user_id)
-    current = get_store_version(db_session, user_id=test_user_id)
-    assert current == stale + 1
-
-    db_session.info["expected_store_version"] = stale
-    with pytest.raises(StoreVersionConflictError):
-        save_store(store, db_session, user_id=test_user_id)
-    assert get_store_version(db_session, user_id=test_user_id) == current
 
 
 def test_dismissed_suggestion_ids_is_empty_for_a_user_who_never_dismissed_anything(

@@ -16,10 +16,11 @@ from fastapi import APIRouter, Depends
 from accounting.api.dependencies import _stash_expected_store_version
 from accounting.api.routers import dashboard, exchange_rates, goals, imports, llm, postings, store
 
-# `_stash_expected_store_version` runs for every accounting endpoint (reads
-# included — harmless there, it just stashes a value nothing reads back),
-# so `accounting.store.save_store`'s version check works everywhere without
-# each of its ~30 call sites needing its own copy of this dependency.
+# `_stash_expected_store_version` runs for every accounting endpoint so the
+# `X-Expected-Store-Version` header stays a declared, documented part of the
+# API. Nothing reads the stashed value back any more — the whole-store version
+# check went with `accounting.store.save_store` — so the header is accepted
+# and ignored; see `accounting.store.get_store_version`.
 router: APIRouter = APIRouter(prefix="/api/accounting", dependencies=[Depends(_stash_expected_store_version)])
 router.include_router(store.router)
 router.include_router(exchange_rates.router)

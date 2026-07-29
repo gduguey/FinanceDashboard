@@ -41,9 +41,10 @@ class Goal(Base, Timestamped):
     color: Mapped[str]
     version: Mapped[int] = mapped_column(default=1)
     """Bumped by `db.base.check_and_bump_row_version` on every `PATCH /goals/{goal_id}` — see that
-    function's own docstring. Never touched by `save_store`'s upsert path for this table (see
-    `accounting.store._upsert_goals_and_prune`), so an unrelated create/save elsewhere never
-    invalidates a version a client already has in hand."""
+    function's own docstring. Never touched by this table's own upsert path (see
+    `accounting.repositories.planning._upsert_goal`, whose `ON CONFLICT ... DO UPDATE` deliberately
+    omits this column), so an unrelated create or reorder never invalidates a version a client
+    already has in hand."""
 
 
 class GoalContribution(Base, Timestamped):

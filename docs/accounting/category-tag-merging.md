@@ -67,23 +67,23 @@ subcategory only ever merges into a sibling under the same
    `posting_overrides` row for this user (same pattern as the 16
    wipe-and-reinsert tables in `src/db/README.md`).
 
-6. **The scoped repository writes, then `save_store`.** Everything step 3
-   repointed *except* the categories dict itself is written by its own
-   aggregate's repository, and runs right after step 3 (before step 4, not
-   after step 5): `store.budgets`/`general_budgets` through
+6. **The scoped repository writes, then `replace_categories`.** Everything
+   step 3 repointed *except* the categories dict itself is written by its
+   own aggregate's repository, and runs right after step 3 (before step 4,
+   not after step 5): `store.budgets`/`general_budgets` through
    `repositories.planning.replace_budgets`/`replace_general_budgets`, and
    `store.category_patterns`/`posting_splits` through
    `repositories.interpretation.replace_category_patterns`/
-   `replace_posting_splits`. `save_store` then persists the categories dict.
-   `Category` is one of the three upsert-and-prune tables — this is the
-   point "Dining"'s row is actually deleted from `categories`. This has to
-   happen *last*:
+   `replace_posting_splits`. `repositories.taxonomy.replace_categories`
+   then persists the categories dict, with a prune — `categories` is one of
+   the three upsert-and-prune tables, and this is the point "Dining"'s row
+   is actually deleted. This has to happen *last*:
    `postings.category_id`/`subcategory_id` and `posting_split_legs.
    category_id`/`subcategory_id` are real foreign keys into `categories.id`
    with no `ondelete` clause, so Postgres would reject deleting "Dining"
    at step 6 if steps 3–5 hadn't already repointed everything referencing
    it. See "What happens if you delete something still in use" in
-   `src/db/README.md`.
+   `src/db/README.md`. The handler's single `session.commit()` follows.
 
 ## Category delete
 
@@ -133,15 +133,16 @@ anything.
    at a deleted id is cleared the same way, via `load_overrides`/
    `save_overrides`.
 
-6. **The scoped repository writes, then `save_store`** — the same split as
-   step 6 of the merge case, in the same position: `replace_budgets`/
-   `replace_general_budgets` and `replace_category_patterns`/
-   `replace_posting_splits` persist whatever step 3 cleared or dropped
-   (running right after step 3), then `save_store` persists the categories
-   dict with "Dining" (and any subcategories) removed. Same ordering
-   requirement as the merge case: everything referencing "Dining" has to
-   be cleared *before* `save_store` runs, or the prune of `categories`
-   would hit the same foreign-key rejection.
+6. **The scoped repository writes, then `replace_categories`** — the same
+   split as step 6 of the merge case, in the same position:
+   `replace_budgets`/`replace_general_budgets` and
+   `replace_category_patterns`/`replace_posting_splits` persist whatever
+   step 3 cleared or dropped (running right after step 3), then
+   `replace_categories` persists the categories dict with "Dining" (and any
+   subcategories) removed. Same ordering requirement as the merge case:
+   everything referencing "Dining" has to be cleared *before*
+   `replace_categories` prunes, or it would hit the same foreign-key
+   rejection.
 
 ## Tag rename → merge
 
@@ -161,8 +162,8 @@ recreate, which orphaned every reference to the old id.
    category preview: runs step 1 without persisting, reports whether it
    would merge and into what, for the same confirm-before-merge dialog.
 
-3. **`store.remap_tag_ids`** (`:607`) — two places outside `AccountingStore`
-   need fixing, for two different reasons:
+3. **`repositories.taxonomy.remap_tag_ids`** — two places outside the `tags`
+   table itself need fixing, for two different reasons:
    - **`posting_tags`** (`accounting.db.core.PostingTag`, a real,
      database-enforced foreign key: `posting_tags.tag_id → tags.id`) — a
      direct `UPDATE posting_tags SET tag_id = <Travel's id> WHERE tag_id =
@@ -178,10 +179,10 @@ recreate, which orphaned every reference to the old id.
      (`"tag:trip"` → `"tag:travel"`, de-duplicated in case an override
      already listed both) via `load_overrides`/`save_overrides`.
 
-4. **`save_store`** — `Tag` is upsert-and-prune too (same three-table
-   list as `Account`/`Category`): this is where "Trip"'s row is actually
-   deleted, after step 3 has already repointed everything that could
-   still reference it.
+4. **`repositories.taxonomy.replace_tags`** — `tags` is upsert-and-prune too
+   (same three-table list as `accounts`/`categories`): this is where
+   "Trip"'s row is actually deleted, after step 3 has already repointed
+   everything that could still reference it.
 
 ## What's deleted vs. just edited, at a glance
 

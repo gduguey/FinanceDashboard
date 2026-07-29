@@ -16,7 +16,8 @@ from accounting.importers.ingest import (
     remap_ledger_category_ids,
 )
 from accounting.models import Account, AccountKind
-from accounting.store import load_store, save_store
+from accounting.repositories.accounts import replace_accounts
+from accounting.store import load_store
 
 if TYPE_CHECKING:
     import uuid
@@ -32,11 +33,12 @@ def _config(tmp_path) -> AccountingConfig:
 
 
 def _register_account(session: Session, user_id: uuid.UUID, kind: AccountKind = "checking") -> None:
-    store = load_store(session, user_id=user_id)
+    load_store(session, user_id=user_id)  # seeds a brand-new user's defaults, exactly as a router would
     account = Account(
         account_id=ACCOUNT_ID, name="Generic Checking", kind=kind, institution="Generic Bank", currency="USD"
     )
-    save_store(store.model_copy(update={"accounts": {**store.accounts, ACCOUNT_ID: account}}), session, user_id=user_id)
+    replace_accounts(session, user_id, [account], prune=False)
+    session.commit()
 
 
 def test_ingest_canonical_csv_archives_the_raw_file_verbatim(

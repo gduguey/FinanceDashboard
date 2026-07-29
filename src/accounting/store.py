@@ -1,12 +1,17 @@
-"""Persisted accounting entities: accounts, categories, tags, rules, and manually-added assets.
+"""The category and tag tree's pure domain logic, plus the whole-store read every dashboard starts from.
 
-None of this is fetched or derived data — every row here is either created
-by an importer meeting a new counterparty for the first time, or typed in
-directly by a user (a category, a rule, a manually-added asset). It lives in
-one small JSON file per the same reasoning `dashboard.settings` already
-uses for `DashboardSettings`: a preference-shaped record, not a
-disposable cache, so it gets its own file rather than living in
-`ledger_csv_path`.
+Nothing here writes a row. Persistence for each of these entities lives in
+`accounting.repositories` — one module per aggregate root, each owning its
+own tables (see that package's own docstring). What's left in this module
+is the two things that aren't persistence:
+
+- the *pure* tree logic a category or tag edit runs before anything is
+  saved — `normalize_categories`, `plan_category_rename`,
+  `plan_tag_rename`, `category_ids_to_delete`, and the color palette they
+  assign from;
+- `AccountingStore`/`load_store`, the one-shot read that composes every
+  repository's `load_*` into the single snapshot `GET /store` and the
+  dashboard's own derivations are written against.
 """
 
 from __future__ import annotations
@@ -16,7 +21,6 @@ import re
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import (
@@ -40,21 +44,17 @@ from accounting.models import (
     TransferRule,
     WithdrawalPriorityEntry,
 )
-from accounting.repositories import interpretation, planning
+from accounting.repositories import accounts, interpretation, planning, taxonomy
 from db.base import (
     VersionConflictError,
-    check_and_bump_version,
-    derive_id,
     get_version,
 )
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Callable, Iterable
+    from collections.abc import Iterable
 
     from sqlalchemy.orm import Session
-
-    from db.base import Base
 
 UNCATEGORIZED_EXPENSE_ACCOUNT_ID = "uncategorized:expense"
 UNCATEGORIZED_INCOME_ACCOUNT_ID = "uncategorized:income"
@@ -600,63 +600,6 @@ def plan_tag_rename(tags: dict[str, Tag], tag_id: str, new_name: str) -> tuple[d
     return result, {tag_id: target.tag_id}
 
 
-def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID) -> None:
-    """Repoint every tag reference that lives outside `AccountingStore` after a merge.
-
-    Doesn't touch `store.tags` itself (the caller already applied
-    `plan_tag_rename`'s own result there, the same division of labor as
-    `remap_category_ids`/`store.categories`) — this only fixes the two
-    other places a tag id is stored, neither of which `AccountingStore`
-    holds: the `posting_tags` join table and each posting override's
-    `PostingOverrideTag` rows — both real FKs to `tags.id`, repointed the
-    same way. That's also why this — unlike the pure `remap_category_ids`
-    — needs a `session`/`user_id` of its own.
-
-    A posting (or override) already tagged with both the merged-away and
-    target tag would violate one of these tables' own uniqueness on a
-    plain update, so that row is deleted instead of retargeted, rather
-    than left to raise.
-
-    Parameters
-    ----------
-    id_remap
-        `old_id -> new_id`, as returned by `plan_tag_rename` — a no-op
-        when empty.
-    session
-        An open database session.
-    user_id
-        Whose tags these are.
-    """
-    if not id_remap:
-        return
-
-    for old_tag_id, new_tag_id in id_remap.items():
-        old_id = _tag_id(user_id, old_tag_id)
-        new_id = _tag_id(user_id, new_tag_id)
-
-        already_tagged_postings = {
-            row.posting_id for row in session.query(adb.PostingTag.posting_id).filter_by(user_id=user_id, tag_id=new_id)
-        }
-        session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).filter(
-            adb.PostingTag.posting_id.in_(already_tagged_postings)
-        ).delete(synchronize_session=False)
-        session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).update(
-            {"tag_id": new_id}, synchronize_session=False
-        )
-
-        already_tagged_overrides = {
-            row.override_id
-            for row in session.query(adb.PostingOverrideTag.override_id).filter_by(user_id=user_id, tag_id=new_id)
-        }
-        session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).filter(
-            adb.PostingOverrideTag.override_id.in_(already_tagged_overrides)
-        ).delete(synchronize_session=False)
-        session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).update(
-            {"tag_id": new_id}, synchronize_session=False
-        )
-    session.commit()
-
-
 def default_categories() -> dict[str, Category]:
     """Build the starting category tree every new user's store is seeded with.
 
@@ -670,8 +613,8 @@ def default_categories() -> dict[str, Category]:
         (_EXPENSE_TAXONOMY, "expense"),
         (_INCOME_TAXONOMY, "income"),
     )
-    for taxonomy, classification in taxonomies:
-        for top_name, sub_names in taxonomy.items():
+    for tree, classification in taxonomies:
+        for top_name, sub_names in tree.items():
             top_color = next_available_color(category.color for category in categories.values())
             top_id = f"{classification}:{slugify(top_name)}"
             categories[top_id] = Category(
@@ -727,8 +670,8 @@ class AccountingStore(BaseModel):
     person is actually organizing (dozens of accounts, categories, rules).
     Dismissed suggestions are the one exception — only ever checked as
     "has this one been dismissed," and unbounded over time — so routing
-    that table through `load_store`/`save_store` would make every
-    unrelated store mutation pay to load a table that only ever grows. See
+    that table through `load_store` would make every unrelated store
+    mutation pay to load a table that only ever grows. See
     `dismissed_suggestion_ids`/`list_dismissed_suggestions`/
     `dismiss_suggestion`/`undismiss_suggestion`, which query it directly.
     """
@@ -753,97 +696,6 @@ class AccountingStore(BaseModel):
     goal_contributions: dict[str, GoalContribution] = Field(default_factory=dict)
     recurring_additions: list[RecurringAddition] = Field(default_factory=list)
     withdrawal_priorities: list[WithdrawalPriorityEntry] = Field(default_factory=list)
-
-
-def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the account natural-keyed `account_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "accounts", account_id)
-
-
-def _category_id(user_id: uuid.UUID, category_id: str | None) -> uuid.UUID | None:
-    """Derive this user's stable internal id for `category_id`, or `None` if `category_id` is `None`.
-
-    Returns
-    -------
-    uuid.UUID or None
-    """
-    return derive_id(user_id, "categories", category_id) if category_id is not None else None
-
-
-def _tag_id(user_id: uuid.UUID, tag_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the tag natural-keyed `tag_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "tags", tag_id)
-
-
-def _transaction_id(user_id: uuid.UUID, transaction_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the transaction natural-keyed `transaction_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "transactions", transaction_id)
-
-
-def _posting_id(user_id: uuid.UUID, posting_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the posting natural-keyed `posting_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "postings", posting_id)
-
-
-def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUID, str]) -> Account:
-    """Convert one persisted `Account` row back into its pydantic model, using natural keys.
-
-    Returns
-    -------
-    Account
-    """
-    return Account(
-        account_id=row.natural_key,
-        name=row.name,
-        kind=row.kind,  # type: ignore[arg-type]
-        institution=row.institution,
-        currency=row.currency,  # type: ignore[arg-type]
-        last_four=row.last_four,
-        parent_account_id=account_natural_key_by_id.get(row.parent_account_id)
-        if row.parent_account_id is not None
-        else None,
-        external_ref=row.external_ref,
-        meta=row.meta,
-        closed=row.closed,
-    )
-
-
-def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.UUID, str]) -> Category:
-    """Convert one persisted `Category` row back into its pydantic model, using natural keys.
-
-    Returns
-    -------
-    Category
-    """
-    return Category(
-        category_id=row.natural_key,
-        name=row.name,
-        classification=row.classification,  # type: ignore[arg-type]
-        parent_category_id=category_natural_key_by_id.get(row.parent_category_id)
-        if row.parent_category_id is not None
-        else None,
-        color=row.color,
-    )
 
 
 def seed_new_user_defaults(session: Session, user_id: uuid.UUID) -> None:
@@ -874,11 +726,25 @@ def seed_new_user_defaults(session: Session, user_id: uuid.UUID) -> None:
         return
     if session.query(adb.Category.id).filter_by(user_id=user_id).first() is not None:
         return
-    save_store(AccountingStore(categories=default_categories(), accounts=default_accounts()), session, user_id=user_id)
+    # Purely additive (`prune=False`): the two guards above already proved this
+    # user owns neither table's rows, so there is nothing a prune could remove
+    # — and asking for one would only invite a repository to delete rows a
+    # future caller might legitimately have seeded separately.
+    accounts.replace_accounts(session, user_id, default_accounts().values(), prune=False)
+    taxonomy.replace_categories(session, user_id, default_categories().values(), prune=False)
+    session.commit()
 
 
-def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa: PLR0914 (one local per AccountingStore field being loaded — splitting this up would just add indirection)
-    """Read the persisted accounting store, seeding sensible defaults the first time.
+def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:
+    """Read every persisted accounting entity at once, seeding sensible defaults the first time.
+
+    Composed entirely out of the repositories' own `load_*` functions —
+    this holds no row-to-model translation of its own. It stays a single
+    whole-store read because that's what the dashboard genuinely needs:
+    almost every derivation (net worth, the income statement, budget
+    progress) spans several of these at once. Writes are the opposite, and
+    no longer go through here at all: each repository writes only the rows
+    a request actually names.
 
     Parameters
     ----------
@@ -893,133 +759,31 @@ def load_store(session: Session, user_id: uuid.UUID) -> AccountingStore:  # noqa
         The persisted store, with default accounts/categories backfilled if missing.
     """
     seed_new_user_defaults(session, user_id)
-    account_rows = list(session.query(adb.Account).filter_by(user_id=user_id))
-    category_rows = list(session.query(adb.Category).filter_by(user_id=user_id))
-    account_natural_key_by_id = {row.id: row.natural_key for row in account_rows}
-    category_natural_key_by_id = {row.id: row.natural_key for row in category_rows}
-    accounts = {row.natural_key: _account_from_row(row, account_natural_key_by_id) for row in account_rows}
-    categories = {row.natural_key: _category_from_row(row, category_natural_key_by_id) for row in category_rows}
-
-    tags = {
-        row.natural_key: Tag(tag_id=row.natural_key, name=row.name)
-        for row in session.query(adb.Tag).filter_by(user_id=user_id)
-    }
-    rules = interpretation.load_transfer_rules(session, user_id)
-    category_patterns = interpretation.load_category_patterns(session, user_id)
-    other_assets = [
-        OtherAsset(asset_id=row.natural_key, name=row.name, value=row.value, currency=row.currency, note=row.note)  # type: ignore[arg-type]
-        for row in session.query(adb.OtherAsset).filter_by(user_id=user_id)
-    ]
-    opening_balances = {
-        account_natural_key_by_id[row.account_id]: OpeningBalance(
-            account_id=account_natural_key_by_id[row.account_id], amount=row.amount, as_of_date=row.as_of_date
-        )
-        for row in session.query(adb.OpeningBalance).filter_by(user_id=user_id)
-    }
-    manual_transfers = [
-        ManualTransfer(
-            transfer_id=row.natural_key,
-            date=row.date,
-            from_account_id=account_natural_key_by_id[row.from_account_id],
-            to_account_id=account_natural_key_by_id[row.to_account_id],
-            from_amount=row.from_amount,
-            to_amount=row.to_amount,
-            description=row.description,
-        )
-        for row in session.query(adb.ManualTransfer).filter_by(user_id=user_id)
-    ]
-    budgets = planning.load_budgets(session, user_id)
-    general_budgets = planning.load_general_budgets(session, user_id)
-    simulator_scenarios = [
-        SimulatorScenario(
-            scenario_id=row.natural_key,
-            name=row.name,
-            initial_capital=row.initial_capital,
-            monthly_contribution=row.monthly_contribution,
-            horizon_years=row.horizon_years,
-            annual_rate_pct=row.annual_rate_pct,
-            compounding_frequency=row.compounding_frequency,  # type: ignore[arg-type]
-            currency=row.currency,  # type: ignore[arg-type]
-        )
-        for row in session.query(adb.SimulatorScenario).filter_by(user_id=user_id)
-    ]
-
-    posting_splits = interpretation.load_posting_splits(session, user_id)
-    posting_merges = interpretation.load_posting_merges(session, user_id)
-    transfer_links = interpretation.load_transfer_links(session, user_id)
-    goals = planning.load_goals(session, user_id)
-    goal_contributions = planning.load_goal_contributions(session, user_id)
-    recurring_additions = planning.load_recurring_additions(session, user_id)
-    withdrawal_priorities = planning.load_withdrawal_priorities(session, user_id)
     store = AccountingStore(
-        accounts=accounts,
-        categories=categories,
-        tags=tags,
-        rules=rules,
-        category_patterns=category_patterns,
-        other_assets=other_assets,
-        opening_balances=opening_balances,
-        manual_transfers=manual_transfers,
-        budgets=budgets,
-        general_budgets=general_budgets,
-        simulator_scenarios=simulator_scenarios,
-        posting_splits=posting_splits,
-        posting_merges=posting_merges,
-        transfer_links=transfer_links,
-        goals=goals,
-        goal_contributions=goal_contributions,
-        recurring_additions=recurring_additions,
-        withdrawal_priorities=withdrawal_priorities,
+        accounts=accounts.load_accounts(session, user_id),
+        categories=taxonomy.load_categories(session, user_id),
+        tags=taxonomy.load_tags(session, user_id),
+        rules=interpretation.load_transfer_rules(session, user_id),
+        category_patterns=interpretation.load_category_patterns(session, user_id),
+        other_assets=taxonomy.load_other_assets(session, user_id),
+        opening_balances=accounts.load_opening_balances(session, user_id),
+        manual_transfers=accounts.load_manual_transfers(session, user_id),
+        budgets=planning.load_budgets(session, user_id),
+        general_budgets=planning.load_general_budgets(session, user_id),
+        simulator_scenarios=taxonomy.load_simulator_scenarios(session, user_id),
+        posting_splits=interpretation.load_posting_splits(session, user_id),
+        posting_merges=interpretation.load_posting_merges(session, user_id),
+        transfer_links=interpretation.load_transfer_links(session, user_id),
+        goals=planning.load_goals(session, user_id),
+        goal_contributions=planning.load_goal_contributions(session, user_id),
+        recurring_additions=planning.load_recurring_additions(session, user_id),
+        withdrawal_priorities=planning.load_withdrawal_priorities(session, user_id),
     )
 
     missing_accounts = {k: v for k, v in default_accounts().items() if k not in store.accounts}
     if missing_accounts:
         store = store.model_copy(update={"accounts": {**store.accounts, **missing_accounts}})
     return store
-
-
-def _group_by[T, K](rows: Iterable[T], key: Callable[[T], K]) -> dict[K, list[T]]:
-    """Group `rows` into lists keyed by `key(row)`, preserving each group's original order.
-
-    Returns
-    -------
-    dict[K, list[T]]
-    """
-    grouped: dict[K, list[T]] = {}
-    for row in rows:
-        grouped.setdefault(key(row), []).append(row)
-    return grouped
-
-
-def _upsert_and_prune(
-    session: Session, model: type[Base], user_id: uuid.UUID, rows: Iterable[Base], keep_natural_keys: set[str]
-) -> None:
-    """Insert-or-update every one of `rows`, then delete this user's rows of `model` not in `keep_natural_keys`.
-
-    Used only for `Account`/`Category`/`Tag` — every other entity
-    `save_store` still writes is safe to delete-all-then-reinsert, but these
-    three are referenced by the ledger's own `postings`/`posting_tags`
-    tables (a different domain, not managed here), so blindly deleting one
-    still referenced by a real posting must fail loudly with a foreign key
-    error instead of silently dropping ledger history's own referential
-    integrity. `session.merge()` (not `add()`) is what makes this an
-    upsert rather than a duplicate-key error on a row that already exists
-    — matching on `id`, which `db.base.derive_id` makes stable across calls
-    for the same natural key, so this still finds the same existing row
-    `account_id`/`category_id`/`tag_id` used to match on directly.
-    """
-    for row in rows:
-        session.merge(row)
-    session.flush()
-    existing_natural_keys = {
-        existing.natural_key  # type: ignore[attr-defined]
-        for existing in session.query(model).filter_by(user_id=user_id)
-    }
-    removed_natural_keys = existing_natural_keys - keep_natural_keys
-    if removed_natural_keys:
-        session.query(model).filter_by(user_id=user_id).filter(
-            model.natural_key.in_(removed_natural_keys)  # type: ignore[attr-defined]
-        ).delete(synchronize_session=False)
 
 
 # A thin, accounting-flavored name for the shared primitive in `db.base` —
@@ -1034,7 +798,20 @@ _STORE_VERSION_TABLE = "accounting.store_versions"
 
 
 def get_store_version(session: Session, user_id: uuid.UUID) -> int:
-    """Read this user's current save-version counter.
+    """Read this user's whole-store save counter, the last remnant of the whole-store write path.
+
+    Nothing bumps this any more. It went with `save_store`: the counter
+    only ever made sense while one function wrote every table at once, and
+    its whole-store granularity is exactly what made two unrelated edits —
+    a budget and an account rename — conflict with each other. Each
+    repository's own writes are either scoped to the rows a request names
+    or row-versioned individually (see `db.base.check_and_bump_row_version`,
+    used by `PATCH /transfer-rules/{rule_id}` and friends), so there is
+    nothing left for one shared counter to guard.
+
+    Kept because `GET /store` still reports a `version` field its clients
+    read and echo back in `X-Expected-Store-Version`; that header is now
+    accepted and ignored.
 
     Parameters
     ----------
@@ -1046,449 +823,6 @@ def get_store_version(session: Session, user_id: uuid.UUID) -> int:
     Returns
     -------
     int
-        `0` if this user has never saved anything yet (no row exists).
+        `0` for every user who never saved through the old whole-store path.
     """
     return get_version(session, _STORE_VERSION_TABLE, user_id)
-
-
-def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
-    """Atomically verify no other save has landed since the caller's expected version, then bump by one.
-
-    Reads the expected version from `session.info["expected_store_version"]`
-    — stashed once per request by `accounting.api.dependencies`'s
-    `_stash_expected_store_version`, from the client's own
-    `X-Expected-Store-Version` header — rather than taking it as a
-    parameter here, so every one of `save_store`'s call sites gets this
-    check for free without threading a version through each of them
-    individually. See `db.base.check_and_bump_version` for the actual
-    atomic check-and-bump mechanics and the `None`-skips-the-check
-    behavior, shared verbatim with `trades.dashboard.settings.save_settings`.
-
-    Re-stashes the freshly-bumped version back into `session.info` after a
-    successful check, so a request that calls `save_store` more than once
-    stays correct: without this, the second call would re-check against the
-    same now-stale client-submitted version and spuriously raise
-    `StoreVersionConflictError` even though nothing external conflicted —
-    the first call already consumed that version.
-
-    Parameters
-    ----------
-    session
-        An open database session.
-    user_id
-        Whose store this is.
-    """
-    expected_version = session.info.get("expected_store_version")
-    session.info["expected_store_version"] = check_and_bump_version(
-        session, _STORE_VERSION_TABLE, user_id, expected_version
-    )
-
-
-def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> None:
-    """Persist the accounting store, overwriting whatever was saved before.
-
-    Shrinking, one aggregate at a time. Two aggregates are already gone
-    from here: the planning tables (budgets, goals, contributions,
-    automations) live in `accounting.repositories.planning`, and the
-    interpretation tables (transfer rules and their exclusions, category
-    patterns, posting splits and merges, transfer links) live in
-    `accounting.repositories.interpretation` — each writes only the rows a
-    request actually names. `load_store` still *reads* both, and
-    `AccountingStore` still carries their fields, so nothing changes for
-    the read path; what this function writes is what shrank. What remains
-    (accounts, categories, tags, other assets, opening balances, manual
-    transfers, simulator scenarios) still follows the old whole-store
-    contract — the caller always passes the complete desired end-state.
-
-    `Account`/`Category`/`Tag` are upserted and pruned (see
-    `_upsert_and_prune`) since the ledger's own `postings`/`posting_tags`
-    tables foreign-key into them — a real posting keeps its account/
-    category/tag rows alive even across a `save_store` call that no longer
-    mentions them by name in-memory, exactly as it should. The four
-    remaining tables (`other_assets`, `simulator_scenarios`,
-    `opening_balances`, `manual_transfers`) are deleted in full and
-    reinserted in full, inside one transaction — deleted up front, before
-    the account rows they foreign-key into are upserted, so a foreign key
-    is never briefly violated mid-transaction.
-
-    Parameters
-    ----------
-    store
-        The store to persist.
-    session
-        An open database session; `session.commit()` is called on success.
-    user_id
-        Whose store this is.
-
-    See `_check_and_bump_store_version` for the `StoreVersionConflictError`
-    this can raise before touching anything else.
-    """
-    _check_and_bump_store_version(session, user_id)
-    session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
-    session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
-    session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
-    session.query(adb.SimulatorScenario).filter_by(user_id=user_id).delete()
-    session.flush()
-
-    _upsert_and_prune(
-        session,
-        adb.Account,
-        user_id,
-        (
-            adb.Account(
-                id=_account_id(user_id, account.account_id),
-                user_id=user_id,
-                natural_key=account.account_id,
-                name=account.name,
-                kind=account.kind,
-                institution=account.institution,
-                currency=account.currency,
-                last_four=account.last_four,
-                parent_account_id=None,
-                external_ref=account.external_ref,
-                meta=account.meta,
-                closed=account.closed,
-            )
-            for account in store.accounts.values()
-            if account.parent_account_id is None
-        ),
-        set(store.accounts.keys()),
-    )
-    _upsert_and_prune(
-        session,
-        adb.Account,
-        user_id,
-        (
-            adb.Account(
-                id=_account_id(user_id, account.account_id),
-                user_id=user_id,
-                natural_key=account.account_id,
-                name=account.name,
-                kind=account.kind,
-                institution=account.institution,
-                currency=account.currency,
-                last_four=account.last_four,
-                parent_account_id=_account_id(user_id, account.parent_account_id)
-                if account.parent_account_id is not None
-                else None,
-                external_ref=account.external_ref,
-                meta=account.meta,
-                closed=account.closed,
-            )
-            for account in store.accounts.values()
-            if account.parent_account_id is not None
-        ),
-        set(store.accounts.keys()),
-    )
-
-    _upsert_and_prune(
-        session,
-        adb.Category,
-        user_id,
-        (
-            adb.Category(
-                id=_category_id(user_id, category.category_id),
-                user_id=user_id,
-                natural_key=category.category_id,
-                name=category.name,
-                classification=category.classification,
-                parent_category_id=None,
-                color=category.color,
-            )
-            for category in store.categories.values()
-            if category.parent_category_id is None
-        ),
-        set(store.categories.keys()),
-    )
-    _upsert_and_prune(
-        session,
-        adb.Category,
-        user_id,
-        (
-            adb.Category(
-                id=_category_id(user_id, category.category_id),
-                user_id=user_id,
-                natural_key=category.category_id,
-                name=category.name,
-                classification=category.classification,
-                parent_category_id=_category_id(user_id, category.parent_category_id),
-                color=category.color,
-            )
-            for category in store.categories.values()
-            if category.parent_category_id is not None
-        ),
-        set(store.categories.keys()),
-    )
-
-    _upsert_and_prune(
-        session,
-        adb.Tag,
-        user_id,
-        (
-            adb.Tag(id=_tag_id(user_id, tag.tag_id), user_id=user_id, natural_key=tag.tag_id, name=tag.name)
-            for tag in store.tags.values()
-        ),
-        set(store.tags.keys()),
-    )
-
-    session.add_all(
-        adb.OtherAsset(
-            id=derive_id(user_id, "other_assets", asset.asset_id),
-            user_id=user_id,
-            natural_key=asset.asset_id,
-            name=asset.name,
-            value=asset.value,
-            currency=asset.currency,
-            note=asset.note,
-        )
-        for asset in store.other_assets
-    )
-    session.add_all(
-        adb.SimulatorScenario(
-            id=derive_id(user_id, "simulator_scenarios", scenario.scenario_id),
-            user_id=user_id,
-            natural_key=scenario.scenario_id,
-            name=scenario.name,
-            initial_capital=scenario.initial_capital,
-            monthly_contribution=scenario.monthly_contribution,
-            horizon_years=scenario.horizon_years,
-            annual_rate_pct=scenario.annual_rate_pct,
-            compounding_frequency=scenario.compounding_frequency,
-            currency=scenario.currency,
-        )
-        for scenario in store.simulator_scenarios
-    )
-    session.add_all(
-        adb.OpeningBalance(
-            id=derive_id(user_id, "opening_balances", ob.account_id),
-            user_id=user_id,
-            account_id=_account_id(user_id, ob.account_id),
-            amount=ob.amount,
-            as_of_date=ob.as_of_date,
-        )
-        for ob in store.opening_balances.values()
-    )
-    session.add_all(
-        adb.ManualTransfer(
-            id=derive_id(user_id, "manual_transfers", mt.transfer_id),
-            user_id=user_id,
-            natural_key=mt.transfer_id,
-            date=mt.date,
-            from_account_id=_account_id(user_id, mt.from_account_id),
-            to_account_id=_account_id(user_id, mt.to_account_id),
-            from_amount=mt.from_amount,
-            to_amount=mt.to_amount,
-            description=mt.description,
-        )
-        for mt in store.manual_transfers
-    )
-    session.commit()
-
-
-def update_account_fields(session: Session, user_id: uuid.UUID, account: Account) -> bool:
-    """Update one account's editable columns in place, touching no other account.
-
-    Scoped counterpart to routing an account edit through `save_store`,
-    whose `_upsert_and_prune` re-merges *every* account from the caller's
-    (possibly stale) snapshot — so editing account A could silently revert
-    a concurrent edit to account B. This fetches only `account.account_id`'s
-    row and mutates its columns, so an UPDATE is issued for that one row
-    alone. `parent_account_id` is intentionally not touched (it isn't part
-    of the edit surface).
-
-    Returns
-    -------
-    bool
-        `True` if the account existed and was updated, `False` otherwise.
-    """
-    row = session.get(adb.Account, _account_id(user_id, account.account_id))
-    if row is None or row.user_id != user_id:
-        return False
-    row.name = account.name
-    row.kind = account.kind
-    row.institution = account.institution
-    row.currency = account.currency
-    row.last_four = account.last_four
-    row.external_ref = account.external_ref
-    row.meta = account.meta
-    row.closed = account.closed
-    session.flush()
-    return True
-
-
-def set_account_closed(session: Session, user_id: uuid.UUID, account_id: str, *, closed: bool) -> bool:
-    """Flip one account's `closed` flag in place, touching no other account.
-
-    Returns
-    -------
-    bool
-        `True` if the account existed, `False` otherwise.
-    """
-    row = session.get(adb.Account, _account_id(user_id, account_id))
-    if row is None or row.user_id != user_id:
-        return False
-    row.closed = closed
-    session.flush()
-    return True
-
-
-def remove_account(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
-    """Delete one account, touching no other. Idempotent, no version check.
-
-    The caller checks the no-postings precondition first; a delete that
-    still violates a foreign key (a posting somehow references it) fails
-    loudly, same as through the whole-store path.
-
-    Returns
-    -------
-    bool
-        `True` if a row was actually deleted, `False` if none existed.
-    """
-    deleted = session.query(adb.Account).filter_by(id=_account_id(user_id, account_id), user_id=user_id).delete()
-    session.flush()
-    return deleted > 0
-
-
-def upsert_opening_balance(opening_balance: OpeningBalance, session: Session, user_id: uuid.UUID) -> None:
-    """Insert-or-update one account's opening balance, touching no other. Scoped like `upsert_budget`.
-
-    Parameters
-    ----------
-    opening_balance
-        The opening balance to persist; its `account_id` names the account.
-    session
-        An open database session; `session.commit()` is called on success.
-    user_id
-        Whose opening balance this is.
-    """
-    session.execute(
-        text(
-            """
-            INSERT INTO accounting.opening_balances (id, user_id, account_id, amount, as_of_date)
-            VALUES (:id, :user_id, :account_id, :amount, :as_of_date)
-            ON CONFLICT (id) DO UPDATE SET
-                amount = EXCLUDED.amount,
-                as_of_date = EXCLUDED.as_of_date
-            """
-        ),
-        {
-            "id": str(derive_id(user_id, "opening_balances", opening_balance.account_id)),
-            "user_id": str(user_id),
-            "account_id": str(_account_id(user_id, opening_balance.account_id)),
-            "amount": opening_balance.amount,
-            "as_of_date": opening_balance.as_of_date,
-        },
-    )
-    session.commit()
-
-
-def remove_opening_balance(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
-    """Delete one account's opening balance, touching no other. Idempotent, no version check.
-
-    Returns
-    -------
-    bool
-        `True` if a row was actually deleted, `False` if none existed.
-    """
-    row_id = derive_id(user_id, "opening_balances", account_id)
-    deleted = session.query(adb.OpeningBalance).filter_by(id=row_id, user_id=user_id).delete()
-    session.flush()
-    return deleted > 0
-
-
-def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Session, user_id: uuid.UUID) -> None:
-    """Insert manual-transfer rows additively, touching no existing transfer.
-
-    Scoped counterpart to routing these through `save_store` (which
-    blanket-deletes and reinserts every manual transfer from the caller's
-    snapshot — so recording a transfer from a stale snapshot could drop a
-    concurrently-added one). Each row is keyed by its own derived id, so
-    re-recording the same transfer is a harmless upsert rather than a
-    duplicate.
-
-    Parameters
-    ----------
-    transfers
-        The transfers to record.
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose transfers these are.
-    """
-    for transfer in transfers:
-        session.execute(
-            text(
-                """
-                INSERT INTO accounting.manual_transfers
-                    (id, user_id, natural_key, date, from_account_id, to_account_id,
-                     from_amount, to_amount, description)
-                VALUES
-                    (:id, :user_id, :natural_key, :date, :from_account_id, :to_account_id,
-                     :from_amount, :to_amount, :description)
-                ON CONFLICT (id) DO UPDATE SET
-                    date = EXCLUDED.date,
-                    from_account_id = EXCLUDED.from_account_id,
-                    to_account_id = EXCLUDED.to_account_id,
-                    from_amount = EXCLUDED.from_amount,
-                    to_amount = EXCLUDED.to_amount,
-                    description = EXCLUDED.description
-                """
-            ),
-            {
-                "id": str(derive_id(user_id, "manual_transfers", transfer.transfer_id)),
-                "user_id": str(user_id),
-                "natural_key": transfer.transfer_id,
-                "date": transfer.date,
-                "from_account_id": str(_account_id(user_id, transfer.from_account_id)),
-                "to_account_id": str(_account_id(user_id, transfer.to_account_id)),
-                "from_amount": transfer.from_amount,
-                "to_amount": transfer.to_amount,
-                "description": transfer.description,
-            },
-        )
-    session.flush()
-
-
-def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
-    """Delete one tag, touching no other. Idempotent, no version check.
-
-    A tag still applied to postings is removed from them too — `posting_tags`
-    and `posting_override_tags` both foreign-key `tags.id` with `ON DELETE
-    CASCADE`, the same cascade the old whole-list `PUT /tags` prune relied on.
-
-    Returns
-    -------
-    bool
-        `True` if a row was actually deleted, `False` if none existed.
-    """
-    deleted = session.query(adb.Tag).filter_by(id=_tag_id(user_id, tag_id), user_id=user_id).delete()
-    session.flush()
-    return deleted > 0
-
-
-def delete_other_asset(session: Session, user_id: uuid.UUID, asset_id: str) -> bool:
-    """Delete one manually-entered asset, touching no other. Idempotent, no version check.
-
-    Returns
-    -------
-    bool
-        `True` if a row was actually deleted, `False` if none existed.
-    """
-    row_id = derive_id(user_id, "other_assets", asset_id)
-    deleted = session.query(adb.OtherAsset).filter_by(id=row_id, user_id=user_id).delete()
-    session.flush()
-    return deleted > 0
-
-
-def delete_simulator_scenario(session: Session, user_id: uuid.UUID, scenario_id: str) -> bool:
-    """Delete one saved simulator scenario, touching no other. Idempotent, no version check.
-
-    Returns
-    -------
-    bool
-        `True` if a row was actually deleted, `False` if none existed.
-    """
-    row_id = derive_id(user_id, "simulator_scenarios", scenario_id)
-    deleted = session.query(adb.SimulatorScenario).filter_by(id=row_id, user_id=user_id).delete()
-    session.flush()
-    return deleted > 0

@@ -355,8 +355,8 @@ def reconcile_and_persist_rule_links(
     session
         An open database session; `session.commit()` is called only if at
         least one new link was found. Every caller of this function commits
-        itself first (via `_write_ledger`, `save_store`, or a scoped
-        repository write, persisting whatever it just changed), so this
+        itself first (via `_write_ledger` or a scoped repository write,
+        persisting whatever it just changed), so this
         function's own first read needs Row-Level Security re-scoped — see
         `db.session.set_rls_user`'s own docstring for why that mid-request
         commit alone breaks it.

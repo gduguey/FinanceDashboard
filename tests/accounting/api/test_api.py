@@ -3453,20 +3453,15 @@ def test_get_store_returns_a_version(client) -> None:
     assert isinstance(response.json()["version"], int)
 
 
-def test_mutation_with_the_current_expected_version_succeeds_and_bumps(client) -> None:
-    version = client.get("/api/accounting/store").json()["version"]
-    response = client.post(
-        "/api/accounting/categories",
-        json={"name": "Custom", "classification": "expense", "color": "#000000"},
-        headers={"X-Expected-Store-Version": str(version)},
-    )
-    assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["version"] == version + 1
+def test_mutation_with_a_stale_expected_version_no_longer_409s(client) -> None:
+    """The whole-store version check went with `save_store`, so a stale header is accepted and ignored.
 
-
-def test_mutation_with_a_stale_expected_version_409s(client) -> None:
+    Every write is now either scoped to the rows a request names or guarded by its own row version
+    (`PATCH /transfer-rules/{rule_id}` and friends), so there is nothing left for one shared counter to
+    guard — and nothing left to make two genuinely unrelated edits conflict.
+    """
     version = client.get("/api/accounting/store").json()["version"]
-    # Someone else's save lands first.
+    # Someone else's write lands first.
     client.post("/api/accounting/categories", json={"name": "Other", "classification": "expense", "color": "#111111"})
 
     response = client.post(
@@ -3474,8 +3469,8 @@ def test_mutation_with_a_stale_expected_version_409s(client) -> None:
         json={"name": "Custom", "classification": "expense", "color": "#000000"},
         headers={"X-Expected-Store-Version": str(version)},
     )
-    assert response.status_code == 409
-    assert "changed elsewhere" in response.json()["detail"]
+    assert response.status_code == 200
+    assert {"expense:custom", "expense:other"} <= set(client.get("/api/accounting/store").json()["categories"])
 
 
 def test_mutation_with_no_expected_version_header_still_succeeds(client) -> None:

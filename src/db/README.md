@@ -142,10 +142,15 @@ below.
 
 There used to be exactly one write path: `accounting.store.save_store`,
 which every mutating endpoint funnelled through, always passing the
-complete desired end-state of *every* table. That is being dissolved one
-aggregate at a time into per-aggregate repositories that write only the
-rows a request actually names:
+complete desired end-state of *every* table. It is gone. Every accounting
+table is now owned by one per-aggregate repository under
+`accounting.repositories`, each writing only the rows a request actually
+names:
 
+- `accounting.repositories.accounts` owns `accounts`,
+  `opening_balances`, `manual_transfers`;
+- `accounting.repositories.taxonomy` owns `categories`, `tags`, and — for
+  want of a better home so far — `other_assets`, `simulator_scenarios`;
 - `accounting.repositories.planning` owns `budgets`, `general_budgets`,
   `goals`, `goal_contributions`, `recurring_additions`,
   `withdrawal_priority_entries`;
@@ -154,13 +159,16 @@ rows a request actually names:
   `posting_split_legs`, `posting_merges`, `posting_merge_duplicates`,
   `transfer_links`, `transfer_linked_transactions`, `posting_overrides`,
   `posting_override_tags`, `posting_pending_suggestions`,
-  `dismissed_suggestions`;
-- `save_store` still owns the rest: `accounts`, `categories`, `tags`,
-  `other_assets`, `simulator_scenarios`, `opening_balances`,
-  `manual_transfers`.
+  `dismissed_suggestions`.
 
-`load_store` still *reads* all three groups into one `AccountingStore`, so
-the read path is unchanged — only the write side split up.
+`accounting.store.load_store` still *reads* all four groups into one
+`AccountingStore` — the dashboard genuinely needs most of them at once —
+so the read path is unchanged. Only the write side split up. One
+consequence worth knowing: the whole-store save counter
+(`accounting.store_versions`) went with `save_store`, since its
+granularity is exactly what made two unrelated edits conflict. Writes are
+guarded by row scope, or by a per-row `version` column where a real
+lost-update risk exists (see `db.base.check_and_bump_row_version`).
 
 **Wipe-and-reinsert**: delete every row this user owns in a table, then
 insert fresh rows for everything currently held in memory. Not "diff and
@@ -177,23 +185,28 @@ against by others in the same wipe-and-reinsert set (e.g. `posting_split_legs`
 which is exactly why the derived id must stay stable: a reinserted parent
 keeps its id, so a child's foreign key still resolves across the rewrite:
 
-- `save_store`, on every call: `manual_transfers`, `opening_balances`,
+Every one of them is now behind a `replace_*` function that runs only
+when a request genuinely submits that whole list:
+
+- `repositories.accounts` (`PUT /accounts/{id}/opening-balance`'s
+  whole-list sibling, and the store round-trip): `opening_balances`,
+  `manual_transfers`.
+- `repositories.taxonomy` (`PUT /other-assets`, `PUT /simulator/scenarios`):
   `other_assets`, `simulator_scenarios`.
-- `repositories.planning`, only when a request asks for a whole-list
-  replace (`PUT /budgets`, `PUT /goals`, ...): `goal_contributions`,
-  `recurring_additions`, `withdrawal_priority_entries`, `goals`,
-  `budgets`, `general_budgets`.
-- `repositories.interpretation`, likewise (`PUT /category-patterns`,
+- `repositories.planning` (`PUT /budgets`, `PUT /goals`, ...):
+  `goal_contributions`, `recurring_additions`,
+  `withdrawal_priority_entries`, `goals`, `budgets`, `general_budgets`.
+- `repositories.interpretation` (`PUT /category-patterns`,
   `PUT /posting-merges`, ...): `posting_split_legs`, `posting_splits`,
   `posting_merge_duplicates`, `posting_merges`, `transfer_links`,
   `transfer_linked_transactions`.
 
-Note the difference the split makes: `save_store`'s four are wiped on
-*every* save, however unrelated; a repository's are wiped only when a
-request genuinely submits that whole list. Single-entity endpoints
-(`POST /budgets`, `POST /transfer-rules`, `PUT /postings/{id}/split`, ...)
-go through the scoped `upsert_*`/`insert_*`/`remove_*` functions instead,
-which touch one row's worth of state and nothing else.
+Note the difference the split makes: these used to be wiped on *every*
+save, however unrelated, because one function wrote every table at once.
+Single-entity endpoints (`POST /budgets`, `POST /transfer-rules`,
+`PUT /postings/{id}/split`, ...) go through the scoped
+`upsert_*`/`insert_*`/`remove_*` functions instead, which touch one row's
+worth of state and nothing else.
 
 Two tables in the interpretation set are neither: `transfer_rules` and
 `category_patterns` carry a `version` column that per-row optimistic
@@ -202,20 +215,27 @@ concurrency depends on, so they are upserted by raw
 then pruned — see `repositories.interpretation.replace_transfer_rules`.
 `dismissed_suggestions` is only ever `session.merge()`d one row at a time.
 
-**Upsert-and-prune** (`accounting.store._upsert_and_prune`): for each row
+**Upsert-and-prune** (`db.base.upsert_and_prune`): for each row
 currently held in memory, `session.merge()` it — update it in place if a
 row with that `id` already exists, insert it if not — then, separately,
 delete only whichever rows *used to* exist for this user but aren't in
 the new set anymore. Nothing not mentioned in the new state gets touched;
-nothing mentioned gets torn down and rebuilt. `save_store` uses this for
-exactly three tables — `accounts`, `categories`, `tags` — because
-`postings.account_id`/`category_id`/`subcategory_id` and
+nothing mentioned gets torn down and rebuilt. Exactly three tables use
+this — `accounts` and `categories` (`repositories.accounts`/`taxonomy`'s
+`replace_accounts`/`replace_categories`) and `tags` (`replace_tags`) —
+because `postings.account_id`/`category_id`/`subcategory_id` and
 `posting_tags.tag_id` are real foreign keys into them. Wiping these the
 same way as the 16 above would mean, for one instant mid-transaction, a
 category your real transaction history still points at doesn't exist —
 Postgres would reject that outright (see "What happens if you delete
-something still in use" below), turning every single save into a hard
+something still in use" below), turning every single write into a hard
 failure the moment any account/category/tag existed at all.
+
+`accounts` and `categories` additionally reference *themselves*
+(`parent_account_id`, `parent_category_id`), so both `replace_*` functions
+run the upsert in two passes — parents first, children second — while
+pruning against the complete desired set on both passes, so a child
+written in the second pass is never swept up by the first pass's prune.
 
 **Which technique to use, for a new table**: wipe-and-reinsert *unless*
 something else foreign-keys against this table's `id` — in which case it
@@ -235,8 +255,8 @@ everything" cheap enough to do on every save without it mattering.
 
 ## `transactions`/`postings`: written once at import time, never wiped
 
-Your actual transaction history isn't part of either pattern above.
-`save_store` never mentions `transactions` or `postings` at all — they're
+Your actual transaction history isn't part of either pattern above. No
+repository mentions `transactions` or `postings` at all — they're
 owned by a completely separate write path,
 `accounting.importers.ingest._write_ledger`, called only when you import
 a statement (`ingest_csv`, the canonical CSV/Excel importer) or rebuild

@@ -18,8 +18,9 @@ from accounting.importers.ingest import _write_ledger, load_ledger
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import Account, Posting, TransferRule
+from accounting.repositories.accounts import replace_accounts
 from accounting.repositories.interpretation import replace_transfer_rules
-from accounting.store import load_store, save_store
+from accounting.store import load_store
 
 if TYPE_CHECKING:
     import uuid
@@ -31,15 +32,13 @@ def _register_account(session: Session, user_id: uuid.UUID, account_id: str, kin
     store = load_store(session, user_id=user_id)
     if account_id in store.accounts:
         return
-    store = store.model_copy(
-        update={
-            "accounts": {
-                **store.accounts,
-                account_id: Account(account_id=account_id, name=account_id, kind=kind, institution="x", currency="USD"),  # type: ignore[arg-type]
-            }
-        }
+    replace_accounts(
+        session,
+        user_id,
+        [Account(account_id=account_id, name=account_id, kind=kind, institution="x", currency="USD")],  # type: ignore[arg-type]
+        prune=False,
     )
-    save_store(store, session, user_id=user_id)
+    session.commit()
 
 
 def _placeholder_posting(

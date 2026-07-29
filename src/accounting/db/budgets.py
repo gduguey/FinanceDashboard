@@ -59,12 +59,14 @@ class GeneralBudget(Base, Timestamped):
     """A category's (or subcategory's) spending target applied to every month alike.
 
     Its `id` is derived deterministically from `(category_id, subcategory_id)`
-    by `store`'s `derive_id` call, not the model's own `uuid.uuid4` default
-    (which is never actually used): `save_store` wipes and reinserts this
-    table on every save, so a stable, content-derived id is what lets a row
-    survive that rewrite unchanged. The unique index below (coalescing
-    `subcategory_id` to a fixed sentinel) still enforces "one general budget
-    per category/subcategory".
+    by `db.base.derive_id`, not the model's own `uuid.uuid4` default (which is
+    never actually used): `repositories.planning.replace_general_budgets` wipes
+    and reinserts this table whenever a client submits the whole list, so a
+    stable, content-derived id is what lets a row survive that rewrite
+    unchanged — and what lets `upsert_general_budget` address one row by its
+    category pair alone. The unique index below (coalescing `subcategory_id`
+    to a fixed sentinel) still enforces "one general budget per
+    category/subcategory".
     """
 
     __tablename__ = "general_budgets"

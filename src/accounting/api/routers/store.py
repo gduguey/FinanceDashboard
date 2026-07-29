@@ -61,6 +61,15 @@ from accounting.models import (
     Tag,
     TransferRule,
 )
+from accounting.repositories.accounts import (
+    insert_manual_transfers,
+    remove_account,
+    remove_opening_balance,
+    replace_accounts,
+    set_account_closed,
+    update_account_fields,
+    upsert_opening_balance,
+)
 from accounting.repositories.interpretation import (
     delete_category_pattern,
     delete_transfer_rule,
@@ -82,28 +91,29 @@ from accounting.repositories.planning import (
     upsert_budget,
     upsert_general_budget,
 )
-from accounting.store import (
-    category_ids_to_delete,
+from accounting.repositories.taxonomy import (
     delete_other_asset,
     delete_simulator_scenario,
     delete_tag,
+    insert_other_asset,
+    insert_simulator_scenario,
+    remap_tag_ids,
+    replace_categories,
+    replace_other_assets,
+    replace_simulator_scenarios,
+    replace_tags,
+)
+from accounting.store import (
+    category_ids_to_delete,
     get_store_version,
-    insert_manual_transfers,
     load_store,
     normalize_categories,
     plan_category_rename,
     plan_tag_rename,
     remap_category_ids,
-    remap_tag_ids,
-    remove_account,
-    remove_opening_balance,
-    save_store,
     seed_new_user_defaults,
-    set_account_closed,
     slugify,
     uncategorize_category_ids,
-    update_account_fields,
-    upsert_opening_balance,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -164,6 +174,16 @@ def get_currencies() -> list[Currency]:
     return list(SUPPORTED_CURRENCIES.values())
 
 
+def _added_categories(before: dict[str, Category], after: dict[str, Category]) -> list[Category]:
+    """Which categories a create actually introduced or changed, so only those need writing.
+
+    Returns
+    -------
+    list[Category]
+    """
+    return [category for category_id, category in after.items() if before.get(category_id) != category]
+
+
 @router.post("/categories")
 def post_category(
     request: CategoryCreate,
@@ -216,10 +236,13 @@ def post_category(
         parent_category_id=None,
         color=request.color,
     )
-    store = store.model_copy(
-        update={"categories": normalize_categories({**store.categories, category_id: new_category})}
-    )
-    save_store(store, session, user_id)
+    # Only the rows this create actually adds get written — never the rest of
+    # the tree, and never a prune. `normalize_categories` runs because it can
+    # mint an "Other" catch-all alongside a new category, so "what this adds"
+    # isn't always just the one row the request named.
+    categories = normalize_categories({**store.categories, category_id: new_category})
+    replace_categories(session, user_id, _added_categories(store.categories, categories), prune=False)
+    session.commit()
     return new_category
 
 
@@ -273,10 +296,11 @@ def post_subcategory(
         parent_category_id=parent_id,
         color=request.color,
     )
-    store = store.model_copy(
-        update={"categories": normalize_categories({**store.categories, category_id: new_category})}
-    )
-    save_store(store, session, user_id)
+    # See `post_category`: additive only, and `normalize_categories` may add
+    # the parent's "Other" catch-all alongside this first real subcategory.
+    categories = normalize_categories({**store.categories, category_id: new_category})
+    replace_categories(session, user_id, _added_categories(store.categories, categories), prune=False)
+    session.commit()
     return new_category
 
 
@@ -295,10 +319,14 @@ def put_categories(
         include an "Other" subcategory the caller didn't submit, or omit
         one it did (see `store.normalize_categories`).
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"categories": normalize_categories(categories)})
-    save_store(store, session, user_id)
-    return store.categories
+    # The placeholder accounts a brand-new user needs are seeded alongside the
+    # default category tree, and replacing the tree below would otherwise make
+    # `seed_new_user_defaults` a permanent no-op for them.
+    seed_new_user_defaults(session, user_id)
+    normalized = normalize_categories(categories)
+    replace_categories(session, user_id, normalized.values())
+    session.commit()
+    return normalized
 
 
 def _posting_count_for_categories(category_ids: set[str], session: Session, user_id: uuid.UUID) -> int:
@@ -383,18 +411,18 @@ def delete_category(
     store = uncategorize_category_ids(store, ids_to_delete)
     store = store.model_copy(update={"categories": normalize_categories(remaining_categories)})
 
-    # The planning and interpretation tables both reference categories and are
-    # written by their own repositories, so their cleared/dropped rows land
-    # before `save_store` gets to the category rows themselves.
+    # The planning and interpretation tables both reference categories, so their
+    # cleared/dropped rows land before `replace_categories` prunes the category
+    # rows they used to point at.
     replace_budgets(session, user_id, store.budgets)
     replace_general_budgets(session, user_id, store.general_budgets.values())
     replace_category_patterns(session, user_id, store.category_patterns.values())
     replace_posting_splits(session, user_id, store.posting_splits.values())
 
-    # Every reference to a deleted category must be cleared *before* `save_store`
-    # deletes that category row below — postings and manual overrides both
-    # foreign-key into `categories`, so the delete would otherwise fail with a
-    # constraint violation (same ordering `post_category_rename` needs).
+    # Every reference to a deleted category must be cleared *before*
+    # `replace_categories` prunes that category row below — postings and manual
+    # overrides both foreign-key into `categories`, so the prune would otherwise
+    # fail with a constraint violation (same ordering `post_category_rename` needs).
     uncategorize_ledger_postings(ids_to_delete, session, user_id)
 
     def clear(field_id: str | None) -> str | None:
@@ -413,15 +441,13 @@ def delete_category(
     }
     save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
-    # Deliberately kept on the whole-store version check (not scoped, not opted out), for the same
-    # reason category/tag *rename* is: deleting a category is a category-graph-wide cascade — it drops
-    # every dependent Budget/GeneralBudget/CategoryPattern, clears PostingSplitLeg refs, and
-    # uncategorizes every posting that used it. The operation genuinely relates to much of the
-    # store, so whole-store optimistic concurrency is the correct granularity here (see the versioning
-    # doc on matching granularity to the operation's true scope), and opting out would remove the only
-    # thing stopping a concurrent delete of a *different* category from resurrecting it via the
-    # category re-merge in `save_store`.
-    save_store(store, session, user_id)
+    # Last, and with a prune: this is the only write here that actually removes
+    # the category rows, and every reference to them was cleared above. The
+    # whole tree is passed because a delete genuinely is category-graph-wide —
+    # a top-level delete takes its subcategories with it, and the survivors'
+    # "Other" catch-alls were re-derived by `normalize_categories` above.
+    replace_categories(session, user_id, store.categories.values())
+    session.commit()
     return CategoryDeleteResponse(categories=store.categories, uncategorized_posting_count=posting_count)
 
 
@@ -527,16 +553,17 @@ def post_category_rename(
     store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
 
     # Repointed budgets, category patterns and posting splits are written by
-    # their own repositories, before `save_store` below removes the merged-away
-    # category rows they used to reference.
+    # their own repositories, before `replace_categories` below prunes the
+    # merged-away category rows they used to reference.
     replace_budgets(session, user_id, store.budgets)
     replace_general_budgets(session, user_id, store.general_budgets.values())
     replace_category_patterns(session, user_id, store.category_patterns.values())
     replace_posting_splits(session, user_id, store.posting_splits.values())
 
-    # Every reference to a merged-away category must be repointed *before* `save_store`
-    # deletes that category row below — postings and manual overrides both foreign-key
-    # into `categories`, so the delete would otherwise fail with a constraint violation.
+    # Every reference to a merged-away category must be repointed *before*
+    # `replace_categories` prunes that category row below — postings and manual
+    # overrides both foreign-key into `categories`, so the prune would otherwise
+    # fail with a constraint violation.
     remap_ledger_category_ids(id_remap, session, user_id)
     if id_remap:
 
@@ -561,7 +588,10 @@ def post_category_rename(
         }
         save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
-    save_store(store, session, user_id)
+    # With a prune: a merge removes the merged-away category rows, and every
+    # reference to them was repointed above.
+    replace_categories(session, user_id, store.categories.values())
+    session.commit()
 
     return CategoryRenameResponse(categories=store.categories, merged=bool(id_remap))
 
@@ -579,10 +609,12 @@ def put_tags(
     dict[str, Tag]
         The tags just persisted, keyed by `tag_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"tags": tags})
-    save_store(store, session, user_id)
-    return store.tags
+    # See `put_categories`: a brand-new user's placeholder accounts and default
+    # category tree are seeded together, and only on first contact.
+    seed_new_user_defaults(session, user_id)
+    replace_tags(session, user_id, tags.values())
+    session.commit()
+    return tags
 
 
 @router.post("/tags")
@@ -623,8 +655,8 @@ def post_tag(
             status_code=409, detail=f"The name {request.name!r} is too similar to an existing tag — pick another"
         )
     new_tag = Tag(tag_id=tag_id, name=request.name)
-    store = store.model_copy(update={"tags": {**store.tags, tag_id: new_tag}})
-    save_store(store, session, user_id)
+    replace_tags(session, user_id, [new_tag], prune=False)
+    session.commit()
     return new_tag
 
 
@@ -725,15 +757,17 @@ def post_tag_rename(
         raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
 
     tags, id_remap = plan_tag_rename(store.tags, tag_id, request.name)
-    store = store.model_copy(update={"tags": tags})
 
-    # Every reference to a merged-away tag must be repointed *before* `save_store`
-    # deletes that tag row below — `posting_tags` foreign-keys into `tags`, so the
-    # delete would otherwise fail with a constraint violation.
+    # Every reference to a merged-away tag must be repointed *before*
+    # `replace_tags` prunes that tag row below — `posting_tags` foreign-keys
+    # into `tags`, and while its cascade would let the delete through, it would
+    # take the postings' tag rows with it instead of moving them.
     remap_tag_ids(id_remap, session, user_id)
-    save_store(store, session, user_id)
+    # With a prune: a merge removes the merged-away tag row itself.
+    replace_tags(session, user_id, tags.values())
+    session.commit()
 
-    return TagRenameResponse(tags=store.tags, merged=bool(id_remap))
+    return TagRenameResponse(tags=tags, merged=bool(id_remap))
 
 
 def _transfer_rule_id(description_contains: str, account_id: str | None, counterparty_account_id: str | None) -> str:
@@ -1037,9 +1071,7 @@ def post_other_asset(
         currency=request.currency,
         note=request.note,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"other_assets": [*store.other_assets, asset]})
-    save_store(store, session, user_id)
+    insert_other_asset(session, user_id, asset)
     return asset
 
 
@@ -1056,10 +1088,9 @@ def put_other_assets(
     list[OtherAsset]
         The assets just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"other_assets": other_assets})
-    save_store(store, session, user_id)
-    return store.other_assets
+    replace_other_assets(session, user_id, other_assets)
+    session.commit()
+    return other_assets
 
 
 @router.delete("/other-assets/{asset_id}")
@@ -1292,9 +1323,7 @@ def post_simulator_scenario(
         compounding_frequency=request.compounding_frequency,
         currency=request.currency,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"simulator_scenarios": [*store.simulator_scenarios, scenario]})
-    save_store(store, session, user_id)
+    insert_simulator_scenario(session, user_id, scenario)
     return scenario
 
 
@@ -1311,10 +1340,9 @@ def put_simulator_scenarios(
     list[SimulatorScenario]
         The scenarios just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"simulator_scenarios": scenarios})
-    save_store(store, session, user_id)
-    return store.simulator_scenarios
+    replace_simulator_scenarios(session, user_id, scenarios)
+    session.commit()
+    return scenarios
 
 
 @router.delete("/simulator/scenarios/{scenario_id}")
@@ -1376,8 +1404,8 @@ def post_account(
         external_ref=account.external_ref,
         meta=account.meta,
     )
-    store = store.model_copy(update={"accounts": {**store.accounts, new_account.account_id: new_account}})
-    save_store(store, session, user_id)
+    replace_accounts(session, user_id, [new_account], prune=False)
+    session.commit()
     return new_account
 
 

@@ -29,7 +29,8 @@ from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.replay import validate_balanced
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS
-from accounting.store import load_store, normalize_categories, save_store
+from accounting.repositories.taxonomy import replace_categories
+from accounting.store import load_store, normalize_categories
 from accounting.utils.statement_archive import StatementArchive
 from db.base import derive_id, natural_keys_by_id
 
@@ -176,8 +177,8 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     wholesale and reinserted — `manual_overrides`, `posting_splits`,
     `posting_merges`, `transfer_links`, `transfer_rule_exclusions`, and
     `goal_contributions.source_posting_id` all foreign-key into them (see
-    `accounting.store.save_store`'s own `_upsert_and_prune` for the same
-    reasoning applied to accounts, categories, and tags). Pruning a
+    `db.base.upsert_and_prune` for the same reasoning applied to accounts,
+    categories, and tags). Pruning a
     transaction still referenced by one of these needs `transfer_links`
     handled explicitly (see below); `posting_merges`/`transfer_rule_exclusions`
     lean on `ondelete="CASCADE"` instead, since each references its
@@ -523,7 +524,10 @@ def _fallback_to_canonical_csv(
     canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
     if canonical_result.new_categories:
         merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
-        save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)
+        # Additive only — an import can mint a category it met in a file, never
+        # remove one — so the merged tree is upserted without a prune.
+        replace_categories(session, user_id, merged_categories.values(), prune=False)
+        session.commit()
     return canonical_result.postings, canonical_result.skipped_rows
 
 
@@ -774,7 +778,9 @@ def _apply_canonical_outcome(
     """
     if outcome.new_categories:
         merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
-        save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)
+        # Additive only, same as `_standardize_canonical`'s own new categories.
+        replace_categories(session, user_id, merged_categories.values(), prune=False)
+        session.commit()
 
     existing = load_ledger(session, user_id=user_id)
     merged = _merge_ledger(existing, outcome.postings)

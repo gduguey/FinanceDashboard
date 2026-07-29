@@ -10,8 +10,10 @@ conflict with each other.
 The boundaries here are the aggregate roots the DB-design audit's target
 shape names, not the tables themselves:
 
-- `accounts` — accounts and their opening balances.
-- `dimensions` — the reference data accounts and postings point at.
+- `accounts` — accounts, their opening balances, and the manual
+  transfers between them.
+- `taxonomy` — the reference data postings point at (categories, tags),
+  plus two standalone user-entered lists with no better home yet.
 - `planning` — budgets, goals, and the automations that fund them.
 - `interpretation` — everything layered *on top of* the immutable ledger.
 
