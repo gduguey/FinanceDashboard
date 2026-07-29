@@ -1,0 +1,517 @@
+"""Category endpoints — the category tree plus its create, rename-with-merge and delete-with-uncategorize writes."""
+
+from __future__ import annotations
+
+import uuid
+from collections import Counter
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from accounting.api.api_models import (
+    BudgetToDeletePreview,
+    CategoryCreate,
+    CategoryDeletePreviewResponse,
+    CategoryDeleteResponse,
+    CategoryRenamePreviewResponse,
+    CategoryRenameRequest,
+    CategoryRenameResponse,
+    SubcategoryCreate,
+)
+from accounting.importers.ingest import load_ledger
+from accounting.models import Budget, Category
+from accounting.repositories.interpretation import (
+    load_category_patterns,
+    load_overrides,
+    load_posting_splits,
+    replace_category_patterns,
+    replace_posting_splits,
+    save_overrides_for_postings,
+)
+from accounting.repositories.planning import load_budgets, replace_budgets
+from accounting.repositories.taxonomy import replace_categories, retire_categories
+from accounting.taxonomy import (
+    CategoryReferences,
+    category_ids_to_delete,
+    normalize_categories,
+    plan_category_rename,
+    remap_category_ids,
+    seed_new_user_defaults,
+    seeded_categories,
+    slugify,
+    uncategorize_category_ids,
+)
+from db.current_user import get_current_user_id
+from db.session import get_db
+
+router = APIRouter()
+
+
+def _added_categories(before: dict[str, Category], after: dict[str, Category]) -> list[Category]:
+    """Which categories a create actually introduced or changed, so only those need writing.
+
+    Returns
+    -------
+    list[Category]
+    """
+    return [category for category_id, category in after.items() if before.get(category_id) != category]
+
+
+@router.post("/categories")
+def post_category(
+    request: CategoryCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Category:
+    """Create a new top-level category, refusing a same-classification, same-name duplicate.
+
+    Unlike `put_categories` (a whole-tree replace, where a client-computed
+    id that happens to collide with an existing one silently overwrites
+    it), this only ever adds a category — a name collision is rejected
+    outright rather than clobbering the existing entry.
+
+    Returns
+    -------
+    Category
+        The category just persisted, including its computed `category_id`.
+
+    Raises
+    ------
+    HTTPException
+        409 if a top-level category of the same classification already
+        has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
+    """
+    existing_categories = seeded_categories(session, user_id)
+    normalized_name = request.name.strip().lower()
+    collision = any(
+        category.parent_category_id is None
+        and category.classification == request.classification
+        and category.name.strip().lower() == normalized_name
+        for category in existing_categories.values()
+    )
+    if collision:
+        raise HTTPException(
+            status_code=409, detail=f"A {request.classification} category named {request.name!r} already exists"
+        )
+
+    category_id = f"{request.classification}:{slugify(request.name)}"
+    if category_id in existing_categories:
+        # The name-collision check above is case-insensitive on the name, but the
+        # id is a lossy slug — two distinct names can still collide on it and
+        # silently overwrite the existing category. Reject instead.
+        raise HTTPException(
+            status_code=409, detail=f"The name {request.name!r} is too similar to an existing category — pick another"
+        )
+    new_category = Category(
+        category_id=category_id,
+        name=request.name,
+        classification=request.classification,
+        parent_category_id=None,
+        color=request.color,
+    )
+    # Only the rows this create actually adds get written — never the rest of
+    # the tree, and never a prune. `normalize_categories` runs because it can
+    # mint an "Other" catch-all alongside a new category, so "what this adds"
+    # isn't always just the one row the request named.
+    categories = normalize_categories({**existing_categories, category_id: new_category})
+    replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
+    session.commit()
+    return new_category
+
+
+@router.post("/categories/{parent_id}/subcategories")
+def post_subcategory(
+    parent_id: str,
+    request: SubcategoryCreate,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Category:
+    """Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
+
+    Returns
+    -------
+    Category
+        The subcategory just persisted, including its computed `category_id`.
+
+    Raises
+    ------
+    HTTPException
+        404 if `parent_id` doesn't exist; 409 if a sibling subcategory
+        already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
+    """
+    existing_categories = seeded_categories(session, user_id)
+    parent = existing_categories.get(parent_id)
+    if parent is None:
+        raise HTTPException(status_code=404, detail=f"Category {parent_id!r} not found")
+
+    normalized_name = request.name.strip().lower()
+    collision = any(
+        category.parent_category_id == parent_id and category.name.strip().lower() == normalized_name
+        for category in existing_categories.values()
+    )
+    if collision:
+        raise HTTPException(
+            status_code=409, detail=f"A subcategory named {request.name!r} already exists under {parent.name!r}"
+        )
+
+    category_id = f"{parent_id}:{slugify(request.name)}"
+    if category_id in existing_categories:
+        # See post_category: the name check is case-insensitive, but the slug id
+        # is lossy — guard against two distinct names colliding on it.
+        raise HTTPException(
+            status_code=409,
+            detail=f"The name {request.name!r} is too similar to an existing subcategory — pick another",
+        )
+    new_category = Category(
+        category_id=category_id,
+        name=request.name,
+        classification=parent.classification,
+        parent_category_id=parent_id,
+        color=request.color,
+    )
+    # See `post_category`: additive only, and `normalize_categories` may add
+    # the parent's "Other" catch-all alongside this first real subcategory.
+    categories = normalize_categories({**existing_categories, category_id: new_category})
+    replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
+    session.commit()
+    return new_category
+
+
+@router.put("/categories")
+def put_categories(
+    categories: dict[str, Category],
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, Category]:
+    """Replace the whole category tree, enforcing the "Other" catch-all subcategory invariant.
+
+    Returns
+    -------
+    dict[str, Category]
+        The categories just persisted, keyed by `category_id` — may
+        include an "Other" subcategory the caller didn't submit, or omit
+        one it did (see `taxonomy.normalize_categories`).
+    """
+    # The placeholder accounts a brand-new user needs are seeded alongside the
+    # default category tree, and replacing the tree below would otherwise make
+    # `seed_new_user_defaults` a permanent no-op for them.
+    seed_new_user_defaults(session, user_id)
+    normalized = normalize_categories(categories)
+    replace_categories(session, user_id, normalized.values())
+    session.commit()
+    return normalized
+
+
+def _category_references(session: Session, user_id: uuid.UUID) -> CategoryReferences:
+    """Load every row a category rename or delete has to repoint or clear, from each row's own repository.
+
+    Returns
+    -------
+    CategoryReferences
+    """
+    return CategoryReferences(
+        category_patterns=load_category_patterns(session, user_id),
+        budgets=load_budgets(session, user_id),
+        posting_splits=load_posting_splits(session, user_id),
+    )
+
+
+def _write_category_references(references: CategoryReferences, session: Session, user_id: uuid.UUID) -> None:
+    """Write each repointed/cleared collection back through its own repository.
+
+    Always called *before* the category rows they used to reference are
+    pruned or retired, so a foreign key never briefly points at a row
+    that is about to disappear.
+    """
+    replace_budgets(session, user_id, references.budgets)
+    replace_category_patterns(session, user_id, references.category_patterns.values())
+    replace_posting_splits(session, user_id, references.posting_splits.values())
+
+
+def _posting_count_for_categories(category_ids: set[str], session: Session, user_id: uuid.UUID) -> int:
+    """How many raw ledger postings currently carry any of `category_ids` as their category or subcategory.
+
+    Returns
+    -------
+    int
+    """
+    ledger = load_ledger(session, user_id)
+    if ledger.is_empty():
+        return 0
+    matches = ledger.filter(ledger["category_id"].is_in(category_ids) | ledger["subcategory_id"].is_in(category_ids))
+    return matches.height
+
+
+@router.get("/categories/{category_id}/delete-preview")
+def get_category_delete_preview(
+    category_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryDeletePreviewResponse:
+    """Report how many postings deleting `category_id` would uncategorize, before actually deleting it.
+
+    A caller can show a confirmation dialog with this count first, and
+    only actually call `DELETE /categories/{category_id}` once the user
+    accepts.
+
+    Returns
+    -------
+    CategoryDeletePreviewResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    categories = seeded_categories(session, user_id)
+    if category_id not in categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    ids_to_delete = category_ids_to_delete(categories, category_id)
+    return CategoryDeletePreviewResponse(posting_count=_posting_count_for_categories(ids_to_delete, session, user_id))
+
+
+@router.delete("/categories/{category_id}")
+def delete_category(
+    category_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryDeleteResponse:
+    """Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
+
+    Every posting currently carrying `category_id` (or one of its
+    subcategories) reads as uncategorized afterwards — the same state a
+    posting that was never categorized at all is already in — without a
+    single posting row being written. The category is *retired* rather
+    than deleted (see `accounting.db.core.Category` and
+    `repositories.taxonomy.retire_categories`): its row stays, so the raw
+    import provenance on those postings keeps a valid foreign key, and it
+    leaves the live tree with no successor, which is what
+    `repositories.taxonomy.load_category_redirects` resolves to "nothing".
+
+    Anything else referencing the deleted id(s) *is* rewritten, because
+    those references are the user's own decisions rather than raw
+    provenance: cleared where the field is optional (`PostingSplitLeg`,
+    and any `subcategory_id`) or dropped entirely where it isn't
+    (`Budget`, `CategoryPattern` both require a `category_id`) — see
+    `taxonomy.uncategorize_category_ids`.
+
+    Returns
+    -------
+    CategoryDeleteResponse
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    categories = seeded_categories(session, user_id)
+    if category_id not in categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    ids_to_delete = category_ids_to_delete(categories, category_id)
+    posting_count = _posting_count_for_categories(ids_to_delete, session, user_id)
+
+    remaining_categories = normalize_categories({
+        existing_id: category for existing_id, category in categories.items() if existing_id not in ids_to_delete
+    })
+
+    # The planning and interpretation tables both reference categories, so their
+    # cleared/dropped rows land before `replace_categories` prunes the category
+    # rows they used to point at.
+    _write_category_references(
+        uncategorize_category_ids(_category_references(session, user_id), ids_to_delete), session, user_id
+    )
+
+    def clear(field_id: str | None) -> str | None:
+        return None if field_id in ids_to_delete else field_id
+
+    # Only the overrides that actually reference a deleted category/subcategory get touched — every
+    # other posting's override is left alone, unlike the old `load_overrides`/`save_overrides(whole
+    # dict)` pair this replaced, which rewrote the entire table on every category delete.
+    overrides = load_overrides(session, user_id)
+    changed_overrides = {
+        posting_id: override.model_copy(
+            update={"category_id": clear(override.category_id), "subcategory_id": clear(override.subcategory_id)}
+        )
+        for posting_id, override in overrides.items()
+        if override.category_id in ids_to_delete or override.subcategory_id in ids_to_delete
+    }
+    save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
+
+    # This, not the prune below, is what takes the categories out of the live
+    # tree — with no successor, so every posting imported under one resolves to
+    # uncategorized. Retiring rather than deleting is what makes the stored
+    # postings' foreign keys safe without rewriting a single one of them.
+    retire_categories(session, user_id, dict.fromkeys(ids_to_delete))
+
+    # Last. The whole tree is passed because a delete genuinely is
+    # category-graph-wide — a top-level delete takes its subcategories with it,
+    # and the survivors' "Other" catch-alls were re-derived by
+    # `normalize_categories` above. Its prune never touches a retired row.
+    replace_categories(session, user_id, remaining_categories.values())
+    session.commit()
+    return CategoryDeleteResponse(categories=remaining_categories, uncategorized_posting_count=posting_count)
+
+
+@router.get("/categories/{category_id}/rename-preview")
+def get_category_rename_preview(
+    category_id: str,
+    name: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryRenamePreviewResponse:
+    """Report whether renaming `category_id` to `name` would merge it into an existing category.
+
+    Calls the same pure `plan_category_rename`/`remap_category_ids`
+    `post_category_rename` itself uses, but never persists anything — a
+    caller can show a confirmation dialog first (including which budgets,
+    if any, would be silently discarded — see `budgets_to_delete`), and
+    only actually call `POST /categories/{category_id}/rename` once the
+    user accepts.
+
+    Returns
+    -------
+    CategoryRenamePreviewResponse
+        `will_merge` is true if this rename would fold into an existing
+        category rather than just changing a name; `target_name` is that
+        existing category's name, or `None` when `will_merge` is false;
+        `budgets_to_delete` lists every `Budget` entry (per-month or
+        general) the merged-away category holds that the merge target
+        already has one for, and which would therefore be discarded (see
+        `taxonomy.remap_category_ids`).
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    existing_categories = seeded_categories(session, user_id)
+    if category_id not in existing_categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    _categories, id_remap = plan_category_rename(existing_categories, category_id, name)
+    target_id = id_remap.get(category_id)
+    target_name = existing_categories[target_id].name if target_id is not None else None
+
+    references = _category_references(session, user_id)
+    updated = remap_category_ids(references, id_remap)
+    # Matched on the identity triple rather than on `budget_id`, because a
+    # repointed budget's id is rebuilt from its new category (see
+    # `taxonomy.remap_category_ids`) — and *counted*, because two budgets can
+    # land on the same triple and only one survives. Walking the source
+    # budgets untouched-first consumes the survivors in the same order the
+    # merge itself arbitrated them, so the entry reported as discarded is
+    # always the merged-away category's, never the target's.
+    remaining = Counter((budget.month, budget.category_id, budget.subcategory_id) for budget in updated.budgets)
+
+    def post_merge_key(budget: Budget) -> tuple[str | None, str, str | None]:
+        """Build the `(month, category_id, subcategory_id)` identity this budget would have after the merge.
+
+        Returns
+        -------
+        tuple[str | None, str, str | None]
+        """
+        subcategory_id = (
+            id_remap.get(budget.subcategory_id, budget.subcategory_id) if budget.subcategory_id is not None else None
+        )
+        return budget.month, id_remap.get(budget.category_id, budget.category_id), subcategory_id
+
+    budgets_to_delete: list[BudgetToDeletePreview] = []
+    for budget in sorted(references.budgets, key=lambda b: b.category_id in id_remap or b.subcategory_id in id_remap):
+        key = post_merge_key(budget)
+        if remaining[key] > 0:
+            remaining[key] -= 1
+            continue
+        budgets_to_delete.append(
+            BudgetToDeletePreview(month=budget.month, amount=budget.amount, currency=budget.currency)
+        )
+    return CategoryRenamePreviewResponse(
+        will_merge=target_id is not None, target_name=target_name, budgets_to_delete=budgets_to_delete
+    )
+
+
+@router.post("/categories/{category_id}/rename")
+def post_category_rename(
+    category_id: str,
+    request: CategoryRenameRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> CategoryRenameResponse:
+    """Rename a category or subcategory, merging it into an existing same-named one if there is one.
+
+    A merge repoints every reference to the merged-away id that is a user
+    decision — manual per-posting overrides, transfer rules, category
+    patterns, budgets, and posting splits — onto the surviving id, and
+    *retires* the merged-away category rather than deleting it (see
+    `accounting.db.core.Category`). Stored postings are not touched at all:
+    the category one was imported under is raw provenance, and the
+    retirement's own successor is what makes it resolve to the survivor
+    from now on (`repositories.taxonomy.load_category_redirects`). See
+    `taxonomy.plan_category_rename` for the exact matching rules: a top-level
+    category only merges into another top-level category of the same
+    classification; a subcategory only merges into a sibling under the
+    same parent. If the merge target already has a budget for a month the
+    merged-away category also budgeted, the merged-away category's budget
+    is discarded (see `taxonomy.remap_category_ids`) — call
+    `GET /categories/{category_id}/rename-preview` first to warn about
+    that before committing to the rename.
+
+    Returns
+    -------
+    CategoryRenameResponse
+        `categories` is the full tree after the change; `merged` is true
+        if this rename actually folded into an existing category rather
+        than just changing a name.
+
+    Raises
+    ------
+    HTTPException
+        404 if `category_id` doesn't exist.
+    """
+    existing_categories = seeded_categories(session, user_id)
+    if category_id not in existing_categories:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+
+    categories, id_remap = plan_category_rename(existing_categories, category_id, request.name)
+
+    # Repointed budgets, category patterns and posting splits are written by
+    # their own repositories, before `replace_categories` below prunes the
+    # merged-away category rows they used to reference.
+    _write_category_references(remap_category_ids(_category_references(session, user_id), id_remap), session, user_id)
+
+    if id_remap:
+
+        def remap(category_id: str | None) -> str | None:
+            """Look up `category_id`'s new id, or leave it unchanged if it wasn't merged away.
+
+            Returns
+            -------
+            str or None
+            """
+            return id_remap.get(category_id, category_id) if category_id is not None else None
+
+        # Only the overrides that actually reference a merged-away category/subcategory get
+        # touched — see the equivalent note in `delete_category` for why.
+        overrides = load_overrides(session, user_id)
+        changed_overrides = {
+            posting_id: override.model_copy(
+                update={"category_id": remap(override.category_id), "subcategory_id": remap(override.subcategory_id)}
+            )
+            for posting_id, override in overrides.items()
+            if override.category_id in id_remap or override.subcategory_id in id_remap
+        }
+        save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
+
+    # The merged-away categories leave the live tree here, each naming the one
+    # it folded into — which is the whole of how the postings imported under
+    # them start resolving to the survivor, with no posting rewritten.
+    retire_categories(session, user_id, dict(id_remap))
+
+    # With a prune: every *live* reference was repointed above, and a retired
+    # row is exempt from the prune (see `replace_categories`).
+    replace_categories(session, user_id, categories.values())
+    session.commit()
+
+    return CategoryRenameResponse(categories=categories, merged=bool(id_remap))

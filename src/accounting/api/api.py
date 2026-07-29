@@ -13,10 +13,34 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from accounting.api.routers import dashboard, exchange_rates, goals, imports, llm, postings, store
+from accounting.api.routers import (
+    accounts,
+    bootstrap,
+    budgets,
+    categories,
+    category_patterns,
+    dashboard,
+    exchange_rates,
+    goals,
+    imports,
+    llm,
+    other_assets,
+    postings,
+    simulator_scenarios,
+    tags,
+    transfer_rules,
+)
 
 router: APIRouter = APIRouter(prefix="/api/accounting")
-router.include_router(store.router)
+router.include_router(bootstrap.router)
+router.include_router(categories.router)
+router.include_router(tags.router)
+router.include_router(transfer_rules.router)
+router.include_router(category_patterns.router)
+router.include_router(other_assets.router)
+router.include_router(budgets.router)
+router.include_router(simulator_scenarios.router)
+router.include_router(accounts.router)
 router.include_router(exchange_rates.router)
 router.include_router(imports.router)
 router.include_router(postings.router)
