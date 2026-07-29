@@ -32,11 +32,13 @@ from accounting.models import CurrencyCode
 from accounting.precedence import OVERLAY_PRECEDENCE
 from accounting.repositories.interpretation import (
     load_overrides,
+    load_overrides_for_postings,
     load_posting_merges,
     load_posting_splits,
     load_transfer_links,
     load_transfer_rules,
 )
+from accounting.repositories.ledger import visible_transaction_page
 from accounting.repositories.planning import load_goal_contributions
 from accounting.repositories.taxonomy import load_category_redirects, load_other_assets
 from accounting.taxonomy import seeded_accounts
@@ -221,6 +223,11 @@ class ResolvedPostings:
     """Every counterparty-resolution rule."""
     accounts: dict[str, Account]
     """Every account, keyed by natural key."""
+    total: int
+    """How many transactions the request's filters match, ignoring its page window.
+
+    Equal to the number of transactions in `resolved` for an unpaged call.
+    A client needs it to know whether there is another page."""
 
 
 def _resolve_postings(
@@ -229,6 +236,8 @@ def _resolve_postings(
     *,
     since: date | None = None,
     until: date | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> ResolvedPostings:
     """Resolve the ledger and hand back both the result and the rows it was resolved from.
 
@@ -236,24 +245,56 @@ def _resolve_postings(
     the frame; read its docstring for what resolution actually does and why
     `apply_category_redirects` runs outside the stage walk.
 
+    With `limit` set, the ledger read is bounded to one page of
+    *transactions* — see `repositories.ledger.visible_transaction_page` for
+    why the page is cut there and not at a posting, and why merged-away
+    duplicates are excluded before the `LIMIT` rather than filtered out of
+    the frame afterwards. The overlay stages then run over that page instead
+    of over all history, which is what makes the read O(what is shown).
+
+    Two overlay collections stay unbounded on purpose even for a paged call.
+    Transfer links are loaded whole because a link's *partner* is usually a
+    much older transaction, and scoping the load to the page would flip a
+    genuinely linked row to `is_linked_transfer=False`. Posting merges are
+    loaded whole because `apply_posting_merges` also rewrites the *kept*
+    transaction's description, which is on the page even when the duplicate
+    it absorbed is not. Both are small next to the ledger, and both were
+    measured at well under a millisecond.
+
     Parameters
     ----------
     session, user_id, since, until
         See `_resolved_postings`.
+    limit
+        How many transactions to resolve, newest first. `None` (the
+        default, used by every dashboard aggregation) is all of them.
+    offset
+        How many transactions to skip. Ignored unless `limit` is set.
 
     Returns
     -------
     ResolvedPostings
     """
-    raw = load_ledger(session, user_id, since=since, until=until)
+    if limit is None:
+        raw = load_ledger(session, user_id, since=since, until=until)
+        overrides = load_overrides(session, user_id)
+        total = raw.select("transaction_id").n_unique()
+    else:
+        page = visible_transaction_page(session, user_id, limit=limit, offset=offset, since=since, until=until)
+        raw = load_ledger(session, user_id, transaction_ids=page.transaction_ids)
+        # Scoped to the page's own postings; the whole-table read would
+        # otherwise be the one thing left that scaled with total history.
+        overrides = load_overrides_for_postings(session, user_id, raw["posting_id"].to_list())
+        total = page.total
     rules = load_transfer_rules(session, user_id)
     accounts = seeded_accounts(session, user_id)
-    overrides = load_overrides(session, user_id)
     appliers = _overlay_appliers(session, user_id, rules=rules, accounts=accounts, overrides=overrides)
     resolved = apply_category_redirects(raw, load_category_redirects(session, user_id))
     for stage in OVERLAY_PRECEDENCE:
         resolved = appliers[stage](resolved)
-    return ResolvedPostings(resolved=resolved, raw=raw, overrides=overrides, rules=rules, accounts=accounts)
+    return ResolvedPostings(
+        resolved=resolved, raw=raw, overrides=overrides, rules=rules, accounts=accounts, total=total
+    )
 
 
 def _resolved_postings_for_aggregation(

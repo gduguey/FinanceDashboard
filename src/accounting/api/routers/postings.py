@@ -10,16 +10,19 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
+    PAGE_LIMIT_DEFAULT,
+    PAGE_LIMIT_MAX,
     DismissSuggestionRequest,
     DuplicateGroup,
     PostingIdResponse,
     PostingMergeIdResponse,
     PostingMergeUpsert,
+    PostingPage,
     PostingRow,
     SuggestionIdResponse,
     TransferLinkCreate,
@@ -75,9 +78,14 @@ _LINK_MEMBERSHIP_CONSTRAINT = "uq_transfer_linked_transactions_user_transaction"
 
 @router.get("/postings")
 def get_postings(
-    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
-) -> list[PostingRow]:
-    """Return every posting, resolved against the current rules and manual overrides.
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    limit: Annotated[int, Query(ge=1, description="How many transactions to return, newest first.")] = (
+        PAGE_LIMIT_DEFAULT
+    ),
+    offset: Annotated[int, Query(ge=0, description="How many transactions to skip.")] = 0,
+) -> PostingPage:
+    """Return one page of postings, resolved against the current rules and manual overrides.
 
     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
     `None`) and `pending_selected` — an automated categorizer's
@@ -95,20 +103,46 @@ def get_postings(
     `manual_transfer_override_posting_id` is set for that transaction —
     see `PostingRow`'s own docstring.
 
+    `limit` counts **transactions**, not postings, and the page carries
+    every leg of every transaction it covers — so `len(items)` is normally
+    larger than `limit`, and larger still where a transaction has been
+    split. `repositories.ledger.visible_transaction_page` explains why the
+    page cannot be cut at a posting instead.
+
+    A `limit` above `PAGE_LIMIT_MAX` is clamped rather than rejected; see
+    that constant for why.
+
+    Parameters
+    ----------
+    limit
+        How many transactions to return, newest first. Clamped to
+        `PAGE_LIMIT_MAX`.
+    offset
+        How many transactions to skip.
+
     Returns
     -------
-    list[PostingRow]
-        One row per posting.
+    PostingPage
+        The page's postings, plus the total transaction count a client needs
+        in order to ask for the next page.
     """
+    limit = min(limit, PAGE_LIMIT_MAX)
     # Everything below the resolved frame — the raw ledger, the overrides, the
     # rules and the accounts — comes back out of resolution rather than being
     # read again. These four display columns are only `get_postings`'
     # concern, but re-reading them for it meant loading the whole ledger
     # twice per request (speed-audit S1).
-    resolution = _resolve_postings(session, user_id)
+    resolution = _resolve_postings(session, user_id, limit=limit, offset=offset)
     overrides = resolution.overrides
     resolved_by_rule = resolved_transfer_rule_ids_by_transaction(resolution.raw, resolution.rules, resolution.accounts)
-    rows = resolution.resolved.to_dicts()
+    # Newest first, matching the order the page window itself was cut in.
+    # The frame is sorted ascending because every dashboard aggregation over
+    # it wants that (a running balance reads forwards), but a *page* returned
+    # ascending inside a descending window is a trap: a client concatenating
+    # pages would get ascending runs in descending page order rather than one
+    # sorted list. Sorting here rather than in the frame keeps both callers
+    # honest.
+    rows = resolution.resolved.sort("posted_at", "posting_id", descending=[True, False]).to_dicts()
 
     posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
     manual_override_posting_by_transaction: dict[str, str] = {}
@@ -128,7 +162,7 @@ def get_postings(
         row["resolved_by_transfer_rule_id"] = (
             None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
         )
-    return [PostingRow(**row) for row in rows]
+    return PostingPage(items=[PostingRow(**row) for row in rows], total=resolution.total, limit=limit, offset=offset)
 
 
 @router.get("/ledger/export")

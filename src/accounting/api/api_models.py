@@ -659,6 +659,25 @@ class RebuildResult(BaseModel):
     total_posting_count: int
 
 
+PAGE_LIMIT_DEFAULT = 200
+"""How many transactions one page of `GET /postings` returns when the client asks for no particular size.
+
+Large enough that a first screen of the Transactions page needs one request,
+small enough that it is nowhere near the DoS cap.
+"""
+
+PAGE_LIMIT_MAX = 5_000
+"""The hard cap on any single page, whatever the client asks for.
+
+The point is that no request can be made arbitrarily expensive by a query
+parameter (API-audit F3). A `limit` above this is **clamped**, not rejected:
+a client asking for more than the server will give is asking for "as much as
+possible", and answering that with a 422 would make paging through a large
+collection fail on the request that is trying hardest to succeed. `total` in
+the response is what tells such a client that more remains.
+"""
+
+
 class PostingRow(Posting):
     """One posting as displayed on the Transactions page — a `Posting` plus its current resolution state.
 
@@ -691,6 +710,30 @@ class PostingRow(Posting):
     is_linked_transfer: bool = False
     linked_transaction_id: str | None = None
     transfer_link_source: TransferLinkSource | None = None
+
+
+class PostingPage(BaseModel):
+    """One page of resolved postings, with what a client needs to ask for the next one.
+
+    Pages are cut by *transaction*, so `items` holds every leg of every
+    transaction on the page and its length is not `limit` — `limit` counts
+    transactions, `items` counts postings, and a split transaction
+    contributes more rows than legs it was imported with. See
+    `repositories.ledger.visible_transaction_page` for why the cut is there.
+    """
+
+    items: list[PostingRow]
+    """The page's postings, every leg of every transaction it covers, newest first.
+
+    Ordered by `posted_at` descending then posting id, the same order the
+    page window is cut in — so concatenating consecutive pages yields one
+    correctly sorted list rather than ascending runs in descending order."""
+    total: int
+    """How many transactions match, ignoring this page's window — not how many `items` there are."""
+    limit: int
+    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
+    offset: int
+    """How many transactions were skipped."""
 
 
 class PostingIdResponse(BaseModel):

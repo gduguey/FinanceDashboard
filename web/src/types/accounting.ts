@@ -51,6 +51,11 @@ export type InterestAccountRow = components['schemas']['InterestAccountRow']
 // what every consumer of this `Posting` alias actually reads. The bare
 // `Posting` schema (no bolted-on fields) backs request bodies elsewhere.
 export type Posting = components['schemas']['PostingRow']
+
+// One page of `GET /postings`. `total` and `limit` both count
+// *transactions*, while `items` holds every leg of every transaction on the
+// page — see the backend's `api_models.PostingPage`.
+export type PostingPage = components['schemas']['PostingPage']
 export type PendingSuggestionSource = NonNullable<Posting['pending_source']>
 
 export type CategoryPattern = components['schemas']['CategoryPattern']

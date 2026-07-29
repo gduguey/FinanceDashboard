@@ -1479,7 +1479,7 @@ export interface paths {
     }
     /**
      * Get Postings
-     * @description Return every posting, resolved against the current rules and manual overrides.
+     * @description Return one page of postings, resolved against the current rules and manual overrides.
      *
      *     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
      *     `None`) and `pending_selected` — an automated categorizer's
@@ -1497,10 +1497,28 @@ export interface paths {
      *     `manual_transfer_override_posting_id` is set for that transaction —
      *     see `PostingRow`'s own docstring.
      *
+     *     `limit` counts **transactions**, not postings, and the page carries
+     *     every leg of every transaction it covers — so `len(items)` is normally
+     *     larger than `limit`, and larger still where a transaction has been
+     *     split. `repositories.ledger.visible_transaction_page` explains why the
+     *     page cannot be cut at a posting instead.
+     *
+     *     A `limit` above `PAGE_LIMIT_MAX` is clamped rather than rejected; see
+     *     that constant for why.
+     *
+     *     Parameters
+     *     ----------
+     *     limit
+     *         How many transactions to return, newest first. Clamped to
+     *         `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many transactions to skip.
+     *
      *     Returns
      *     -------
-     *     list[PostingRow]
-     *         One row per posting.
+     *     PostingPage
+     *         The page's postings, plus the total transaction count a client needs
+     *         in order to ask for the next page.
      */
     get: operations['get_postings_api_accounting_postings_get']
     put?: never
@@ -1733,7 +1751,13 @@ export interface paths {
      *     HTTPException
      *         400 if either transaction names itself, or already has a
      *         `PostingSplit`; 409 if either transaction is already part of a
-     *         *different* transfer link.
+     *         *different* transfer link — whether that was already true when the
+     *         request arrived, or became true concurrently while it was being
+     *         served.
+     *     sqlalchemy.exc.IntegrityError
+     *         Any constraint violation that is *not* the one-link-per-transaction
+     *         rule. Re-raised untouched rather than folded into the 409, so a
+     *         genuinely unexpected violation stays a loud 500.
      */
     post: operations['post_transfer_link_api_accounting_transfer_links_post']
     delete?: never
@@ -6286,6 +6310,26 @@ export interface components {
       description?: string | null
     }
     /**
+     * PostingPage
+     * @description One page of resolved postings, with what a client needs to ask for the next one.
+     *
+     *     Pages are cut by *transaction*, so `items` holds every leg of every
+     *     transaction on the page and its length is not `limit` — `limit` counts
+     *     transactions, `items` counts postings, and a split transaction
+     *     contributes more rows than legs it was imported with. See
+     *     `repositories.ledger.visible_transaction_page` for why the cut is there.
+     */
+    PostingPage: {
+      /** Items */
+      items: components['schemas']['PostingRow'][]
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
+    }
+    /**
      * PostingRow
      * @description One posting as displayed on the Transactions page — a `Posting` plus its current resolution state.
      *
@@ -8858,7 +8902,12 @@ export interface operations {
   }
   get_postings_api_accounting_postings_get: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description How many transactions to return, newest first. */
+        limit?: number
+        /** @description How many transactions to skip. */
+        offset?: number
+      }
       header?: never
       path?: never
       cookie?: never
@@ -8871,7 +8920,16 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['PostingRow'][]
+          'application/json': components['schemas']['PostingPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

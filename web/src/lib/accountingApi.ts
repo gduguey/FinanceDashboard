@@ -52,6 +52,7 @@ import type {
   Posting,
   PostingMerge,
   PostingMergeUpsert,
+  PostingPage,
   PostingSplitLeg,
   ProjectionPoint,
   SimulatorScenario,
@@ -149,6 +150,9 @@ export interface TagRenamePreview {
   will_merge: boolean
   target_name: string | null
 }
+
+const POSTINGS_PAGE_LIMIT = 5000
+/** The server's own hard cap (`api_models.PAGE_LIMIT_MAX`) — the fewest round trips it will allow. */
 
 function queryString(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams()
@@ -322,7 +326,28 @@ export const accountingApi = {
     })
   },
   rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
-  postings: () => request<Posting[]>('/api/accounting/postings'),
+  // Pages through the collection until it is exhausted, rather than asking
+  // for one page. The server caps any single page (`PAGE_LIMIT_MAX`), so a
+  // single request cannot return a large user's whole ledger — and returning
+  // a silently truncated ledger is not an option for a money app. PR 4
+  // replaces this loop with real pagination in the Transactions table; until
+  // then every consumer still receives the complete list it expects.
+  //
+  // `total` counts *transactions* and `limit` is in transactions too, so the
+  // loop advances by `limit` and stops once `offset` covers `total`.
+  postings: async () => {
+    const limit = POSTINGS_PAGE_LIMIT
+    const items: Posting[] = []
+    let offset = 0
+    let total = 0
+    do {
+      const page = await request<PostingPage>(`/api/accounting/postings${queryString({ limit, offset })}`)
+      items.push(...page.items)
+      total = page.total
+      offset += limit
+    } while (offset < total)
+    return items
+  },
   ledgerExport: () => request<Posting[]>('/api/accounting/ledger/export'),
   // A request only ever carries the fields the caller means to change —
   // `put_posting_override` merges into whatever's already stored for

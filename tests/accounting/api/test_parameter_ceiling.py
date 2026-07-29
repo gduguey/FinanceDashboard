@@ -156,4 +156,5 @@ def test_resolving_postings_survives_more_overlay_rows_than_the_parameter_ceilin
     response = client.get("/api/accounting/postings")
 
     assert response.status_code == 200
-    assert len(response.json()) == _OVER_THE_CEILING
+    # One transaction, so the default page (200 *transactions*) covers every leg of it.
+    assert len(response.json()["items"]) == _OVER_THE_CEILING

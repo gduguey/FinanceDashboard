@@ -39,7 +39,7 @@ from db.money import quantize_money
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import date
     from typing import Any
 
@@ -99,8 +99,9 @@ def load_ledger(
     since: date | None = None,
     until: date | None = None,
     origin: TransactionOrigin | None = None,
+    transaction_ids: Sequence[uuid.UUID] | None = None,
 ) -> pl.DataFrame:
-    """Load the posting ledger, optionally restricted to `[since, until]` or to one transaction origin.
+    """Load the posting ledger, optionally restricted to a date range, an origin, or a named set of transactions.
 
     Parameters
     ----------
@@ -128,6 +129,10 @@ def load_ledger(
         result) would flag a legitimate cross-currency manual transfer,
         whose two legs are equal-and-opposite only after a conversion it
         deliberately doesn't store.
+    transaction_ids
+        Restrict to the postings of these transactions, which is how a page
+        of `repositories.ledger.visible_transaction_page` becomes a frame.
+        `None` (the default) is every transaction.
 
     Returns
     -------
@@ -143,7 +148,8 @@ def load_ledger(
         The statement that produces these rows, and why it selects columns
         rather than entities, is `repositories.ledger`.
     """
-    rows = session.execute(ledger_statement(user_id, since=since, until=until, origin=origin)).all()
+    statement = ledger_statement(user_id, since=since, until=until, origin=origin, transaction_ids=transaction_ids)
+    rows = session.execute(statement).all()
     if not rows:
         return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
     return ledger_rows_to_frame(rows)

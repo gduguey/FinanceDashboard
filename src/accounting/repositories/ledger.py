@@ -25,6 +25,7 @@ entity: `ledger_rows_to_frame` reads each row once and never again.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, time
 from typing import TYPE_CHECKING, Any
 
@@ -35,7 +36,7 @@ from sqlalchemy.orm import aliased
 
 import accounting.db as adb
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
-from db.base import any_text
+from db.base import any_text, any_uuid
 from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
@@ -55,6 +56,7 @@ def ledger_statement(
     since: date | None = None,
     until: date | None = None,
     origin: TransactionOrigin | None = None,
+    transaction_ids: Sequence[uuid.UUID] | None = None,
 ) -> Select[Any]:
     """Build the `SELECT` whose rows are `LEDGER_FRAME_SCHEMA`, one per posting.
 
@@ -80,6 +82,11 @@ def ledger_statement(
         Whose ledger to select.
     since, until, origin
         See `importers.ingest.load_ledger`.
+    transaction_ids
+        Restrict to the postings of these transactions — how a page of
+        `visible_transaction_page` becomes a frame. Matched as one array
+        parameter, so a page of any size is one bind. `None` means every
+        transaction; an *empty* sequence means none, and yields no rows.
 
     Returns
     -------
@@ -140,6 +147,8 @@ def ledger_statement(
         )
         .where(adb.Posting.user_id == user_id)
     )
+    if transaction_ids is not None:
+        statement = statement.where(any_uuid(adb.Transaction.id, transaction_ids))
     if origin is not None:
         statement = statement.where(adb.Transaction.origin == origin)
     if since is not None:
@@ -147,6 +156,88 @@ def ledger_statement(
     if until is not None:
         statement = statement.where(adb.Transaction.posted_at <= datetime.combine(until, time.max))
     return statement
+
+
+@dataclass(frozen=True)
+class TransactionPage:
+    """One page of transactions, plus how many there are in total."""
+
+    transaction_ids: list[uuid.UUID]
+    """The page's transactions, newest first. Empty past the end of the collection."""
+    total: int
+    """How many transactions are visible in total, ignoring `limit`/`offset` — what a client needs to page."""
+
+
+def visible_transaction_page(
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    limit: int,
+    offset: int,
+    since: date | None = None,
+    until: date | None = None,
+) -> TransactionPage:
+    """Select one page of transaction ids, newest first, and count how many there are.
+
+    **Pages are cut by transaction, never by posting**, and that is a
+    correctness requirement rather than a preference. Three things downstream
+    need every leg of a transaction present in the same frame:
+    `ledger.categorization.apply_rules` only treats a transaction as
+    rule-eligible when it can see exactly two legs, one of them a
+    placeholder; the transfer badge and the "mark as transfer" target are
+    both resolved from a transaction's *other* leg. Cut the page at a
+    posting and a transaction straddling the boundary silently resolves
+    differently than it would in full history.
+
+    **Merged-away duplicates are excluded here, before `LIMIT`, not filtered
+    out of the frame afterwards.** `apply_posting_merges` drops every posting
+    of a duplicate transaction, so filtering after the cut would return fewer
+    rows than asked for and skew every subsequent offset. The anti-join below
+    is that same drop, expressed where it has to happen.
+
+    `posted_at` is the sort key because it is the only column no overlay
+    stage rewrites — merges rewrite `description`, splits rewrite `amount`,
+    and rules and overrides rewrite `account_id`, so ordering or filtering on
+    any of those pre-pipeline would select a different set than the resolved
+    values a client sees. `id` breaks ties, and being a UUIDv7 it is itself
+    time-ordered, so the order is stable and total.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose transactions to page.
+    limit, offset
+        The window. Validated by the caller — see `api.api_models.PostingPage`.
+    since, until
+        Optional inclusive date bounds, matching `ledger_statement`.
+
+    Returns
+    -------
+    TransactionPage
+    """
+    merged_away = (
+        select(adb.PostingMergeDuplicate.duplicate_transaction_id)
+        .where(adb.PostingMergeDuplicate.user_id == user_id)
+        .scalar_subquery()
+    )
+    # Built once and used for both the count and the page, so `total` can
+    # never describe a different collection than the rows beside it.
+    predicates = [adb.Transaction.user_id == user_id, adb.Transaction.id.not_in(merged_away)]
+    if since is not None:
+        predicates.append(adb.Transaction.posted_at >= datetime.combine(since, time.min))
+    if until is not None:
+        predicates.append(adb.Transaction.posted_at <= datetime.combine(until, time.max))
+    total = session.execute(select(func.count()).select_from(adb.Transaction).where(*predicates)).scalar_one()
+    page = (
+        select(adb.Transaction.id)
+        .where(*predicates)
+        .order_by(adb.Transaction.posted_at.desc(), adb.Transaction.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return TransactionPage(transaction_ids=list(session.execute(page).scalars()), total=total)
 
 
 def transaction_keys_by_posting_key(
