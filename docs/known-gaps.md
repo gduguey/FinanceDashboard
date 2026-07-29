@@ -1,10 +1,10 @@
 # Known gaps / possible future work
 
 Real issues we've consciously **deferred** rather than fixed — recorded here so
-they aren't lost. Neither is urgent: the app is pre-launch with only test data,
-and both deserve their own focused, tested change rather than being bundled into
-a larger PR. Surfaced during the CodeRabbit review sweep of the decomposed
-branches.
+they aren't lost. None is urgent: the app is pre-launch with only test data, and
+each deserves its own focused, tested change rather than being bundled into a
+larger PR. Each entry says where the problem is, what it is, the intended fix,
+and why it was not taken in the PR that found it.
 
 ## 1. The transaction boundary lives in the HTTP layer
 
@@ -52,7 +52,39 @@ Neither is hard; both need failure-injection tests, and both are behavioural
 rather than contractual — so this belongs in its own PR rather than one whose
 subject is the HTTP contract.
 
-## 2. First-login lockout if the Clerk `user.created` webhook is slow or lost
+## 2. `POST /api/v1/trades/sync` is synchronous, and its progress is per-process
+
+**Where:** `sync` in `src/trades/api/routers/sync.py`;
+`_report_sync_progress` in `src/trades/api/dependencies.py`.
+
+**What:** the endpoint runs the whole IBKR pull plus the price/CPI/HYSA cache
+refresh inside the request and answers 200 when it is done, so it advertises a
+long-running job as an ordinary write. Two separate consequences:
+
+1. **The 200 is honest today but does not scale.** A client cannot poll, cancel
+   or resume; the only progress channel is `GET /sync/progress`.
+2. **That progress channel is already wrong.** It reads
+   `app.state.sync_progress`, an in-process dict. Under more than one uvicorn
+   worker, the poll can land on a worker that never ran the sync and reports
+   nothing, while the sync is running fine in another. This is a real bug, not
+   only a scaling limit — it is latent purely because the current deployment
+   runs a single worker.
+
+**Fix direction:** make the run a resource. `POST /api/v1/trades/sync-runs`
+answers `202 Accepted` with a `Location` pointing at
+`/api/v1/trades/sync-runs/{run_id}`, which reports the run's step, percent and
+terminal state; a background runner does the work. Progress then lives in a
+`sync_runs` table, which fixes (2) as a side effect — any worker can read it.
+
+**Why deferred out of the API-contract PR:** an honest `202` needs a durable
+job resource, a migration for it, and a background runner — none of which is a
+contract change, and shipping `202` without them would replace a truthful 200
+with a lie. Note the `303 See Other` originally proposed alongside this is
+**dropped permanently**, not deferred: there is no created resource to see, and
+`fetch()` follows redirects invisibly, so the SPA could not distinguish it from
+the 200 it already gets.
+
+## 3. First-login lockout if the Clerk `user.created` webhook is slow or lost
 
 **Where:** `resolve_current_user_id` in `src/trades/api/auth.py`; user
 provisioning in `src/trades/api/webhooks.py`.

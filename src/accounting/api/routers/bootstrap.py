@@ -1,4 +1,25 @@
-"""Store-bootstrap endpoints — the whole persisted store in one read, plus the currencies it can hold."""
+"""Store-bootstrap endpoints — the whole persisted store in one read, plus the currencies it can hold.
+
+`GET /store` is a **composite** on purpose: one round trip that recomposes
+twelve `load_*` calls so the SPA has everything it needs to render before the
+user's first interaction. The API-design audit's finding against it (F4) is
+answered rather than accepted, on two counts:
+
+- Its stated defect — that the route "returns the entire persisted
+  `AccountingStore`" — is factually dead. There is no such class; the whole-store
+  load/mutate/save cycle went when `accounting.repositories` split into
+  aggregates, and this route is a router-level recomposition of independent
+  reads with no type behind it (see `AccountingStoreResponse`'s own docstring).
+- Splitting it into twelve collection GETs would turn one boot request into
+  twelve, which is a performance regression dressed as a design fix. Whether the
+  SPA should fetch per-resource instead belongs with the work that measures the
+  boot path, not before it.
+
+The per-resource collection GETs are the right thing to *add* — a client that
+wants one collection should not have to read all twelve — and they are what an
+item-level `Location` header needs to point at. Adding them does not require
+deleting this route.
+"""
 
 from __future__ import annotations
 
