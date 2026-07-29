@@ -64,12 +64,20 @@ subcategory only ever merges into a sibling under the same
    person's by-hand re-categorization, stored outside `AccountingStore`
    too) get the same old-id → new-id swap via `load_overrides`/
    `save_overrides`, which fully deletes and reinserts every
-   `posting_overrides` row for this user (same pattern as the 17
+   `posting_overrides` row for this user (same pattern as the 16
    wipe-and-reinsert tables in `src/db/README.md`).
 
-6. **`save_store`** persists everything steps 1–3 changed. `Category` is
-   one of the three upsert-and-prune tables — this is the point "Dining"'s
-   row is actually deleted from `categories`. This has to happen *last*:
+6. **The scoped repository writes, then `save_store`.** Everything step 3
+   repointed *except* the categories dict itself is written by its own
+   aggregate's repository, and runs right after step 3 (before step 4, not
+   after step 5): `store.budgets`/`general_budgets` through
+   `repositories.planning.replace_budgets`/`replace_general_budgets`, and
+   `store.category_patterns`/`posting_splits` through
+   `repositories.interpretation.replace_category_patterns`/
+   `replace_posting_splits`. `save_store` then persists the categories dict.
+   `Category` is one of the three upsert-and-prune tables — this is the
+   point "Dining"'s row is actually deleted from `categories`. This has to
+   happen *last*:
    `postings.category_id`/`subcategory_id` and `posting_split_legs.
    category_id`/`subcategory_id` are real foreign keys into `categories.id`
    with no `ondelete` clause, so Postgres would reject deleting "Dining"
@@ -125,11 +133,15 @@ anything.
    at a deleted id is cleared the same way, via `load_overrides`/
    `save_overrides`.
 
-6. **`save_store`** — persists the categories dict with "Dining" (and any
-   subcategories) removed, plus whatever step 3 changed. Same ordering
+6. **The scoped repository writes, then `save_store`** — the same split as
+   step 6 of the merge case, in the same position: `replace_budgets`/
+   `replace_general_budgets` and `replace_category_patterns`/
+   `replace_posting_splits` persist whatever step 3 cleared or dropped
+   (running right after step 3), then `save_store` persists the categories
+   dict with "Dining" (and any subcategories) removed. Same ordering
    requirement as the merge case: everything referencing "Dining" has to
-   be cleared *before* this runs, or the delete-and-reinsert of
-   `categories` would hit the same foreign-key rejection.
+   be cleared *before* `save_store` runs, or the prune of `categories`
+   would hit the same foreign-key rejection.
 
 ## Tag rename → merge
 

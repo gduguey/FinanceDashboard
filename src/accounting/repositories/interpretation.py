@@ -213,7 +213,9 @@ def clear_rule_exclusions(session: Session, user_id: uuid.UUID) -> None:
     session.flush()
 
 
-def replace_transfer_rules(session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule]) -> None:
+def replace_transfer_rules(
+    session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule], *, prune: bool = True
+) -> None:
     """Insert-or-update every one of `rules`, then delete this user's rows not among them — never touching `version`.
 
     A plain `session.merge()` would overwrite every mapped column on an
@@ -225,6 +227,12 @@ def replace_transfer_rules(session: Session, user_id: uuid.UUID, rules: Iterable
     existing row keeps whatever version `check_and_bump_row_version` last
     left it at, no matter how many times an unrelated create round-trips
     through here.
+
+    Never touches `transfer_rule_exclusions` — see `replace_rule_exclusions`
+    for why those are a separate call.
+
+    `prune=False` makes this purely additive — the single-rule create path
+    (`upsert_transfer_rule`), which must never remove a rule it wasn't given.
     """
     keep_ids: set[uuid.UUID] = set()
     for rule in rules:
@@ -263,12 +271,77 @@ def replace_transfer_rules(session: Session, user_id: uuid.UUID, rules: Iterable
             },
         )
     session.flush()
+    if not prune:
+        return
     existing_ids = {row.id for row in session.query(adb.TransferRule.id).filter_by(user_id=user_id)}
     removed_ids = existing_ids - keep_ids
     if removed_ids:
         session.query(adb.TransferRule).filter_by(user_id=user_id).filter(adb.TransferRule.id.in_(removed_ids)).delete(
             synchronize_session=False
         )
+
+
+def _sync_rule_exclusions(
+    session: Session, user_id: uuid.UUID, rule_row_id: uuid.UUID, transaction_ids: list[str]
+) -> None:
+    """Make one rule's opted-out transaction set exactly `transaction_ids`, touching no other rule's exclusions.
+
+    Diffs against what's stored rather than deleting and reinserting, so a
+    rule whose exclusion set didn't change issues no writes at all.
+
+    Parameters
+    ----------
+    session
+        An open database session; the caller commits.
+    user_id
+        Whose exclusions these are.
+    rule_row_id
+        The `transfer_rules.id` these exclusions belong to.
+    transaction_ids
+        The complete desired set, as transaction natural keys.
+    """
+    existing_exclusions = list(session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id, rule_id=rule_row_id))
+    existing_transaction_ids = {exclusion.transaction_id for exclusion in existing_exclusions}
+    desired_transaction_ids = {_transaction_id(user_id, tid) for tid in transaction_ids}
+    to_remove = existing_transaction_ids - desired_transaction_ids
+    if to_remove:
+        session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id, rule_id=rule_row_id).filter(
+            adb.TransferRuleExclusion.transaction_id.in_(to_remove)
+        ).delete(synchronize_session=False)
+    session.add_all(
+        adb.TransferRuleExclusion(user_id=user_id, rule_id=rule_row_id, transaction_id=transaction_id)
+        for transaction_id in desired_transaction_ids - existing_transaction_ids
+    )
+    session.flush()
+
+
+def upsert_transfer_rule(rule: TransferRule, session: Session, user_id: uuid.UUID) -> None:
+    """Insert-or-update one rule (and its exclusion set), touching no other rule already saved.
+
+    Scoped counterpart to routing `POST /transfer-rules` through the
+    whole-store save, which rewrote every one of this user's rules from the
+    caller's (possibly stale) snapshot — so creating one rule could silently
+    revert, or resurrect, a rule some concurrent request had just edited or
+    deleted. This only ever writes `rule.rule_id`'s own row, so two creates
+    for different rules can't conflict no matter how they interleave.
+
+    `version` is left alone (see `replace_transfer_rules`), so re-posting a
+    rule never invalidates a version a client already holds for it.
+
+    Parameters
+    ----------
+    rule
+        The rule to persist; `rule.rule_id` names the row.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose rule this is.
+    """
+    replace_transfer_rules(session, user_id, [rule], prune=False)
+    _sync_rule_exclusions(
+        session, user_id, derive_id(user_id, "transfer_rules", rule.rule_id), list(rule.excluded_transaction_ids)
+    )
+    session.commit()
 
 
 def update_transfer_rule(
@@ -279,8 +352,8 @@ def update_transfer_rule(
     `rule.rule_id` identifies which row to update; every other field on
     `rule` (including `rule.version`, which is never read here — only
     `expected_version` is) becomes that row's new state. Unlike
-    `save_store`, this never deletes and reinserts the whole
-    `transfer_rules` table — it's a single row, guarded by
+    `replace_transfer_rules`, this never reads or prunes any other rule —
+    it's a single row, guarded by
     `db.base.check_and_bump_row_version` so a stale client can't silently
     clobber a concurrent edit to the same rule. Caller is responsible for
     running `ledger.transfers.reconcile_and_persist_rule_links` afterward,
@@ -320,19 +393,7 @@ def update_transfer_rule(
     row.active = rule.active
     session.flush()
 
-    existing_exclusions = list(session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id, rule_id=row.id))
-    existing_transaction_ids = {exclusion.transaction_id for exclusion in existing_exclusions}
-    desired_transaction_ids = {_transaction_id(user_id, tid) for tid in rule.excluded_transaction_ids}
-    to_remove = existing_transaction_ids - desired_transaction_ids
-    if to_remove:
-        session.query(adb.TransferRuleExclusion).filter_by(user_id=user_id, rule_id=row.id).filter(
-            adb.TransferRuleExclusion.transaction_id.in_(to_remove)
-        ).delete(synchronize_session=False)
-    session.add_all(
-        adb.TransferRuleExclusion(user_id=user_id, rule_id=row.id, transaction_id=transaction_id)
-        for transaction_id in desired_transaction_ids - existing_transaction_ids
-    )
-    session.flush()
+    _sync_rule_exclusions(session, user_id, row.id, list(rule.excluded_transaction_ids))
 
     account_natural_key_by_id = natural_keys_by_id(
         session, adb.Account, user_id, [row.account_id, row.counterparty_account_id]
@@ -787,6 +848,54 @@ def replace_posting_merges(session: Session, user_id: uuid.UUID, merges: Iterabl
         for duplicate_id in merge.duplicate_transaction_ids
     )
     session.flush()
+
+
+def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UUID) -> None:
+    """Persist one duplicate-resolution decision, replacing only that merge's prior rows.
+
+    Scoped counterpart to routing `POST /posting-merges` through the
+    whole-store save, which blanket-deleted and reinserted every merge from
+    the caller's snapshot — so recording one merge could silently resurrect
+    a merge some concurrent request had just undone. This only ever touches
+    `merge.merge_id`'s own rows. A merge is one coherent replace-in-full
+    unit keyed by `merge_id` (its duplicate set isn't independently
+    editable), so last-write-wins on the same merge is the intended
+    semantics, the same reasoning `save_posting_split` spells out.
+
+    Parameters
+    ----------
+    merge
+        The merge to persist; `merge.merge_id` names the row.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose merge this is.
+    """
+    row_id = derive_id(user_id, "posting_merges", merge.merge_id)
+    # The membership rows go first: they foreign-key into `posting_merges`,
+    # so the parent row can't be replaced while they still point at it.
+    session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id, merge_id=row_id).delete(
+        synchronize_session=False
+    )
+    session.query(adb.PostingMerge).filter_by(id=row_id, user_id=user_id).delete(synchronize_session=False)
+    session.flush()
+    session.add(
+        adb.PostingMerge(
+            id=row_id,
+            user_id=user_id,
+            natural_key=merge.merge_id,
+            kept_transaction_id=_transaction_id(user_id, merge.kept_transaction_id),
+            description=merge.description,
+        )
+    )
+    session.flush()
+    session.add_all(
+        adb.PostingMergeDuplicate(
+            user_id=user_id, merge_id=row_id, duplicate_transaction_id=_transaction_id(user_id, duplicate_id)
+        )
+        for duplicate_id in merge.duplicate_transaction_ids
+    )
+    session.commit()
 
 
 def remove_posting_merge(session: Session, user_id: uuid.UUID, merge_id: str) -> bool:

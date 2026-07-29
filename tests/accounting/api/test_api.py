@@ -1899,8 +1899,8 @@ def test_patch_transfer_rule_referencing_a_nonexistent_account_fails() -> None:
 def test_patch_transfer_rule_with_a_newly_resolvable_link_does_not_409(client) -> None:
     """Same scenario as `test_put_transfer_rules_with_a_newly_resolvable_link_does_not_409`, but for `PATCH`:
     editing a rule so it newly matches an existing transaction runs `reconcile_and_persist_rule_links`
-    (a second `save_store`-driven commit in the same request) right after the row-scoped update commit —
-    both must succeed without the row-version check on the first spuriously rejecting the second.
+    (a second commit in the same request) right after the row-scoped update commit — both must succeed
+    without the row-version check on the first spuriously rejecting the second.
     """
     checking_id = _import_chase_checking(client)
     credit_card_csv = (
@@ -2071,11 +2071,11 @@ def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
 
 
 def test_creating_an_unrelated_rule_does_not_reset_another_rules_version(client) -> None:
-    """`POST /transfer-rules` still round-trips through `save_store`, which deletes and reinserts every
-    `TransferRule` row for the user (see `save_store`'s own docstring) — if that blanket reinsert ever
+    """`POST /transfer-rules` writes through `repositories.interpretation.upsert_transfer_rule`, which
+    reuses `replace_transfer_rules`' `INSERT ... ON CONFLICT (id) DO UPDATE` — if that upsert ever
     reset `version` back to its column default, a client holding an already-bumped version for some
-    *other*, untouched rule would get a spurious 409 on its very next `PATCH`. `accounting.store`'s
-    upsert-by-id path for `TransferRule` exists specifically to prevent that.
+    *other*, untouched rule would get a spurious 409 on its very next `PATCH`. Omitting `version` from
+    that statement's `SET` clause exists specifically to prevent that.
     """
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
     other_employer = _create_account(client, name="Other Co", kind="income_source", institution="internal")

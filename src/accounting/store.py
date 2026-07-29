@@ -996,8 +996,8 @@ def _upsert_and_prune(
 ) -> None:
     """Insert-or-update every one of `rows`, then delete this user's rows of `model` not in `keep_natural_keys`.
 
-    Used only for `Account`/`Category`/`Tag` — every other entity in the
-    store is safe to delete-all-then-reinsert (see `save_store`), but these
+    Used only for `Account`/`Category`/`Tag` — every other entity
+    `save_store` still writes is safe to delete-all-then-reinsert, but these
     three are referenced by the ledger's own `postings`/`posting_tags`
     tables (a different domain, not managed here), so blindly deleting one
     still referenced by a real posting must fail loudly with a foreign key
@@ -1065,13 +1065,11 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
     behavior, shared verbatim with `trades.dashboard.settings.save_settings`.
 
     Re-stashes the freshly-bumped version back into `session.info` after a
-    successful check — some requests call `save_store` more than once (e.g.
-    `POST /transfer-rules` calling it once for the rule itself, then again
-    inside `ledger.transfers.reconcile_and_persist_rule_links` if a new
-    link was found); without this, that second call would re-check
-    against the same now-stale client-submitted version and spuriously
-    raise `StoreVersionConflictError` even though nothing external
-    conflicted — the first call already consumed that version.
+    successful check, so a request that calls `save_store` more than once
+    stays correct: without this, the second call would re-check against the
+    same now-stale client-submitted version and spuriously raise
+    `StoreVersionConflictError` even though nothing external conflicted —
+    the first call already consumed that version.
 
     Parameters
     ----------
@@ -1089,20 +1087,29 @@ def _check_and_bump_store_version(session: Session, user_id: uuid.UUID) -> None:
 def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> None:
     """Persist the accounting store, overwriting whatever was saved before.
 
-    Shrinking, one aggregate at a time: the planning tables (budgets,
-    goals, contributions, automations) are already gone from here and live
-    in `accounting.repositories.planning`, which writes only the rows a
-    request actually names. What remains still follows the old whole-store
+    Shrinking, one aggregate at a time. Two aggregates are already gone
+    from here: the planning tables (budgets, goals, contributions,
+    automations) live in `accounting.repositories.planning`, and the
+    interpretation tables (transfer rules and their exclusions, category
+    patterns, posting splits and merges, transfer links) live in
+    `accounting.repositories.interpretation` — each writes only the rows a
+    request actually names. `load_store` still *reads* both, and
+    `AccountingStore` still carries their fields, so nothing changes for
+    the read path; what this function writes is what shrank. What remains
+    (accounts, categories, tags, other assets, opening balances, manual
+    transfers, simulator scenarios) still follows the old whole-store
     contract — the caller always passes the complete desired end-state.
 
     `Account`/`Category`/`Tag` are upserted and pruned (see
     `_upsert_and_prune`) since the ledger's own `postings`/`posting_tags`
     tables foreign-key into them — a real posting keeps its account/
     category/tag rows alive even across a `save_store` call that no longer
-    mentions them by name in-memory, exactly as it should. Every other
-    entity here is deleted in full and reinserted in full, inside one
-    transaction. Tables are deleted leaves-first and inserted roots-first
-    so foreign keys are never briefly violated mid-transaction.
+    mentions them by name in-memory, exactly as it should. The four
+    remaining tables (`other_assets`, `simulator_scenarios`,
+    `opening_balances`, `manual_transfers`) are deleted in full and
+    reinserted in full, inside one transaction — deleted up front, before
+    the account rows they foreign-key into are upserted, so a foreign key
+    is never briefly violated mid-transaction.
 
     Parameters
     ----------
@@ -1117,7 +1124,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
     this can raise before touching anything else.
     """
     _check_and_bump_store_version(session, user_id)
-    interpretation.clear_rule_exclusions(session, user_id)
     session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
     session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
     session.query(adb.OtherAsset).filter_by(user_id=user_id).delete()
@@ -1252,8 +1258,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for scenario in store.simulator_scenarios
     )
-    interpretation.replace_category_patterns(session, user_id, store.category_patterns.values())
-    interpretation.replace_transfer_rules(session, user_id, store.rules)
     session.add_all(
         adb.OpeningBalance(
             id=derive_id(user_id, "opening_balances", ob.account_id),
@@ -1278,13 +1282,6 @@ def save_store(store: AccountingStore, session: Session, user_id: uuid.UUID) -> 
         )
         for mt in store.manual_transfers
     )
-    session.flush()
-
-    interpretation.replace_rule_exclusions(session, user_id, store.rules)
-
-    interpretation.replace_posting_merges(session, user_id, store.posting_merges.values())
-    interpretation.replace_transfer_links(session, user_id, store.transfer_links)
-    interpretation.replace_posting_splits(session, user_id, store.posting_splits.values())
     session.commit()
 
 

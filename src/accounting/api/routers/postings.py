@@ -47,19 +47,19 @@ from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
+    insert_transfer_links,
     list_dismissed_suggestions,
     load_overrides,
     load_overrides_for_postings,
     remove_posting_merge,
     remove_transfer_link,
+    replace_posting_merges,
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
+    upsert_posting_merge,
 )
-from accounting.store import (
-    load_store,
-    save_store,
-)
+from accounting.store import load_store
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
@@ -285,10 +285,9 @@ def put_posting_merges(
     dict[str, PostingMerge]
         The merges just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"posting_merges": merges})
-    save_store(store, session, user_id)
-    return store.posting_merges
+    replace_posting_merges(session, user_id, merges.values())
+    session.commit()
+    return merges
 
 
 def _merge_id(kept_transaction_id: str) -> str:
@@ -320,9 +319,7 @@ def post_posting_merge(
         duplicate_transaction_ids=request.duplicate_transaction_ids,
         description=request.description,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"posting_merges": {**store.posting_merges, merge.merge_id: merge}})
-    save_store(store, session, user_id)
+    upsert_posting_merge(merge, session, user_id)
     return merge
 
 
@@ -410,8 +407,8 @@ def post_transfer_link(
                 detail=f"Transaction {transaction_id!r} has already been split and can't be linked",
             )
 
-    store = store.model_copy(update={"transfer_links": [*store.transfer_links, link]})
-    save_store(store, session, user_id)
+    insert_transfer_links(session, user_id, [link])
+    session.commit()
     return link
 
 

@@ -66,9 +66,13 @@ from accounting.repositories.interpretation import (
     delete_transfer_rule,
     load_overrides,
     remove_rule_transfer_links,
+    replace_category_patterns,
+    replace_posting_splits,
     save_overrides_for_postings,
     update_category_pattern,
     update_transfer_rule,
+    upsert_category_pattern,
+    upsert_transfer_rule,
 )
 from accounting.repositories.planning import (
     remove_budget,
@@ -379,11 +383,13 @@ def delete_category(
     store = uncategorize_category_ids(store, ids_to_delete)
     store = store.model_copy(update={"categories": normalize_categories(remaining_categories)})
 
-    # The planning tables reference categories and are written by their own
-    # repository, so their cleared/dropped rows land before `save_store` gets
-    # to the category rows themselves.
+    # The planning and interpretation tables both reference categories and are
+    # written by their own repositories, so their cleared/dropped rows land
+    # before `save_store` gets to the category rows themselves.
     replace_budgets(session, user_id, store.budgets)
     replace_general_budgets(session, user_id, store.general_budgets.values())
+    replace_category_patterns(session, user_id, store.category_patterns.values())
+    replace_posting_splits(session, user_id, store.posting_splits.values())
 
     # Every reference to a deleted category must be cleared *before* `save_store`
     # deletes that category row below — postings and manual overrides both
@@ -409,8 +415,8 @@ def delete_category(
 
     # Deliberately kept on the whole-store version check (not scoped, not opted out), for the same
     # reason category/tag *rename* is: deleting a category is a category-graph-wide cascade — it drops
-    # every dependent Budget/GeneralBudget/CategoryPattern, clears TransferRule/PostingSplitLeg refs,
-    # and uncategorizes every posting that used it. The operation genuinely relates to much of the
+    # every dependent Budget/GeneralBudget/CategoryPattern, clears PostingSplitLeg refs, and
+    # uncategorizes every posting that used it. The operation genuinely relates to much of the
     # store, so whole-store optimistic concurrency is the correct granularity here (see the versioning
     # doc on matching granularity to the operation's true scope), and opting out would remove the only
     # thing stopping a concurrent delete of a *different* category from resurrecting it via the
@@ -520,10 +526,13 @@ def post_category_rename(
     categories, id_remap = plan_category_rename(store.categories, category_id, request.name)
     store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
 
-    # Repointed budgets are written by their own repository, before `save_store`
-    # below removes the merged-away category rows they used to reference.
+    # Repointed budgets, category patterns and posting splits are written by
+    # their own repositories, before `save_store` below removes the merged-away
+    # category rows they used to reference.
     replace_budgets(session, user_id, store.budgets)
     replace_general_budgets(session, user_id, store.general_budgets.values())
+    replace_category_patterns(session, user_id, store.category_patterns.values())
+    replace_posting_splits(session, user_id, store.posting_splits.values())
 
     # Every reference to a merged-away category must be repointed *before* `save_store`
     # deletes that category row below — postings and manual overrides both foreign-key
@@ -765,7 +774,7 @@ def post_transfer_rule(
     store = load_store(session, user_id)
     # Both reference real accounts (counterparty_account_id is a DB foreign key);
     # validate up front so an unknown id is a clean 404, not an IntegrityError 500
-    # from save_store.
+    # from the insert.
     for label, ref in (
         ("account_id", request.account_id),
         ("counterparty_account_id", request.counterparty_account_id),
@@ -789,10 +798,8 @@ def post_transfer_rule(
         active=existing.active if existing else True,
         excluded_transaction_ids=list(existing.excluded_transaction_ids) if existing else [],
     )
-    remaining = [r for r in store.rules if r.rule_id != rule_id]
-    store = store.model_copy(update={"rules": [*remaining, rule]})
     raw_ledger = load_ledger(session, user_id)
-    save_store(store, session, user_id)
+    upsert_transfer_rule(rule, session, user_id)
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
     return rule
 
@@ -916,9 +923,10 @@ def post_category_pattern(
         subcategory_id=request.subcategory_id,
         priority=request.priority,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"category_patterns": {**store.category_patterns, pattern.pattern_id: pattern}})
-    save_store(store, session, user_id)
+    # The default category tree this pattern's `category_id` foreign-keys into has to exist first;
+    # a no-op read for everyone but a brand-new user.
+    seed_new_user_defaults(session, user_id)
+    upsert_category_pattern(session, user_id, pattern)
     return pattern
 
 
@@ -935,10 +943,10 @@ def put_category_patterns(
     dict[str, CategoryPattern]
         The patterns just persisted, keyed by `pattern_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"category_patterns": category_patterns})
-    save_store(store, session, user_id)
-    return store.category_patterns
+    seed_new_user_defaults(session, user_id)  # see the equivalent note in `post_category_pattern`
+    replace_category_patterns(session, user_id, category_patterns.values())
+    session.commit()
+    return category_patterns
 
 
 @router.patch("/category-patterns/{pattern_id}")

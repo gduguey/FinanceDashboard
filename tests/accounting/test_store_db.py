@@ -53,13 +53,21 @@ from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
+    insert_transfer_links,
     list_dismissed_suggestions,
     load_overrides,
     load_overrides_for_postings,
+    replace_category_patterns,
+    replace_posting_merges,
+    replace_posting_splits,
+    replace_rule_exclusions,
+    replace_transfer_rules,
     save_overrides,
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
+    upsert_posting_merge,
+    upsert_transfer_rule,
 )
 from accounting.store import (
     StoreVersionConflictError,
@@ -406,10 +414,6 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
                 ),
             },
             "tags": {"trip": Tag(tag_id="trip", name="Trip")},
-            "rules": [TransferRule(rule_id="r1", description_contains="uber", priority=1)],
-            "category_patterns": {
-                "cp1": CategoryPattern(pattern_id="cp1", description_contains="uber", category_id="expense:transport")
-            },
             "other_assets": [OtherAsset(asset_id="oa1", name="Car", value=5000)],
             "opening_balances": {
                 "checking:test": OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1))
@@ -434,22 +438,39 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
                     annual_rate_pct=5,
                 )
             ],
-            "posting_splits": {
-                "p1": PostingSplit(
-                    posting_id="p1",
-                    legs=[
-                        PostingSplitLeg(amount=6, category_id="expense:food-drink", description="groceries"),
-                        PostingSplitLeg(amount=4, category_id="expense:transport", description="cab"),
-                    ],
-                )
-            },
-            "posting_merges": {
-                "m1": PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])
-            },
         }
     )
 
     save_store(store, db_session, user_id=test_user_id)
+
+    # The interpretation aggregate is written by its own repository, never by
+    # `save_store` — see `accounting.repositories.interpretation`.
+    replace_transfer_rules(
+        db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="uber", priority=1)]
+    )
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="cp1", description_contains="uber", category_id="expense:transport")],
+    )
+    replace_posting_splits(
+        db_session,
+        test_user_id,
+        [
+            PostingSplit(
+                posting_id="p1",
+                legs=[
+                    PostingSplitLeg(amount=6, category_id="expense:food-drink", description="groceries"),
+                    PostingSplitLeg(amount=4, category_id="expense:transport", description="cab"),
+                ],
+            )
+        ],
+    )
+    replace_posting_merges(
+        db_session,
+        test_user_id,
+        [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
+    )
 
     # The planning aggregate is written by its own repository, never by
     # `save_store` — see `accounting.repositories.planning`.
@@ -528,18 +549,23 @@ def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session,
                     account_id="employer:eqore", name="Eqore", kind="income_source", institution="x", currency="USD"
                 ),
             },
-            "rules": [
-                TransferRule(
-                    rule_id="r1",
-                    description_contains="payroll",
-                    account_id="checking:test",
-                    counterparty_account_id="employer:eqore",
-                    priority=1,
-                )
-            ],
         }
     )
     save_store(store, db_session, user_id=test_user_id)
+    replace_transfer_rules(
+        db_session,
+        test_user_id,
+        [
+            TransferRule(
+                rule_id="r1",
+                description_contains="payroll",
+                account_id="checking:test",
+                counterparty_account_id="employer:eqore",
+                priority=1,
+            )
+        ],
+    )
+    db_session.commit()
     reloaded = load_store(db_session, user_id=test_user_id)
 
     rule = reloaded.rules[0]
@@ -548,31 +574,18 @@ def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session,
 
 
 def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "rules": [
-                TransferRule(
-                    rule_id="r1",
-                    description_contains="payroll",
-                    counterparty_account_id="does-not-exist",
-                )
-            ],
-        }
-    )
+    load_store(db_session, user_id=test_user_id)
+    rule = TransferRule(rule_id="r1", description_contains="payroll", counterparty_account_id="does-not-exist")
     with pytest.raises(IntegrityError):
-        save_store(store, db_session, user_id=test_user_id)
+        replace_transfer_rules(db_session, test_user_id, [rule])
 
 
 def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "rules": [TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"])],
-        }
-    )
-    save_store(store, db_session, user_id=test_user_id)
+    rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"])
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    replace_rule_exclusions(db_session, test_user_id, [rule])
+    db_session.commit()
     reloaded = load_store(db_session, user_id=test_user_id)
 
     assert reloaded.rules[0].excluded_transaction_ids == ["t1"]
@@ -581,22 +594,91 @@ def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, 
 def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transaction_raises(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "rules": [
-                TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
-            ],
-        }
-    )
+    load_store(db_session, user_id=test_user_id)
+    rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
+    replace_transfer_rules(db_session, test_user_id, [rule])
     with pytest.raises(IntegrityError):
-        save_store(store, db_session, user_id=test_user_id)
+        replace_rule_exclusions(db_session, test_user_id, [rule])
+
+
+def test_upsert_transfer_rule_leaves_every_other_rule_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The scoped seam that replaced routing `POST /transfer-rules` through the whole-store save.
+
+    That path rewrote every one of this user's rules from the caller's snapshot, so creating one rule
+    from a snapshot taken before someone else's create would silently delete the other rule again.
+    `upsert_transfer_rule` only ever writes the one `rule_id` it's given.
+    """
+    load_store(db_session, user_id=test_user_id)
+    upsert_transfer_rule(TransferRule(rule_id="r1", description_contains="uber"), db_session, test_user_id)
+    upsert_transfer_rule(TransferRule(rule_id="r2", description_contains="lyft"), db_session, test_user_id)
+
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert {rule.rule_id for rule in reloaded.rules} == {"r1", "r2"}
+
+    # Re-posting r1 replaces only r1, and leaves r2 exactly where it was.
+    upsert_transfer_rule(TransferRule(rule_id="r1", description_contains="uber", priority=5), db_session, test_user_id)
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert {rule.rule_id: rule.priority for rule in reloaded.rules} == {"r1": 5, "r2": 0}
+
+
+def test_upsert_transfer_rule_round_trips_its_own_exclusions(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    upsert_transfer_rule(
+        TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"]),
+        db_session,
+        test_user_id,
+    )
+
+    assert load_store(db_session, user_id=test_user_id).rules[0].excluded_transaction_ids == ["t1"]
+
+    upsert_transfer_rule(
+        TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=[]),
+        db_session,
+        test_user_id,
+    )
+    assert load_store(db_session, user_id=test_user_id).rules[0].excluded_transaction_ids == []
+
+
+def test_upsert_posting_merge_leaves_every_other_merge_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The scoped seam that replaced routing `POST /posting-merges` through the whole-store save.
+
+    That path blanket-deleted and reinserted every merge from the caller's snapshot, so recording one
+    merge could resurrect a merge another request had just undone. `upsert_posting_merge` only ever
+    touches the one `merge_id` it's given.
+    """
+    for index in range(1, 6):
+        _seed_posting(db_session, test_user_id, transaction_id=f"t{index}", posting_id=f"p{index}")
+
+    upsert_posting_merge(
+        PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2", "t5"]),
+        db_session,
+        test_user_id,
+    )
+    upsert_posting_merge(
+        PostingMerge(merge_id="m2", kept_transaction_id="t3", duplicate_transaction_ids=["t4"]),
+        db_session,
+        test_user_id,
+    )
+
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert set(reloaded.posting_merges) == {"m1", "m2"}
+
+    # Re-upserting m1 with a narrower duplicate set replaces only m1's rows.
+    upsert_posting_merge(
+        PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"], description="redone"),
+        db_session,
+        test_user_id,
+    )
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert set(reloaded.posting_merges) == {"m1", "m2"}
+    assert reloaded.posting_merges["m1"].duplicate_transaction_ids == ["t2"]
+    assert reloaded.posting_merges["m1"].description == "redone"
+    assert reloaded.posting_merges["m2"].duplicate_transaction_ids == ["t4"]
 
 
 def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    store = load_store(db_session, user_id=test_user_id)
     link = TransferLink(
         link_id="transfer-link:t1:t2",
         transaction_id_a="t1",
@@ -604,8 +686,8 @@ def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID)
         source="rule",
         rule_id="chase-card-payoff",
     )
-    store = store.model_copy(update={"transfer_links": [link]})
-    save_store(store, db_session, user_id=test_user_id)
+    insert_transfer_links(db_session, test_user_id, [link])
+    db_session.commit()
     reloaded = load_store(db_session, user_id=test_user_id)
 
     assert reloaded.transfer_links == [link]
@@ -618,17 +700,65 @@ def test_transfer_link_naming_an_already_linked_transaction_raises(
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
     _seed_posting(db_session, test_user_id, transaction_id="t3", posting_id="p3")
-    store = load_store(db_session, user_id=test_user_id)
-    store = store.model_copy(
-        update={
-            "transfer_links": [
+    with pytest.raises(IntegrityError):
+        insert_transfer_links(
+            db_session,
+            test_user_id,
+            [
                 TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2"),
                 TransferLink(link_id="transfer-link:t1:t3", transaction_id_a="t1", transaction_id_b="t3"),
-            ]
-        }
+            ],
+        )
+
+
+def test_save_store_no_longer_writes_any_interpretation_row(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The whole point of the extraction: a stale whole-store save can't clobber interpretation data.
+
+    Replaces the old round-trip assertions, which persisted rules/patterns/splits/merges/links *through*
+    `save_store` and so only held because it blanket-reinserted them. Now a caller holding a snapshot
+    taken before any of this data existed can save it back without erasing a single row — which is
+    exactly what every unrelated request (adding an account, renaming a tag) does.
+    """
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    stale = load_store(db_session, user_id=test_user_id)
+    assert stale.rules == []
+
+    rule = TransferRule(rule_id="r1", description_contains="uber", excluded_transaction_ids=["t1"])
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    replace_rule_exclusions(db_session, test_user_id, [rule])
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="cp1", description_contains="uber", category_id="expense:transport")],
     )
-    with pytest.raises(IntegrityError):
-        save_store(store, db_session, user_id=test_user_id)
+    replace_posting_splits(
+        db_session,
+        test_user_id,
+        [PostingSplit(posting_id="p1", legs=[PostingSplitLeg(amount=6), PostingSplitLeg(amount=4)])],
+    )
+    replace_posting_merges(
+        db_session,
+        test_user_id,
+        [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
+    )
+    insert_transfer_links(
+        db_session,
+        test_user_id,
+        [TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2")],
+    )
+    db_session.commit()
+
+    # The snapshot taken above still carries none of it — the old `save_store` would wipe all five.
+    save_store(stale, db_session, user_id=test_user_id)
+
+    reloaded = load_store(db_session, user_id=test_user_id)
+    assert [r.rule_id for r in reloaded.rules] == ["r1"]
+    assert reloaded.rules[0].excluded_transaction_ids == ["t1"]
+    assert set(reloaded.category_patterns) == {"cp1"}
+    assert set(reloaded.posting_splits) == {"p1"}
+    assert set(reloaded.posting_merges) == {"m1"}
+    assert [link.link_id for link in reloaded.transfer_links] == ["transfer-link:t1:t2"]
 
 
 def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
