@@ -14,8 +14,23 @@ from datetime import datetime  # noqa: TC003 — SQLAlchemy resolves Mapped[...]
 from decimal import Decimal
 from typing import TYPE_CHECKING, override
 
-from sqlalchemy import DDL, DateTime, MetaData, Numeric, TypeDecorator, event, func, text
+from sqlalchemy import (
+    ARRAY,
+    DDL,
+    DateTime,
+    MetaData,
+    Numeric,
+    Text,
+    TypeDecorator,
+    any_,
+    event,
+    func,
+    literal,
+    select,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -23,6 +38,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from typing import Any
 
+    from sqlalchemy import ColumnElement
     from sqlalchemy.engine.interfaces import Dialect
     from sqlalchemy.orm import Session
 
@@ -276,6 +292,60 @@ def check_in_sql(column: str, values: Sequence[str]) -> str:
     return f"{column} IN ({quoted})"
 
 
+def any_uuid(column: Any, values: Iterable[uuid.UUID]) -> ColumnElement[bool]:  # noqa: ANN401 — any UUID column
+    """Match `column` against a set of ids as **one** array parameter, not one parameter per id.
+
+    Use this, never `column.in_(ids)`, whenever the list can grow with a
+    user's data. `IN (...)` renders one bind parameter per element, and
+    Postgres's wire protocol accepts at most **65,535** of them in a single
+    statement — past that the driver raises `number of parameters must be
+    between 0 and 65535` and the request 500s. That was a measured
+    availability cliff, not a theoretical one: a user with 65,535 posting
+    overrides took down `GET /postings` and every dashboard endpoint (DB-audit
+    D4, speed-audit S2), because `natural_keys_by_id` below resolves one id
+    per override and nothing deduplicated them down.
+
+    `= ANY(:array)` binds the whole list as a single array value instead, so
+    there is no ceiling to hit and no chunking loop to get wrong. It is also
+    the shape Postgres plans identically to `IN` for index lookups, so this
+    costs nothing.
+
+    Parameters
+    ----------
+    column
+        The UUID column to match, e.g. `Posting.id`.
+    values
+        The ids to match against. Deduplicated; order is irrelevant to `ANY`.
+
+    Returns
+    -------
+    sqlalchemy.ColumnElement
+        A boolean expression for a `WHERE`/`ON` clause.
+    """
+    return column == any_(literal(sorted(set(values)), ARRAY(PG_UUID(as_uuid=True))))
+
+
+def any_text(column: Any, values: Iterable[str]) -> ColumnElement[bool]:  # noqa: ANN401 — any text column
+    """Match `column` against a set of strings as one array parameter — `any_uuid` for text columns.
+
+    Read `any_uuid` for why every unbounded list in this repo goes through
+    one of these two rather than through `in_`.
+
+    Parameters
+    ----------
+    column
+        The text column to match, e.g. `Posting.natural_key`.
+    values
+        The values to match against. Deduplicated.
+
+    Returns
+    -------
+    sqlalchemy.ColumnElement
+        A boolean expression for a `WHERE`/`ON` clause.
+    """
+    return column == any_(literal(sorted(set(values)), ARRAY(Text)))
+
+
 def natural_keys_by_id(
     session: Session,
     model: Any,  # noqa: ANN401 — generic helper shared across every model with an id/natural_key/user_id shape
@@ -315,7 +385,7 @@ def natural_keys_by_id(
     if not id_list:
         return {}
     rows: list[tuple[uuid.UUID, str]] = (
-        session.query(model.id, model.natural_key).filter(model.user_id == user_id, model.id.in_(id_list)).all()
+        session.query(model.id, model.natural_key).filter(model.user_id == user_id, any_uuid(model.id, id_list)).all()
     )
     return dict(rows)
 
@@ -421,7 +491,7 @@ def ids_by_natural_key(
     rows: list[tuple[str, uuid.UUID]] = (
         session
         .query(model.natural_key, model.id)
-        .filter(model.user_id == user_id, model.natural_key.in_(key_list))
+        .filter(model.user_id == user_id, any_text(model.natural_key, key_list))
         .all()
     )
     return _NaturalKeyIds(rows, table)
@@ -511,6 +581,12 @@ def ensure_reference_rows(
     over the whole batch — no lookup, no round trip per key, and safe under
     two concurrent imports naming the same new symbol.
 
+    The rows come from `unnest` over one array parameter rather than from an
+    explicit multi-row `VALUES`. An explicit `.values([...])` list binds one
+    parameter per key, which is the 65,535-parameter ceiling `any_uuid`
+    documents — and unlike an ORM `add_all`, SQLAlchemy's `insertmanyvalues`
+    batching does not rescue a statement that was written out by hand.
+
     `ON CONFLICT DO NOTHING` rather than `DO UPDATE`: the key is the entire
     row's content, so there is nothing an existing row could be missing.
 
@@ -532,7 +608,10 @@ def ensure_reference_rows(
     (key_column,) = model.__table__.primary_key.columns
     session.execute(
         pg_insert(model.__table__)
-        .values([{key_column.name: key} for key in wanted])
+        .from_select(
+            [key_column.name],
+            select(func.unnest(literal(wanted, ARRAY(Text))).label(key_column.name)),
+        )
         .on_conflict_do_nothing(index_elements=[key_column.name])
     )
     session.flush()
@@ -589,9 +668,9 @@ def upsert_and_prune(
     existing_natural_keys = {existing.natural_key for existing in session.query(model).filter_by(user_id=user_id)}
     removed_natural_keys = existing_natural_keys - keep_natural_keys
     if removed_natural_keys:
-        session.query(model).filter_by(user_id=user_id).filter(model.natural_key.in_(removed_natural_keys)).delete(
-            synchronize_session=False
-        )
+        session.query(model).filter_by(user_id=user_id).filter(
+            any_text(model.natural_key, removed_natural_keys)
+        ).delete(synchronize_session=False)
     return written_ids
 
 

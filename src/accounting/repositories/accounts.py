@@ -35,6 +35,7 @@ from sqlalchemy import text
 import accounting.db as adb
 from accounting.models import Account, ManualTransfer, OpeningBalance
 from db.base import (
+    any_uuid,
     ensure_reference_rows,
     ids_by_natural_key,
     merge_by_natural_key,
@@ -502,7 +503,10 @@ def load_manual_transfers(session: Session, user_id: uuid.UUID) -> list[ManualTr
     transaction_by_id = {row.id: row for row in transactions}
     legs_by_transaction_id: dict[uuid.UUID, list[adb.Posting]] = defaultdict(list)
     for posting in (
-        session.query(adb.Posting).filter_by(user_id=user_id).filter(adb.Posting.transaction_id.in_(transaction_by_id))
+        session
+        .query(adb.Posting)
+        .filter_by(user_id=user_id)
+        .filter(any_uuid(adb.Posting.transaction_id, transaction_by_id.keys()))
     ):
         legs_by_transaction_id[posting.transaction_id].append(posting)
     account_natural_key_by_id = natural_keys_by_id(

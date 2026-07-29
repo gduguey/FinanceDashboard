@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import Budget, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
-from db.base import check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
+from db.base import any_text, check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
 
 if TYPE_CHECKING:
     import uuid
@@ -311,7 +311,7 @@ def replace_goals(session: Session, user_id: uuid.UUID, goals: Iterable[Goal]) -
     removed_natural_keys = existing_natural_keys - keep_natural_keys
     if removed_natural_keys:
         session.query(adb.Goal).filter_by(user_id=user_id).filter(
-            adb.Goal.natural_key.in_(removed_natural_keys)
+            any_text(adb.Goal.natural_key, removed_natural_keys)
         ).delete(synchronize_session=False)
     session.flush()
 

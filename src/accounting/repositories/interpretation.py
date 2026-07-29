@@ -41,13 +41,21 @@ from accounting.models import (
     TransferLink,
     TransferRule,
 )
-from db.base import check_and_bump_row_version, ids_by_natural_key, merge_by_natural_key, natural_keys_by_id
+from db.base import (
+    any_text,
+    any_uuid,
+    check_and_bump_row_version,
+    ids_by_natural_key,
+    merge_by_natural_key,
+    natural_keys_by_id,
+)
 
 if TYPE_CHECKING:
     import uuid
     from collections.abc import Callable, Iterable, Mapping
     from datetime import datetime
 
+    from sqlalchemy import Row
     from sqlalchemy.orm import Session
 
 
@@ -183,6 +191,20 @@ _CATEGORIZATION_RULES_TABLE = "accounting.categorization_rules"
 
 Passed to `db.base.check_and_bump_row_version`, which builds raw SQL from
 it — a fixed internal constant, never anything a caller supplies.
+"""
+
+_TRANSFER_LINK_INSERT_CHUNK = 8_000
+"""How many transfer links `insert_transfer_links` sends per statement.
+
+`db.base.any_uuid` retires the 65,535-parameter ceiling for every `WHERE`
+clause in this package by binding one array instead of one parameter per
+element, but an *insert* has no array to bind into: an explicit multi-row
+`VALUES` list binds four parameters per link and there is nothing to
+collapse. SQLAlchemy's `insertmanyvalues` would batch it automatically, but
+only for an `executemany`-shaped call — passing a list of dicts to
+`.values()` is a single statement it takes literally. So the chunking is
+ours to do. Four parameters per link puts the cliff at ~16k links, and 8,000
+leaves the same headroom below it as the column count grows.
 """
 
 
@@ -412,7 +434,7 @@ def _prune_rules(session: Session, user_id: uuid.UUID, *, effect: str, keep_natu
     removed_natural_keys = existing_natural_keys - keep_natural_keys
     if removed_natural_keys:
         session.query(adb.CategorizationRule).filter_by(user_id=user_id, effect=effect).filter(
-            adb.CategorizationRule.natural_key.in_(removed_natural_keys)
+            any_text(adb.CategorizationRule.natural_key, removed_natural_keys)
         ).delete(synchronize_session=False)
 
 
@@ -444,7 +466,7 @@ def _sync_rule_exclusions(
     to_remove = existing_transaction_ids - desired_transaction_ids
     if to_remove:
         session.query(adb.CategorizationRuleExclusion).filter_by(user_id=user_id, rule_id=rule_row_id).filter(
-            adb.CategorizationRuleExclusion.transaction_id.in_(to_remove)
+            any_uuid(adb.CategorizationRuleExclusion.transaction_id, to_remove)
         ).delete(synchronize_session=False)
     session.add_all(
         adb.CategorizationRuleExclusion(user_id=user_id, rule_id=rule_row_id, transaction_id=transaction_id)
@@ -1258,20 +1280,31 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
     # the skipped rows, which is exactly the "which links are mine?" answer the
     # membership insert below needs — no second read, and no race between the
     # two statements.
-    inserted = session.execute(
-        pg_insert(adb.TransferLink)
-        .values([
-            {
-                "user_id": user_id,
-                "natural_key": link.link_id,
-                "source": link.source,
-                "rule_id": _optional_id(rule_ids, link.rule_id),
-            }
-            for link in transfer_links
-        ])
-        .on_conflict_do_nothing(index_elements=["user_id", "natural_key"])
-        .returning(adb.TransferLink.id, adb.TransferLink.natural_key)
-    ).all()
+    #
+    # Split across statements of `_TRANSFER_LINK_INSERT_CHUNK` links because an
+    # explicit `VALUES` list is one statement SQLAlchemy does not batch for us.
+    # Purely a parameter-count concern: the chunks share the caller's
+    # transaction, so the accumulated rows are the same set, and mean the same
+    # thing, as a single statement's `RETURNING` would have returned.
+    inserted: list[Row[tuple[uuid.UUID, str]]] = []
+    for chunk_start in range(0, len(transfer_links), _TRANSFER_LINK_INSERT_CHUNK):
+        chunk = transfer_links[chunk_start : chunk_start + _TRANSFER_LINK_INSERT_CHUNK]
+        inserted.extend(
+            session.execute(
+                pg_insert(adb.TransferLink)
+                .values([
+                    {
+                        "user_id": user_id,
+                        "natural_key": link.link_id,
+                        "source": link.source,
+                        "rule_id": _optional_id(rule_ids, link.rule_id),
+                    }
+                    for link in chunk
+                ])
+                .on_conflict_do_nothing(index_elements=["user_id", "natural_key"])
+                .returning(adb.TransferLink.id, adb.TransferLink.natural_key)
+            ).all()
+        )
     link_id_by_natural_key = {natural_key: row_id for row_id, natural_key in inserted}
     session.flush()
     session.add_all(
@@ -1390,9 +1423,18 @@ def load_overrides_for_postings(
     """Like `load_overrides`, but only for `posting_ids` — never reads any other posting's override.
 
     The scoped counterpart callers should use whenever they only need (and
-    are only about to write back) a known, bounded set of postings — using
+    are only about to write back) a named set of postings — using
     `load_overrides` there would still be correct, just a wasted whole-table
-    read for a caller that only cares about a handful of rows.
+    read for a caller that only cares about a subset of rows.
+
+    That set is not size-limited. It used to have to be: the two queries
+    below matched their posting ids with `IN (...)`, one bind parameter
+    apiece, so a large enough set hit Postgres's 65,535-parameter ceiling and
+    500d. Both now go through `db.base.any_uuid`, which binds the whole set
+    as one array parameter. That matters because two callers pass sets that
+    grow with the user's data rather than a handful of ids —
+    `api.routers.llm`'s bulk pattern matching, and `payload.posting_ids`
+    straight off the request body in `api.routers.postings`.
 
     Parameters
     ----------
@@ -1414,14 +1456,14 @@ def load_overrides_for_postings(
         return {}
     override_rows = list(
         session.query(adb.PostingOverride).filter(
-            adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
+            adb.PostingOverride.user_id == user_id, any_uuid(adb.PostingOverride.posting_id, posting_row_ids)
         )
     )
     pending_rows = list(
         session.query(adb.Suggestion).filter(
             adb.Suggestion.user_id == user_id,
             adb.Suggestion.status == "pending",
-            adb.Suggestion.posting_id.in_(posting_row_ids),
+            any_uuid(adb.Suggestion.posting_id, posting_row_ids),
         )
     )
     return _overrides_from_rows(override_rows, pending_rows, session, user_id)
@@ -1467,7 +1509,7 @@ def _overrides_from_rows(
     override_tag_rows = list(
         session.query(adb.PostingOverrideTag).filter(
             adb.PostingOverrideTag.user_id == user_id,
-            adb.PostingOverrideTag.override_id.in_([row.id for row in override_rows]),
+            any_uuid(adb.PostingOverrideTag.override_id, [row.id for row in override_rows]),
         )
     )
     tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, [row.tag_id for row in override_tag_rows])
@@ -1654,12 +1696,12 @@ def save_overrides_for_postings(
         return
     posting_row_ids = list(ids_by_natural_key(session, adb.Posting, user_id, posting_ids).values())
     session.query(adb.PostingOverride).filter(
-        adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
+        adb.PostingOverride.user_id == user_id, any_uuid(adb.PostingOverride.posting_id, posting_row_ids)
     ).delete(synchronize_session=False)
     session.query(adb.Suggestion).filter(
         adb.Suggestion.user_id == user_id,
         adb.Suggestion.status == "pending",
-        adb.Suggestion.posting_id.in_(posting_row_ids),
+        any_uuid(adb.Suggestion.posting_id, posting_row_ids),
     ).delete(synchronize_session=False)
 
     _insert_overrides(overrides, session, user_id)
@@ -1716,7 +1758,7 @@ def dismissed_suggestion_ids(session: Session, user_id: uuid.UUID, suggestion_id
     rows = session.query(adb.Suggestion.natural_key).filter(
         adb.Suggestion.user_id == user_id,
         adb.Suggestion.status == "dismissed",
-        adb.Suggestion.natural_key.in_(candidates),
+        any_text(adb.Suggestion.natural_key, candidates),
     )
     return {row.natural_key for row in rows}
 

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 import accounting.db as adb
 from accounting.models import Category, OtherAsset, SimulatorScenario, Tag
-from db.base import ids_by_natural_key, merge_by_natural_key, upsert_and_prune
+from db.base import any_uuid, ids_by_natural_key, merge_by_natural_key, upsert_and_prune
 
 if TYPE_CHECKING:
     import uuid
@@ -445,7 +445,7 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
             row.posting_id for row in session.query(adb.PostingTag.posting_id).filter_by(user_id=user_id, tag_id=new_id)
         }
         session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).filter(
-            adb.PostingTag.posting_id.in_(already_tagged_postings)
+            any_uuid(adb.PostingTag.posting_id, already_tagged_postings)
         ).delete(synchronize_session=False)
         session.query(adb.PostingTag).filter_by(user_id=user_id, tag_id=old_id).update(
             {"tag_id": new_id}, synchronize_session=False
@@ -456,7 +456,7 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
             for row in session.query(adb.PostingOverrideTag.override_id).filter_by(user_id=user_id, tag_id=new_id)
         }
         session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).filter(
-            adb.PostingOverrideTag.override_id.in_(already_tagged_overrides)
+            any_uuid(adb.PostingOverrideTag.override_id, already_tagged_overrides)
         ).delete(synchronize_session=False)
         session.query(adb.PostingOverrideTag).filter_by(user_id=user_id, tag_id=old_id).update(
             {"tag_id": new_id}, synchronize_session=False
