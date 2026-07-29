@@ -93,8 +93,11 @@ def grant_app_runtime(op: ModuleType, *, schemas: Sequence[str]) -> None:
     # CREATE/ALTER ROLE ... PASSWORD takes a string literal, never a bind
     # parameter, so the password is escaped by doubling single quotes.
     password = _app_runtime_password().replace("'", "''")
-    role_exists = op.get_bind().execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname = :role"),
-                                        {"role": APP_RUNTIME_ROLE}).first()
+    role_exists = (
+        op.get_bind()
+        .execute(sa.text("SELECT 1 FROM pg_roles WHERE rolname = :role"), {"role": APP_RUNTIME_ROLE})
+        .first()
+    )
     if role_exists is None:
         op.execute(f"CREATE ROLE \"{APP_RUNTIME_ROLE}\" LOGIN PASSWORD '{password}'")
     else:
@@ -138,9 +141,7 @@ def revoke_app_runtime(op: ModuleType, *, schemas: Sequence[str]) -> None:
             f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" '
             f'REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLES FROM "{APP_RUNTIME_ROLE}"'
         )
-        op.execute(
-            f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" REVOKE USAGE ON SEQUENCES FROM "{APP_RUNTIME_ROLE}"'
-        )
+        op.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" REVOKE USAGE ON SEQUENCES FROM "{APP_RUNTIME_ROLE}"')
         op.execute(f'REVOKE ALL ON ALL TABLES IN SCHEMA "{schema}" FROM "{APP_RUNTIME_ROLE}"')
         op.execute(f'REVOKE ALL ON ALL SEQUENCES IN SCHEMA "{schema}" FROM "{APP_RUNTIME_ROLE}"')
         op.execute(f'REVOKE USAGE ON SCHEMA "{schema}" FROM "{APP_RUNTIME_ROLE}"')

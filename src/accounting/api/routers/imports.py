@@ -198,6 +198,39 @@ def _read_category_overrides(raw: str | None) -> CategoryOverrides | None:
     return CategoryOverrides(categories=parsed.categories, subcategories=parsed.subcategories)
 
 
+def _read_confirmed_row_numbers(raw: str) -> set[int]:
+    """Parse the JSON-encoded list of row numbers the client confirmed.
+
+    Parsed before anything is written, not after. It used to be read *below*
+    the commit that persists the file's new categories, so a malformed value
+    left those categories in the database and then raised
+    `json.JSONDecodeError` into a 500 — a write the caller was told had
+    failed.
+
+    Returns
+    -------
+    set[int]
+
+    Raises
+    ------
+    HTTPException
+        422 if the value is not a JSON array of integers.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        message = f"confirmed_row_numbers must be a JSON array of row numbers: {error}"
+        raise HTTPException(status_code=422, detail=message) from error
+    if not isinstance(parsed, list):
+        message = "confirmed_row_numbers must be a JSON array of integers."
+        raise HTTPException(status_code=422, detail=message)
+    # `bool` is a subclass of `int`, so `[true]` would otherwise pass as `[1]`.
+    if any(not isinstance(number, int) or isinstance(number, bool) for number in parsed):
+        message = "confirmed_row_numbers must be a JSON array of integers."
+        raise HTTPException(status_code=422, detail=message)
+    return set(parsed)
+
+
 @router.post("/import/canonical/preview")
 async def post_canonical_import_preview(
     file: UploadFile,
@@ -469,6 +502,8 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     ids = [account_id.strip() for account_id in account_ids.split(",") if account_id.strip()] if account_ids else None
     overrides = _read_category_overrides(category_overrides)
+    # Validated before the category commit below — see `_read_confirmed_row_numbers`.
+    wanted_row_numbers = _read_confirmed_row_numbers(confirmed_row_numbers)
     try:
         preview = preview_categorize_from_file(
             await file.read(),
@@ -490,7 +525,6 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
         replace_categories(session, user_id, preview.new_categories.values(), prune=False)
         session.commit()
 
-    wanted_row_numbers = set(json.loads(confirmed_row_numbers))
     to_apply = [
         ConfirmedCategorization(
             posting_id=match.posting_id,

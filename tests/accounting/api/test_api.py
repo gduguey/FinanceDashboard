@@ -460,6 +460,30 @@ def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(cli
     assert len(postings) == 4
 
 
+def test_categorize_from_file_apply_rejects_a_malformed_confirmed_row_numbers_without_writing(client) -> None:
+    """A rejected request must not leave the file's new categories behind.
+
+    `confirmed_row_numbers` used to be parsed *after* the commit that
+    persists the categories the uploaded file introduced, so a malformed
+    value committed those categories and then raised `json.JSONDecodeError`
+    into a 500 — a write the caller was told had failed. Parsed up front now,
+    so the 422 happens before anything is written.
+    """
+    _import_chase_checking(client)
+    before = set(client.get("/api/accounting/store").json()["categories"])
+    sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,A Brand New Category\n"
+
+    response = client.post(
+        "/api/accounting/import/categorize-from-file/apply",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+        data={"confirmed_row_numbers": "not json at all"},
+    )
+
+    assert response.status_code == 422
+    after = set(client.get("/api/accounting/store").json()["categories"])
+    assert after == before, "a rejected apply committed the file's new categories anyway"
+
+
 def test_categorize_from_file_apply_skips_rows_not_confirmed(client) -> None:
     account_id = _import_chase_checking(client)
     sheet_csv = (

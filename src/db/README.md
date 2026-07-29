@@ -552,8 +552,15 @@ are explicit rather than accidental:
 
 `tests/db/test_rls_coverage.py` migrates its own scratch database and asserts
 the live `pg_policies` matches — every tenant table forced, and every
-unprotected table either reference data or a declared exemption. It runs in
-both backend CI jobs and does not skip when unconfigured.
+unprotected table either reference data or a declared exemption.
+
+It runs in **both** backend CI jobs, which is the point — the `test` job sets
+`DATABASE_URL_APP` as well as `DATABASE_URL_TEST` precisely so these tests
+execute there rather than erroring out. The module does still skip itself when
+`DATABASE_URL_TEST` is unset, which is the "no Postgres on this machine at all"
+case; what it deliberately does *not* do is skip when Postgres is present but
+half-configured, because a green CI run that silently proved nothing is how the
+three unprotected tables shipped in the first place.
 
 This means: even if a query somewhere in the code forgot its own
 `WHERE user_id = ...` filter, Postgres itself still refuses to return
