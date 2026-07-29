@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
@@ -14,6 +14,7 @@ from accounting.api.api_models import (
     TagRenameRequest,
     TagRenameResponse,
 )
+from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import Tag
 from accounting.repositories.taxonomy import delete_tag, load_tags, remap_tag_ids, replace_tags
 from accounting.taxonomy import plan_tag_rename, seed_new_user_defaults, slugify
@@ -44,9 +45,38 @@ def put_tags(
     return tags
 
 
-@router.post("/tags")
+@router.get("/tags/{tag_id}")
+def get_tag(
+    tag_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Tag:
+    """Return one tag by id.
+
+    The address `post_tag` advertises in its `Location` — see
+    `api.locations.location_of` for why the header is resolved against
+    this route rather than formatted by hand.
+
+    Returns
+    -------
+    Tag
+
+    Raises
+    ------
+    HTTPException
+        404 if no tag has this id.
+    """
+    tag = load_tags(session, user_id).get(tag_id)
+    if tag is None:
+        raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
+    return tag
+
+
+@router.post("/tags", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_tag(
     request: TagCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Tag:
@@ -56,6 +86,10 @@ def post_tag(
     that happens to collide with an existing one silently overwrites it),
     this only ever adds a tag — a name collision is rejected outright
     rather than clobbering the existing entry.
+
+    A genuine `201`: the id is the name's slug, but the two 409s below
+    leave creation as this route's only outcome, so it never replaces
+    anything and the status is not a hedge.
 
     Returns
     -------
@@ -84,6 +118,7 @@ def post_tag(
     new_tag = Tag(tag_id=tag_id, name=request.name)
     replace_tags(session, user_id, [new_tag], prune=False)
     session.commit()
+    location_of(http_request, response, "get_tag", tag_id=tag_id)
     return new_tag
 
 

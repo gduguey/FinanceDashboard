@@ -63,6 +63,85 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/accounting/categories/{category_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Category
+     * @description Return one category — top-level or sub — by id.
+     *
+     *     Serves both, because a subcategory is a `Category` with a
+     *     `parent_category_id` living in the same flat, `category_id`-keyed map
+     *     (see `models.Category`): there is one address space, so one route
+     *     covers it, and `POST /categories/{parent_id}/subcategories` can point
+     *     its `Location` here too.
+     *
+     *     This is the address the two creates below advertise. It exists so that
+     *     `Location` names something a client can actually fetch — until PR 3
+     *     there was no way to read a single created row back at all, only the
+     *     whole collection or `GET /store`.
+     *
+     *     Returns
+     *     -------
+     *     Category
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no category has this id.
+     */
+    get: operations['get_category_api_v1_accounting_categories__category_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Category
+     * @description Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
+     *
+     *     Every posting currently carrying `category_id` (or one of its
+     *     subcategories) reads as uncategorized afterwards — the same state a
+     *     posting that was never categorized at all is already in — without a
+     *     single posting row being written. The category is *retired* rather
+     *     than deleted (see `accounting.db.core.Category` and
+     *     `repositories.taxonomy.retire_categories`): its row stays, so the raw
+     *     import provenance on those postings keeps a valid foreign key, and it
+     *     leaves the live tree with no successor, which is what
+     *     `repositories.taxonomy.load_category_redirects` resolves to "nothing".
+     *
+     *     Anything else referencing the deleted id(s) *is* rewritten, because
+     *     those references are the user's own decisions rather than raw
+     *     provenance: cleared where the field is optional (`PostingSplitLeg`,
+     *     and any `subcategory_id`) or dropped entirely where it isn't
+     *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
+     *     `taxonomy.uncategorize_category_ids`.
+     *
+     *     Answers 200 with a body rather than the 204 the other row deletes answer:
+     *     this delete has effects beyond the row it names — it cascades to
+     *     subcategories, re-derives the survivors' "Other" catch-alls, and
+     *     uncategorizes an arbitrary number of postings — so the resulting tree and
+     *     the count of affected postings are not derivable from the request. A 204
+     *     here would mean the caller could not tell the user what just happened.
+     *
+     *     Returns
+     *     -------
+     *     CategoryDeleteResponse
+     *         The category tree that survives, and how many postings now read as
+     *         uncategorized.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `category_id` doesn't exist.
+     */
+    delete: operations['delete_category_api_v1_accounting_categories__category_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/accounting/categories': {
     parameters: {
       query?: never
@@ -91,6 +170,13 @@ export interface paths {
      *     id that happens to collide with an existing one silently overwrites
      *     it), this only ever adds a category — a name collision is rejected
      *     outright rather than clobbering the existing entry.
+     *
+     *     A genuine `201`, not a hedge: the id is derived from the name
+     *     (`{classification}:{slug}`), but the two 409s below mean this route
+     *     can only ever bring a category into existence. It never replaces one,
+     *     so `201 Created` is the whole truth about what happened — which is
+     *     why this stays a `POST` on the collection rather than becoming the
+     *     `PUT /{id}` the genuinely-upserting routes became.
      *
      *     Returns
      *     -------
@@ -122,6 +208,11 @@ export interface paths {
     /**
      * Post Subcategory
      * @description Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
+     *
+     *     A genuine `201` for the same reason as `post_category`: the sibling
+     *     and slug 409s below leave creation as the only outcome. Its `Location`
+     *     points at `GET /categories/{category_id}`, not at a route nested under
+     *     the parent — a subcategory is addressed like any other category.
      *
      *     Returns
      *     -------
@@ -169,61 +260,6 @@ export interface paths {
     put?: never
     post?: never
     delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/v1/accounting/categories/{category_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Category
-     * @description Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
-     *
-     *     Every posting currently carrying `category_id` (or one of its
-     *     subcategories) reads as uncategorized afterwards — the same state a
-     *     posting that was never categorized at all is already in — without a
-     *     single posting row being written. The category is *retired* rather
-     *     than deleted (see `accounting.db.core.Category` and
-     *     `repositories.taxonomy.retire_categories`): its row stays, so the raw
-     *     import provenance on those postings keeps a valid foreign key, and it
-     *     leaves the live tree with no successor, which is what
-     *     `repositories.taxonomy.load_category_redirects` resolves to "nothing".
-     *
-     *     Anything else referencing the deleted id(s) *is* rewritten, because
-     *     those references are the user's own decisions rather than raw
-     *     provenance: cleared where the field is optional (`PostingSplitLeg`,
-     *     and any `subcategory_id`) or dropped entirely where it isn't
-     *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
-     *     `taxonomy.uncategorize_category_ids`.
-     *
-     *     Answers 200 with a body rather than the 204 the other row deletes answer:
-     *     this delete has effects beyond the row it names — it cascades to
-     *     subcategories, re-derives the survivors' "Other" catch-alls, and
-     *     uncategorizes an arbitrary number of postings — so the resulting tree and
-     *     the count of affected postings are not derivable from the request. A 204
-     *     here would mean the caller could not tell the user what just happened.
-     *
-     *     Returns
-     *     -------
-     *     CategoryDeleteResponse
-     *         The category tree that survives, and how many postings now read as
-     *         uncategorized.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if `category_id` doesn't exist.
-     */
-    delete: operations['delete_category_api_v1_accounting_categories__category_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -348,6 +384,10 @@ export interface paths {
      *     this only ever adds a tag — a name collision is rejected outright
      *     rather than clobbering the existing entry.
      *
+     *     A genuine `201`: the id is the name's slug, but the two 409s below
+     *     leave creation as this route's only outcome, so it never replaces
+     *     anything and the status is not a hedge.
+     *
      *     Returns
      *     -------
      *     Tag
@@ -373,7 +413,24 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Tag
+     * @description Return one tag by id.
+     *
+     *     The address `post_tag` advertises in its `Location` — see
+     *     `api.locations.location_of` for why the header is resolved against
+     *     this route rather than formatted by hand.
+     *
+     *     Returns
+     *     -------
+     *     Tag
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no tag has this id.
+     */
+    get: operations['get_tag_api_v1_accounting_tags__tag_id__get']
     put?: never
     post?: never
     /**
@@ -7271,6 +7328,68 @@ export interface operations {
       }
     }
   }
+  get_category_api_v1_accounting_categories__category_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Category']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_category_api_v1_accounting_categories__category_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryDeleteResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_categories_api_v1_accounting_categories_put: {
     parameters: {
       query?: never
@@ -7322,8 +7441,10 @@ export interface operations {
     }
     responses: {
       /** @description Successful Response */
-      200: {
+      201: {
         headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {
@@ -7357,8 +7478,10 @@ export interface operations {
     }
     responses: {
       /** @description Successful Response */
-      200: {
+      201: {
         headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {
@@ -7394,37 +7517,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CategoryDeletePreviewResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_category_api_v1_accounting_categories__category_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        category_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CategoryDeleteResponse']
         }
       }
       /** @description Validation Error */
@@ -7555,6 +7647,39 @@ export interface operations {
         'application/json': components['schemas']['TagCreate']
       }
     }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Tag']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_tag_api_v1_accounting_tags__tag_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        tag_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {

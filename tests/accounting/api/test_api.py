@@ -2541,9 +2541,14 @@ def test_post_category_creates_a_new_top_level_category(client) -> None:
     response = client.post(
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     body = response.json()
     assert body["category_id"] == "expense:custom"
+    # The address the 201 advertises has to answer, not just be well-formed:
+    # a `Location` pointing at a 404 is worse than no `Location` at all.
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == body
     store = client.get("/api/v1/accounting/store").json()
     assert "expense:custom" in store["categories"]
 
@@ -2565,7 +2570,7 @@ def test_post_category_allows_the_same_name_under_a_different_classification(cli
     response = client.post(
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "income", "color": "#111111"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
 
 
 def test_post_subcategory_creates_a_new_subcategory(client) -> None:
@@ -2575,10 +2580,15 @@ def test_post_subcategory_creates_a_new_subcategory(client) -> None:
     response = client.post(
         "/api/v1/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#222222"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     body = response.json()
     assert body["category_id"] == "expense:custom:gadgets"
     assert body["parent_category_id"] == "expense:custom"
+    # A subcategory's `Location` is a plain `/categories/{id}`, not a route
+    # nested under the parent — one flat address space for the whole tree.
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == body
 
 
 def test_post_subcategory_404s_for_an_unknown_parent(client) -> None:
@@ -2614,7 +2624,7 @@ def test_post_subcategory_allows_the_same_name_under_a_different_parent(client) 
     response = client.post(
         "/api/v1/accounting/categories/expense:other-top/subcategories", json={"name": "Gadgets", "color": "#555555"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
 
 
 def test_category_rename_preview_reports_no_merge_for_a_plain_rename(client) -> None:
@@ -2836,11 +2846,25 @@ def test_tag_rename_merge_repoints_a_tag_ids_override(client, db_session) -> Non
 
 def test_post_tag_creates_a_new_tag(client) -> None:
     response = client.post("/api/v1/accounting/tags", json={"name": "Trip"})
-    assert response.status_code == 200
+    assert response.status_code == 201
     body = response.json()
     assert body["tag_id"] == "tag:trip"
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == body
     store = client.get("/api/v1/accounting/store").json()
     assert "tag:trip" in store["tags"]
+
+
+def test_getting_one_category_or_tag_404s_when_it_does_not_exist(client) -> None:
+    """The item GETs the creates point at, on the path a `Location` must never take.
+
+    Asserted for its own sake: `location_of` guarantees the *route* exists,
+    never that the row does, so these two have to distinguish a missing row
+    from a missing route rather than answering 200 with a null body.
+    """
+    assert client.get("/api/v1/accounting/categories/expense:nope").status_code == 404
+    assert client.get("/api/v1/accounting/tags/tag:nope").status_code == 404
 
 
 def test_post_tag_409s_on_a_duplicate_name_case_insensitive(client) -> None:
@@ -2852,7 +2876,7 @@ def test_post_tag_409s_on_a_duplicate_name_case_insensitive(client) -> None:
 def test_post_tag_allows_a_distinct_name(client) -> None:
     client.post("/api/v1/accounting/tags", json={"name": "Trip"})
     response = client.post("/api/v1/accounting/tags", json={"name": "Move"})
-    assert response.status_code == 200
+    assert response.status_code == 201
 
 
 def test_delete_tag_removes_only_that_tag(client) -> None:
@@ -3791,5 +3815,5 @@ def test_two_unrelated_writes_both_land_without_conflicting(client) -> None:
     response = client.post(
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert {"expense:custom", "expense:other"} <= set(client.get("/api/v1/accounting/store").json()["categories"])

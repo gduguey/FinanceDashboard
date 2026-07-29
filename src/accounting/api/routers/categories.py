@@ -6,7 +6,7 @@ import uuid
 from collections import Counter
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
@@ -19,6 +19,7 @@ from accounting.api.api_models import (
     CategoryRenameResponse,
     SubcategoryCreate,
 )
+from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.importers.ingest import load_ledger
 from accounting.models import Budget, Category
 from accounting.repositories.interpretation import (
@@ -58,9 +59,45 @@ def _added_categories(before: dict[str, Category], after: dict[str, Category]) -
     return [category for category_id, category in after.items() if before.get(category_id) != category]
 
 
-@router.post("/categories")
+@router.get("/categories/{category_id}")
+def get_category(
+    category_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Category:
+    """Return one category — top-level or sub — by id.
+
+    Serves both, because a subcategory is a `Category` with a
+    `parent_category_id` living in the same flat, `category_id`-keyed map
+    (see `models.Category`): there is one address space, so one route
+    covers it, and `POST /categories/{parent_id}/subcategories` can point
+    its `Location` here too.
+
+    This is the address the two creates below advertise. It exists so that
+    `Location` names something a client can actually fetch — until PR 3
+    there was no way to read a single created row back at all, only the
+    whole collection or `GET /store`.
+
+    Returns
+    -------
+    Category
+
+    Raises
+    ------
+    HTTPException
+        404 if no category has this id.
+    """
+    category = seeded_categories(session, user_id).get(category_id)
+    if category is None:
+        raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
+    return category
+
+
+@router.post("/categories", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_category(
     request: CategoryCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Category:
@@ -70,6 +107,13 @@ def post_category(
     id that happens to collide with an existing one silently overwrites
     it), this only ever adds a category — a name collision is rejected
     outright rather than clobbering the existing entry.
+
+    A genuine `201`, not a hedge: the id is derived from the name
+    (`{classification}:{slug}`), but the two 409s below mean this route
+    can only ever bring a category into existence. It never replaces one,
+    so `201 Created` is the whole truth about what happened — which is
+    why this stays a `POST` on the collection rather than becoming the
+    `PUT /{id}` the genuinely-upserting routes became.
 
     Returns
     -------
@@ -117,17 +161,25 @@ def post_category(
     categories = normalize_categories({**existing_categories, category_id: new_category})
     replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
     session.commit()
+    location_of(http_request, response, "get_category", category_id=category_id)
     return new_category
 
 
-@router.post("/categories/{parent_id}/subcategories")
+@router.post("/categories/{parent_id}/subcategories", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_subcategory(
     parent_id: str,
     request: SubcategoryCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Category:
     """Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
+
+    A genuine `201` for the same reason as `post_category`: the sibling
+    and slug 409s below leave creation as the only outcome. Its `Location`
+    points at `GET /categories/{category_id}`, not at a route nested under
+    the parent — a subcategory is addressed like any other category.
 
     Returns
     -------
@@ -175,6 +227,7 @@ def post_subcategory(
     categories = normalize_categories({**existing_categories, category_id: new_category})
     replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
     session.commit()
+    location_of(http_request, response, "get_category", category_id=category_id)
     return new_category
 
 

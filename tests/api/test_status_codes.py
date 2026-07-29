@@ -53,6 +53,27 @@ def test_every_delete_answers_204_with_no_body(paths) -> None:
     assert offenders == []
 
 
+def test_every_201_declares_the_location_header_it_answers_with(paths) -> None:
+    """A `201` owes the caller the address of what it just made.
+
+    FastAPI derives a response body from the return annotation and knows
+    nothing about headers, so a `Location` set only in a handler is real on
+    the wire but absent from the schema — and therefore absent from
+    `web/src/types/schema.ts` and from `/docs`. Every create declares it
+    through `accounting.api.locations.CREATED_WITH_LOCATION`; this fails
+    for one that sets the header without declaring it, or declares the
+    status without the header.
+    """
+    missing = [
+        (path, method)
+        for path, operations in paths.items()
+        for method, operation in operations.items()
+        if "201" in operation.get("responses", {})
+        and "Location" not in operation["responses"]["201"].get("headers", {})
+    ]
+    assert missing == []
+
+
 def test_the_deletes_that_keep_a_body_are_exactly_the_listed_exceptions(paths) -> None:
     """Guards the exception list from drifting into a place nobody rechecks.
 
