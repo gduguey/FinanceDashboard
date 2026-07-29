@@ -156,6 +156,21 @@ export interface TagRenamePreview {
 const POSTINGS_PAGE_LIMIT = 5000
 /** The server's own hard cap (`api_models.PAGE_LIMIT_MAX`) — the fewest round trips it will allow. */
 
+/**
+ * How far a paging loop may advance, given the page size the server applied.
+ *
+ * Guards the one input that could hang the tab: a stride of zero would make
+ * the loop re-request the same offset forever. The server validates
+ * `limit >= 1`, so this should be unreachable — which is exactly why it
+ * should fail loudly rather than spin.
+ */
+function pageStride(appliedLimit: number): number {
+  if (!Number.isInteger(appliedLimit) || appliedLimit < 1) {
+    throw new Error(`Server returned an unusable page limit: ${appliedLimit}`)
+  }
+  return appliedLimit
+}
+
 function queryString(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
@@ -336,7 +351,13 @@ export const accountingApi = {
   // then every consumer still receives the complete list it expects.
   //
   // `total` counts *transactions* and `limit` is in transactions too, so the
-  // loop advances by `limit` and stops once `offset` covers `total`.
+  // loop advances by the page's own size and stops once `offset` covers
+  // `total`. It advances by `page.limit`, the size the server actually
+  // applied after clamping, never by the size we asked for: if this
+  // constant is ever above the server's cap — mid-deploy, say — advancing
+  // by the request would step past records the server never sent and
+  // truncate the ledger silently, which is the exact failure paging exists
+  // to avoid.
   postings: async () => {
     const limit = POSTINGS_PAGE_LIMIT
     const items: Posting[] = []
@@ -346,7 +367,7 @@ export const accountingApi = {
       const page = await request<PostingPage>(`/api/accounting/postings${queryString({ limit, offset })}`)
       items.push(...page.items)
       total = page.total
-      offset += limit
+      offset += pageStride(page.limit)
     } while (offset < total)
     return items
   },
@@ -363,7 +384,7 @@ export const accountingApi = {
       const page = await request<LedgerExportPage>(`/api/accounting/ledger/export${queryString({ limit, offset })}`)
       items.push(...page.items)
       total = page.total
-      offset += limit
+      offset += pageStride(page.limit)
     } while (offset < total)
     return items
   },
