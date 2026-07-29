@@ -66,9 +66,14 @@ jobs:
       - name: mypy
         run: uv run mypy
 
+      # DATABASE_URL_APP is needed even though this job runs no migration of its
+      # own: tests/db/test_rls_coverage.py migrates its own scratch database, and
+      # the baseline creates the restricted app_runtime role from this URL's
+      # password. Without it those tests error out instead of running.
       - name: pytest
         env:
           DATABASE_URL_TEST: postgresql+psycopg://postgres:postgres@localhost:5432/test
+          DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/test
         run: uv run pytest
 
   migrations:

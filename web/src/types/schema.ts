@@ -3782,39 +3782,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/{full_path}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Serve Frontend
-     * @description Serve the built React app for anything no route above matched.
-     *
-     *     Registered last on purpose: Starlette matches routes in registration
-     *     order, so every `/api/...` route (and `/docs`, `/openapi.json`)
-     *     defined earlier is tried first. Falls back to `index.html` for any
-     *     path that isn't a real file in `web/dist/` — e.g. a hard refresh on
-     *     `/settings` — so the frontend's client-side router gets a chance to
-     *     handle it instead of a bare 404.
-     *
-     *     Returns
-     *     -------
-     *     FileResponse
-     *         The requested static file if it exists under `web/dist/`,
-     *         otherwise `index.html` so client-side routing can take over.
-     */
-    get: operations['serve_frontend__full_path__get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
 }
 export type webhooks = Record<string, never>
 export interface components {
@@ -11437,37 +11404,6 @@ export interface operations {
           'application/json': {
             [key: string]: string
           }
-        }
-      }
-    }
-  }
-  serve_frontend__full_path__get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        full_path: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': unknown
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

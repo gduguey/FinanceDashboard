@@ -139,7 +139,13 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 if _FRONTEND_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="frontend-assets")
 
-    @app.get("/{full_path:path}")
+    # include_in_schema=False keeps this out of the generated OpenAPI document.
+    # It is not part of the API contract, and because the route only exists when
+    # web/dist/ happens to be built, including it made the generated schema — and
+    # so the checked-in TypeScript client — depend on whether the machine that
+    # regenerated it had run `npm run build`. The drift gate could then pass or
+    # fail for reasons unrelated to the API.
+    @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str) -> FileResponse:
         """Serve the built React app for anything no route above matched.
 
