@@ -6,8 +6,7 @@ Current balance, Status`) is the older checking/savings export;
 Description, Primary Category, Detailed Category, Amount`) is the newer
 one, which also covers vaults — something the old format has no export
 for at all (SoFi only ever offered vault history via the monthly
-statement PDF, see `importers.sofi.statement_pdf` — retired for new
-imports, see that module's own docstring).
+statement PDF, whose importer has since been retired and deleted).
 """
 
 from __future__ import annotations
@@ -15,6 +14,8 @@ from __future__ import annotations
 from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from db.money import Money
 
 
 class SofiRow(BaseModel):
@@ -25,7 +26,7 @@ class SofiRow(BaseModel):
     transaction_date: date = Field(alias="Date")
     description: str = Field(alias="Description")
     type: str = Field(alias="Type")
-    amount: float = Field(alias="Amount")
+    amount: Money = Field(alias="Amount")
     current_balance: str = Field(alias="Current balance", default="")
     status: str = Field(alias="Status", default="")
 
@@ -50,4 +51,4 @@ class SofiCsvRow(BaseModel):
     description: str = Field(alias="Description")
     primary_category: str = Field(alias="Primary Category", default="")
     detailed_category: str = Field(alias="Detailed Category", default="")
-    amount: float = Field(alias="Amount")
+    amount: Money = Field(alias="Amount")

@@ -4,8 +4,8 @@ Two distinct export shapes exist (see `importers.sofi.models`): an older,
 per-account-kind shape (`SofiRow`) with no vault support at all, and a
 newer, wider shape (`SofiCsvRow`) that covers checking, savings, and
 vaults alike — SoFi previously only ever exposed vault history via the
-monthly statement PDF (`importers.sofi.statement_pdf`, retired for new
-imports); this format lets a vault be dragged straight in as a CSV
+monthly statement PDF, whose importer has since been retired and
+deleted; this format lets a vault be dragged straight in as a CSV
 instead. `standardize_sofi_checking`/`standardize_sofi_savings` dispatch
 to whichever shape a given file is actually in, so both are safe to keep
 registered against their account kind regardless of which shape the user
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Literal
 
 from accounting.importers.common import RawLeg, posting_pair, postings_to_frame, row_hash
 from accounting.importers.sofi.models import SofiCsvRow, SofiRow
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     import polars as pl
@@ -106,11 +106,7 @@ def parse_account_name(account_name: str) -> ParsedAccountName | None:
     return ParsedAccountName(label=label, last4=match["last4"], kind=kind)
 
 
-def _standardize_sofi_wide_csv(
-    csv_text: str,
-    account_id: str,
-    parent_account_id: str | None,  # noqa: ARG001 (kept for call-site signature uniformity with the legacy shape)
-) -> pl.DataFrame:
+def _standardize_sofi_wide_csv(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map the newer, wider SoFi export's rows onto postings against `account_id`.
 
     Every row — including an "Interest" row and a vault's own "Transfer
@@ -132,10 +128,6 @@ def _standardize_sofi_wide_csv(
         The raw CSV file contents, exactly as uploaded.
     account_id
         The real account (checking, savings, or vault) these rows belong to.
-    parent_account_id
-        `account_id`'s own parent savings account, if it's a vault; `None`
-        otherwise — unused here, forwarded only for interface uniformity
-        with `standardize_sofi_checking`/`standardize_sofi_savings`'s shared signature.
 
     Returns
     -------
@@ -148,7 +140,10 @@ def _standardize_sofi_wide_csv(
         posted_at = datetime.combine(row.posted_date, datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
 
-        transaction_row_id = row_hash(account_id, row.posted_date.isoformat(), str(row.amount), row.description)
+        # `:.4f` at `MONEY_SCALE`, never `str(row.amount)` — see the same line in
+        # `importers.chase.checking` for why the `Decimal`'s own scale must not leak
+        # into a transaction id.
+        transaction_row_id = row_hash(account_id, row.posted_date.isoformat(), f"{row.amount:.4f}", row.description)
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,
@@ -203,7 +198,12 @@ def _standardize_sofi_legacy_csv(csv_text: str, account_id: str, *, source: str)
         row = SofiRow.model_validate(raw)
         posted_at = datetime.combine(row.transaction_date, datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
-        transaction_row_id = row_hash(account_id, row.transaction_date.isoformat(), str(row.amount), row.description)
+        # `:.4f` at `MONEY_SCALE`, never `str(row.amount)` — see the same line in
+        # `importers.chase.checking` for why the `Decimal`'s own scale must not leak
+        # into a transaction id.
+        transaction_row_id = row_hash(
+            account_id, row.transaction_date.isoformat(), f"{row.amount:.4f}", row.description
+        )
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,
@@ -223,7 +223,7 @@ def _standardize_sofi_legacy_csv(csv_text: str, account_id: str, *, source: str)
     return postings_to_frame(postings)
 
 
-def standardize_sofi_checking(csv_text: str, account_id: str, parent_account_id: str | None = None) -> pl.DataFrame:
+def standardize_sofi_checking(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map SoFi checking export rows onto postings against `account_id`.
 
     Dispatches to the wider CSV shape when `csv_text` is in it — both are
@@ -237,10 +237,6 @@ def standardize_sofi_checking(csv_text: str, account_id: str, parent_account_id:
         The raw CSV file contents, exactly as uploaded.
     account_id
         The real SoFi checking account these rows belong to.
-    parent_account_id
-        `account_id`'s own parent account, if any — a checking account
-        never has one, but forwarded to the wide-CSV standardizer for
-        interface uniformity with `standardize_sofi_savings`.
 
     Returns
     -------
@@ -248,11 +244,11 @@ def standardize_sofi_checking(csv_text: str, account_id: str, parent_account_id:
         Posting-shaped rows, two per input row, validated through `Posting`.
     """
     if is_sofi_csv(csv_text):
-        return _standardize_sofi_wide_csv(csv_text, account_id, parent_account_id)
+        return _standardize_sofi_wide_csv(csv_text, account_id)
     return _standardize_sofi_legacy_csv(csv_text, account_id, source="sofi-checking")
 
 
-def standardize_sofi_savings(csv_text: str, account_id: str, parent_account_id: str | None = None) -> pl.DataFrame:
+def standardize_sofi_savings(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map SoFi savings (or vault) export rows onto postings against `account_id`.
 
     Dispatches to the wider CSV shape when `csv_text` is in it — the only
@@ -265,9 +261,6 @@ def standardize_sofi_savings(csv_text: str, account_id: str, parent_account_id: 
         The raw CSV file contents, exactly as uploaded.
     account_id
         The real SoFi savings or vault account these rows belong to.
-    parent_account_id
-        `account_id`'s own parent savings account, when `account_id` is a
-        vault; `None` for a real savings account.
 
     Returns
     -------
@@ -275,7 +268,7 @@ def standardize_sofi_savings(csv_text: str, account_id: str, parent_account_id: 
         Posting-shaped rows, two per input row, validated through `Posting`.
     """
     if is_sofi_csv(csv_text):
-        return _standardize_sofi_wide_csv(csv_text, account_id, parent_account_id)
+        return _standardize_sofi_wide_csv(csv_text, account_id)
     return _standardize_sofi_legacy_csv(csv_text, account_id, source="sofi-savings")
 
 

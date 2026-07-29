@@ -14,6 +14,7 @@ from trades.ledger.counterfactuals import benchmark_counterfactual_series, hysa_
 from trades.ledger.metrics import max_drawdown
 from trades.ledger.nav import growth_of_100, nav_series, period_pnl
 from trades.ledger.replay import external_cashflows, portfolio_value, replay_ledger
+from trades.ledger.signs import signed_cash_effect
 from trades.market_data import cpi as cpi_module
 from trades.utils.frames import collect_if_lazy
 
@@ -374,7 +375,7 @@ def _symbol_trading_contributions(ledger: pl.DataFrame, month_start: date, month
         return {}
     by_symbol = (
         month_trades
-        .with_columns(signed=pl.when(pl.col("event_type") == "BUY").then(pl.col("amount")).otherwise(-pl.col("amount")))
+        .with_columns(signed=-signed_cash_effect())
         .group_by("symbol")
         .agg(contribution=pl.col("signed").sum())
     )

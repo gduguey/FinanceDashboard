@@ -28,8 +28,12 @@ from accounting.importers.canonical.csv import (
     read_tabular_rows,
     resolve_categorization_rows,
 )
+from accounting.ledger.frame import to_analytics_amount
 from accounting.models import ManualOverride
-from accounting.store import load_overrides_for_postings, save_overrides_for_postings
+from accounting.repositories.interpretation import (
+    load_overrides_for_postings,
+    save_overrides_for_postings,
+)
 
 if TYPE_CHECKING:
     import uuid
@@ -40,6 +44,7 @@ if TYPE_CHECKING:
 
     from accounting.importers.canonical.csv import DateOrder, SkippedRowsInfo
     from accounting.models import Category
+    from db.money import Money
 
 # Amounts are cents-precision money, not arbitrary floats — an exact match
 # (up to float roundoff) is the one cheap, unambiguous filter available
@@ -137,7 +142,7 @@ class CategorizationMatch:
     row_number: int
     posted_at: datetime
     description: str
-    amount: float
+    amount: Money
     proposed_category_id: str | None
     proposed_category_name: str | None
     proposed_subcategory_id: str | None
@@ -241,8 +246,9 @@ def preview_categorize_from_file(  # noqa: PLR0913, PLR0914, C901
 
     scored: list[tuple[float, int, str]] = []  # (score, row_index, posting_id)
     for row_index, row in enumerate(resolved_rows):
-        for candidate in candidates_by_amount.get(round(row.amount, 2), []):
-            if abs(candidate["amount"] - row.amount) > _AMOUNT_TOLERANCE:
+        row_amount = to_analytics_amount(row.amount)
+        for candidate in candidates_by_amount.get(round(row_amount, 2), []):
+            if abs(candidate["amount"] - row_amount) > _AMOUNT_TOLERANCE:
                 continue
             days_apart = abs((candidate["posted_at"] - row.posted_at).total_seconds()) / 86400
             if days_apart > window_days:

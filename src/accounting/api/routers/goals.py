@@ -9,8 +9,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-import accounting.db as adb
 from accounting.api.api_models import (
+    GoalAutomationCreate,
+    GoalAutomationIdResponse,
+    GoalAutomationUpdate,
     GoalContributionCreate,
     GoalContributionIdResponse,
     GoalContributionUpdate,
@@ -18,34 +20,39 @@ from accounting.api.api_models import (
     GoalIdResponse,
     GoalsSummary,
     GoalUpdate,
-    RecurringAdditionCreate,
-    RecurringAdditionIdResponse,
-    RecurringAdditionUpdate,
     SimulateContributionRequest,
     SimulateContributionResult,
     WithdrawalAutomationResult,
 )
-from accounting.api.dependencies import _display_currency, _resolved_postings_and_store, state
+from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
     run_recurring_additions,
     run_withdrawal_automation,
 )
-from accounting.models import CurrencyCode, Goal, GoalContribution, RecurringAddition, WithdrawalPriorityEntry
-from accounting.store import (
+from accounting.models import CurrencyCode, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
+from accounting.repositories.planning import (
     delete_goal,
-    load_store,
-    next_available_color,
+    goal_automation_exists,
+    goal_contribution_exists,
+    insert_goal,
+    insert_goal_contributions,
+    load_goal_automations,
+    load_goal_contributions,
+    load_goals,
+    remove_goal_automation,
     remove_goal_contribution,
-    remove_recurring_addition,
-    save_store,
+    replace_goal_automations,
+    replace_goal_contributions,
+    replace_goals,
     update_goal,
+    upsert_goal_automation,
     upsert_goal_contribution,
-    upsert_recurring_addition,
 )
-from db.base import derive_id
+from accounting.taxonomy import next_available_color, seeded_accounts
 from db.current_user import get_current_user_id
+from db.money import quantize_money
 from db.session import get_db
 
 router = APIRouter()
@@ -62,7 +69,7 @@ def post_goal(
     `goal_id` is server-minted — two goals can validly share a name, so
     there's no natural key two "the same" goal would collide on. `color`
     is picked to be distinct from every color already assigned to an
-    existing goal, the same `store.next_available_color` helper
+    existing goal, the same `taxonomy.next_available_color` helper
     categories already use for the same purpose.
 
     Returns
@@ -70,18 +77,17 @@ def post_goal(
     Goal
         The goal just persisted.
     """
-    store = load_store(session, user_id)
+    existing = load_goals(session, user_id)
     goal = Goal(
         goal_id=f"goal:{uuid.uuid4().hex}",
         name=request.name,
         target_amount=request.target_amount,
         target_currency=request.target_currency,
         target_date=request.target_date,
-        color=next_available_color(goal.color for goal in store.goals.values()),
+        color=next_available_color(goal.color for goal in existing.values()),
         created_at=datetime.now(tz=UTC),
     )
-    store = store.model_copy(update={"goals": {**store.goals, goal.goal_id: goal}})
-    save_store(store, session, user_id)
+    insert_goal(session, user_id, goal)
     return goal
 
 
@@ -98,10 +104,9 @@ def put_goals(
     dict[str, Goal]
         The goals just persisted, keyed by `goal_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"goals": goals})
-    save_store(store, session, user_id)
-    return store.goals
+    replace_goals(session, user_id, goals.values())
+    session.commit()
+    return goals
 
 
 @router.patch("/goals/{goal_id}")
@@ -113,13 +118,10 @@ def patch_goal(
 ) -> Goal:
     """Update one existing goal in place, without touching any other goal already saved.
 
-    A true per-resource write — unlike `PUT /goals`, this never
-    round-trips through `load_store`/`save_store` (which deletes and
-    reinserts every persisted entity for the user); see
-    `accounting.store.update_goal`. Guarded by `request.expected_version`
-    instead of the whole-store `X-Expected-Store-Version` header, so an
-    edit to this one goal can never spuriously conflict with — or be
-    silently overwritten by — an unrelated save elsewhere in the store.
+    A true per-resource write — see `repositories.planning.update_goal`.
+    Guarded by `request.expected_version`, this goal's own row version,
+    so an edit to this one goal can never spuriously conflict with — or
+    be silently overwritten by — an unrelated save elsewhere.
 
     Returns
     -------
@@ -157,7 +159,7 @@ def delete_goal_route(
 ) -> GoalIdResponse:
     """Delete one goal, without touching any other goal already saved.
 
-    No version check — see `accounting.store.delete_goal`'s own
+    No version check — see `repositories.planning.delete_goal`'s own
     docstring for why deleting an already-gone goal is a plain 404, not a
     409: there's nothing left to conflict with.
 
@@ -191,42 +193,33 @@ def put_goal_contributions(
     dict[str, GoalContribution]
         The contributions just persisted, keyed by `contribution_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"goal_contributions": contributions})
-    save_store(store, session, user_id)
-    return store.goal_contributions
+    replace_goal_contributions(session, user_id, contributions.values())
+    session.commit()
+    return contributions
 
 
-def _goal_contribution_exists(session: Session, user_id: uuid.UUID, contribution_id: str) -> bool:
-    """Whether one contribution row exists, without loading the whole store.
+def _reject_wrong_direction(automations: list[GoalAutomation], direction: GoalAutomationDirection) -> None:
+    """Refuse a whole-list replace that carries automations of the other direction.
 
-    `PUT /goal-contributions/{id}` needs this because `upsert_goal_contribution` would otherwise happily
-    *create* a row for an unknown id (INSERT ... ON CONFLICT), where the endpoint's contract is a 404.
+    Both directions live in one table now, and each whole-list `PUT`
+    deletes only its own direction's rows before reinserting — so a body
+    mixing the two would silently drop the entries that don't match.
+    A 400 at the edge says that, rather than letting
+    `repositories.planning.replace_goal_automations` raise a `ValueError`
+    into a 500.
 
-    Returns
-    -------
-    bool
+    Raises
+    ------
+    HTTPException
+        400 if any entry's `direction` isn't `direction`.
     """
-    row_id = derive_id(user_id, "goal_contributions", contribution_id)
-    return session.get(adb.GoalContribution, row_id) is not None
+    wrong = [automation.automation_id for automation in automations if automation.direction != direction]
+    if wrong:
+        raise HTTPException(status_code=400, detail=f"Every automation here must be a {direction!r}: {wrong}")
 
 
-def _recurring_addition_exists(session: Session, user_id: uuid.UUID, addition_id: str) -> bool:
-    """Whether one recurring-addition row exists, without loading the whole store.
-
-    `PATCH /recurring-additions/{id}` needs this because `upsert_recurring_addition` would otherwise
-    create a row for an unknown id, where the endpoint's contract is a 404.
-
-    Returns
-    -------
-    bool
-    """
-    row_id = derive_id(user_id, "recurring_additions", addition_id)
-    return session.get(adb.RecurringAddition, row_id) is not None
-
-
-def _validate_remainder_invariant(additions: list[RecurringAddition]) -> None:
-    """Enforce the whole-list `remainder` rules against a full recurring-addition set.
+def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
+    """Enforce the whole-list `remainder` rules against a full contribution-automation set.
 
     Shared by the whole-list `PUT` and the single-row `PATCH` so both reject
     the same illegal states: a single-row edit is validated against the list it
@@ -234,16 +227,24 @@ def _validate_remainder_invariant(additions: list[RecurringAddition]) -> None:
     second `remainder` row, or move the `remainder` row off the lowest
     priority, a state `PUT` itself refuses.
 
+    The first of the two rules is *also* structural now — `goal_automations`
+    carries `UNIQUE (user_id) WHERE mode = 'remainder'` (see
+    `db.goals.GoalAutomation`) — and this check stays on top of it anyway,
+    because the index's only vocabulary is a unique violation, which reaches
+    a client as a 500. The second rule cannot be an index at all: "is the
+    lowest-priority row" is a statement about the whole list's ordering, not
+    about any one row.
+
     Raises
     ------
     HTTPException
-        400 if more than one addition uses `mode="remainder"`, or one does but isn't the lowest-priority row.
+        400 if more than one automation uses `mode="remainder"`, or one does but isn't the lowest-priority row.
     """
-    remainder_additions = [addition for addition in additions if addition.mode == "remainder"]
-    if len(remainder_additions) > 1:
-        raise HTTPException(status_code=400, detail="Only one recurring addition may use mode='remainder'")
-    if remainder_additions and remainder_additions[0].priority != max((a.priority for a in additions), default=0):
-        raise HTTPException(status_code=400, detail="A 'remainder' addition must be the lowest-priority row")
+    remainder = [automation for automation in automations if automation.mode == "remainder"]
+    if len(remainder) > 1:
+        raise HTTPException(status_code=400, detail="Only one contribution automation may use mode='remainder'")
+    if remainder and remainder[0].priority != max((a.priority for a in automations), default=0):
+        raise HTTPException(status_code=400, detail="A 'remainder' automation must be the lowest-priority row")
 
 
 @router.post("/goal-contributions")
@@ -272,6 +273,7 @@ def post_goal_contribution(
         amount=request.amount,
         currency=request.currency,
         note=request.note,
+        account_id=request.account_id,
         source_posting_id=request.source_posting_id,
         origin=request.origin,
         edited=request.edited,
@@ -304,7 +306,7 @@ def put_goal_contribution(
     HTTPException
         404 if no contribution with this id exists.
     """
-    if not _goal_contribution_exists(session, user_id, contribution_id):
+    if not goal_contribution_exists(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
     contribution = GoalContribution(
         contribution_id=contribution_id,
@@ -313,6 +315,7 @@ def put_goal_contribution(
         amount=request.amount,
         currency=request.currency,
         note=request.note,
+        account_id=request.account_id,
         source_posting_id=request.source_posting_id,
         origin=request.origin,
         edited=request.edited,
@@ -344,49 +347,56 @@ def delete_goal_contribution(
     return GoalContributionIdResponse(contribution_id=contribution_id)
 
 
-@router.post("/recurring-additions")
-def post_recurring_addition(
-    request: RecurringAdditionCreate,
+@router.post("/goal-automations/contributions")
+def post_goal_automation(
+    request: GoalAutomationCreate,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> RecurringAddition:
-    """Create one new recurring-addition rule, appended after every rule already saved.
+) -> GoalAutomation:
+    """Create one new scheduled contribution automation, appended after every one already saved.
 
-    `addition_id` is server-minted — two rules can validly share every
+    `automation_id` is server-minted — two rules can validly share every
     other field. `priority` is never taken from the client: this always
-    goes after the current lowest-priority rule, matching the Goals
-    page's own "append at the end of the ordered list" behavior.
-    Drag-and-drop reordering still goes through `PUT /recurring-additions`.
+    goes after the current lowest-priority contribution, matching the
+    Goals page's own "append at the end of the ordered list" behavior.
+    Drag-and-drop reordering still goes through
+    `PUT /goal-automations/contributions`.
 
     Returns
     -------
-    RecurringAddition
-        The addition just persisted.
+    GoalAutomation
+        The automation just persisted.
     """
-    store = load_store(session, user_id)
-    addition = RecurringAddition(
-        addition_id=f"addition:{uuid.uuid4().hex}",
+    existing = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
+    ]
+    automation = GoalAutomation(
+        automation_id=f"addition:{uuid.uuid4().hex}",
         goal_id=request.goal_id,
+        direction="contribution",
+        priority=len(existing),
         start_date=request.start_date,
         frequency=request.frequency,
         end_date=request.end_date,
         mode=request.mode,
         value=request.value,
         currency=request.currency,
-        priority=len(store.recurring_additions),
     )
-    store = store.model_copy(update={"recurring_additions": [*store.recurring_additions, addition]})
-    save_store(store, session, user_id)
-    return addition
+    upsert_goal_automation(automation, session, user_id)
+    return automation
 
 
-@router.put("/recurring-additions")
-def put_recurring_additions(
-    additions: list[RecurringAddition],
+@router.put("/goal-automations/contributions")
+def put_goal_contribution_automations(
+    automations: list[GoalAutomation],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[RecurringAddition]:
-    """Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
+) -> list[GoalAutomation]:
+    """Replace the whole contribution-automation list — the priority-ordered allocation rules.
+
+    Scoped to `direction="contribution"`: the withdrawal ordering lives in
+    the same table now but is replaced by its own endpoint, so neither
+    list can wipe the other.
 
     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
     (more than one `mode="remainder"`, or a `remainder` row that isn't the
@@ -394,115 +404,122 @@ def put_recurring_additions(
 
     Returns
     -------
-    list[RecurringAddition]
-        The additions just persisted.
+    list[GoalAutomation]
+        The automations just persisted. Answers 400 if any entry is not a
+        `contribution`, or if the `remainder` invariant is broken.
     """
-    _validate_remainder_invariant(additions)
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"recurring_additions": additions})
-    # Reorder is a pure whole-list ordering operation (last write wins), so opt out of the whole-store
-    # version check — otherwise a reorder would spuriously 409 against an unrelated concurrent save. The
-    # per-rule field edit and delete go through their own scoped endpoints (PATCH/DELETE below).
-    session.info["expected_store_version"] = None
-    save_store(store, session, user_id)
-    return store.recurring_additions
+    _reject_wrong_direction(automations, "contribution")
+    _validate_remainder_invariant(automations)
+    replace_goal_automations(session, user_id, automations, "contribution")
+    session.commit()
+    return automations
 
 
-@router.patch("/recurring-additions/{addition_id}")
-def patch_recurring_addition(
-    addition_id: str,
-    request: RecurringAdditionUpdate,
+@router.patch("/goal-automations/{automation_id}")
+def patch_goal_automation(
+    automation_id: str,
+    request: GoalAutomationUpdate,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> RecurringAddition:
-    """Edit one recurring-addition rule in place, without touching any other. Scoped, last-write-wins.
+) -> GoalAutomation:
+    """Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
 
     A single-rule field edit no longer round-trips through the whole-list
     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-    edit to a different one); see `accounting.store.upsert_recurring_addition`.
+    edit to a different one); see `repositories.planning.upsert_goal_automation`.
 
     Returns
     -------
-    RecurringAddition
+    GoalAutomation
         The rule as persisted after the edit.
 
     Raises
     ------
     HTTPException
-        404 if no rule with `addition_id` exists.
+        404 if no *contribution* automation with `automation_id` exists.
     """
-    if not _recurring_addition_exists(session, user_id, addition_id):
-        raise HTTPException(status_code=404, detail=f"Recurring addition {addition_id!r} not found")
-    addition = RecurringAddition(
-        addition_id=addition_id,
+    # Direction-scoped on purpose. The two directions are separate resources
+    # over one table, and this handler hard-codes `direction="contribution"`
+    # below — so a direction-blind existence check would let a withdrawal's id
+    # through and silently rewrite that row into a contribution, giving it a
+    # funding schedule that moves money the opposite way and dropping it out of
+    # the drawdown order. A withdrawal id names no contribution, so 404 is the
+    # honest answer.
+    if not goal_automation_exists(session, user_id, automation_id, direction="contribution"):
+        raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
+    automation = GoalAutomation(
+        automation_id=automation_id,
         goal_id=request.goal_id,
+        direction="contribution",
+        priority=request.priority,
         start_date=request.start_date,
         frequency=request.frequency,
         end_date=request.end_date,
         mode=request.mode,
         value=request.value,
         currency=request.currency,
-        priority=request.priority,
     )
     # Validate against the whole list this edit would produce, not the row in
     # isolation — the single-row PATCH must not be able to reach a state the
     # whole-list PUT would reject (a second `remainder`, or one out of order).
-    store = load_store(session, user_id)
-    effective = [addition if a.addition_id == addition_id else a for a in store.recurring_additions]
+    effective = [
+        automation if existing.automation_id == automation_id else existing
+        for existing in load_goal_automations(session, user_id)
+        if existing.direction == "contribution"
+    ]
     _validate_remainder_invariant(effective)
-    upsert_recurring_addition(addition, session, user_id)
-    return addition
+    upsert_goal_automation(automation, session, user_id)
+    return automation
 
 
-@router.delete("/recurring-additions/{addition_id}")
-def delete_recurring_addition_route(
-    addition_id: str,
+@router.delete("/goal-automations/{automation_id}")
+def delete_goal_automation_route(
+    automation_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> RecurringAdditionIdResponse:
-    """Delete one recurring-addition rule, without touching any other. Idempotent, no version check.
+) -> GoalAutomationIdResponse:
+    """Delete one goal automation, without touching any other. Idempotent, no version check.
 
     Returns
     -------
-    RecurringAdditionIdResponse
-        The rule id just deleted.
+    GoalAutomationIdResponse
+        The automation id just deleted.
 
     Raises
     ------
     HTTPException
-        404 if no rule with `addition_id` exists.
+        404 if no automation with `automation_id` exists.
     """
-    if not remove_recurring_addition(session, user_id, addition_id):
-        raise HTTPException(status_code=404, detail=f"Recurring addition {addition_id!r} not found")
+    if not remove_goal_automation(session, user_id, automation_id):
+        raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
     session.commit()
-    return RecurringAdditionIdResponse(addition_id=addition_id)
+    return GoalAutomationIdResponse(automation_id=automation_id)
 
 
-@router.put("/withdrawal-priorities")
-def put_withdrawal_priorities(
-    priorities: list[WithdrawalPriorityEntry],
+@router.put("/goal-automations/withdrawals")
+def put_goal_withdrawal_automations(
+    automations: list[GoalAutomation],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[WithdrawalPriorityEntry]:
-    """Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
+) -> list[GoalAutomation]:
+    """Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
 
-    A pure ordering + set-membership operation (no free text or amount
-    anywhere), so it's last-write-wins by nature — whichever ordering was
-    submitted last is the intended one. It opts out of the whole-store
-    version check (like the recurring-additions reorder) so re-ordering
-    can't spuriously 409 against an unrelated concurrent save elsewhere in
-    the store.
+    A pure ordering + set-membership operation (no free text, schedule, or
+    amount anywhere — a withdrawal automation carries none), so it's
+    last-write-wins by nature: whichever ordering was submitted last is
+    the intended one. Scoped to `direction="withdrawal"`, so it never
+    touches the contribution automations sharing the table.
 
     Returns
     -------
-    list[WithdrawalPriorityEntry]
-        The priorities just persisted.
+    list[GoalAutomation]
+        The withdrawal automations just persisted. Answers 400 if any
+        entry is not a `withdrawal`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"withdrawal_priorities": priorities})
-    session.info["expected_store_version"] = None
-    save_store(store, session, user_id)
-    return store.withdrawal_priorities
+    _reject_wrong_direction(automations, "withdrawal")
+    replace_goal_automations(session, user_id, automations, "withdrawal")
+    session.commit()
+    return automations
 
 
 @router.get("/goals/summary")
@@ -522,12 +539,12 @@ def get_goals_summary(
     -------
     GoalsSummary
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    display = _display_currency(display_currency, store, as_of_date)
-    contributions = contributions_to_frame(store.goal_contributions)
-    balances = all_goal_balances(contributions, list(store.goals.keys()), as_of_date, display)
-    unallocated = unallocated_balance(postings, store.accounts, contributions, as_of_date, display)
+    display = _display_currency(display_currency, _currencies_in_use(session, user_id), as_of_date)
+    contributions = contributions_to_frame(load_goal_contributions(session, user_id))
+    balances = all_goal_balances(contributions, list(load_goals(session, user_id).keys()), as_of_date, display)
+    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions, as_of_date, display)
     return GoalsSummary(balances=balances, unallocated=unallocated)
 
 
@@ -553,13 +570,13 @@ def post_run_recurring_additions(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[GoalContribution]:
-    """Run every recurring addition whose most recent scheduled occurrence hasn't already run.
+    """Run every contribution automation whose most recent scheduled occurrence hasn't already run.
 
-    Idempotent by construction: each addition's occurrence writes a
+    Idempotent by construction: each automation's occurrence writes a
     contribution under a deterministic id
-    (`f"auto:{addition_id}:{occurrence.isoformat()}"`, see
+    (`f"auto:{automation_id}:{occurrence.isoformat()}"`, see
     `ledger.goal_automations.next_recurring_occurrence`); calling this
-    again before the next occurrence is a no-op for any addition that id
+    again before the next occurrence is a no-op for any automation that id
     already exists for. There is no background scheduler in this app —
     this is meant to be called when the Goals page loads, which is the
     natural moment a user would notice a change anyway.
@@ -569,45 +586,57 @@ def post_run_recurring_additions(
     list[GoalContribution]
         The new contributions just written (empty if nothing was due).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    existing_ids = set(store.goal_contributions.keys())
+    contributions = load_goal_contributions(session, user_id)
+    existing_ids = set(contributions.keys())
+    scheduled = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
+    ]
 
     occurrences: dict[str, date] = {}
-    for addition in store.recurring_additions:
-        occurrence = next_recurring_occurrence(addition, as_of_date)
+    for automation in scheduled:
+        occurrence = next_recurring_occurrence(automation, as_of_date)
         if occurrence is None:
             continue
-        if f"auto:{addition.addition_id}:{occurrence.isoformat()}" in existing_ids:
+        if f"auto:{automation.automation_id}:{occurrence.isoformat()}" in existing_ids:
             continue
-        occurrences[addition.addition_id] = occurrence
+        occurrences[automation.automation_id] = occurrence
 
-    due = [addition for addition in store.recurring_additions if addition.addition_id in occurrences]
+    due = [automation for automation in scheduled if automation.automation_id in occurrences]
     if not due:
         return []
 
-    contributions_frame = contributions_to_frame(store.goal_contributions)
-    unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
+    contributions_frame = contributions_to_frame(contributions)
+    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
     funded = run_recurring_additions(due, unallocated)
 
-    by_goal_addition = {addition.goal_id: addition for addition in due}
+    # Keyed by `automation_id`, not `goal_id`: a goal may legitimately have
+    # several contribution schedules (only *withdrawals* are one-per-goal, see
+    # `db.goals`' partial unique index). Keying by goal made the map
+    # non-injective, so two funded schedules on one goal both resolved to
+    # whichever automation came last, minted the same `contribution_id`, and the
+    # second silently overwrote the first here — while `run_recurring_additions`
+    # had already counted both against unallocated.
+    by_automation_id = {automation.automation_id: automation for automation in due}
     new_contributions: dict[str, GoalContribution] = {}
-    for goal_id, amount in funded:
-        addition = by_goal_addition[goal_id]
-        occurrence = occurrences[addition.addition_id]
-        contribution_id = f"auto:{addition.addition_id}:{occurrence.isoformat()}"
+    for automation_id, amount in funded:
+        automation = by_automation_id[automation_id]
+        occurrence = occurrences[automation.automation_id]
+        contribution_id = f"auto:{automation.automation_id}:{occurrence.isoformat()}"
         new_contributions[contribution_id] = GoalContribution(
             contribution_id=contribution_id,
-            goal_id=goal_id,
+            goal_id=automation.goal_id,
             date=datetime.combine(occurrence, datetime.min.time()),
-            amount=amount,
-            currency=addition.currency,
+            # Computed in the float analytics projection; re-quantized here
+            # because it is about to be stored. See `accounting.ledger.frame`.
+            amount=quantize_money(amount),
+            currency=automation.currency or "USD",
             note="Recurring addition",
             origin="automation",
         )
 
-    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
-    save_store(store, session, user_id)
+    insert_goal_contributions(session, user_id, new_contributions.values())
     return list(new_contributions.values())
 
 
@@ -633,18 +662,22 @@ def post_run_withdrawal_automation(
         The contributions just written, and however much of the shortfall
         (if any) no goal had enough left to cover.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    contributions_frame = contributions_to_frame(store.goal_contributions)
-    unallocated = unallocated_balance(postings, store.accounts, contributions_frame, as_of_date)
+    contributions = load_goal_contributions(session, user_id)
+    contributions_frame = contributions_to_frame(contributions)
+    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
     if unallocated >= 0:
         return WithdrawalAutomationResult(withdrawals=[], remaining_shortfall=0.0)
 
     shortfall = -unallocated
-    balances = all_goal_balances(contributions_frame, list(store.goals.keys()), as_of_date)
-    drawn = run_withdrawal_automation(store.withdrawal_priorities, balances, shortfall)
+    balances = all_goal_balances(contributions_frame, list(load_goals(session, user_id).keys()), as_of_date)
+    withdrawals = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "withdrawal"
+    ]
+    drawn = run_withdrawal_automation(withdrawals, balances, shortfall)
 
-    existing_ids = set(store.goal_contributions.keys())
+    existing_ids = set(contributions.keys())
     new_contributions: dict[str, GoalContribution] = {}
     for goal_id, amount in drawn:
         contribution_id = _next_contribution_id(existing_ids, f"auto-withdrawal:{goal_id}:{as_of_date.isoformat()}")
@@ -653,13 +686,13 @@ def post_run_withdrawal_automation(
             contribution_id=contribution_id,
             goal_id=goal_id,
             date=datetime(as_of_date.year, as_of_date.month, as_of_date.day),  # noqa: DTZ001  (ledger dates are naive)
-            amount=amount,
+            # Re-quantized on the way into storage, as above.
+            amount=quantize_money(amount),
             note="Withdrawal automation — unallocated went negative",
             origin="automation",
         )
 
-    store = store.model_copy(update={"goal_contributions": {**store.goal_contributions, **new_contributions}})
-    save_store(store, session, user_id)
+    insert_goal_contributions(session, user_id, new_contributions.values())
     remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
     return WithdrawalAutomationResult(
         withdrawals=list(new_contributions.values()), remaining_shortfall=remaining_shortfall
@@ -686,15 +719,19 @@ def post_simulate_contribution(
         running once more, with this contribution already applied, so the
         user can see if it sets up a shortfall soon after (non-blocking).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
-    contributions_frame = contributions_to_frame(store.goal_contributions)
-    unallocated_as_of_date = unallocated_balance(postings, store.accounts, contributions_frame, payload.date)
+    postings = _resolved_postings(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    contributions_frame = contributions_to_frame(load_goal_contributions(session, user_id))
+    unallocated_as_of_date = unallocated_balance(postings, accounts, contributions_frame, payload.date)
     exceeds_unallocated = payload.amount > unallocated_as_of_date
 
     today = datetime.now(UTC).date()
-    unallocated_today = unallocated_balance(postings, store.accounts, contributions_frame, today)
+    unallocated_today = unallocated_balance(postings, accounts, contributions_frame, today)
     projected_before_run = unallocated_today - payload.amount
-    funded_next_run = run_recurring_additions(store.recurring_additions, max(projected_before_run, 0.0))
+    scheduled = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
+    ]
+    funded_next_run = run_recurring_additions(scheduled, max(projected_before_run, 0.0))
     projected_next_run_unallocated = projected_before_run - sum(amount for _, amount in funded_next_run)
 
     return SimulateContributionResult(

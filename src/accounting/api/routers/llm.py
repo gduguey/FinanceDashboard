@@ -18,7 +18,7 @@ from accounting.api.api_models import (
     PatternSuggestBulkRequest,
     VerifyResult,
 )
-from accounting.api.dependencies import _resolved_postings_and_store, state
+from accounting.api.dependencies import _resolved_postings
 from accounting.ledger.patterns import match_patterns_bulk, matching_pattern
 from accounting.ledger.pending import stage_pending_suggestion
 from accounting.llm import categorize
@@ -33,7 +33,12 @@ from accounting.llm.settings import (
 )
 from accounting.llm.usage import RESET_PERIOD, TrackedProvider, load_usage
 from accounting.models import CategoryClassification, PendingSuggestionSource
-from accounting.store import load_overrides_for_postings, save_overrides_for_postings
+from accounting.repositories.interpretation import (
+    load_category_patterns,
+    load_overrides_for_postings,
+    save_overrides_for_postings,
+)
+from accounting.taxonomy import seeded_categories
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -302,24 +307,23 @@ def post_ai_suggest_category(
     HTTPException
         404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
     target_row = target.row(0, named=True)
     classification: CategoryClassification = "income" if target_row["amount"] >= 0 else "expense"
 
+    categories = seeded_categories(session, user_id)
     system_prompt, user_prompt = categorize.build_prompt(
-        target_row["description"], classification, store.categories, _few_shot_examples(postings, classification)
+        target_row["description"], classification, categories, _few_shot_examples(postings, classification)
     )
     try:
         raw_response = complete_with_fallback(_llm_providers(session, user_id), system_prompt, user_prompt)
     except LLMProviderError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    category_id, subcategory_id = categorize.parse_and_validate_suggestion(
-        raw_response, store.categories, classification
-    )
+    category_id, subcategory_id = categorize.parse_and_validate_suggestion(raw_response, categories, classification)
     if category_id is None:
         return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
     if lock_category_id is not None and category_id != lock_category_id:
@@ -343,7 +347,7 @@ def post_pattern_suggest_category(
     The description-match/suggest-don't-apply counterpart to
     `post_ai_suggest_category` — same staged-pending flow (see
     `ledger.pending`), same `lock_category_id` guarantee, just matched
-    against `store.category_patterns` instead of calling an LLM.
+    against the user's own `CategoryPattern` rows instead of calling an LLM.
 
     Parameters
     ----------
@@ -365,13 +369,13 @@ def post_pattern_suggest_category(
     HTTPException
         404 if the posting doesn't exist.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
     target_row = target.row(0, named=True)
 
-    pattern = matching_pattern(store.category_patterns, str(target_row["description"]))
+    pattern = matching_pattern(load_category_patterns(session, user_id), str(target_row["description"]))
     if pattern is None:
         return CategorySuggestionResult(category_id=None, subcategory_id=None, applied=False)
     if lock_category_id is not None and pattern.category_id != lock_category_id:
@@ -414,12 +418,14 @@ def post_pattern_suggest_category_bulk(
     BulkSuggestResult
         How many postings got a staged suggestion.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
     if targets.is_empty():
         return BulkSuggestResult(applied=0)
 
-    matches = collect_if_lazy(match_patterns_bulk(store.category_patterns, targets.select("posting_id", "description")))
+    matches = collect_if_lazy(
+        match_patterns_bulk(load_category_patterns(session, user_id), targets.select("posting_id", "description"))
+    )
     if matches.is_empty():
         return BulkSuggestResult(applied=0)
 

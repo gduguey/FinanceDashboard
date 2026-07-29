@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from accounting.importers.chase.models import ChaseCheckingRow
 from accounting.importers.common import RawLeg, parse_us_date, posting_pair, postings_to_frame, row_hash
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     import polars as pl
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from accounting.models import Posting
 
 
-def standardize_chase_checking(csv_text: str, account_id: str, _parent_account_id: str | None = None) -> pl.DataFrame:
+def standardize_chase_checking(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map Chase checking export rows onto postings against `account_id`.
 
     Every row's counterparty is one of the two uncategorized placeholders,
@@ -29,9 +29,6 @@ def standardize_chase_checking(csv_text: str, account_id: str, _parent_account_i
         The raw CSV file contents, exactly as uploaded.
     account_id
         The real Chase checking account these rows belong to.
-    _parent_account_id
-        Unused — Chase checking accounts never have vaults. Accepted only
-        so this function matches `_STANDARDIZERS`' shared call signature.
 
     Returns
     -------
@@ -43,7 +40,12 @@ def standardize_chase_checking(csv_text: str, account_id: str, _parent_account_i
         row = ChaseCheckingRow.model_validate(raw)
         posted_at = datetime.combine(parse_us_date(row.posting_date), datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
-        transaction_row_id = row_hash(account_id, row.posting_date, str(row.amount), row.description)
+        # `:.4f`, not `str(row.amount)` — `amount` is a `Money` (`Decimal`), and
+        # `str(Decimal)` keeps the source file's own scale, so `1500.0`, `1500.00`
+        # and `1500` would hash to three different transaction ids for one
+        # transaction and re-import would stop deduping. `.4f` is `MONEY_SCALE`,
+        # the scale the amount is stored at, and matches `importers.canonical.csv`.
+        transaction_row_id = row_hash(account_id, row.posting_date, f"{row.amount:.4f}", row.description)
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,

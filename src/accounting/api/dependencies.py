@@ -9,47 +9,42 @@ without a circular import back through the module that imports them.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING
 
 import polars as pl
-from fastapi import Depends, Header, HTTPException
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from accounting.config import AccountingConfig
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.categorization import (
+    apply_category_redirects,
     apply_manual_overrides,
     apply_posting_merges,
     apply_posting_splits,
     apply_rules,
 )
 from accounting.ledger.currency import DisplayCurrency
-from accounting.ledger.manual_transfers import postings_for_manual_transfers
 from accounting.ledger.transfers import apply_transfer_links
 from accounting.market_data import exchange_rates
 from accounting.models import CurrencyCode
-from accounting.store import AccountingStore, load_overrides, load_store
-from db.session import get_db
+from accounting.precedence import OVERLAY_PRECEDENCE
+from accounting.repositories.interpretation import (
+    load_overrides,
+    load_posting_merges,
+    load_posting_splits,
+    load_transfer_links,
+    load_transfer_rules,
+)
+from accounting.repositories.planning import load_goal_contributions
+from accounting.repositories.taxonomy import load_category_redirects, load_other_assets
+from accounting.taxonomy import seeded_accounts
 
 if TYPE_CHECKING:
     import uuid
+    from collections.abc import Callable, Iterable
 
-
-def _stash_expected_store_version(
-    session: Annotated[Session, Depends(get_db)],
-    x_expected_store_version: Annotated[int | None, Header()] = None,
-) -> None:
-    """Remember the client's last-seen store version on this request's own session, for `save_store` to check.
-
-    A router-level dependency (see `accounting.api.api`'s top-level
-    `APIRouter`) — no individual endpoint declares this itself. FastAPI
-    caches `Depends(get_db)` per request, so this stashes onto the exact
-    same `Session` instance every endpoint's own `Depends(get_db)`
-    parameter goes on to receive, letting `accounting.store.save_store`
-    read it back (`session.info["expected_store_version"]`) without any of
-    its ~30 call sites needing to thread a version through themselves.
-    """
-    session.info["expected_store_version"] = x_expected_store_version
+    from accounting.precedence import OverlayStage
 
 
 class _State:
@@ -63,27 +58,100 @@ class _State:
 state = _State()
 
 
-def _resolved_postings_and_store(
-    config: AccountingConfig,  # noqa: ARG001
+def _overlay_appliers(
+    session: Session,
+    user_id: uuid.UUID,
+) -> dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]]:
+    """Bind one applier per declared overlay stage, so the caller only has to walk the declared order.
+
+    Each entry is the whole of what that stage does to the frame, already
+    closed over the rows it needs. The mapping is keyed by
+    `accounting.precedence.OverlayStage` and asserted complete below, so a
+    stage added to the vocabulary without an applier fails at import-time
+    review rather than by silently never running — which is the property
+    that makes precedence data rather than the line order of a function
+    body.
+
+    Every stage here is per-posting, so none of them needs the caller's
+    date window: whatever `load_ledger` returned is already scoped. The
+    retired `manual_transfer` stage was the sole exception — it generated
+    postings that bypassed that filter and had to re-apply it by hand — and
+    it stopped being one when a manual transfer became a real transaction.
+
+    Each stage reads only its own overlay table (plus, for the
+    counterparty stage, the accounts a rule repoints at), so they are
+    loaded one collection at a time here rather than as one snapshot of
+    everything persisted.
+
+    Parameters
+    ----------
+    session, user_id
+        See `_resolved_postings`.
+
+    Returns
+    -------
+    dict[accounting.precedence.OverlayStage, collections.abc.Callable]
+        One applier per stage, each mapping a frame to the frame that stage produces.
+
+    Raises
+    ------
+    RuntimeError
+        If a declared stage has no applier registered here — an overlay
+        that would otherwise silently never be applied.
+    """
+    rules = load_transfer_rules(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    posting_splits = load_posting_splits(session, user_id)
+    posting_merges = load_posting_merges(session, user_id)
+    transfer_links = load_transfer_links(session, user_id)
+    appliers: dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]] = {
+        "counterparty": lambda postings: apply_rules(postings, rules, accounts),
+        "split": lambda postings: apply_posting_splits(postings, posting_splits),
+        "override": lambda postings: apply_manual_overrides(postings, load_overrides(session, user_id)),
+        "merge": lambda postings: apply_posting_merges(postings, posting_merges),
+        "link": lambda postings: apply_transfer_links(postings, transfer_links),
+    }
+    missing = [stage for stage in OVERLAY_PRECEDENCE if stage not in appliers]
+    if missing:
+        message = f"No applier registered for declared overlay stage(s): {', '.join(missing)}"
+        raise RuntimeError(message)
+    return appliers
+
+
+def _resolved_postings(
     session: Session,
     user_id: uuid.UUID,
     *,
     since: date | None = None,
     until: date | None = None,
-) -> tuple[Any, Any]:
-    """Load the raw ledger and resolve it against the current rules and manual overrides.
+) -> pl.DataFrame:
+    """Load the raw ledger and replay every interpretation overlay over it, in declared precedence order.
 
-    A rule only ever repoints a posting at an account that already exists
-    in the store, never creates one — so unlike importing a statement
-    (which does register a new account), this is a pure read with no side
+    Which stages exist and what order they run in is
+    `accounting.precedence.OVERLAY_PRECEDENCE` — read that module for the
+    rationale behind the order. This function walks it; it does not define
+    it, and adding a stage does not mean finding the right line here to
+    insert a call at.
+
+    One step runs before the walk and is deliberately not a stage:
+    `ledger.categorization.apply_category_redirects` resolves the category
+    a posting was *imported* under into the one it means today. Postings
+    are raw and never rewritten (DB-audit D14), so a category rename,
+    merge, or delete retires a `categories` row instead of touching them
+    (see `accounting.db.core.Category`) — and this is where that retirement
+    is read back. It is a dimension lookup rather than an overlay, and it
+    necessarily precedes all five stages because each of them reads or
+    writes a category.
+
+    A rule only ever repoints a posting at an account that already
+    exists, never creates one — so unlike importing a statement (which
+    does register a new account), this is a pure read with no side
     effect to persist. Manual overrides are never written back here
-    either; they already live in their own file and are only ever applied
-    on top.
+    either; they already live in their own table and are only ever
+    applied on top.
 
     Parameters
     ----------
-    config
-        Unused; kept for every caller's existing call shape.
     session
         An open database session.
     user_id
@@ -101,53 +169,37 @@ def _resolved_postings_and_store(
         `apply_posting_merges`) only ever looks at one posting/transaction
         at a time — none of them need a *different* posting's date to
         resolve a given one, `apply_posting_merges` included: it drops a
-        duplicate purely by transaction id, from `store.posting_merges`
+        duplicate purely by transaction id, from the posting merges
         (loaded in full, independently of `since`/`until`), never by
         checking whether the transaction it was merged into is also
-        present in this same date-limited frame. `store.manual_transfers`
-        (added below, also independent of `load_ledger`'s own filter) is
-        the one thing still filtered again afterward, so a transfer dated
-        outside the window doesn't leak in.
+        present in this same date-limited frame. Manual transfers used to
+        be the one exception, generated outside `load_ledger` and so
+        needing the window re-applied by hand; they are real postings now
+        and the SQL filter covers them like everything else.
     until
         Last day to include, inclusive. Same reasoning as `since`.
 
     Returns
     -------
-    tuple[polars.DataFrame, accounting.store.AccountingStore]
-        The fully resolved postings, and the current store.
+    polars.DataFrame
+        The fully resolved postings.
     """
     raw = load_ledger(session, user_id, since=since, until=until)
-    store = load_store(session, user_id)
-    resolved = apply_rules(raw, store.rules, store.accounts)
-    resolved = apply_posting_splits(resolved, store.posting_splits)
-    overrides = load_overrides(session, user_id)
-    resolved = apply_manual_overrides(resolved, overrides)
-    resolved = apply_posting_merges(resolved, store.posting_merges)
-    if store.manual_transfers:
-        manual = postings_for_manual_transfers(store.manual_transfers, store.accounts)
-        if since is not None:
-            manual = manual.filter(pl.col("posted_at").dt.date() >= since)
-        if until is not None:
-            manual = manual.filter(pl.col("posted_at").dt.date() <= until)
-        resolved = pl.concat([resolved, manual], how="vertical")
-    # Deliberately the *last* step: `apply_posting_splits`/`apply_manual_overrides`
-    # above rebuild the frame through `Posting.polars_schema`, which would
-    # silently drop `is_linked_transfer`/`linked_transaction_id`/
-    # `transfer_link_source` if they were added any earlier (see
-    # `ledger.transfers.apply_transfer_links`'s own docstring).
-    resolved = apply_transfer_links(resolved, store.transfer_links)
-    return resolved, store
+    appliers = _overlay_appliers(session, user_id)
+    resolved = apply_category_redirects(raw, load_category_redirects(session, user_id))
+    for stage in OVERLAY_PRECEDENCE:
+        resolved = appliers[stage](resolved)
+    return resolved
 
 
 def _resolved_postings_for_aggregation(
-    config: AccountingConfig,
     session: Session,
     user_id: uuid.UUID,
     *,
     since: date | None = None,
     until: date | None = None,
-) -> tuple[Any, Any]:
-    """Like `_resolved_postings_and_store`, but clears category/subcategory for unconfirmed suggestions.
+) -> pl.DataFrame:
+    """Like `_resolved_postings`, but clears category/subcategory for unconfirmed suggestions.
 
     A pending AI/pattern suggestion is applied optimistically everywhere
     else (see `ledger.pending`) so its category shows up immediately in the
@@ -159,35 +211,29 @@ def _resolved_postings_for_aggregation(
 
     Parameters
     ----------
-    config, session, user_id
-        See `_resolved_postings_and_store`.
+    session, user_id
+        See `_resolved_postings`.
     since, until
-        See `_resolved_postings_and_store` — every caller of *this*
-        function is a dashboard aggregation already scoped to its own
-        date range, so they should always be passed here.
+        See `_resolved_postings` — every caller of *this* function is a
+        dashboard aggregation already scoped to its own date range, so
+        they should always be passed here.
 
     Returns
     -------
-    tuple[polars.DataFrame, accounting.store.AccountingStore]
-        The resolved postings (with any pending posting's category/subcategory
-        nulled out), and the current store.
+    polars.DataFrame
+        The resolved postings, with any pending posting's category/subcategory nulled out.
     """
-    postings, store = _resolved_postings_and_store(config, session, user_id, since=since, until=until)
+    postings = _resolved_postings(session, user_id, since=since, until=until)
     overrides = load_overrides(session, user_id)
     pending_ids = [posting_id for posting_id, override in overrides.items() if override.pending_source is not None]
     if not pending_ids:
-        return postings, store
+        return postings
     cleared = pl.when(pl.col("posting_id").is_in(pending_ids)).then(None).otherwise(pl.col("category_id"))
     cleared_sub = pl.when(pl.col("posting_id").is_in(pending_ids)).then(None).otherwise(pl.col("subcategory_id"))
-    return postings.with_columns(category_id=cleared, subcategory_id=cleared_sub), store
+    return postings.with_columns(category_id=cleared, subcategory_id=cleared_sub)
 
 
-def _account_has_postings(
-    account_id: str,
-    config: AccountingConfig,  # noqa: ARG001
-    session: Session,
-    user_id: uuid.UUID,
-) -> bool:
+def _account_has_postings(account_id: str, session: Session, user_id: uuid.UUID) -> bool:
     """Check whether any imported posting has ever been assigned to this account.
 
     Used to enforce the accounts-CRUD rule: an account's institution,
@@ -206,15 +252,39 @@ def _account_has_postings(
     return bool(ledger.filter(pl.col("account_id") == account_id).height > 0)
 
 
+def _currencies_in_use(session: Session, user_id: uuid.UUID) -> set[CurrencyCode]:
+    """Find every currency this user actually holds money in, across all three places one can be named.
+
+    Read once per request and passed to `_display_currency`, rather than
+    re-read per date by an endpoint building a history series.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose currencies to collect.
+
+    Returns
+    -------
+    set[CurrencyCode]
+        Every account's, other asset's, and goal contribution's own currency.
+    """
+    return (
+        {account.currency for account in seeded_accounts(session, user_id).values()}
+        | {asset.currency for asset in load_other_assets(session, user_id)}
+        | {contribution.currency for contribution in load_goal_contributions(session, user_id).values()}
+    )
+
+
 def _display_currency(
-    code: CurrencyCode, store: AccountingStore | None = None, as_of: date | None = None
+    code: CurrencyCode, currencies: Iterable[CurrencyCode] = (), as_of: date | None = None
 ) -> DisplayCurrency:
     """Build a `DisplayCurrency` from the cached exchange-rate history's smoothed rate as of a date.
 
     Only ever requires history for the currencies actually in play —
-    `code` itself, plus every account's, other-asset's, and goal
-    contribution's own currency when `store` is given — never every
-    `CurrencyCode` this app could theoretically support, so a store with
+    `code` itself, plus whatever `currencies` names — never every
+    `CurrencyCode` this app could theoretically support, so a user with
     no EUR accounts yet isn't blocked from a USD-only net worth just
     because EUR was never synced.
 
@@ -222,9 +292,10 @@ def _display_currency(
     ----------
     code
         The currency to display aggregates in.
-    store
-        The accounting store, to find every currency actually in use;
-        `None` (e.g. a standalone rate lookup) only requires `code` itself.
+    currencies
+        Every other currency the caller's own figures are held in (see
+        `_currencies_in_use`); empty (e.g. a standalone rate lookup) only
+        requires `code` itself.
     as_of
         The date to compute the smoothed rate as of; defaults to today.
 
@@ -238,11 +309,7 @@ def _display_currency(
         400 if exchange rates have never been synced (or lack history for
         a needed currency) — sync first, rather than silently guessing a rate.
     """
-    needed = {code}
-    if store is not None:
-        needed.update(account.currency for account in store.accounts.values())
-        needed.update(asset.currency for asset in store.other_assets)
-        needed.update(contribution.currency for contribution in store.goal_contributions.values())
+    needed = {code, *currencies}
     history = exchange_rates.load_rate_history(state.config)
     try:
         rates = exchange_rates.current_rates_to_base(history, as_of or datetime.now(tz=UTC).date(), needed)

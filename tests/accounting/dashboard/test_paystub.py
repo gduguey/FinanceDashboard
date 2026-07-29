@@ -1,12 +1,13 @@
+from decimal import Decimal
 from datetime import datetime
 
 import polars as pl
-import pytest
 
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
-from accounting.models import Account, EarningsDeposit, EarningsLineItem, EarningsStatement, Posting
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account, EarningsDeposit, EarningsLineItem, EarningsStatement
 
-SCHEMA = Posting.polars_schema
+SCHEMA = LEDGER_FRAME_SCHEMA
 
 CHECKING = Account(
     account_id="chase:checking:9579",
@@ -114,7 +115,7 @@ def test_propose_posting_splits_gives_a_single_salary_leg_with_no_reimbursements
     assert len(proposals) == 1
     assert len(proposals[0].legs) == 1
     assert proposals[0].legs[0].category_id == "income:salary"
-    assert proposals[0].legs[0].amount == pytest.approx(3200.0)
+    assert proposals[0].legs[0].amount == Decimal("3200.0")
 
 
 def test_propose_posting_splits_separates_salary_from_reimbursements_on_one_deposit() -> None:
@@ -131,12 +132,12 @@ def test_propose_posting_splits_separates_salary_from_reimbursements_on_one_depo
     proposals = propose_posting_splits(statement, result.matches)
     assert len(proposals) == 1
     legs = proposals[0].legs
-    assert sum(leg.amount for leg in legs) == pytest.approx(3400.0)
+    assert sum(leg.amount for leg in legs) == Decimal("3400.0")
     reimbursement_leg = next(leg for leg in legs if leg.category_id == "income:reimbursement")
-    assert reimbursement_leg.amount == pytest.approx(200.0)
+    assert reimbursement_leg.amount == Decimal("200.0")
     assert reimbursement_leg.description == "QSEHRA"
     salary_leg = next(leg for leg in legs if leg.category_id == "income:salary")
-    assert salary_leg.amount == pytest.approx(3200.0)
+    assert salary_leg.amount == Decimal("3200.0")
 
 
 def test_propose_posting_splits_assigns_reimbursements_to_the_largest_deposit_first() -> None:
@@ -183,10 +184,10 @@ def test_propose_posting_splits_assigns_reimbursements_to_the_largest_deposit_fi
     reimbursement_total_chase = sum(
         leg.amount for leg in chase_proposal.legs if leg.category_id == "income:reimbursement"
     )
-    assert reimbursement_total_chase == pytest.approx(1188.76)
+    assert reimbursement_total_chase == Decimal("1188.76")
     assert all(leg.category_id != "income:reimbursement" for leg in sofi_proposal.legs)
-    assert sum(leg.amount for leg in sofi_proposal.legs) == pytest.approx(2000.0)
-    assert sum(leg.amount for leg in chase_proposal.legs) == pytest.approx(2715.82)
+    assert sum(leg.amount for leg in sofi_proposal.legs) == Decimal("2000.0")
+    assert sum(leg.amount for leg in chase_proposal.legs) == Decimal("2715.82")
 
 
 def test_propose_posting_splits_skips_unmatched_deposits() -> None:

@@ -59,12 +59,12 @@ app.include_router(sync.router, dependencies=_authenticated)
 app.include_router(webhooks_router)
 
 
-# One handler, not one per save function — both `accounting.store.save_store`
-# and `trades.dashboard.settings.save_settings` raise this from deep inside
-# a plain persistence function (no FastAPI import in either, deliberately),
-# via the shared `db.base.check_and_bump_version`, so translating it into an
-# HTTP 409 happens once, here, rather than either module's own call sites
-# needing their own try/except.
+# One handler, not one per write path — every row-versioned accounting update
+# (`PATCH /goals/{id}`, `PATCH /transfer-rules/{id}`, `PATCH
+# /category-patterns/{id}`, via `db.base.check_and_bump_row_version`) raises
+# this from deep inside a plain persistence function (no FastAPI import in any
+# of them, deliberately), so translating it into an HTTP 409 happens once,
+# here, rather than each of those call sites needing its own try/except.
 @app.exception_handler(VersionConflictError)
 def _handle_version_conflict(_request: Request, exc: VersionConflictError) -> Response:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -139,7 +139,13 @@ _FRONTEND_DIST = Path(__file__).resolve().parents[3] / "web" / "dist"
 if _FRONTEND_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=_FRONTEND_DIST / "assets"), name="frontend-assets")
 
-    @app.get("/{full_path:path}")
+    # include_in_schema=False keeps this out of the generated OpenAPI document.
+    # It is not part of the API contract, and because the route only exists when
+    # web/dist/ happens to be built, including it made the generated schema — and
+    # so the checked-in TypeScript client — depend on whether the machine that
+    # regenerated it had run `npm run build`. The drift gate could then pass or
+    # fail for reasons unrelated to the API.
+    @app.get("/{full_path:path}", include_in_schema=False)
     def serve_frontend(full_path: str) -> FileResponse:
         """Serve the built React app for anything no route above matched.
 

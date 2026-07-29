@@ -9,12 +9,14 @@ import xlsxwriter
 from fastapi.testclient import TestClient
 
 import db.models as dbm
+import trades.db as tdb
 from accounting import api as accounting_api
 from accounting.api.routers import imports as accounting_imports_router
 from accounting.api.routers import llm as accounting_llm_router
 from accounting.config import AccountingConfig
 from accounting.db.llm import LLMUsage
 from accounting.importers import ingest as ingest_module
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.market_data import exchange_rates
 from accounting.models import Posting
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
@@ -49,7 +51,7 @@ def _db_for_api(db_session):
     `get_current_user_id` again locally — see
     `test_accounts_are_isolated_between_users`.
     """
-    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=DEFAULT_USER_ID, email="default@example.com"))
     db_session.commit()
 
     def _override_get_db():
@@ -63,6 +65,21 @@ def _db_for_api(db_session):
 @pytest.fixture
 def client():
     return TestClient(trades_api.app)
+
+
+@pytest.fixture
+def broker_connection_id(db_session) -> uuid.UUID:
+    """A real `trades.broker_connections` row for an account to link its value to.
+
+    `accounts.broker_connection_id` is a genuine foreign key across the
+    ledger seam now (DB-audit move #1), so "this account mirrors the
+    tracked portfolio" can only be said about a connection that exists.
+    A sync creates it in the real app; this creates it directly.
+    """
+    connection_id = uuid.uuid4()
+    db_session.add(tdb.BrokerConnection(id=connection_id, user_id=DEFAULT_USER_ID, natural_key="ibkr", broker="ibkr"))
+    db_session.commit()
+    return connection_id
 
 
 def test_get_store_seeds_default_categories_and_placeholder_accounts(client) -> None:
@@ -443,6 +460,30 @@ def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(cli
     assert len(postings) == 4
 
 
+def test_categorize_from_file_apply_rejects_a_malformed_confirmed_row_numbers_without_writing(client) -> None:
+    """A rejected request must not leave the file's new categories behind.
+
+    `confirmed_row_numbers` used to be parsed *after* the commit that
+    persists the categories the uploaded file introduced, so a malformed
+    value committed those categories and then raised `json.JSONDecodeError`
+    into a 500 — a write the caller was told had failed. Parsed up front now,
+    so the 422 happens before anything is written.
+    """
+    _import_chase_checking(client)
+    before = set(client.get("/api/accounting/store").json()["categories"])
+    sheet_csv = "Date,Description,Amount,Category\n06/30/2026,Payroll,1500.00,A Brand New Category\n"
+
+    response = client.post(
+        "/api/accounting/import/categorize-from-file/apply",
+        files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
+        data={"confirmed_row_numbers": "not json at all"},
+    )
+
+    assert response.status_code == 422
+    after = set(client.get("/api/accounting/store").json()["categories"])
+    assert after == before, "a rejected apply committed the file's new categories anyway"
+
+
 def test_categorize_from_file_apply_skips_rows_not_confirmed(client) -> None:
     account_id = _import_chase_checking(client)
     sheet_csv = (
@@ -516,16 +557,19 @@ def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     posting_id = payroll["posting_id"]
 
-    client.put(f"/api/accounting/postings/{posting_id}/override", json={"category_id": "income:salary"})
-    response = client.put(f"/api/accounting/postings/{posting_id}/override", json={"subcategory_id": "income:bonus"})
+    client.put(f"/api/accounting/postings/{posting_id}/override", json={"category_id": "income:reimbursement"})
+    response = client.put(
+        f"/api/accounting/postings/{posting_id}/override",
+        json={"subcategory_id": "income:reimbursement:employer"},
+    )
     assert response.status_code == 200
-    assert response.json()["category_id"] == "income:salary"
-    assert response.json()["subcategory_id"] == "income:bonus"
+    assert response.json()["category_id"] == "income:reimbursement"
+    assert response.json()["subcategory_id"] == "income:reimbursement:employer"
 
     updated = client.get("/api/accounting/postings").json()
     updated_payroll = next(p for p in updated if p["posting_id"] == posting_id)
-    assert updated_payroll["category_id"] == "income:salary"
-    assert updated_payroll["subcategory_id"] == "income:bonus"
+    assert updated_payroll["category_id"] == "income:reimbursement"
+    assert updated_payroll["subcategory_id"] == "income:reimbursement:employer"
 
 
 def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) -> None:
@@ -1128,7 +1172,9 @@ def test_net_worth_reports_the_checking_balance_as_an_asset(client) -> None:
     assert checking_row["balance"] == pytest.approx(1430.0)
 
 
-def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client, tmp_path, monkeypatch) -> None:
+def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(
+    client, broker_connection_id, tmp_path, monkeypatch
+) -> None:
     monkeypatch.setattr(trades_api.app.state, "config", AppConfig(ibkr={"cache_dir": tmp_path / "empty-ibkr"}))
     investment = _create_account(
         client,
@@ -1137,7 +1183,7 @@ def test_net_worth_degrades_gracefully_when_trades_has_never_been_synced(client,
         institution="external",
         currency="USD",
         parent_account_id=None,
-        external_ref="trades",
+        broker_connection_id=str(broker_connection_id),
         meta={},
     )
     client.post(
@@ -1898,8 +1944,8 @@ def test_patch_transfer_rule_referencing_a_nonexistent_account_fails() -> None:
 def test_patch_transfer_rule_with_a_newly_resolvable_link_does_not_409(client) -> None:
     """Same scenario as `test_put_transfer_rules_with_a_newly_resolvable_link_does_not_409`, but for `PATCH`:
     editing a rule so it newly matches an existing transaction runs `reconcile_and_persist_rule_links`
-    (a second `save_store`-driven commit in the same request) right after the row-scoped update commit —
-    both must succeed without the row-version check on the first spuriously rejecting the second.
+    (a second commit in the same request) right after the row-scoped update commit — both must succeed
+    without the row-version check on the first spuriously rejecting the second.
     """
     checking_id = _import_chase_checking(client)
     credit_card_csv = (
@@ -2070,11 +2116,11 @@ def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
 
 
 def test_creating_an_unrelated_rule_does_not_reset_another_rules_version(client) -> None:
-    """`POST /transfer-rules` still round-trips through `save_store`, which deletes and reinserts every
-    `TransferRule` row for the user (see `save_store`'s own docstring) — if that blanket reinsert ever
+    """`POST /transfer-rules` writes through `repositories.interpretation.upsert_transfer_rule`, which
+    reuses `replace_transfer_rules`' `INSERT ... ON CONFLICT (id) DO UPDATE` — if that upsert ever
     reset `version` back to its column default, a client holding an already-bumped version for some
-    *other*, untouched rule would get a spurious 409 on its very next `PATCH`. `accounting.store`'s
-    upsert-by-id path for `TransferRule` exists specifically to prevent that.
+    *other*, untouched rule would get a spurious 409 on its very next `PATCH`. Omitting `version` from
+    that statement's `SET` clause exists specifically to prevent that.
     """
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
     other_employer = _create_account(client, name="Other Co", kind="income_source", institution="internal")
@@ -2216,6 +2262,51 @@ def test_category_rename_merges_into_an_existing_category_and_repoints_postings(
     postings = client.get("/api/accounting/postings").json()
     grocery_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert grocery_leg["category_id"] == "expense:food"
+
+
+def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_category(client) -> None:
+    """DB-audit D14: the merge is resolved on read, never written back onto the posting.
+
+    `GET /ledger/export` is the raw ledger, so it still names the category
+    the file itself did; `GET /postings` — the same rows with the taxonomy's
+    redirects applied — names the survivor.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/accounting/store").json()
+    nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
+    client.put(
+        "/api/accounting/categories",
+        json={
+            **store["categories"],
+            "expense:food": {
+                "category_id": "expense:food",
+                "name": "Food",
+                "classification": "expense",
+                "color": "#111111",
+            },
+        },
+    )
+
+    client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
+
+    raw = client.get("/api/accounting/ledger/export").json()
+    raw_leg = next(p for p in raw if p["account_id"] == account["account_id"])
+    assert raw_leg["category_id"] == nourriture["category_id"]
+
+    postings = client.get("/api/accounting/postings").json()
+    resolved_leg = next(p for p in postings if p["account_id"] == account["account_id"])
+    assert resolved_leg["category_id"] == "expense:food"
 
 
 def test_category_rename_merge_repoints_a_manual_override(client) -> None:
@@ -2527,7 +2618,7 @@ def _write_posting_with_tags(
         tag_ids=tag_ids,
         description="test",
     )
-    frame = pl.DataFrame([posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    frame = pl.DataFrame([posting.model_dump(mode="python")], schema=LEDGER_FRAME_SCHEMA)
     ingest_module._write_ledger(frame, db_session, user_id=DEFAULT_USER_ID)
 
 
@@ -2751,19 +2842,18 @@ def test_get_budget_comparison_rejects_a_malformed_month(client) -> None:
     assert response.status_code == 400
 
 
-def test_put_general_budgets_persists_separately_from_per_month_budgets(client) -> None:
+def test_a_general_budget_persists_alongside_the_same_categorys_per_month_one(client) -> None:
+    # One table, one list — `month: null` is the general target and coexists
+    # with the month one for the same category rather than replacing it.
     client.put(
         "/api/accounting/budgets",
-        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}],
+        json=[
+            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0},
+            {"budget_id": "b2", "month": None, "category_id": "expense:food-drink", "amount": 500.0},
+        ],
     )
-    response = client.put(
-        "/api/accounting/general-budgets",
-        json={"expense:food-drink": {"category_id": "expense:food-drink", "amount": 500.0}},
-    )
-    assert response.status_code == 200
-    store = client.get("/api/accounting/store").json()
-    assert store["general_budgets"]["expense:food-drink"]["amount"] == pytest.approx(500.0)
-    assert store["budgets"][0]["amount"] == pytest.approx(100.0)
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {(b["month"], b["amount"]) for b in budgets} == {("2026-06", 100.0), (None, 500.0)}
 
 
 def test_post_budget_upserts_one_budget_without_touching_others(client) -> None:
@@ -2835,51 +2925,50 @@ def test_delete_budget_404s_for_an_unknown_id(client) -> None:
 
 
 def test_post_general_budget_upserts_one_without_touching_others(client) -> None:
-    client.put(
-        "/api/accounting/general-budgets",
-        json={"expense:transport": {"category_id": "expense:transport", "amount": 40.0}},
-    )
+    client.post("/api/accounting/budgets", json={"category_id": "expense:transport", "amount": 40.0})
 
-    response = client.post(
-        "/api/accounting/general-budgets", json={"category_id": "expense:food-drink", "amount": 500.0}
-    )
+    response = client.post("/api/accounting/budgets", json={"category_id": "expense:food-drink", "amount": 500.0})
 
     assert response.status_code == 200
     assert response.json()["amount"] == pytest.approx(500.0)
-    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
-    assert set(general_budgets.keys()) == {"expense:transport", "expense:food-drink"}
+    assert response.json()["month"] is None
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {":expense:transport", ":expense:food-drink"}
 
 
-def test_post_general_budget_with_a_subcategory_keys_by_subcategory(client) -> None:
+def test_post_general_budget_with_a_subcategory_includes_it_in_the_derived_id(client) -> None:
     response = client.post(
-        "/api/accounting/general-budgets",
+        "/api/accounting/budgets",
         json={"category_id": "expense:food-drink", "subcategory_id": "expense:food-drink:groceries", "amount": 200.0},
     )
     assert response.status_code == 200
-    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
-    assert "expense:food-drink:groceries" in general_budgets
-    assert "expense:food-drink" not in general_budgets
+    assert response.json()["budget_id"] == ":expense:food-drink:expense:food-drink:groceries"
+
+
+def test_post_general_budget_does_not_overwrite_the_same_categorys_month_budget(client) -> None:
+    client.post(
+        "/api/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}
+    )
+    client.post("/api/accounting/budgets", json={"category_id": "expense:food-drink", "amount": 500.0})
+
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {"2026-06:expense:food-drink", ":expense:food-drink"}
 
 
 def test_delete_general_budget_removes_only_that_one(client) -> None:
     client.put(
-        "/api/accounting/general-budgets",
-        json={
-            "expense:food-drink": {"category_id": "expense:food-drink", "amount": 500.0},
-            "expense:transport": {"category_id": "expense:transport", "amount": 40.0},
-        },
+        "/api/accounting/budgets",
+        json=[
+            {"budget_id": ":expense:food-drink", "month": None, "category_id": "expense:food-drink", "amount": 500.0},
+            {"budget_id": ":expense:transport", "month": None, "category_id": "expense:transport", "amount": 40.0},
+        ],
     )
 
-    response = client.delete("/api/accounting/general-budgets/expense:food-drink")
+    response = client.delete("/api/accounting/budgets/:expense:food-drink")
 
     assert response.status_code == 200
-    general_budgets = client.get("/api/accounting/store").json()["general_budgets"]
-    assert set(general_budgets.keys()) == {"expense:transport"}
-
-
-def test_delete_general_budget_404s_for_an_unknown_key(client) -> None:
-    response = client.delete("/api/accounting/general-budgets/does-not-exist")
-    assert response.status_code == 404
+    budgets = client.get("/api/accounting/store").json()["budgets"]
+    assert {b["budget_id"] for b in budgets} == {":expense:transport"}
 
 
 def test_get_suggested_budget_amount_returns_zero_with_no_history(client) -> None:
@@ -2981,11 +3070,11 @@ def test_accounts_are_isolated_between_users(client, db_session) -> None:
     """Proof that `store.py`'s account CRUD is genuinely per-user, not a shared global store.
 
     Regression test for the FK-violation/cross-user-leak sweep: before every
-    endpoint threaded a real `user_id` through `load_store`/`save_store`,
+    endpoint threaded a real `user_id` through its own repository calls,
     this router had no way to keep two users' accounts apart at all.
     """
     other_user_id = uuid.uuid4()
-    db_session.add(dbm.User(id=other_user_id, email="other@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(dbm.User(id=other_user_id, email="other@example.com"))
     db_session.commit()
 
     account = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="EUR")
@@ -3054,7 +3143,7 @@ def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) ->
     assert renamed.json()["name"] == "Renamed"
 
 
-def test_post_account_accepts_an_external_investment_pulling_from_trades(client) -> None:
+def test_post_account_accepts_an_external_investment_pulling_from_trades(client, broker_connection_id) -> None:
     response = client.post(
         "/api/accounting/accounts",
         json={
@@ -3062,13 +3151,13 @@ def test_post_account_accepts_an_external_investment_pulling_from_trades(client)
             "kind": "external_investment",
             "institution": "external",
             "currency": "USD",
-            "external_ref": "trades",
+            "broker_connection_id": str(broker_connection_id),
         },
     )
     assert response.status_code == 200
     account_id = response.json()["account_id"]
     created = client.get("/api/accounting/store").json()["accounts"][account_id]
-    assert created["external_ref"] == "trades"
+    assert created["broker_connection_id"] == str(broker_connection_id)
 
 
 def test_post_account_accepts_a_manually_tracked_external_investment(client) -> None:
@@ -3079,10 +3168,41 @@ def test_post_account_accepts_a_manually_tracked_external_investment(client) -> 
     assert response.status_code == 200
     account_id = response.json()["account_id"]
     created = client.get("/api/accounting/store").json()["accounts"][account_id]
-    assert created["external_ref"] is None
+    assert created["broker_connection_id"] is None
 
 
-def test_put_account_can_switch_an_external_investment_between_trades_and_manual(client) -> None:
+def test_post_account_rejects_a_broker_connection_that_does_not_exist(client) -> None:
+    """DB-audit move #1: the seam is a real foreign key, so an account can't name a connection nobody has."""
+    response = client.post(
+        "/api/accounting/accounts",
+        json={
+            "name": "Interactive Brokers",
+            "kind": "external_investment",
+            "institution": "external",
+            "currency": "USD",
+            "broker_connection_id": str(uuid.uuid4()),
+        },
+    )
+    assert response.status_code == 404
+    assert "broker connection" in response.json()["detail"].lower()
+
+
+def test_post_account_rejects_a_broker_link_on_a_non_investment_account(client, broker_connection_id) -> None:
+    """The `CHECK` that makes "my checking account mirrors a brokerage" unrepresentable."""
+    response = client.post(
+        "/api/accounting/accounts",
+        json={
+            "name": "Chase Checking",
+            "kind": "checking",
+            "institution": "Chase",
+            "currency": "USD",
+            "broker_connection_id": str(broker_connection_id),
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_put_account_can_switch_an_external_investment_between_trades_and_manual(client, broker_connection_id) -> None:
     account = _create_account(
         client, name="Friend's Fund", kind="external_investment", institution="external", currency="USD"
     )
@@ -3093,18 +3213,18 @@ def test_put_account_can_switch_an_external_investment_between_trades_and_manual
             "institution": "external",
             "kind": "external_investment",
             "currency": "USD",
-            "external_ref": "trades",
+            "broker_connection_id": str(broker_connection_id),
         },
     )
     assert response.status_code == 200
-    assert response.json()["external_ref"] == "trades"
+    assert response.json()["broker_connection_id"] == str(broker_connection_id)
 
     back_to_manual = client.put(
         f"/api/accounting/accounts/{account['account_id']}",
         json={"name": "Friend's Fund", "institution": "external", "kind": "external_investment", "currency": "USD"},
     )
     assert back_to_manual.status_code == 200
-    assert back_to_manual.json()["external_ref"] is None
+    assert back_to_manual.json()["broker_connection_id"] is None
 
 
 def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> None:
@@ -3220,6 +3340,41 @@ def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client)
     balances = {row["account_id"]: row["balance"] for row in net_worth["accounts"]}
     assert balances[checking["account_id"]] == pytest.approx(-100.0)
     assert balances[savings["account_id"]] == pytest.approx(100.0)
+
+
+def test_close_account_records_the_transfer_as_a_manual_origin_transaction_in_the_raw_ledger(client) -> None:
+    """A manual transfer is a real transaction now, not a mini-ledger replayed over one.
+
+    `GET /ledger/export` is the raw ledger, before any overlay stage runs
+    — the two legs showing up there is what proves they are stored rows
+    rather than something the resolution pipeline synthesized.
+    """
+    checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    savings = _create_account(client, name="BNP Savings", kind="savings", institution="BNP", currency="USD")
+    client.post(
+        f"/api/accounting/accounts/{checking['account_id']}/close",
+        json={
+            "transfers": [
+                {
+                    "transfer_id": "close-bnp-checking-0001",
+                    "date": "2026-06-30T00:00:00",
+                    "from_account_id": checking["account_id"],
+                    "to_account_id": savings["account_id"],
+                    "from_amount": 100.0,
+                    "to_amount": 100.0,
+                    "description": "Closing out BNP checking",
+                }
+            ]
+        },
+    )
+
+    raw = client.get("/api/accounting/ledger/export").json()
+    legs = {posting["posting_id"]: posting for posting in raw}
+    assert legs["manual-transfer:close-bnp-checking-0001:from"]["amount"] == pytest.approx(-100.0)
+    assert legs["manual-transfer:close-bnp-checking-0001:to"]["amount"] == pytest.approx(100.0)
+    assert legs["manual-transfer:close-bnp-checking-0001:from"]["transaction_id"] == (
+        "manual-transfer:close-bnp-checking-0001"
+    )
 
 
 def test_close_account_rejects_a_transfer_whose_from_account_doesnt_match(client) -> None:
@@ -3405,11 +3560,10 @@ def test_delete_simulator_scenario_that_is_already_gone_gets_404(client) -> None
 
 def test_interest_summary_reports_savings_interest_earned(client, db_session) -> None:
     account = _create_account(client, name="SoFi Savings", kind="savings", institution="SoFi")
-    # Seeded directly as a posting, not via `importers.sofi.statement_pdf`'s
-    # real PDF/text parser — this test is checking that the interest-summary
-    # endpoint correctly aggregates an already-categorized "Interest Earned"
-    # posting, not exercising SoFi statement parsing (see
-    # tests/accounting/importers/sofi/test_statement_pdf.py for that).
+    # Seeded directly as a posting, not through a real importer — this test
+    # is checking that the interest-summary endpoint correctly aggregates an
+    # already-categorized "Interest Earned" posting, not exercising SoFi
+    # statement parsing.
     interest_posting = Posting(
         posting_id="p1",
         transaction_id="t1",
@@ -3423,7 +3577,7 @@ def test_interest_summary_reports_savings_interest_earned(client, db_session) ->
         description="Interest earned",
         meta={},
     )
-    frame = pl.DataFrame([interest_posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    frame = pl.DataFrame([interest_posting.model_dump(mode="python")], schema=LEDGER_FRAME_SCHEMA)
     ingest_module._write_ledger(frame, db_session, user_id=DEFAULT_USER_ID)
 
     response = client.get("/api/accounting/interest-summary", params={"as_of": "2026-04-30"})
@@ -3447,39 +3601,24 @@ def test_monthly_income_expense_reports_both_sides(client) -> None:
     assert month["expense"] == pytest.approx(70.0)
 
 
-def test_get_store_returns_a_version(client) -> None:
+def test_get_store_carries_no_store_wide_version(client) -> None:
+    """There is no whole-store counter left — optimistic concurrency is per-row, on the rows that need it."""
     response = client.get("/api/accounting/store")
     assert response.status_code == 200
-    assert isinstance(response.json()["version"], int)
+    assert "version" not in response.json()
 
 
-def test_mutation_with_the_current_expected_version_succeeds_and_bumps(client) -> None:
-    version = client.get("/api/accounting/store").json()["version"]
-    response = client.post(
-        "/api/accounting/categories",
-        json={"name": "Custom", "classification": "expense", "color": "#000000"},
-        headers={"X-Expected-Store-Version": str(version)},
-    )
-    assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["version"] == version + 1
+def test_two_unrelated_writes_both_land_without_conflicting(client) -> None:
+    """Nothing store-wide can make two genuinely unrelated edits conflict with each other.
 
-
-def test_mutation_with_a_stale_expected_version_409s(client) -> None:
-    version = client.get("/api/accounting/store").json()["version"]
-    # Someone else's save lands first.
+    Every write is either scoped to the rows a request names or guarded by its own row version
+    (`PATCH /transfer-rules/{rule_id}` and friends), so a second create against a store another
+    create already changed simply succeeds.
+    """
     client.post("/api/accounting/categories", json={"name": "Other", "classification": "expense", "color": "#111111"})
 
-    response = client.post(
-        "/api/accounting/categories",
-        json={"name": "Custom", "classification": "expense", "color": "#000000"},
-        headers={"X-Expected-Store-Version": str(version)},
-    )
-    assert response.status_code == 409
-    assert "changed elsewhere" in response.json()["detail"]
-
-
-def test_mutation_with_no_expected_version_header_still_succeeds(client) -> None:
     response = client.post(
         "/api/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
     assert response.status_code == 200
+    assert {"expense:custom", "expense:other"} <= set(client.get("/api/accounting/store").json()["categories"])

@@ -2,9 +2,9 @@
 
 Complements `tests/accounting/ledger/test_transfers.py` (the pure
 `reconcile_rule_links`/`apply_transfer_links` logic) — this exercises the
-actual persistence boundary: loading the store, proposing links, and
-saving them back, including the DB-enforced "a transaction is never in
-more than one link" invariant.
+actual persistence boundary: loading the rules and accounts, proposing
+links, and saving them back, including the DB-enforced "a transaction is
+never in more than one link" invariant.
 """
 
 from __future__ import annotations
@@ -15,9 +15,12 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from accounting.importers.ingest import _write_ledger, load_ledger
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import Account, Posting, TransferRule
-from accounting.store import load_store, save_store
+from accounting.repositories.accounts import replace_accounts
+from accounting.repositories.interpretation import load_transfer_links, replace_transfer_rules
+from accounting.taxonomy import seeded_accounts
 
 if TYPE_CHECKING:
     import uuid
@@ -26,18 +29,15 @@ if TYPE_CHECKING:
 
 
 def _register_account(session: Session, user_id: uuid.UUID, account_id: str, kind: str) -> None:
-    store = load_store(session, user_id=user_id)
-    if account_id in store.accounts:
+    if account_id in seeded_accounts(session, user_id):
         return
-    store = store.model_copy(
-        update={
-            "accounts": {
-                **store.accounts,
-                account_id: Account(account_id=account_id, name=account_id, kind=kind, institution="x", currency="USD"),  # type: ignore[arg-type]
-            }
-        }
+    replace_accounts(
+        session,
+        user_id,
+        [Account(account_id=account_id, name=account_id, kind=kind, institution="x", currency="USD")],  # type: ignore[arg-type]
+        prune=False,
     )
-    save_store(store, session, user_id=user_id)
+    session.commit()
 
 
 def _placeholder_posting(
@@ -80,49 +80,46 @@ def _seed_transfer_pair(session: Session, user_id: uuid.UUID) -> None:
         _placeholder_posting("card:1:0", "card:1", "chase:credit_card:8235", 70.0, card_at, "Payment Thank You"),
         _placeholder_posting("card:1:1", "card:1", "uncategorized:income", -70.0, card_at, "Payment Thank You"),
     ]
-    ledger = pl.DataFrame([p.model_dump(mode="python") for p in postings], schema=Posting.polars_schema)
+    ledger = pl.DataFrame([p.model_dump(mode="python") for p in postings], schema=LEDGER_FRAME_SCHEMA)
     _write_ledger(ledger, session, user_id=user_id)
 
 
 def test_reconcile_and_persist_rule_links_persists_a_new_link(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_transfer_pair(db_session, test_user_id)
-    store = load_store(db_session, user_id=test_user_id)
     rule = TransferRule(
         rule_id="chase-card-payoff",
         description_contains="Payment to Chase card ending in 8235",
         account_id="chase:checking:9579",
         counterparty_account_id="chase:credit_card:8235",
     )
-    store = store.model_copy(update={"rules": [rule]})
-    save_store(store, db_session, user_id=test_user_id)
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    db_session.commit()
 
     raw = load_ledger(db_session, user_id=test_user_id)
     new_links = reconcile_and_persist_rule_links(raw, db_session, test_user_id)
 
     assert len(new_links) == 1
     assert new_links[0].source == "rule"
-    reloaded = load_store(db_session, user_id=test_user_id)
-    assert reloaded.transfer_links == new_links
+    assert load_transfer_links(db_session, test_user_id) == new_links
 
 
 def test_reconcile_and_persist_rule_links_is_idempotent(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_transfer_pair(db_session, test_user_id)
-    store = load_store(db_session, user_id=test_user_id)
     rule = TransferRule(
         rule_id="chase-card-payoff",
         description_contains="Payment to Chase card ending in 8235",
         account_id="chase:checking:9579",
         counterparty_account_id="chase:credit_card:8235",
     )
-    store = store.model_copy(update={"rules": [rule]})
-    save_store(store, db_session, user_id=test_user_id)
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    db_session.commit()
     raw = load_ledger(db_session, user_id=test_user_id)
 
     first = reconcile_and_persist_rule_links(raw, db_session, test_user_id)
     assert len(first) == 1
     second = reconcile_and_persist_rule_links(raw, db_session, test_user_id)
     assert second == []
-    assert len(load_store(db_session, user_id=test_user_id).transfer_links) == 1
+    assert len(load_transfer_links(db_session, test_user_id)) == 1
 
 
 def test_reconcile_and_persist_rule_links_finds_nothing_when_no_rule_matches(
@@ -132,4 +129,4 @@ def test_reconcile_and_persist_rule_links_finds_nothing_when_no_rule_matches(
     raw = load_ledger(db_session, user_id=test_user_id)
     new_links = reconcile_and_persist_rule_links(raw, db_session, test_user_id)
     assert new_links == []
-    assert load_store(db_session, user_id=test_user_id).transfer_links == []
+    assert load_transfer_links(db_session, test_user_id) == []

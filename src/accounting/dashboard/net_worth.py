@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.ledger.frame import to_analytics_amount
 from accounting.ledger.replay import account_balances
 
 if TYPE_CHECKING:
@@ -77,13 +78,13 @@ def net_worth_summary(
     Virtual counterparty accounts (`income_source`/`expense_payee`,
     including the two uncategorized placeholders) are excluded entirely —
     their "balance" is just how much has passed through categorization,
-    never money that is anywhere. An `external_investment` account whose
-    `external_ref` is `"trades"` never gets its balance from `postings` at
-    all; it comes from `external_investment_value`, sourced by the caller
-    from `trades.dashboard.overview_cards` (see `api.py`) since this module
-    has no way to compute it and no business trying to — denominated in
-    the account's own `currency`, converted like any other account. An
-    `external_investment` account with no `external_ref` is a
+    never money that is anywhere. An account carrying a
+    `broker_connection_id` never gets its balance from `postings` at all;
+    it comes from `external_investment_value`, sourced by the caller from
+    `trades.dashboard.overview_cards` (see `api.py`) since this module has
+    no way to compute it and no business trying to — denominated in the
+    account's own `currency`, converted like any other account. An
+    `external_investment` account with no broker connection is a
     manually-tracked one instead, and is valued the same way as any other
     account — from its postings plus its opening balance.
 
@@ -123,11 +124,15 @@ def net_worth_summary(
     def is_trades_linked(account: Account) -> bool:
         """Whether this account's value is pulled live from the tracked `trades` portfolio.
 
+        One column, not a string match over two: the `kind` half is
+        redundant now that `accounts` carries a `CHECK` making a broker
+        link possible only on an `external_investment` row.
+
         Returns
         -------
         bool
         """
-        return account.kind == "external_investment" and account.external_ref == "trades"
+        return account.broker_connection_id is not None
 
     def base_balance(account: Account) -> float:
         """Return this account's balance in its own native currency, before display-currency conversion.
@@ -141,7 +146,7 @@ def net_worth_summary(
         balance = balance_by_account.get(account.account_id, 0.0)
         opening = opening_balances.get(account.account_id)
         if opening is not None and as_of >= opening.as_of_date.date():
-            balance += opening.amount
+            balance += to_analytics_amount(opening.amount)
         return balance
 
     rows = [
@@ -168,7 +173,7 @@ def net_worth_summary(
 
     assets = sum(to_display(row.balance, row.currency) for row in rows if row.kind not in _LIABILITY_KINDS)
     liabilities = sum(-to_display(row.balance, row.currency) for row in rows if row.kind in _LIABILITY_KINDS)
-    other_assets_total = sum(to_display(asset.value, asset.currency) for asset in other_assets)
+    other_assets_total = sum(to_display(to_analytics_amount(asset.value), asset.currency) for asset in other_assets)
 
     return NetWorthSummary(
         as_of=as_of,

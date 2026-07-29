@@ -1,6 +1,6 @@
+from decimal import Decimal
 from datetime import date
 
-import pytest
 
 from accounting.importers.canonical.parsing import find_column, parse_amount_flexible, parse_date_flexible
 
@@ -43,36 +43,36 @@ def test_parse_date_flexible_day_first_does_not_affect_unambiguous_dates() -> No
 
 
 def test_parse_amount_flexible_reads_a_plain_number() -> None:
-    assert parse_amount_flexible("123.45") == pytest.approx(123.45)
+    assert parse_amount_flexible("123.45") == Decimal("123.45")
 
 
 def test_parse_amount_flexible_reads_us_thousands_separator() -> None:
-    assert parse_amount_flexible("1,234.56") == pytest.approx(1234.56)
+    assert parse_amount_flexible("1,234.56") == Decimal("1234.56")
 
 
 def test_parse_amount_flexible_reads_european_thousands_separator() -> None:
-    assert parse_amount_flexible("1.234,56") == pytest.approx(1234.56)
+    assert parse_amount_flexible("1.234,56") == Decimal("1234.56")
 
 
 def test_parse_amount_flexible_reads_a_currency_symbol() -> None:
-    assert parse_amount_flexible("$1,234.56") == pytest.approx(1234.56)
-    assert parse_amount_flexible("€1.234,56") == pytest.approx(1234.56)
+    assert parse_amount_flexible("$1,234.56") == Decimal("1234.56")
+    assert parse_amount_flexible("€1.234,56") == Decimal("1234.56")
 
 
 def test_parse_amount_flexible_reads_parentheses_as_negative() -> None:
-    assert parse_amount_flexible("(123.45)") == pytest.approx(-123.45)
+    assert parse_amount_flexible("(123.45)") == Decimal("-123.45")
 
 
 def test_parse_amount_flexible_reads_a_trailing_minus_sign() -> None:
-    assert parse_amount_flexible("123.45-") == pytest.approx(-123.45)
+    assert parse_amount_flexible("123.45-") == Decimal("-123.45")
 
 
 def test_parse_amount_flexible_reads_comma_only_thousands_with_no_decimal() -> None:
-    assert parse_amount_flexible("1,234") == pytest.approx(1234.0)
+    assert parse_amount_flexible("1,234") == Decimal("1234.0")
 
 
 def test_parse_amount_flexible_reads_dot_only_european_thousands_with_no_decimal() -> None:
-    assert parse_amount_flexible("1.234") == pytest.approx(1234.0)
+    assert parse_amount_flexible("1.234") == Decimal("1234.0")
 
 
 def test_parse_amount_flexible_returns_none_for_garbage() -> None:

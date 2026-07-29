@@ -4,14 +4,13 @@ from accounting.models import (
     Budget,
     Category,
     CategoryPattern,
-    GeneralBudget,
     PostingSplit,
     PostingSplitLeg,
     Tag,
 )
-from accounting.store import (
+from accounting.taxonomy import (
     CATEGORY_COLOR_PALETTE,
-    AccountingStore,
+    CategoryReferences,
     category_ids_to_delete,
     default_categories,
     next_available_color,
@@ -170,7 +169,7 @@ def test_plan_category_rename_does_not_merge_a_subcategory_with_the_same_name_un
 
 
 def test_remap_category_ids_updates_every_reference() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         category_patterns={
             "p1": CategoryPattern(
                 pattern_id="p1",
@@ -181,63 +180,74 @@ def test_remap_category_ids_updates_every_reference() -> None:
         },
         budgets=[
             Budget(
-                budget_id="b1",
+                budget_id="2026-06:expense:nourriture",
                 month="2026-06",
                 category_id="expense:nourriture",
                 subcategory_id=None,
                 amount=100.0,
                 currency="USD",
-            )
+            ),
+            Budget(budget_id=":expense:nourriture", month=None, category_id="expense:nourriture", amount=50.0),
         ],
-        general_budgets={
-            "expense:nourriture": GeneralBudget(category_id="expense:nourriture", subcategory_id=None, amount=50.0)
-        },
     )
     id_remap = {"expense:nourriture": "expense:food", "expense:nourriture:snacks": "expense:food:snacks"}
-    updated = remap_category_ids(store, id_remap)
+    updated = remap_category_ids(references, id_remap)
     assert updated.category_patterns["p1"].category_id == "expense:food"
-    assert updated.budgets[0].category_id == "expense:food"
-    assert "expense:food" in updated.general_budgets
-    assert "expense:nourriture" not in updated.general_budgets
-    assert updated.general_budgets["expense:food"].category_id == "expense:food"
+    assert {budget.category_id for budget in updated.budgets} == {"expense:food"}
+    # The natural key is the identity triple, so a repointed budget's id follows
+    # its new category rather than still naming the merged-away one.
+    assert {budget.budget_id for budget in updated.budgets} == {"2026-06:expense:food", ":expense:food"}
 
 
 def test_remap_category_ids_drops_the_merged_away_categorys_colliding_budget() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         budgets=[
             Budget(budget_id="b1", month="2026-06", category_id="expense:nourriture", amount=100.0),
             Budget(budget_id="b2", month="2026-06", category_id="expense:food", amount=200.0),
         ]
     )
     id_remap = {"expense:nourriture": "expense:food"}
-    updated = remap_category_ids(store, id_remap)
-    assert [budget.budget_id for budget in updated.budgets] == ["b2"]
+    updated = remap_category_ids(references, id_remap)
+    assert len(updated.budgets) == 1
     assert updated.budgets[0].amount == pytest.approx(200.0)
 
 
 def test_remap_category_ids_drops_the_merged_away_categorys_colliding_general_budget() -> None:
-    store = AccountingStore(
-        general_budgets={
-            "expense:nourriture": GeneralBudget(category_id="expense:nourriture", amount=50.0),
-            "expense:food": GeneralBudget(category_id="expense:food", amount=75.0),
-        }
+    references = CategoryReferences(
+        budgets=[
+            Budget(budget_id=":expense:nourriture", month=None, category_id="expense:nourriture", amount=50.0),
+            Budget(budget_id=":expense:food", month=None, category_id="expense:food", amount=75.0),
+        ]
     )
     id_remap = {"expense:nourriture": "expense:food"}
-    updated = remap_category_ids(store, id_remap)
-    assert list(updated.general_budgets) == ["expense:food"]
-    assert updated.general_budgets["expense:food"].amount == pytest.approx(75.0)
+    updated = remap_category_ids(references, id_remap)
+    assert [budget.budget_id for budget in updated.budgets] == [":expense:food"]
+    assert updated.budgets[0].amount == pytest.approx(75.0)
+
+
+def test_remap_category_ids_keeps_a_general_budget_alongside_a_month_one_for_the_same_category() -> None:
+    # `month=None` is its own key, so merging never collapses the standing
+    # target into the month one (or the other way round).
+    references = CategoryReferences(
+        budgets=[
+            Budget(budget_id=":expense:nourriture", month=None, category_id="expense:nourriture", amount=50.0),
+            Budget(budget_id="2026-06:expense:food", month="2026-06", category_id="expense:food", amount=200.0),
+        ]
+    )
+    updated = remap_category_ids(references, {"expense:nourriture": "expense:food"})
+    assert {(budget.month, budget.amount) for budget in updated.budgets} == {(None, 50.0), ("2026-06", 200.0)}
 
 
 def test_remap_category_ids_with_no_collision_keeps_both_budgets() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         budgets=[
             Budget(budget_id="b1", month="2026-06", category_id="expense:nourriture", amount=100.0),
             Budget(budget_id="b2", month="2026-07", category_id="expense:food", amount=200.0),
         ]
     )
     id_remap = {"expense:nourriture": "expense:food"}
-    updated = remap_category_ids(store, id_remap)
-    assert {budget.budget_id for budget in updated.budgets} == {"b1", "b2"}
+    updated = remap_category_ids(references, id_remap)
+    assert {budget.month for budget in updated.budgets} == {"2026-06", "2026-07"}
 
 
 def test_category_ids_to_delete_for_a_subcategory_is_just_itself() -> None:
@@ -263,7 +273,7 @@ def test_category_ids_to_delete_for_a_top_level_category_includes_every_subcateg
 
 
 def test_uncategorize_category_ids_clears_nullable_references() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         posting_splits={
             "p1": PostingSplit(
                 posting_id="p1",
@@ -274,25 +284,25 @@ def test_uncategorize_category_ids_clears_nullable_references() -> None:
             )
         },
     )
-    updated = uncategorize_category_ids(store, {"expense:food", "expense:food:snacks"})
+    updated = uncategorize_category_ids(references, {"expense:food", "expense:food:snacks"})
     assert updated.posting_splits["p1"].legs[0].category_id is None
     assert updated.posting_splits["p1"].legs[0].subcategory_id is None
     assert updated.posting_splits["p1"].legs[1].category_id == "expense:travel"
 
 
 def test_uncategorize_category_ids_deletes_a_budget_whose_own_category_is_deleted() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         budgets=[
             Budget(budget_id="b1", month="2026-06", category_id="expense:food", amount=100.0),
             Budget(budget_id="b2", month="2026-06", category_id="expense:travel", amount=200.0),
         ]
     )
-    updated = uncategorize_category_ids(store, {"expense:food"})
-    assert [budget.budget_id for budget in updated.budgets] == ["b2"]
+    updated = uncategorize_category_ids(references, {"expense:food"})
+    assert [budget.category_id for budget in updated.budgets] == ["expense:travel"]
 
 
 def test_uncategorize_category_ids_only_clears_subcategory_when_just_the_subcategory_is_deleted() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         budgets=[
             Budget(
                 budget_id="b1",
@@ -303,33 +313,64 @@ def test_uncategorize_category_ids_only_clears_subcategory_when_just_the_subcate
             ),
         ]
     )
-    updated = uncategorize_category_ids(store, {"expense:food:snacks"})
+    updated = uncategorize_category_ids(references, {"expense:food:snacks"})
     assert len(updated.budgets) == 1
     assert updated.budgets[0].category_id == "expense:food"
     assert updated.budgets[0].subcategory_id is None
+    assert updated.budgets[0].budget_id == "2026-06:expense:food"
 
 
-def test_uncategorize_category_ids_drops_a_general_budget_keyed_by_a_deleted_subcategory() -> None:
-    store = AccountingStore(
-        general_budgets={
-            "expense:food:snacks": GeneralBudget(
-                category_id="expense:food", subcategory_id="expense:food:snacks", amount=50.0
+def test_uncategorize_category_ids_clears_a_general_budgets_deleted_subcategory() -> None:
+    references = CategoryReferences(
+        budgets=[
+            Budget(
+                budget_id=":expense:food:expense:food:snacks",
+                month=None,
+                category_id="expense:food",
+                subcategory_id="expense:food:snacks",
+                amount=50.0,
             ),
-            "expense:travel": GeneralBudget(category_id="expense:travel", amount=75.0),
-        }
+            Budget(budget_id=":expense:travel", month=None, category_id="expense:travel", amount=75.0),
+        ]
     )
-    updated = uncategorize_category_ids(store, {"expense:food:snacks"})
-    assert list(updated.general_budgets) == ["expense:travel"]
+    updated = uncategorize_category_ids(references, {"expense:food:snacks"})
+    assert {(budget.budget_id, budget.subcategory_id) for budget in updated.budgets} == {
+        (":expense:food", None),
+        (":expense:travel", None),
+    }
+
+
+def test_uncategorize_category_ids_keeps_the_untouched_budget_when_clearing_a_subcategory_collides() -> None:
+    # Clearing the deleted subcategory would give this budget the same
+    # (month, category, subcategory) identity as the whole-category one — the
+    # untouched budget wins and the cleared one is dropped, since two rows
+    # cannot share that identity in the table.
+    references = CategoryReferences(
+        budgets=[
+            Budget(
+                budget_id="2026-06:expense:food:expense:food:snacks",
+                month="2026-06",
+                category_id="expense:food",
+                subcategory_id="expense:food:snacks",
+                amount=50.0,
+            ),
+            Budget(budget_id="2026-06:expense:food", month="2026-06", category_id="expense:food", amount=300.0),
+        ]
+    )
+    updated = uncategorize_category_ids(references, {"expense:food:snacks"})
+    assert [(budget.budget_id, budget.amount) for budget in updated.budgets] == [
+        ("2026-06:expense:food", pytest.approx(300.0))
+    ]
 
 
 def test_uncategorize_category_ids_deletes_a_category_pattern_for_the_deleted_category() -> None:
-    store = AccountingStore(
+    references = CategoryReferences(
         category_patterns={
             "p1": CategoryPattern(pattern_id="p1", description_contains="x", category_id="expense:food"),
             "p2": CategoryPattern(pattern_id="p2", description_contains="y", category_id="expense:travel"),
         }
     )
-    updated = uncategorize_category_ids(store, {"expense:food"})
+    updated = uncategorize_category_ids(references, {"expense:food"})
     assert list(updated.category_patterns) == ["p2"]
 
 

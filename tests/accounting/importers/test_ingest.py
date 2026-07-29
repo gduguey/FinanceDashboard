@@ -16,8 +16,15 @@ from accounting.importers.ingest import (
     load_ledger,
     rebuild_from_raw_statements,
 )
-from accounting.models import Account, Posting
-from accounting.store import load_store, save_store
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import Account, ManualTransfer, Posting
+from accounting.repositories.accounts import (
+    insert_manual_transfers,
+    load_accounts,
+    load_manual_transfers,
+    replace_accounts,
+)
+from accounting.taxonomy import seed_new_user_defaults
 
 if TYPE_CHECKING:
     import uuid
@@ -57,10 +64,10 @@ def _register_account(
     kind: str = "checking",
     parent_account_id: str | None = None,
 ) -> None:
-    """Register an account through the store first — exactly what `api.py`'s upload endpoint does before
-    ever calling `ingest_csv`, since a posting can only reference an account that already exists.
+    """Register an account through the accounts repository first — exactly what `api.py`'s upload endpoint
+    does before ever calling `ingest_csv`, since a posting can only reference an account that already exists.
     """
-    store = load_store(session, user_id=user_id)
+    seed_new_user_defaults(session, user_id)  # seeds a brand-new user's defaults, exactly as a router would
     account = Account(
         account_id=account_id,
         name=account_id,
@@ -69,7 +76,8 @@ def _register_account(
         currency="USD",
         parent_account_id=parent_account_id,
     )
-    save_store(store.model_copy(update={"accounts": {**store.accounts, account_id: account}}), session, user_id=user_id)
+    replace_accounts(session, user_id, [account], prune=False)
+    session.commit()
 
 
 def test_ingest_csv_archives_the_raw_file_verbatim(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -250,7 +258,6 @@ def test_ingest_csv_handles_a_vault_transfer_with_opaque_parent_id(
         config,
         db_session,
         user_id=test_user_id,
-        parent_account_id=savings_id,
     )
     assert result.new_posting_count == 4
 
@@ -281,7 +288,6 @@ def test_rebuild_from_raw_statements_handles_a_vault_transfer_with_opaque_ids(
         config,
         db_session,
         user_id=test_user_id,
-        parent_account_id=savings_id,
     )
 
     rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
@@ -323,6 +329,44 @@ def test_rebuild_from_raw_statements_reconstructs_the_same_ledger(
     assert after["posting_id"].to_list() == before["posting_id"].to_list()
 
 
+def test_rebuild_from_raw_statements_keeps_manual_origin_transactions(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The reason `transactions.origin` exists: a replay owns the imported half and only that half.
+
+    No archive describes a manual transfer, so a rebuild produces nothing
+    that would put one back — and must therefore not read its absence from
+    the replayed frame as a deletion.
+    """
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    _register_account(db_session, test_user_id, "sofi:savings:9999", "SoFi", kind="savings")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+    insert_manual_transfers(
+        [
+            ManualTransfer(
+                transfer_id="closing",
+                date=datetime(2026, 7, 1, tzinfo=UTC),
+                from_account_id="chase:checking:1234",
+                to_account_id="sofi:savings:9999",
+                from_amount=430,
+                to_amount=430,
+                description="Closing balance out",
+            )
+        ],
+        db_session,
+        test_user_id,
+    )
+    db_session.commit()
+
+    rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
+
+    assert [transfer.transfer_id for transfer in load_manual_transfers(db_session, test_user_id)] == ["closing"]
+    posting_ids = load_ledger(db_session, user_id=test_user_id)["posting_id"].to_list()
+    assert "manual-transfer:closing:from" in posting_ids
+    assert "manual-transfer:closing:to" in posting_ids
+
+
 def test_rebuild_from_raw_statements_with_no_archives_raises(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
@@ -331,38 +375,39 @@ def test_rebuild_from_raw_statements_with_no_archives_raises(
         rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
 
-def _archive_sofi_statement_pdf(config: AccountingConfig, pdf_bytes: bytes) -> None:
-    """Write a raw PDF straight into the archive, exactly where an old (pre-retirement) upload would have.
+def _archive_non_csv_statement(config: AccountingConfig, pdf_bytes: bytes) -> None:
+    """Write a non-CSV file into the archive, exactly where a retired PDF upload used to land.
 
-    `rebuild_from_raw_statements` no longer reads anything under
-    `SoFi/statement_pdf/*.pdf` — this only exists to prove a rebuild
-    ignores it rather than erroring on it or re-deriving postings from it.
+    A rebuild only ever replays `*/*/*.csv`. Real archives still hold
+    files left by the deleted PDF importer, so this proves a rebuild
+    walks past them rather than erroring or trying to derive postings
+    from them.
     """
     directory = config.raw_statement_dir / "SoFi" / "statement_pdf"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "statement.pdf").write_bytes(pdf_bytes)
 
 
-def test_rebuild_from_raw_statements_ignores_archived_pdfs(
+def test_rebuild_from_raw_statements_ignores_archived_non_csv_files(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
     ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
-    _archive_sofi_statement_pdf(config, b"%PDF-fake")
+    _archive_non_csv_statement(config, b"%PDF-fake")
 
     rebuilt = rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
 
     assert "chase:checking:1234" in set(rebuilt["account_id"].unique().to_list())
     assert not any(account_id.startswith("sofi:") for account_id in rebuilt["account_id"].unique().to_list())
-    assert "sofi:savings:3680" not in load_store(db_session, user_id=test_user_id).accounts
+    assert "sofi:savings:3680" not in load_accounts(db_session, test_user_id)
 
 
-def test_rebuild_from_raw_statements_with_only_archived_pdfs_raises(
+def test_rebuild_from_raw_statements_with_only_archived_non_csv_files_raises(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     config = _config(tmp_path)
-    _archive_sofi_statement_pdf(config, b"%PDF-fake")
+    _archive_non_csv_statement(config, b"%PDF-fake")
 
     with pytest.raises(FileNotFoundError):
         rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
@@ -380,7 +425,7 @@ def _unbalanced_posting_frame(account_id: str) -> pl.DataFrame:
         description="test",
         meta={},
     )
-    return pl.DataFrame([posting.model_dump(mode="python")], schema=Posting.polars_schema)
+    return pl.DataFrame([posting.model_dump(mode="python")], schema=LEDGER_FRAME_SCHEMA)
 
 
 def test_ingest_csv_rejects_a_standardizer_result_that_doesnt_balance(

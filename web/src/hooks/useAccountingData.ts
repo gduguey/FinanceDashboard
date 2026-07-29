@@ -4,7 +4,6 @@ import {
   type AccountUpdate,
   accountingApi,
   type CategoryCreate,
-  type ImportAccountInfo,
   type SubcategoryCreate,
   type TagCreate,
 } from '@/lib/accountingApi'
@@ -17,7 +16,9 @@ import type {
   CategoryPatternUpdate,
   CurrencyCode,
   DismissSuggestionRequest,
-  GeneralBudgetUpsert,
+  GoalAutomation,
+  GoalAutomationCreate,
+  GoalAutomationUpdate,
   GoalContributionCreate,
   GoalContributionUpdate,
   GoalCreate,
@@ -29,15 +30,11 @@ import type {
   OtherAssetCreate,
   PostingMergeUpsert,
   PostingSplitLeg,
-  RecurringAddition,
-  RecurringAdditionCreate,
-  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   TransferLinkCreate,
   TransferRuleCreate,
   TransferRuleUpdate,
-  WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
 const keys = {
@@ -304,20 +301,22 @@ export function useRemoveTransferLink() {
     // round trip — the badge disappears immediately and just reconciles
     // quietly once the real response (and `onSuccess`'s refetch) lands.
     // Rolled back on failure; `onSuccess: invalidate` still refetches
-    // regardless, both to reconcile with whatever the server actually
-    // persisted and to advance `lastKnownStoreVersion` for the next
-    // mutation's own version-conflict check (see `accountingApi.ts`'s
-    // `request`) — this optimistic patch only changes how fast the UI
-    // *looks* like it responded, never which version header goes out next.
+    // regardless, to reconcile with whatever the server actually persisted
+    // — this optimistic patch only changes how fast the UI *looks* like it
+    // responded, never what actually gets written.
+    // The updater is a *function* of the current cache, not a spread of the
+    // snapshot taken above, so this composes with any other optimistic write
+    // still in flight instead of reverting it — `excludeFromRule`
+    // (TransferRulesTab) runs this right after a `usePatchTransferRule` whose
+    // own refetch may not have settled yet.
     onMutate: async (linkId) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
-      if (previous) {
-        queryClient.setQueryData<AccountingStore>(keys.store, {
-          ...previous,
-          transfer_links: previous.transfer_links.filter((link) => link.link_id !== linkId),
-        })
-      }
+      queryClient.setQueryData<AccountingStore>(keys.store, (current) =>
+        current
+          ? { ...current, transfer_links: current.transfer_links.filter((link) => link.link_id !== linkId) }
+          : current,
+      )
       return { previous }
     },
     onError: (_error, _linkId, context) => {
@@ -578,24 +577,28 @@ export function usePatchTransferRule() {
     // but scoped to the one rule being edited (toggling active, editing
     // fields, excluding/un-excluding a transaction) rather than the whole
     // `transfer_rules` array — each call carries and checks its own
-    // `update.expected_version`, not the shared whole-store one, so firing
-    // several of these back-to-back (e.g. rapid clicks) can never silently
-    // clobber a sibling rule's edit or spuriously conflict with an
-    // unrelated save elsewhere in the store. Rolled back on failure;
+    // `update.expected_version`, so firing several of these back-to-back
+    // (e.g. rapid clicks) can never silently clobber a sibling rule's edit
+    // or conflict with an unrelated save elsewhere. Rolled back on failure;
     // `onSuccess: invalidate` still refetches regardless, to reconcile
     // with whatever the server actually persisted (including the bumped
-    // `version` for this rule's next edit).
+    // `version` for this rule's next edit). Like `useRemoveTransferLink`,
+    // the updater is a function of the current cache rather than a spread of
+    // the snapshot, so a concurrent optimistic write composes with this one
+    // instead of reverting it.
     onMutate: async ({ ruleId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
-      if (previous) {
-        queryClient.setQueryData<AccountingStore>(keys.store, {
-          ...previous,
-          transfer_rules: previous.transfer_rules.map((rule) =>
-            rule.rule_id === ruleId ? { ...rule, ...update } : rule,
-          ),
-        })
-      }
+      queryClient.setQueryData<AccountingStore>(keys.store, (current) =>
+        current
+          ? {
+              ...current,
+              transfer_rules: current.transfer_rules.map((rule) =>
+                rule.rule_id === ruleId ? { ...rule, ...update } : rule,
+              ),
+            }
+          : current,
+      )
       return { previous }
     },
     onError: (_error, _variables, context) => {
@@ -669,7 +672,8 @@ export function useCreateOtherAsset() {
 
 // Single-item budget mutations — only send the one budget being changed
 // over the wire, not the user's entire budget history for every edit
-// (see accounting.api.routers.store.post_budget/post_general_budget).
+// (see accounting.api.routers.store.post_budget). A `month: null` upsert is
+// the general, every-month-alike target; both go through the same endpoint.
 export function useSetBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
@@ -682,22 +686,6 @@ export function useRemoveBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (budgetId: string) => accountingApi.removeBudget(budgetId),
-    onSuccess: invalidate,
-  })
-}
-
-export function useSetGeneralBudget() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (generalBudget: GeneralBudgetUpsert) => accountingApi.setGeneralBudget(generalBudget),
-    onSuccess: invalidate,
-  })
-}
-
-export function useRemoveGeneralBudget() {
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
-    mutationFn: (key: string) => accountingApi.removeGeneralBudget(key),
     onSuccess: invalidate,
   })
 }
@@ -756,7 +744,7 @@ export function useReopenAccount() {
 export function useImportCsv() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ file, info }: { file: File; info: ImportAccountInfo }) => accountingApi.importCsv(file, info),
+    mutationFn: ({ file, accountId }: { file: File; accountId: string }) => accountingApi.importCsv(file, accountId),
     onSuccess: invalidate,
   })
 }
@@ -766,17 +754,17 @@ export function useImportCanonicalCsv() {
   return useMutation({
     mutationFn: ({
       file,
-      info,
+      accountId,
       separator,
       dateOrder,
       categoryOverrides,
     }: {
       file: File
-      info: ImportAccountInfo
+      accountId: string
       separator?: string
       dateOrder?: string
       categoryOverrides?: CanonicalCategoryOverrides
-    }) => accountingApi.importCanonicalCsv(file, info, separator, dateOrder, categoryOverrides),
+    }) => accountingApi.importCanonicalCsv(file, accountId, separator, dateOrder, categoryOverrides),
     onSuccess: invalidate,
   })
 }
@@ -961,9 +949,9 @@ export function usePatchGoal() {
   return useMutation({
     mutationFn: ({ goalId, update }: { goalId: string; update: GoalUpdate }) => accountingApi.patchGoal(goalId, update),
     // Same per-row optimistic-patch approach as `usePatchTransferRule` —
-    // each call carries and checks its own `update.expected_version`, not
-    // a shared whole-store one, so editing two different goals can never
-    // clobber each other regardless of how the requests interleave.
+    // each call carries and checks its own `update.expected_version`, so
+    // editing two different goals can never clobber each other regardless
+    // of how the requests interleave.
     onMutate: async ({ goalId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
@@ -1039,31 +1027,31 @@ export function useRemoveGoalContribution() {
 
 // Whole-list PUT — used only for drag-to-reorder (a pure ordering operation); single-rule field
 // edits and deletes go through the scoped hooks below.
-export function useSetRecurringAdditions() {
+export function useSetContributionAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (additions: RecurringAddition[]) => accountingApi.putRecurringAdditions(additions),
+    mutationFn: (automations: GoalAutomation[]) => accountingApi.putContributionAutomations(automations),
     onSuccess: invalidate,
   })
 }
 
-export function usePatchRecurringAddition() {
+export function usePatchGoalAutomation() {
   const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: ({ additionId, update }: { additionId: string; update: RecurringAdditionUpdate }) =>
-      accountingApi.patchRecurringAddition(additionId, update),
-    // Optimistically patch the one addition in the cached list so a field edit
-    // reflects immediately instead of lagging until the refetch — same
+    mutationFn: ({ automationId, update }: { automationId: string; update: GoalAutomationUpdate }) =>
+      accountingApi.patchGoalAutomation(automationId, update),
+    // Optimistically patch the one automation in the cached list so a field
+    // edit reflects immediately instead of lagging until the refetch — same
     // onMutate/onError shape as `usePatchGoal`, over a list rather than a map.
-    onMutate: async ({ additionId, update }) => {
+    onMutate: async ({ automationId, update }) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
       if (previous) {
         queryClient.setQueryData<AccountingStore>(keys.store, {
           ...previous,
-          recurring_additions: previous.recurring_additions.map((addition) =>
-            addition.addition_id === additionId ? { ...addition, ...update } : addition,
+          goal_automations: previous.goal_automations.map((automation) =>
+            automation.automation_id === automationId ? { ...automation, ...update } : automation,
           ),
         })
       }
@@ -1076,41 +1064,41 @@ export function usePatchRecurringAddition() {
   })
 }
 
-export function useDeleteRecurringAddition() {
+export function useDeleteGoalAutomation() {
   const queryClient = useQueryClient()
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (additionId: string) => accountingApi.deleteRecurringAddition(additionId),
-    onMutate: async (additionId) => {
+    mutationFn: (automationId: string) => accountingApi.deleteGoalAutomation(automationId),
+    onMutate: async (automationId) => {
       await queryClient.cancelQueries({ queryKey: keys.store })
       const previous = queryClient.getQueryData<AccountingStore>(keys.store)
       if (previous) {
         queryClient.setQueryData<AccountingStore>(keys.store, {
           ...previous,
-          recurring_additions: previous.recurring_additions.filter((addition) => addition.addition_id !== additionId),
+          goal_automations: previous.goal_automations.filter((automation) => automation.automation_id !== automationId),
         })
       }
       return { previous }
     },
-    onError: (_error, _additionId, context) => {
+    onError: (_error, _automationId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
     onSuccess: invalidate,
   })
 }
 
-export function useCreateRecurringAddition() {
+export function useCreateContributionAutomation() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (addition: RecurringAdditionCreate) => accountingApi.createRecurringAddition(addition),
+    mutationFn: (automation: GoalAutomationCreate) => accountingApi.createContributionAutomation(automation),
     onSuccess: invalidate,
   })
 }
 
-export function useSetWithdrawalPriorities() {
+export function useSetWithdrawalAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (priorities: WithdrawalPriorityEntry[]) => accountingApi.putWithdrawalPriorities(priorities),
+    mutationFn: (automations: GoalAutomation[]) => accountingApi.putWithdrawalAutomations(automations),
     onSuccess: invalidate,
   })
 }

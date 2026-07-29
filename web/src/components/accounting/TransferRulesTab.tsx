@@ -164,11 +164,18 @@ export function TransferRulesTab({
   // Excluding a rule-linked transfer both stops the rule from re-linking it
   // (via `excluded_transaction_ids`, same as the Excluded-from-rules tab's
   // "remove exclusion" is the inverse of) and drops the `TransferLink` it
-  // already made — sequential, not parallel, since `removeTransferLink` goes
-  // out against the whole-store version header, which only advances once
-  // the rule patch's own success has refetched the store (see
-  // `TransactionsTab.tsx`'s `handleExcludeAndUnlinkFromRule`, which this
-  // mirrors for the Rules page's own "linked by this rule" table).
+  // already made. Those are two writes but one intention, so they run in
+  // order rather than in parallel: the exclusion is patched first and the
+  // link is only deleted once that patch has actually landed. Firing both
+  // at once risks the half-applied state where the link is gone but the
+  // rule never learned to skip the pair, so the very next reconciliation
+  // re-links it and silently undoes the exclusion. This way a failed patch
+  // leaves both sides untouched and the whole action is retryable. Errors
+  // are deliberately left to propagate to the caller (each hook rolls its
+  // own optimistic patch back in `onError`) and the success toast only
+  // fires once both writes have landed — mirrors
+  // `TransactionsTab.tsx`'s `handleExcludeAndUnlinkFromRule` for the Rules
+  // page's own "linked by this rule" table.
   async function excludeFromRule(rule: TransferRule, linkId: string, transactionIds: string[]) {
     const ruleLabel = rule.description || rule.description_contains || rule.rule_id
     await patchRule.mutateAsync({

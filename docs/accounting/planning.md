@@ -8,15 +8,22 @@ which charts it appears in.
 ## Budgets
 
 A `Budget` (`accounting.models.Budget`) assigns a target amount to one
-expense category for one calendar month — `category_id` is always the
-top-level category; an optional `subcategory_id` scopes the target to just
-that one subcategory's own actual spend instead of the whole category's,
-so a category and one of its subcategories can each carry their own
-independent target for the same month. A `GeneralBudget` mirrors this same
-`category_id`/`subcategory_id` shape but assigns a target that applies to
-every month alike, stored completely separately from per-month budgets —
-switching between "general" and "per-month" mode in the UI never merges or
-silently overwrites the other; each is its own independent set of numbers.
+expense category — `category_id` is always the top-level category; an
+optional `subcategory_id` scopes the target to just that one
+subcategory's own actual spend instead of the whole category's, so a
+category and one of its subcategories can each carry their own
+independent target for the same month.
+
+`month` is what says *which* target it is: a `"YYYY-MM"` scopes it to that
+one month, and `null` is the **general** target — the standing amount that
+applies to every month alike, which the Budget page's "General" mode
+edits. Both live in the one `budgets` table (they used to be `budgets` and
+`general_budgets`, two tables with the same four columns), and the unique
+index coalesces `month` to `''` so a month target and a general target for
+the same category coexist as two rows while neither kind can be
+duplicated. Switching between "general" and "per-month" mode in the UI
+therefore never merges or silently overwrites the other; each is still its
+own independent set of numbers.
 
 A budget's *actual* spend is never stored anywhere — `dashboard.budgets`
 computes it fresh from `dashboard.income_statement.category_totals` for
@@ -73,9 +80,14 @@ part that actually persists a row
 `post_run_withdrawal_automation`), the same decide/apply split
 `dashboard.paystub.propose_posting_splits` uses for paystub splits.
 
-- **Recurring additions** (`accounting.models.RecurringAddition`) — an
-  ordered list of rules that move unallocated money into a goal on a
-  monthly schedule, in priority order. Each is either a fixed amount or a
+Both are rows of the one `goal_automations` table, told apart by a
+`direction` column (`contribution` | `withdrawal`) whose
+`schedule_matches_direction` CHECK enforces that a contribution carries
+the whole schedule and a withdrawal carries none of it.
+
+- **Recurring additions** (`GoalAutomation` with
+  `direction="contribution"`) — an ordered list of rules that move
+  unallocated money into a goal on a schedule, in priority order. Each is either a fixed amount or a
   percentage of the unallocated balance at the moment it runs; only the
   single lowest-priority rule may instead be `"remainder"` — take
   whatever's left after every rule above it. `ledger.goal_automations.run_recurring_additions`
@@ -86,8 +98,9 @@ part that actually persists a row
   additions are caught up whenever the Goals page loads, using a
   deterministic contribution id per (rule, month) pair so re-running it
   within the same month is a no-op.
-- **Withdrawal automation** (`accounting.models.WithdrawalPriorityEntry`) —
-  a separate, ordered list with no schedule of its own; it only triggers
+- **Withdrawal automation** (`GoalAutomation` with
+  `direction="withdrawal"`) — a separate, ordered list with no schedule of
+  its own; it only triggers
   when unallocated money is found to be negative (checked the same way,
   whenever the Goals page loads). `ledger.goal_automations.run_withdrawal_automation`
   draws down goals in priority order, never taking any single goal below

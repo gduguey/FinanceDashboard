@@ -14,6 +14,7 @@ from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING
 
 import polars as pl
+from sqlalchemy import select
 
 import accounting.db as adb
 from accounting.importers.canonical.csv import (
@@ -25,12 +26,16 @@ from accounting.importers.canonical.csv import (
 from accounting.importers.chase.checking import standardize_chase_checking
 from accounting.importers.chase.credit_card import standardize_chase_credit_card
 from accounting.importers.sofi.csv import standardize_sofi_checking, standardize_sofi_savings
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.replay import validate_balanced
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
-from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Posting
-from accounting.store import load_store, normalize_categories, save_store
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS
+from accounting.repositories.taxonomy import replace_categories
+from accounting.taxonomy import normalize_categories, seeded_accounts, seeded_categories
 from accounting.utils.statement_archive import StatementArchive
-from db.base import derive_id, natural_keys_by_id
+from db.base import ids_by_natural_key, natural_keys_by_id
+from db.money import quantize_money
+from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     import uuid
@@ -42,13 +47,12 @@ if TYPE_CHECKING:
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
-    from accounting.models import Account, Category
-    from accounting.store import AccountingStore
+    from accounting.models import Account, Category, TransactionOrigin
 
 _Fingerprint = tuple[str, datetime, float, str]
 """`(account_id, posted_at, amount, description)` — two transactions with the same fingerprint look identical."""
 
-_STANDARDIZERS: dict[tuple[str, str], Callable[[str, str, str | None], pl.DataFrame]] = {
+_STANDARDIZERS: dict[tuple[str, str], Callable[[str, str], pl.DataFrame]] = {
     ("Chase", "checking"): standardize_chase_checking,
     ("Chase", "credit_card"): standardize_chase_credit_card,
     ("SoFi", "checking"): standardize_sofi_checking,
@@ -59,8 +63,6 @@ _STANDARDIZERS: dict[tuple[str, str], Callable[[str, str, str | None], pl.DataFr
     # itself `"vault"`, not `"savings"`.
     ("SoFi", "vault"): standardize_sofi_savings,
 }
-
-_SOFI_STATEMENT_PDF_ACCOUNT_KIND = "statement_pdf"
 
 
 def supported_import_kinds() -> set[tuple[str, str]]:
@@ -91,9 +93,14 @@ class IngestResult:
 
 
 def load_ledger(
-    session: Session, user_id: uuid.UUID, *, since: date | None = None, until: date | None = None
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    origin: TransactionOrigin | None = None,
 ) -> pl.DataFrame:
-    """Load the posting ledger, optionally restricted to `[since, until]`.
+    """Load the posting ledger, optionally restricted to `[since, until]` or to one transaction origin.
 
     Parameters
     ----------
@@ -109,36 +116,62 @@ def load_ledger(
         result to a date range (dashboard aggregations) should pass it.
     until
         Last day to include, inclusive. Same defaulting reasoning as `since`.
+    origin
+        Restrict to postings of `imported` or `manual` transactions (see
+        `models.TransactionOrigin`). `None` (the default) is the whole
+        ledger, which is what every *read* wants: a manual transfer is a
+        real transaction and shows up in balances, net worth and the
+        transaction list exactly like any other. Only the import machinery
+        passes `"imported"`, and for two reasons — the merge it does is a
+        diff against what the archives produce, which manual rows are no
+        part of, and `ledger.replay.validate_balanced` (run over the merged
+        result) would flag a legitimate cross-currency manual transfer,
+        whose two legs are equal-and-opposite only after a conversion it
+        deliberately doesn't store.
 
     Returns
     -------
     polars.DataFrame
-        Shaped exactly like `Posting.polars_schema` — every other ledger
+        Shaped exactly like `LEDGER_FRAME_SCHEMA` — every other ledger
         and dashboard module depends on that shape, not on how it's
         actually stored, so nothing downstream of this function needed to
-        change when its own storage moved from `ledger.csv` to Postgres.
-        An empty frame if nothing matches.
+        change when its own storage moved from `ledger.csv` to Postgres,
+        nor when `posted_at`/`description` moved off `postings` onto
+        `transactions` and became the join below. An empty frame if nothing
+        matches.
     """
-    # `posted_at` is a naive (timezone-unaware) column — the bounds below
-    # must be naive too, or psycopg rejects the comparison outright.
-    query = session.query(adb.Posting).filter_by(user_id=user_id)
+    # Always joined, not just when `origin` is given: `posted_at` and
+    # `description` are the transaction's (see `db.core.Transaction`), and
+    # the frame carries one of each per *leg* — so this join is what
+    # denormalizes one event's date and text back onto every posting of it,
+    # keeping `LEDGER_FRAME_SCHEMA` the single shape every downstream module
+    # reads. The date bounds filter `transactions` (where the index now
+    # lives) and stay naive to match that naive column, or psycopg rejects
+    # the comparison outright.
+    query = (
+        session
+        .query(adb.Posting, adb.Transaction)
+        .join(adb.Transaction, adb.Posting.transaction_id == adb.Transaction.id)
+        .filter(adb.Posting.user_id == user_id)
+    )
+    if origin is not None:
+        query = query.filter(adb.Transaction.origin == origin)
     if since is not None:
-        query = query.filter(adb.Posting.posted_at >= datetime.combine(since, time.min))
+        query = query.filter(adb.Transaction.posted_at >= datetime.combine(since, time.min))
     if until is not None:
-        query = query.filter(adb.Posting.posted_at <= datetime.combine(until, time.max))
+        query = query.filter(adb.Transaction.posted_at <= datetime.combine(until, time.max))
     rows = query.all()
     if not rows:
-        return pl.DataFrame(schema=Posting.polars_schema)
+        return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
 
-    transaction_natural_key_by_id = natural_keys_by_id(
-        session, adb.Transaction, user_id, [row.transaction_id for row in rows]
+    account_natural_key_by_id = natural_keys_by_id(
+        session, adb.Account, user_id, [posting.account_id for posting, _ in rows]
     )
-    account_natural_key_by_id = natural_keys_by_id(session, adb.Account, user_id, [row.account_id for row in rows])
     category_natural_key_by_id = natural_keys_by_id(
         session,
         adb.Category,
         user_id,
-        [row.category_id for row in rows] + [row.subcategory_id for row in rows],
+        [posting.category_id for posting, _ in rows] + [posting.subcategory_id for posting, _ in rows],
     )
     tag_ids_by_posting: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
     tag_ids: set[uuid.UUID] = set()
@@ -146,41 +179,60 @@ def load_ledger(
         tag_ids_by_posting[posting_tag.posting_id].append(posting_tag.tag_id)
         tag_ids.add(posting_tag.tag_id)
     tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, tag_ids)
-    budget_natural_key_by_id = natural_keys_by_id(session, adb.Budget, user_id, [row.budget_id for row in rows])
+    budget_natural_key_by_id = natural_keys_by_id(
+        session, adb.Budget, user_id, [posting.budget_id for posting, _ in rows]
+    )
 
     records = [
         {
-            "posting_id": row.natural_key,
-            "transaction_id": transaction_natural_key_by_id[row.transaction_id],
-            "account_id": account_natural_key_by_id[row.account_id],
-            "posted_at": row.posted_at,
-            "amount": row.amount,
-            "currency": row.currency,
-            "category_id": category_natural_key_by_id.get(row.category_id) if row.category_id is not None else None,
-            "subcategory_id": category_natural_key_by_id.get(row.subcategory_id)
-            if row.subcategory_id is not None
+            "posting_id": posting.natural_key,
+            "transaction_id": transaction.natural_key,
+            "account_id": account_natural_key_by_id[posting.account_id],
+            "posted_at": transaction.posted_at,
+            # Explicit at the sanctioned helper rather than left to Polars to
+            # coerce inside the constructor — same value either way, but the
+            # `Decimal -> float` crossing stays greppable, which is the whole
+            # point of `ledger.frame` declaring one seam.
+            "amount": to_analytics_amount(posting.amount),
+            "currency": posting.currency,
+            "category_id": category_natural_key_by_id.get(posting.category_id)
+            if posting.category_id is not None
             else None,
-            "budget_id": budget_natural_key_by_id.get(row.budget_id) if row.budget_id is not None else None,
-            "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(row.id, [])],
-            "description": row.description,
-            "meta": row.meta,
+            "subcategory_id": category_natural_key_by_id.get(posting.subcategory_id)
+            if posting.subcategory_id is not None
+            else None,
+            "budget_id": budget_natural_key_by_id.get(posting.budget_id) if posting.budget_id is not None else None,
+            "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(posting.id, [])],
+            "description": transaction.description,
+            "meta": posting.meta,
         }
-        for row in rows
+        for posting, transaction in rows
     ]
-    return pl.DataFrame(records, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return pl.DataFrame(records, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
 
 def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) -> None:
-    """Persist the full posting ledger, overwriting whatever was saved before.
+    """Persist the imported half of the posting ledger, overwriting whatever was saved before.
+
+    Only the imported half. Every row written here is `origin =
+    "imported"` (see `models.TransactionOrigin`), and the prune below is
+    scoped to imported transactions and their postings, so a rebuild that
+    replays every archived statement cannot delete a `manual` transaction
+    — a manual transfer is reproducible from nothing, so nothing this
+    function replays would ever put it back. That scoping *is* the
+    discriminator's reason for existing; without it, retiring the old
+    `manual_transfers` table into ordinary transactions would have made
+    `rebuild_from_raw_statements` silently destructive.
 
     `transactions`/`postings` are upserted and pruned rather than deleted
     wholesale and reinserted — `manual_overrides`, `posting_splits`,
-    `posting_merges`, `transfer_links`, `transfer_rule_exclusions`, and
+    `posting_merges`, `transfer_links`, `categorization_rule_exclusions`, and
     `goal_contributions.source_posting_id` all foreign-key into them (see
-    `accounting.store.save_store`'s own `_upsert_and_prune` for the same
-    reasoning applied to accounts, categories, and tags). Pruning a
+    `db.base.upsert_and_prune` for the same reasoning applied to accounts,
+    categories, and tags). Pruning a
     transaction still referenced by one of these needs `transfer_links`
-    handled explicitly (see below); `posting_merges`/`transfer_rule_exclusions`
+    handled explicitly (see below);
+    `posting_merges`/`categorization_rule_exclusions`
     lean on `ondelete="CASCADE"` instead, since each references its
     transaction directly rather than through a separate join table.
     `posting_tags` has nothing foreign-keying into it, so it's safe to
@@ -190,7 +242,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     Parameters
     ----------
     ledger
-        The full ledger to persist, shaped like `Posting.polars_schema`.
+        The whole imported ledger to persist, shaped like `LEDGER_FRAME_SCHEMA`.
     session
         An open database session; `session.commit()` is called on success.
     user_id
@@ -198,35 +250,102 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     """
     rows = ledger.to_dicts()
 
-    transaction_ids: set[uuid.UUID] = set()
-    for row in rows:
-        transaction_id = derive_id(user_id, "transactions", row["transaction_id"])
-        transaction_ids.add(transaction_id)
-        session.merge(adb.Transaction(id=transaction_id, user_id=user_id, natural_key=row["transaction_id"]))
+    # The frame carries one `posted_at`/`description` pair per *leg*; the
+    # storage holds one per event (see `db.core.Transaction`). Collapsing by
+    # `transaction_id` here is where the frame's denormalized copies become
+    # the one row again — and since every path that builds a frame gives
+    # each leg of a transaction the same date and description, "last leg
+    # wins" is not a choice being made, it is the same value written once.
+    transaction_facts = {row["transaction_id"]: (row["posted_at"], row["description"]) for row in rows}
+
+    # Every prune below is scoped to these. A `manual` transaction and its
+    # postings are outside the set this function is the source of truth for,
+    # so a rebuild that no longer produces them must not read that as "the
+    # user deleted them" — see this function's own docstring.
+    imported_transaction_ids = select(adb.Transaction.id).where(
+        adb.Transaction.user_id == user_id, adb.Transaction.origin == "imported"
+    )
+    imported_posting_ids = select(adb.Posting.id).where(
+        adb.Posting.user_id == user_id, adb.Posting.transaction_id.in_(imported_transaction_ids)
+    )
+
+    # One read of the imported half's `(natural_key, id)` pairs serves both
+    # jobs below: telling `merge()` which rows already exist (so it updates
+    # rather than duplicating on `UNIQUE (user_id, natural_key)`), and giving
+    # the prune the set of ids to diff against. Deliberately *not* an
+    # `ids_by_natural_key` call keyed on the frame's own natural keys: a
+    # rebuild carries tens of thousands of them, and one `IN` list that long
+    # is the 65,535-parameter cliff DB-audit D4 is about. Reading the user's
+    # imported rows wholesale binds two parameters regardless of size.
+    existing_transaction_ids = {
+        row.natural_key: row.id
+        for row in session.query(adb.Transaction.natural_key, adb.Transaction.id).filter_by(
+            user_id=user_id, origin="imported"
+        )
+    }
+    existing_posting_ids = {
+        row.natural_key: row.id
+        for row in session
+        .query(adb.Posting.natural_key, adb.Posting.id)
+        .filter_by(user_id=user_id)
+        .filter(adb.Posting.transaction_id.in_(imported_transaction_ids))
+    }
+
+    transaction_rows: dict[str, adb.Transaction] = {}
+    for natural_key, (posted_at, description) in transaction_facts.items():
+        transaction_rows[natural_key] = session.merge(
+            adb.Transaction(
+                id=existing_transaction_ids.get(natural_key),
+                user_id=user_id,
+                natural_key=natural_key,
+                posted_at=posted_at,
+                description=description,
+                origin="imported",
+            )
+        )
+    # Flushed before the postings below, because a posting's `transaction_id`
+    # is the id `uuid7()` mints for its transaction — read off the flushed
+    # instance rather than recomputed from the natural key.
     session.flush()
 
-    posting_ids: set[uuid.UUID] = set()
+    # The reference tables a posting points at. These are small per user (a
+    # handful of accounts, dozens of categories and tags) and the frame names
+    # only a subset, so a keyed lookup is the right shape here — unlike the
+    # ledger's own two tables above.
+    account_ids = ids_by_natural_key(session, adb.Account, user_id, [row["account_id"] for row in rows])
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [row["category_id"] for row in rows] + [row["subcategory_id"] for row in rows],
+    )
+    budget_ids = ids_by_natural_key(session, adb.Budget, user_id, [row["budget_id"] for row in rows])
+
+    posting_rows: dict[str, adb.Posting] = {}
     for row in rows:
-        posting_id = derive_id(user_id, "postings", row["posting_id"])
-        posting_ids.add(posting_id)
-        session.merge(
+        posting_rows[row["posting_id"]] = session.merge(
             adb.Posting(
-                id=posting_id,
+                id=existing_posting_ids.get(row["posting_id"]),
                 user_id=user_id,
                 natural_key=row["posting_id"],
-                transaction_id=derive_id(user_id, "transactions", row["transaction_id"]),
-                account_id=derive_id(user_id, "accounts", row["account_id"]),
-                posted_at=row["posted_at"],
-                amount=row["amount"],
+                transaction_id=transaction_rows[row["transaction_id"]].id,
+                account_id=account_ids[row["account_id"]],
+                # Back out of the float projection before Postgres sees this.
+                # `rows` comes off a `LEDGER_FRAME_SCHEMA` frame, where `amount` is
+                # `Float64`, and `postings.amount` is `MONEY` = `NUMERIC(18, 4)`:
+                # handing psycopg a Python float makes Postgres cast
+                # `float8 -> numeric`, which truncates at 15 significant digits, so
+                # `12345678901234.5678` persisted as `12345678901234.6000`. Worse
+                # here than in `trades`, because these amounts arrive genuinely
+                # exact — Chase, SoFi and canonical CSV all parse to `Money` — so
+                # the cast destroyed precision that really existed. `quantize_money`
+                # routes the float through `str()` for its shortest round-trip
+                # literal; see `ledger.frame`, "Exact again on the way out".
+                amount=quantize_money(row["amount"]),
                 currency=row["currency"],
-                category_id=derive_id(user_id, "categories", row["category_id"])
-                if row["category_id"] is not None
-                else None,
-                subcategory_id=derive_id(user_id, "categories", row["subcategory_id"])
-                if row["subcategory_id"] is not None
-                else None,
-                budget_id=derive_id(user_id, "budgets", row["budget_id"]) if row["budget_id"] is not None else None,
-                description=row["description"],
+                category_id=category_ids[row["category_id"]] if row["category_id"] is not None else None,
+                subcategory_id=category_ids[row["subcategory_id"]] if row["subcategory_id"] is not None else None,
+                budget_id=budget_ids[row["budget_id"]] if row["budget_id"] is not None else None,
                 meta=row["meta"],
             )
         )
@@ -235,22 +354,20 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     # Postings first, then transactions — a transaction that lost every one of
     # its postings would otherwise still be referenced by the very rows this
     # step is trying to delete first.
-    existing_posting_ids = {row.id for row in session.query(adb.Posting.id).filter_by(user_id=user_id)}
-    removed_posting_ids = existing_posting_ids - posting_ids
+    removed_posting_ids = set(existing_posting_ids.values()) - {row.id for row in posting_rows.values()}
     if removed_posting_ids:
         session.query(adb.Posting).filter_by(user_id=user_id).filter(adb.Posting.id.in_(removed_posting_ids)).delete(
             synchronize_session=False
         )
 
-    existing_transaction_ids = {row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id)}
-    removed_transaction_ids = existing_transaction_ids - transaction_ids
+    removed_transaction_ids = set(existing_transaction_ids.values()) - {row.id for row in transaction_rows.values()}
     if removed_transaction_ids:
         # A `TransferLink` has no FK of its own into `transactions` — only
         # its `TransferLinkedTransaction` children do — so cascading that
         # child row alone would leave the link's other side referencing a
         # link with only one member. Deleting the whole link here instead
         # (its children cascade off `link_id`) removes both sides together.
-        # `PostingMerge`/`PostingMergeDuplicate`/`TransferRuleExclusion`
+        # `PostingMerge`/`PostingMergeDuplicate`/`CategorizationRuleExclusion`
         # don't need the same handling: each references its transaction
         # directly, so `ondelete="CASCADE"` on those columns is enough.
         stale_link_ids = {
@@ -268,72 +385,20 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
             adb.Transaction.id.in_(removed_transaction_ids)
         ).delete(synchronize_session=False)
 
-    session.query(adb.PostingTag).filter_by(user_id=user_id).delete()
+    session.query(adb.PostingTag).filter_by(user_id=user_id).filter(
+        adb.PostingTag.posting_id.in_(imported_posting_ids)
+    ).delete(synchronize_session=False)
+    tag_ids = ids_by_natural_key(session, adb.Tag, user_id, [tag_id for row in rows for tag_id in row["tag_ids"]])
     session.add_all(
         adb.PostingTag(
             user_id=user_id,
-            posting_id=derive_id(user_id, "postings", row["posting_id"]),
-            tag_id=derive_id(user_id, "tags", tag_id),
+            posting_id=posting_rows[row["posting_id"]].id,
+            tag_id=tag_ids[tag_id],
         )
         for row in rows
         for tag_id in row["tag_ids"]
     )
     session.commit()
-
-
-def remap_ledger_category_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID) -> None:
-    """Repoint every posting's `category_id`/`subcategory_id` after a category merge, in place.
-
-    A canonical import can bake a category straight onto a posting a
-    import time (from that file's own Category/Subcategory columns) rather
-    than only through a rule or a manual override — so merging two
-    categories (see `store.plan_category_rename`) needs to fix the ledger
-    cache itself, not just the store's own rules/patterns/budgets (see
-    `store.remap_category_ids`). `.replace(...)` leaves any id not in
-    `id_remap` (including `null`) unchanged.
-
-    Parameters
-    ----------
-    id_remap
-        `old_id -> new_id`, as returned by `store.plan_category_rename` —
-        a no-op when empty.
-    session
-        An open database session.
-    user_id
-        Whose ledger this is.
-    """
-    if not id_remap:
-        return
-    ledger = load_ledger(session, user_id=user_id)
-    ledger = ledger.with_columns(pl.col("category_id").replace(id_remap), pl.col("subcategory_id").replace(id_remap))
-    _write_ledger(ledger, session, user_id=user_id)
-
-
-def uncategorize_ledger_postings(category_ids: set[str], session: Session, user_id: uuid.UUID) -> None:
-    """Clear `category_id`/`subcategory_id` on every posting currently assigned to any of `category_ids`, in place.
-
-    The delete-side counterpart to `remap_ledger_category_ids`: a category
-    delete (see `store.category_ids_to_delete`) has no replacement id to
-    repoint postings at, so this nulls the field out instead — the same
-    "uncategorized" state a posting that was never categorized at all is
-    already in.
-
-    Parameters
-    ----------
-    category_ids
-        Every category id being deleted (see `store.category_ids_to_delete`)
-        — a no-op when empty.
-    session
-        An open database session.
-    user_id
-        Whose ledger this is.
-    """
-    if not category_ids:
-        return
-    ledger = load_ledger(session, user_id=user_id)
-    cleared = dict.fromkeys(category_ids)
-    ledger = ledger.with_columns(pl.col("category_id").replace(cleared), pl.col("subcategory_id").replace(cleared))
-    _write_ledger(ledger, session, user_id=user_id)
 
 
 def _fingerprint(row: dict[str, Any]) -> _Fingerprint:
@@ -468,7 +533,7 @@ def _reassign_colliding_transaction_ids(existing: pl.DataFrame, new: pl.DataFram
                 rows[counterparty_index]["transaction_id"] = final_id
                 rows[counterparty_index]["posting_id"] = f"{final_id}:1"
 
-    return pl.DataFrame(rows, schema=Posting.polars_schema)
+    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA)
 
 
 def _merge_ledger(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
@@ -499,11 +564,10 @@ def _archive_raw_statement(
 def _fallback_to_canonical_csv(
     csv_text: str,
     account_id: str,
-    config: AccountingConfig,  # noqa: ARG001 (kept for call-site signature uniformity with the other standardizers)
     session: Session,
     user_id: uuid.UUID,
 ) -> tuple[pl.DataFrame, SkippedRowsInfo | None]:
-    """Standardize via the canonical CSV importer, merging any newly-created categories into the store.
+    """Standardize via the canonical CSV importer, persisting any category it had to create along the way.
 
     Parameters
     ----------
@@ -511,23 +575,28 @@ def _fallback_to_canonical_csv(
         The raw CSV file contents.
     account_id
         The account these rows belong to.
-    config
-        Application configuration.
+    session
+        An open database session.
+    user_id
+        Whose category tree the newly-created categories are merged into.
 
     Returns
     -------
     tuple[pl.DataFrame, SkippedRowsInfo | None]
         The standardized postings, and info about any skipped rows.
     """
-    store = load_store(session, user_id=user_id)
-    canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", store.categories)
+    categories = seeded_categories(session, user_id)
+    canonical_result = standardize_canonical_csv(csv_text, account_id, "USD", categories)
     if canonical_result.new_categories:
-        merged_categories = normalize_categories({**store.categories, **canonical_result.new_categories})
-        save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)
+        merged_categories = normalize_categories({**categories, **canonical_result.new_categories})
+        # Additive only — an import can mint a category it met in a file, never
+        # remove one — so the merged tree is upserted without a prune.
+        replace_categories(session, user_id, merged_categories.values(), prune=False)
+        session.commit()
     return canonical_result.postings, canonical_result.skipped_rows
 
 
-def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the CSV-parsing options, push this one over)
+def ingest_csv(
     csv_text: str,
     institution: str,
     account_kind: str,
@@ -535,7 +604,6 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     config: AccountingConfig,
     session: Session,
     user_id: uuid.UUID,
-    parent_account_id: str | None = None,
 ) -> IngestResult:
     """Archive one uploaded CSV verbatim, standardize it, and merge the result into the ledger.
 
@@ -565,11 +633,7 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
-    parent_account_id
-        `account_id`'s own parent account, if it has one (a vault's savings
-        account) — only meaningful to the SoFi standardizers; ignored by
-        every other registered standardizer.
+        Whose ledger this is.
 
     Returns
     -------
@@ -593,12 +657,12 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
     skip_info: SkippedRowsInfo | None = None
     # Try the bank-specific standardizer first; if it fails, fall back to canonical CSV
     try:
-        new_postings = standardizer(csv_text, account_id, parent_account_id)
+        new_postings = standardizer(csv_text, account_id)
     except (ValueError, RuntimeError) as error:
         # Bank-specific standardizer failed (likely validation, parsing, or format mismatch).
         # Fall back to canonical CSV importer, which is more forgiving about column names/formats.
         try:
-            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, config, session, user_id=user_id)
+            new_postings, skip_info = _fallback_to_canonical_csv(csv_text, account_id, session, user_id=user_id)
         except (CanonicalCsvError, ValueError, KeyError, RuntimeError) as canonical_error:
             # Both standardizers failed; raise the original bank error with fallback note
             message = (
@@ -608,7 +672,7 @@ def ingest_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on top of the
             )
             raise ValueError(message) from error
 
-    existing = load_ledger(session, user_id=user_id)
+    existing = load_ledger(session, user_id=user_id, origin="imported")
     merged = _merge_ledger(existing, new_postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
@@ -690,7 +754,7 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
     separator
         The column separator to use, overriding auto-detection.
     date_order
@@ -704,15 +768,15 @@ def ingest_canonical_csv(  # noqa: PLR0913, PLR0917 (config+session+user_id, on 
     CanonicalIngestResult
         How many postings were newly added, and any categories created.
     """
-    store = load_store(session, user_id=user_id)
-    account = store.accounts[account_id]
+    account = seeded_accounts(session, user_id)[account_id]
     _reject_non_importable_kind(account, account_id)
+    categories = seeded_categories(session, user_id)
 
     _archive_raw_statement(account.institution, account_id, csv_text.encode("utf-8"), config, user_id)
     outcome = standardize_canonical_csv(
-        csv_text, account_id, account.currency, store.categories, separator, date_order, category_overrides
+        csv_text, account_id, account.currency, categories, separator, date_order, category_overrides
     )
-    return _apply_canonical_outcome(outcome, account_id, store, session, user_id=user_id)
+    return _apply_canonical_outcome(outcome, account_id, categories, session, user_id=user_id)
 
 
 def ingest_canonical_excel(
@@ -741,7 +805,7 @@ def ingest_canonical_excel(
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
     date_order
         Whether an ambiguous, all-numeric date reads month-first or day-first.
     category_overrides
@@ -753,35 +817,49 @@ def ingest_canonical_excel(
     CanonicalIngestResult
         How many postings were newly added, and any categories created.
     """
-    store = load_store(session, user_id=user_id)
-    account = store.accounts[account_id]
+    account = seeded_accounts(session, user_id)[account_id]
     _reject_non_importable_kind(account, account_id)
+    categories = seeded_categories(session, user_id)
 
     _archive_raw_statement(account.institution, account_id, file_bytes, config, user_id, suffix="xlsx")
     outcome = standardize_canonical_excel(
-        file_bytes, account_id, account.currency, store.categories, date_order, category_overrides
+        file_bytes, account_id, account.currency, categories, date_order, category_overrides
     )
-    return _apply_canonical_outcome(outcome, account_id, store, session, user_id=user_id)
+    return _apply_canonical_outcome(outcome, account_id, categories, session, user_id=user_id)
 
 
 def _apply_canonical_outcome(
     outcome: CanonicalImportResult,
     account_id: str,
-    store: AccountingStore,
+    categories: dict[str, Category],
     session: Session,
     user_id: uuid.UUID,
 ) -> CanonicalIngestResult:
     """Persist a canonical parse's new categories and merge its postings into the ledger — shared by CSV and Excel.
+
+    Parameters
+    ----------
+    outcome
+        What the canonical parser produced.
+    account_id
+        The account these rows belong to.
+    categories
+        The category tree as it stood before the parse, for the new
+        categories to be merged into.
+    session, user_id
+        An open database session, and whose ledger this is.
 
     Returns
     -------
     CanonicalIngestResult
     """
     if outcome.new_categories:
-        merged_categories = normalize_categories({**store.categories, **outcome.new_categories})
-        save_store(store.model_copy(update={"categories": merged_categories}), session, user_id=user_id)
+        merged_categories = normalize_categories({**categories, **outcome.new_categories})
+        # Additive only, same as `_standardize_canonical`'s own new categories.
+        replace_categories(session, user_id, merged_categories.values(), prune=False)
+        session.commit()
 
-    existing = load_ledger(session, user_id=user_id)
+    existing = load_ledger(session, user_id=user_id, origin="imported")
     merged = _merge_ledger(existing, outcome.postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
@@ -817,10 +895,7 @@ def last_import_at(config: AccountingConfig, user_id: uuid.UUID) -> datetime | N
         Timezone-aware (UTC), or `None` if nothing has ever been imported.
     """
     archive = StatementArchive(config.raw_statement_dir, f"statements/{user_id}")
-    relative_paths = [
-        *archive.list_relative_paths("*/*/*.csv"),
-        *archive.list_relative_paths(f"SoFi/{_SOFI_STATEMENT_PDF_ACCOUNT_KIND}/*.pdf"),
-    ]
+    relative_paths = archive.list_relative_paths("*/*/*.csv")
     timestamps: list[datetime] = []
     for relative_path in relative_paths:
         filename = relative_path.rsplit("/", 1)[-1]
@@ -840,12 +915,15 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     (`raw_statement_dir/{institution}/{account_id}/...`) — no separate
     registry of "which files belong to which account" is needed.
 
-    Archived SoFi statement PDFs (see `importers.sofi.statement_pdf`, kept
-    only for that module's own sake — see its docstring) are deliberately
-    ignored here, not replayed: PDF-based import is retired, and any
-    postings that were only ever derived from an old PDF are dropped by a
-    rebuild rather than re-parsed. If that ever matters for a real
-    archive, re-run the parser against it manually first.
+    Only archived CSVs are replayed. PDF-based import was retired and its
+    parser deleted, so any posting that was only ever derived from an old
+    archived PDF is dropped by a rebuild rather than re-parsed.
+
+    Only the `imported` half of the ledger is discarded and recomputed.
+    A `manual` transaction (see `models.TransactionOrigin`) is not derived
+    from any archive — no replay could put one back — so `_write_ledger`'s
+    prune deliberately cannot see it, and a rebuild leaves every manual
+    transfer exactly where it was. That is what the discriminator is for.
 
     Parameters
     ----------
@@ -854,7 +932,7 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     session
         An open database session.
     user_id
-        Whose store/ledger this is.
+        Whose ledger this is.
 
     Returns
     -------
@@ -874,20 +952,20 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
         message = f"No archived raw statements under {config.raw_statement_dir}"
         raise FileNotFoundError(message)
 
-    store = load_store(session, user_id=user_id)
-    frames = [pl.DataFrame(schema=Posting.polars_schema)]
+    accounts = seeded_accounts(session, user_id)
+    frames = [pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)]
     for relative_path in csv_relative_paths:
         institution, account_id, _filename = relative_path.split("/")
         # An archived-but-now-missing account is an invariant violation, not a
         # case to degrade gracefully for — `delete_account` already refuses to
         # delete any account with postings, and every archived raw statement
         # implies postings were ingested from it, so indexing directly is safe.
-        account = store.accounts[account_id]
+        account = accounts[account_id]
         standardizer = _STANDARDIZERS.get((institution, account.kind))
         if standardizer is None:
             message = f"No importer for institution={institution!r}, account_kind={account.kind!r}."
             raise UnsupportedImportError(message)
-        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id, account.parent_account_id))
+        frames.append(standardizer(archive.read(relative_path).decode("utf-8"), account_id))
 
     ledger = _merge_ledger(frames[0], pl.concat(frames[1:], how="vertical"))
     validate_balanced(ledger)

@@ -20,11 +20,9 @@ export interface paths {
      *     AccountingStoreResponse
      *         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
      *         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
-     *         list). `version` is this user's current save counter (see
-     *         `store.get_store_version`) — a client should remember it and send
-     *         it back as the `X-Expected-Store-Version` header on its next
-     *         mutating request, so `save_store` can detect if something else
-     *         changed this data in the meantime.
+     *         list). No store-wide version: optimistic concurrency is per-row
+     *         (`goals`, `transfer_rules`, `category_patterns` each carry their
+     *         own `version`), so there is nothing store-wide to echo back.
      */
     get: operations['get_store_api_accounting_store_get']
     put?: never
@@ -77,7 +75,7 @@ export interface paths {
      *     dict[str, Category]
      *         The categories just persisted, keyed by `category_id` — may
      *         include an "Other" subcategory the caller didn't submit, or omit
-     *         one it did (see `store.normalize_categories`).
+     *         one it did (see `taxonomy.normalize_categories`).
      */
     put: operations['put_categories_api_accounting_categories_put']
     /**
@@ -186,13 +184,21 @@ export interface paths {
      * @description Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
      *
      *     Every posting currently carrying `category_id` (or one of its
-     *     subcategories) as its own `category_id`/`subcategory_id` has that
-     *     field cleared rather than left dangling — the same "uncategorized"
-     *     state a posting that was never categorized at all is already in.
-     *     Anything else referencing the deleted id(s) is cleared where the
-     *     field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
-     *     entirely where it isn't (`Budget`, `GeneralBudget`, `CategoryPattern`
-     *     all require a `category_id`) — see `store.uncategorize_category_ids`.
+     *     subcategories) reads as uncategorized afterwards — the same state a
+     *     posting that was never categorized at all is already in — without a
+     *     single posting row being written. The category is *retired* rather
+     *     than deleted (see `accounting.db.core.Category` and
+     *     `repositories.taxonomy.retire_categories`): its row stays, so the raw
+     *     import provenance on those postings keeps a valid foreign key, and it
+     *     leaves the live tree with no successor, which is what
+     *     `repositories.taxonomy.load_category_redirects` resolves to "nothing".
+     *
+     *     Anything else referencing the deleted id(s) *is* rewritten, because
+     *     those references are the user's own decisions rather than raw
+     *     provenance: cleared where the field is optional (`PostingSplitLeg`,
+     *     and any `subcategory_id`) or dropped entirely where it isn't
+     *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
+     *     `taxonomy.uncategorize_category_ids`.
      *
      *     Returns
      *     -------
@@ -233,10 +239,10 @@ export interface paths {
      *         `will_merge` is true if this rename would fold into an existing
      *         category rather than just changing a name; `target_name` is that
      *         existing category's name, or `None` when `will_merge` is false;
-     *         `budgets_to_delete` lists every `Budget`/`GeneralBudget` entry the
-     *         merged-away category holds that the merge target already has one
-     *         for, and which would therefore be discarded (see
-     *         `store.remap_category_ids`).
+     *         `budgets_to_delete` lists every `Budget` entry (per-month or
+     *         general) the merged-away category holds that the merge target
+     *         already has one for, and which would therefore be discarded (see
+     *         `taxonomy.remap_category_ids`).
      *
      *     Raises
      *     ------
@@ -265,16 +271,20 @@ export interface paths {
      * Post Category Rename
      * @description Rename a category or subcategory, merging it into an existing same-named one if there is one.
      *
-     *     A merge repoints every reference to the merged-away id — postings
-     *     already in the ledger cache, manual per-posting overrides, transfer
-     *     rules, category patterns, budgets, and posting splits — onto the
-     *     surviving id, then removes the merged-away category entirely. See
-     *     `store.plan_category_rename` for the exact matching rules: a top-level
+     *     A merge repoints every reference to the merged-away id that is a user
+     *     decision — manual per-posting overrides, transfer rules, category
+     *     patterns, budgets, and posting splits — onto the surviving id, and
+     *     *retires* the merged-away category rather than deleting it (see
+     *     `accounting.db.core.Category`). Stored postings are not touched at all:
+     *     the category one was imported under is raw provenance, and the
+     *     retirement's own successor is what makes it resolve to the survivor
+     *     from now on (`repositories.taxonomy.load_category_redirects`). See
+     *     `taxonomy.plan_category_rename` for the exact matching rules: a top-level
      *     category only merges into another top-level category of the same
      *     classification; a subcategory only merges into a sibling under the
      *     same parent. If the merge target already has a budget for a month the
      *     merged-away category also budgeted, the merged-away category's budget
-     *     is discarded (see `store.remap_category_ids`) — call
+     *     is discarded (see `taxonomy.remap_category_ids`) — call
      *     `GET /categories/{category_id}/rename-preview` first to warn about
      *     that before committing to the rename.
      *
@@ -358,7 +368,7 @@ export interface paths {
      *
      *     Replaces deleting a tag by re-sending the whole tag list minus one
      *     (which risked a stale second delete resurrecting a just-removed tag);
-     *     see `accounting.store.delete_tag`. A tag still applied to postings is
+     *     see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
      *     removed from them too, via the `posting_tags` FK cascade.
      *
      *     Returns
@@ -429,7 +439,7 @@ export interface paths {
      *
      *     A merge repoints every reference to the merged-away id — the
      *     `posting_tags` and `posting_override_tags` join tables (see
-     *     `store.remap_tag_ids`) — before the merged-away tag itself is
+     *     `repositories.taxonomy.remap_tag_ids`) — before the merged-away tag itself is
      *     deleted, so a foreign key never briefly points at a row about to
      *     disappear.
      *
@@ -506,11 +516,11 @@ export interface paths {
      *     Deleting a rule cascades to the links it produced: a rule-created link
      *     (`source == "rule"`) is a consequence of the rule, so it must not outlive
      *     it. Manually-confirmed links are never swept up (see
-     *     `accounting.store.remove_rule_transfer_links`). The follow-up
+     *     `repositories.interpretation.remove_rule_transfer_links`). The follow-up
      *     `reconcile_and_persist_rule_links` re-proposes only from the *remaining*
      *     rules, so the deleted rule's links stay gone rather than being re-derived.
      *
-     *     No version check — see `accounting.store.delete_transfer_rule`'s own
+     *     No version check — see `repositories.interpretation.delete_transfer_rule`'s own
      *     docstring for why deleting an already-gone rule is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
@@ -532,13 +542,11 @@ export interface paths {
      * @description Update one existing transfer rule in place, without touching any other rule already saved.
      *
      *     A true per-resource write — unlike `POST /transfer-rules`, this
-     *     never round-trips through `load_store`/`save_store` (which deletes and
-     *     reinserts every persisted entity for the user); see
-     *     `accounting.store.update_transfer_rule`. Guarded by
-     *     `request.expected_version` instead of the whole-store
-     *     `X-Expected-Store-Version` header, so an edit to this one rule can
-     *     never spuriously conflict with — or be silently overwritten by — an
-     *     unrelated save elsewhere in the store.
+     *     never round-trips through a whole-store rewrite; see
+     *     `repositories.interpretation.update_transfer_rule`. Guarded by
+     *     `request.expected_version`, this rule's own row version, so an edit
+     *     to this one rule can never spuriously conflict with — or be silently
+     *     overwritten by — an unrelated save elsewhere in the store.
      *
      *     Returns
      *     -------
@@ -604,7 +612,7 @@ export interface paths {
      * Delete Category Pattern Route
      * @description Delete one category pattern, without touching any other pattern already saved.
      *
-     *     No version check — see `accounting.store.delete_category_pattern`.
+     *     No version check — see `repositories.interpretation.delete_category_pattern`.
      *
      *     Returns
      *     -------
@@ -623,8 +631,8 @@ export interface paths {
      * Patch Category Pattern
      * @description Update one existing category pattern in place, without touching any other pattern already saved.
      *
-     *     A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
-     *     `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+     *     A true per-resource write — see `repositories.interpretation.update_category_pattern`. Guarded by
+     *     `request.expected_version`, this pattern's own row version.
      *
      *     Returns
      *     -------
@@ -692,7 +700,7 @@ export interface paths {
      * @description Delete one manually-entered asset, without touching any other. Idempotent, no version check.
      *
      *     Replaces deleting an asset by re-sending the whole list minus one; see
-     *     `accounting.store.delete_other_asset`.
+     *     `repositories.taxonomy.delete_other_asset`.
      *
      *     Returns
      *     -------
@@ -720,7 +728,7 @@ export interface paths {
     get?: never
     /**
      * Put Budgets
-     * @description Replace the whole budget list, across every month.
+     * @description Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
      *
      *     Returns
      *     -------
@@ -730,7 +738,11 @@ export interface paths {
     put: operations['put_budgets_api_accounting_budgets_put']
     /**
      * Post Budget
-     * @description Set one month's spending target for one category (or subcategory), replacing any prior target for it.
+     * @description Set one spending target for one category (or subcategory), replacing any prior target for it.
+     *
+     *     `request.month` picks which target: a `"YYYY-MM"` sets that month's,
+     *     and omitting it sets the general, every-month-alike one. The two are
+     *     separate rows, so setting one never overwrites the other.
      *
      *     Unlike `PUT /budgets`, only the one budget in the request body is
      *     sent or touched — every other month/category's target is left alone,
@@ -761,7 +773,7 @@ export interface paths {
     post?: never
     /**
      * Delete Budget
-     * @description Remove one month's target for one category.
+     * @description Remove one target — a month's, or the general one — for one category.
      *
      *     Returns
      *     -------
@@ -774,77 +786,6 @@ export interface paths {
      *         404 if no budget has this id.
      */
     delete: operations['delete_budget_api_accounting_budgets__budget_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/general-budgets': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put General Budgets
-     * @description Replace the whole general-budget map, keyed by `category_id` — the same amount applies to every month.
-     *
-     *     Stored, edited, and displayed completely separately from `Budget`'s
-     *     per-month rows (see `models.GeneralBudget`); this never falls back to
-     *     or overwrites a per-month budget, or vice versa.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, GeneralBudget]
-     *         The general budgets just persisted.
-     */
-    put: operations['put_general_budgets_api_accounting_general_budgets_put']
-    /**
-     * Post General Budget
-     * @description Set one category's (or subcategory's) standing target, replacing any prior one for it.
-     *
-     *     Unlike `PUT /general-budgets`, only the one entry in the request body
-     *     is sent or touched.
-     *
-     *     Returns
-     *     -------
-     *     GeneralBudget
-     *         The general budget just persisted.
-     */
-    post: operations['post_general_budget_api_accounting_general_budgets_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/general-budgets/{key}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete General Budget
-     * @description Remove one category's (or subcategory's) standing target.
-     *
-     *     Returns
-     *     -------
-     *     GeneralBudgetKeyResponse
-     *         The key just removed.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no general budget has this key.
-     */
-    delete: operations['delete_general_budget_api_accounting_general_budgets__key__delete']
     options?: never
     head?: never
     patch?: never
@@ -903,7 +844,7 @@ export interface paths {
      * @description Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
      *
      *     Replaces deleting a scenario by re-sending the whole list minus one;
-     *     see `accounting.store.delete_simulator_scenario`.
+     *     see `repositories.taxonomy.delete_simulator_scenario`.
      *
      *     Returns
      *     -------
@@ -942,7 +883,9 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if `parent_account_id` is set but names an account that doesn't exist.
+     *         404 if `parent_account_id` is set but names an account that doesn't
+     *         exist, or if `broker_connection_id` names a connection that doesn't;
+     *         400 if a broker connection is named on a non-investment account.
      */
     post: operations['post_account_api_accounting_accounts_post']
     delete?: never
@@ -971,8 +914,10 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if the account doesn't exist; 400 if institution/kind/currency
-     *         changed on an account that already has postings.
+     *         404 if the account doesn't exist or `broker_connection_id` names a
+     *         connection that doesn't; 400 if institution/kind/currency changed on
+     *         an account that already has postings, or a broker connection is
+     *         named on a non-investment account.
      */
     put: operations['put_account_api_accounting_accounts__account_id__put']
     post?: never
@@ -1246,15 +1191,11 @@ export interface paths {
      * Post Import
      * @description Archive and import the uploaded CSV against an already-registered account.
      *
-     *     `institution`, `account_kind`, `account_name`, `currency`, and
-     *     `parent_account_id` are no longer used to select the importer or
-     *     construct anything here — every account this endpoint is called with
-     *     must already exist (see `AccountCreate`/`POST /accounts`), so the
-     *     account's own `institution`/`kind`/`parent_account_id` (not these form
-     *     fields) are the source of truth: a form value that disagreed with the
-     *     registered account would otherwise pick the wrong importer. Kept as
-     *     accepted form fields anyway rather than narrowing this endpoint's
-     *     request contract as part of this change.
+     *     Every account this endpoint is called with must already exist (see
+     *     `AccountCreate`/`POST /accounts`), so the account's own
+     *     `institution`/`kind`/`parent_account_id` are the source of truth for
+     *     picking the importer — a form field that disagreed with the registered
+     *     account would pick the wrong one.
      *
      *     Returns
      *     -------
@@ -1323,8 +1264,8 @@ export interface paths {
      * Post Canonical Import
      * @description Import the file, against an already-registered account, through the canonical fallback parser.
      *
-     *     Used when no dedicated standardizer exists for `institution`/`account_kind`
-     *     (see `supported_import_kinds`) — the canonical parser guesses column
+     *     Used when no dedicated standardizer exists for the account's own
+     *     institution/kind (see `supported_import_kinds`) — the canonical parser guesses column
      *     names and date/amount formats instead of expecting an exact shape (see
      *     `importers.canonical.csv`). Both `.csv` and `.xlsx` files are accepted
      *     (dispatched on `file.filename`'s extension); an Excel workbook has every
@@ -1333,12 +1274,6 @@ export interface paths {
      *     automatically, unless `category_overrides` (a JSON-encoded
      *     `CanonicalCategoryOverridesRequest`) renames or merges it — typically
      *     collected via `post_canonical_import_preview` first.
-     *
-     *     `institution`, `account_name`, `currency`, and `parent_account_id` are
-     *     accepted but unused — every account this endpoint is called with must
-     *     already exist (see `AccountCreate`/`POST /accounts`). Kept as accepted
-     *     form fields anyway rather than narrowing this endpoint's request
-     *     contract as part of this change.
      *
      *     Returns
      *     -------
@@ -1557,7 +1492,7 @@ export interface paths {
      *     "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
      *     manual override always wins if both somehow apply to the same
      *     transaction (it's applied after rules — see
-     *     `api.dependencies._resolved_postings_and_store`), so
+     *     `api.dependencies._resolved_postings`), so
      *     `resolved_by_transfer_rule_id` is suppressed whenever
      *     `manual_transfer_override_posting_id` is set for that transaction —
      *     see `PostingRow`'s own docstring.
@@ -2173,7 +2108,7 @@ export interface paths {
      *     The description-match/suggest-don't-apply counterpart to
      *     `post_ai_suggest_category` — same staged-pending flow (see
      *     `ledger.pending`), same `lock_category_id` guarantee, just matched
-     *     against `store.category_patterns` instead of calling an LLM.
+     *     against the user's own `CategoryPattern` rows instead of calling an LLM.
      *
      *     Parameters
      *     ----------
@@ -2533,7 +2468,7 @@ export interface paths {
      *     `goal_id` is server-minted — two goals can validly share a name, so
      *     there's no natural key two "the same" goal would collide on. `color`
      *     is picked to be distinct from every color already assigned to an
-     *     existing goal, the same `store.next_available_color` helper
+     *     existing goal, the same `taxonomy.next_available_color` helper
      *     categories already use for the same purpose.
      *
      *     Returns
@@ -2562,7 +2497,7 @@ export interface paths {
      * Delete Goal Route
      * @description Delete one goal, without touching any other goal already saved.
      *
-     *     No version check — see `accounting.store.delete_goal`'s own
+     *     No version check — see `repositories.planning.delete_goal`'s own
      *     docstring for why deleting an already-gone goal is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
@@ -2583,13 +2518,10 @@ export interface paths {
      * Patch Goal
      * @description Update one existing goal in place, without touching any other goal already saved.
      *
-     *     A true per-resource write — unlike `PUT /goals`, this never
-     *     round-trips through `load_store`/`save_store` (which deletes and
-     *     reinserts every persisted entity for the user); see
-     *     `accounting.store.update_goal`. Guarded by `request.expected_version`
-     *     instead of the whole-store `X-Expected-Store-Version` header, so an
-     *     edit to this one goal can never spuriously conflict with — or be
-     *     silently overwritten by — an unrelated save elsewhere in the store.
+     *     A true per-resource write — see `repositories.planning.update_goal`.
+     *     Guarded by `request.expected_version`, this goal's own row version,
+     *     so an edit to this one goal can never spuriously conflict with — or
+     *     be silently overwritten by — an unrelated save elsewhere.
      *
      *     Returns
      *     -------
@@ -2692,7 +2624,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/recurring-additions': {
+  '/api/accounting/goal-automations/contributions': {
     parameters: {
       query?: never
       header?: never
@@ -2701,8 +2633,12 @@ export interface paths {
     }
     get?: never
     /**
-     * Put Recurring Additions
-     * @description Replace the whole recurring-addition list — the priority-ordered monthly allocation rules.
+     * Put Goal Contribution Automations
+     * @description Replace the whole contribution-automation list — the priority-ordered allocation rules.
+     *
+     *     Scoped to `direction="contribution"`: the withdrawal ordering lives in
+     *     the same table now but is replaced by its own endpoint, so neither
+     *     list can wipe the other.
      *
      *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
      *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
@@ -2710,33 +2646,35 @@ export interface paths {
      *
      *     Returns
      *     -------
-     *     list[RecurringAddition]
-     *         The additions just persisted.
+     *     list[GoalAutomation]
+     *         The automations just persisted. Answers 400 if any entry is not a
+     *         `contribution`, or if the `remainder` invariant is broken.
      */
-    put: operations['put_recurring_additions_api_accounting_recurring_additions_put']
+    put: operations['put_goal_contribution_automations_api_accounting_goal_automations_contributions_put']
     /**
-     * Post Recurring Addition
-     * @description Create one new recurring-addition rule, appended after every rule already saved.
+     * Post Goal Automation
+     * @description Create one new scheduled contribution automation, appended after every one already saved.
      *
-     *     `addition_id` is server-minted — two rules can validly share every
+     *     `automation_id` is server-minted — two rules can validly share every
      *     other field. `priority` is never taken from the client: this always
-     *     goes after the current lowest-priority rule, matching the Goals
-     *     page's own "append at the end of the ordered list" behavior.
-     *     Drag-and-drop reordering still goes through `PUT /recurring-additions`.
+     *     goes after the current lowest-priority contribution, matching the
+     *     Goals page's own "append at the end of the ordered list" behavior.
+     *     Drag-and-drop reordering still goes through
+     *     `PUT /goal-automations/contributions`.
      *
      *     Returns
      *     -------
-     *     RecurringAddition
-     *         The addition just persisted.
+     *     GoalAutomation
+     *         The automation just persisted.
      */
-    post: operations['post_recurring_addition_api_accounting_recurring_additions_post']
+    post: operations['post_goal_automation_api_accounting_goal_automations_contributions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/recurring-additions/{addition_id}': {
+  '/api/accounting/goal-automations/{automation_id}': {
     parameters: {
       query?: never
       header?: never
@@ -2747,44 +2685,44 @@ export interface paths {
     put?: never
     post?: never
     /**
-     * Delete Recurring Addition Route
-     * @description Delete one recurring-addition rule, without touching any other. Idempotent, no version check.
+     * Delete Goal Automation Route
+     * @description Delete one goal automation, without touching any other. Idempotent, no version check.
      *
      *     Returns
      *     -------
-     *     RecurringAdditionIdResponse
-     *         The rule id just deleted.
+     *     GoalAutomationIdResponse
+     *         The automation id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if no rule with `addition_id` exists.
+     *         404 if no automation with `automation_id` exists.
      */
-    delete: operations['delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete']
+    delete: operations['delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete']
     options?: never
     head?: never
     /**
-     * Patch Recurring Addition
-     * @description Edit one recurring-addition rule in place, without touching any other. Scoped, last-write-wins.
+     * Patch Goal Automation
+     * @description Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
      *
      *     A single-rule field edit no longer round-trips through the whole-list
      *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-     *     edit to a different one); see `accounting.store.upsert_recurring_addition`.
+     *     edit to a different one); see `repositories.planning.upsert_goal_automation`.
      *
      *     Returns
      *     -------
-     *     RecurringAddition
+     *     GoalAutomation
      *         The rule as persisted after the edit.
      *
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if no rule with `addition_id` exists.
+     *         404 if no *contribution* automation with `automation_id` exists.
      */
-    patch: operations['patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch']
+    patch: operations['patch_goal_automation_api_accounting_goal_automations__automation_id__patch']
     trace?: never
   }
-  '/api/accounting/withdrawal-priorities': {
+  '/api/accounting/goal-automations/withdrawals': {
     parameters: {
       query?: never
       header?: never
@@ -2793,22 +2731,22 @@ export interface paths {
     }
     get?: never
     /**
-     * Put Withdrawal Priorities
-     * @description Replace the whole withdrawal-priority list — the order goals are drawn down from when unallocated goes negative.
+     * Put Goal Withdrawal Automations
+     * @description Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
      *
-     *     A pure ordering + set-membership operation (no free text or amount
-     *     anywhere), so it's last-write-wins by nature — whichever ordering was
-     *     submitted last is the intended one. It opts out of the whole-store
-     *     version check (like the recurring-additions reorder) so re-ordering
-     *     can't spuriously 409 against an unrelated concurrent save elsewhere in
-     *     the store.
+     *     A pure ordering + set-membership operation (no free text, schedule, or
+     *     amount anywhere — a withdrawal automation carries none), so it's
+     *     last-write-wins by nature: whichever ordering was submitted last is
+     *     the intended one. Scoped to `direction="withdrawal"`, so it never
+     *     touches the contribution automations sharing the table.
      *
      *     Returns
      *     -------
-     *     list[WithdrawalPriorityEntry]
-     *         The priorities just persisted.
+     *     list[GoalAutomation]
+     *         The withdrawal automations just persisted. Answers 400 if any
+     *         entry is not a `withdrawal`.
      */
-    put: operations['put_withdrawal_priorities_api_accounting_withdrawal_priorities_put']
+    put: operations['put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put']
     post?: never
     delete?: never
     options?: never
@@ -2854,13 +2792,13 @@ export interface paths {
     put?: never
     /**
      * Post Run Recurring Additions
-     * @description Run every recurring addition whose most recent scheduled occurrence hasn't already run.
+     * @description Run every contribution automation whose most recent scheduled occurrence hasn't already run.
      *
-     *     Idempotent by construction: each addition's occurrence writes a
+     *     Idempotent by construction: each automation's occurrence writes a
      *     contribution under a deterministic id
-     *     (`f"auto:{addition_id}:{occurrence.isoformat()}"`, see
+     *     (`f"auto:{automation_id}:{occurrence.isoformat()}"`, see
      *     `ledger.goal_automations.next_recurring_occurrence`); calling this
-     *     again before the next occurrence is a no-op for any addition that id
+     *     again before the next occurrence is a no-op for any automation that id
      *     already exists for. There is no background scheduler in this app —
      *     this is meant to be called when the Goals page loads, which is the
      *     natural moment a user would notice a change anyway.
@@ -3344,12 +3282,12 @@ export interface paths {
     }
     /**
      * Get Target Allocation
-     * @description Return the persisted target allocation, with the settings-row version.
+     * @description Return the persisted target allocation.
      *
      *     Returns
      *     -------
-     *     TargetAllocationSetting
-     *         `target_allocation_pct` (symbol -> target percentage) and `version`.
+     *     dict[str, Rate]
+     *         Symbol -> target percentage.
      */
     get: operations['get_target_allocation_api_settings_target_allocation_get']
     /**
@@ -3358,15 +3296,12 @@ export interface paths {
      *
      *     Merges into the existing settings — a settings row is one record, so
      *     writing this field naively from a fresh `DashboardSettings()` would
-     *     silently wipe out the HYSA/benchmark settings saved separately. The
-     *     response carries `version` (like every other settings endpoint) so the
-     *     client's cached version stays current and a follow-up save to another
-     *     settings field doesn't spuriously 409.
+     *     silently wipe out the HYSA/benchmark settings saved separately.
      *
      *     Returns
      *     -------
-     *     TargetAllocationSetting
-     *         The persisted target allocation and the new version.
+     *     dict[str, Rate]
+     *         The persisted target allocation.
      */
     put: operations['put_target_allocation_api_settings_target_allocation_put']
     post?: never
@@ -3520,6 +3455,32 @@ export interface paths {
      *         Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
      */
     put: operations['put_tax_settings_api_settings_tax_put']
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/broker-connections': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Broker Connections
+     * @description List this user's broker connections — the only things an account may pull its value from.
+     *
+     *     Returns
+     *     -------
+     *     list[BrokerConnection]
+     *         Ordered by broker then id, so the frontend's list is stable across
+     *         requests. Empty until a sync has actually created a connection.
+     */
+    get: operations['get_broker_connections_api_broker_connections_get']
+    put?: never
     post?: never
     delete?: never
     options?: never
@@ -3830,10 +3791,20 @@ export interface components {
      * @description One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
      *
      *     `parent_account_id` is only set for a `vault`, pointing at the savings
-     *     account it's a named sub-balance of. `external_ref` is only set for the
-     *     `external_investment` kind, naming where its value actually comes from
-     *     (currently always `"trades"`, meaning `trades.dashboard.overview_cards`)
-     *     since this account's balance is never derived from its own postings.
+     *     account it's a named sub-balance of. `broker_connection_id` is only set
+     *     for the `external_investment` kind, naming the *broker connection*
+     *     whose portfolio this account mirrors, since its balance is never
+     *     derived from its own postings.
+     *
+     *     That field replaces `external_ref`, a free-text column whose only ever
+     *     value was the literal `"trades"` and which `dashboard.net_worth`
+     *     string-matched on. It is the one id on this model that is a raw
+     *     `broker_connections.id` rather than a natural key, deliberately: it
+     *     points across the seam into the other ledger's schema, where this
+     *     package has no business resolving natural keys, and the database
+     *     enforces it as a real foreign key (see `db.core.Account`) so an account
+     *     can never name a connection that isn't there.
+     *
      *     `meta` holds facts about the account itself rather than any one
      *     posting — currently just `apy_pct`, the interest rate last seen on a
      *     statement, carried here because it describes the account's terms, not
@@ -3876,8 +3847,8 @@ export interface components {
       last_four?: string | null
       /** Parent Account Id */
       parent_account_id?: string | null
-      /** External Ref */
-      external_ref?: string | null
+      /** Broker Connection Id */
+      broker_connection_id?: string | null
       /** Meta */
       meta?: {
         [key: string]: string
@@ -3938,8 +3909,8 @@ export interface components {
       last_four?: string | null
       /** Parent Account Id */
       parent_account_id?: string | null
-      /** External Ref */
-      external_ref?: string | null
+      /** Broker Connection Id */
+      broker_connection_id?: string | null
       /** Meta */
       meta?: {
         [key: string]: string
@@ -3962,11 +3933,12 @@ export interface components {
      *     `put_account`, not here, since that check needs the ledger. `closed`
      *     isn't edited here — see `close_account`/`reopen_account`, which pair it
      *     with recording where a closed account's remaining balance went.
-     *     `external_ref` is never locked — it only ever changes which value an
-     *     `external_investment` account shows (see `dashboard.net_worth`), never
-     *     what it has already recorded, so it's free to toggle regardless of postings.
-     *     `last_four` is never locked either, for the same reason: it never
-     *     affects identity or any stored history.
+     *     `broker_connection_id` is never locked — it only ever changes which
+     *     value an `external_investment` account shows (see
+     *     `dashboard.net_worth`), never what it has already recorded, so it's
+     *     free to toggle regardless of postings. `last_four` is never locked
+     *     either, for the same reason: it never affects identity or any stored
+     *     history.
      */
     AccountUpdate: {
       /** Name */
@@ -3995,8 +3967,8 @@ export interface components {
       currency: 'USD' | 'EUR'
       /** Last Four */
       last_four?: string | null
-      /** External Ref */
-      external_ref?: string | null
+      /** Broker Connection Id */
+      broker_connection_id?: string | null
       /** Meta */
       meta?: {
         [key: string]: string
@@ -4006,13 +3978,19 @@ export interface components {
      * AccountingStoreResponse
      * @description Every persisted accounting entity: accounts, categories, tags, rules, other assets.
      *
-     *     Mirrors `store.AccountingStore` field-for-field, except `rules` is
-     *     exposed as `transfer_rules` (the name every other endpoint and the
-     *     frontend already use for it). Dismissed suggestions aren't part of
-     *     `AccountingStore` at all — see `GET /dismissed-suggestions` and
-     *     `store.list_dismissed_suggestions`/`dismissed_suggestion_ids`, which
-     *     query that table directly rather than through the whole-store
-     *     round-trip every other entity here goes through.
+     *     One field per repository `load_*`, recomposed at the router (see
+     *     `api.routers.store.get_store`) — this response model is the only
+     *     place the whole set is named together; nothing server-side passes it
+     *     around. `transfer_rules` is `repositories.interpretation`'s
+     *     `load_transfer_rules`, under the name every other endpoint and the
+     *     frontend already use for it.
+     *
+     *     Dismissed suggestions are deliberately not here: unlike every entity
+     *     that is, they're never read as "give me the whole list to build
+     *     something", only ever checked as "has this one already been
+     *     dismissed" — see `GET /dismissed-suggestions` and
+     *     `repositories.interpretation.dismissed_suggestion_ids`, which query
+     *     that table directly.
      */
     AccountingStoreResponse: {
       /** Accounts */
@@ -4051,10 +4029,6 @@ export interface components {
       }
       /** Transfer Links */
       transfer_links: components['schemas']['TransferLink'][]
-      /** General Budgets */
-      general_budgets: {
-        [key: string]: components['schemas']['GeneralBudget']
-      }
       /** Category Patterns */
       category_patterns: {
         [key: string]: components['schemas']['CategoryPattern']
@@ -4067,12 +4041,8 @@ export interface components {
       goal_contributions: {
         [key: string]: components['schemas']['GoalContribution']
       }
-      /** Recurring Additions */
-      recurring_additions: components['schemas']['RecurringAddition'][]
-      /** Withdrawal Priorities */
-      withdrawal_priorities: components['schemas']['WithdrawalPriorityEntry'][]
-      /** Version */
-      version: number
+      /** Goal Automations */
+      goal_automations: components['schemas']['GoalAutomation'][]
     }
     /**
      * AllocationRow
@@ -4124,8 +4094,6 @@ export interface components {
       symbol_override: string | null
       /** Default Symbol */
       default_symbol: string
-      /** Version */
-      version: number
     }
     /**
      * BenchmarkSettingUpdate
@@ -4139,21 +4107,8 @@ export interface components {
     Body_post_canonical_import_api_accounting_import_canonical_post: {
       /** File */
       file: string
-      /** Institution */
-      institution: string
-      /** Account Kind */
-      account_kind: string
       /** Account Id */
       account_id: string
-      /** Account Name */
-      account_name: string
-      /**
-       * Currency
-       * @default USD
-       */
-      currency: string
-      /** Parent Account Id */
-      parent_account_id?: string | null
       /** Separator */
       separator?: string | null
       /**
@@ -4229,21 +4184,8 @@ export interface components {
     Body_post_import_api_accounting_import_post: {
       /** File */
       file: string
-      /** Institution */
-      institution: string
-      /** Account Kind */
-      account_kind: string
       /** Account Id */
       account_id: string
-      /** Account Name */
-      account_name: string
-      /**
-       * Currency
-       * @default USD
-       */
-      currency: string
-      /** Parent Account Id */
-      parent_account_id?: string | null
     }
     /** Body_post_paystub_reconciliation_api_accounting_import_paystub_post */
     Body_post_paystub_reconciliation_api_accounting_import_paystub_post: {
@@ -4251,8 +4193,38 @@ export interface components {
       file: string
     }
     /**
+     * BrokerConnection
+     * @description One of this user's live broker connections — what an accounting account may link its value to.
+     *
+     *     `connection_id` is the raw `trades.broker_connections.id`, not a
+     *     natural key, because it is what
+     *     `accounting.models.Account.broker_connection_id` foreign-keys to. This
+     *     endpoint exists so the frontend can offer only connections that
+     *     actually exist: the link is a real foreign key now (DB-audit move #1),
+     *     so "IBKR credentials are configured" is no longer close enough — the
+     *     connection row is only created by the first sync, and until then there
+     *     is nothing to point at.
+     */
+    BrokerConnection: {
+      /**
+       * Connection Id
+       * Format: uuid
+       */
+      connection_id: string
+      /** Broker */
+      broker: string
+    }
+    /**
      * Budget
-     * @description One month's spending target for one top-level expense category, or one of its subcategories.
+     * @description One spending target for one top-level expense category, or one of its subcategories.
+     *
+     *     `month` is what scopes the target: a `"YYYY-MM"` string targets that
+     *     one month, and `None` is the *general* target — the standing amount
+     *     that applies to every month alike, which the Budget page's "General"
+     *     mode edits. Both live in the same list (and the same `budgets` table):
+     *     a month target and a general target for the same category coexist as
+     *     two rows, and neither falls back to or overwrites the other, so
+     *     switching the page's mode never silently rewrites the other one.
      *
      *     `category_id` is always the top-level category, matching
      *     `Posting.category_id`. `subcategory_id`, when set, scopes the target to
@@ -4273,7 +4245,7 @@ export interface components {
       /** Budget Id */
       budget_id: string
       /** Month */
-      month: string
+      month?: string | null
       /** Category Id */
       category_id: string
       /** Subcategory Id */
@@ -4324,13 +4296,13 @@ export interface components {
     }
     /**
      * BudgetToDeletePreview
-     * @description One `Budget`/`GeneralBudget` entry a category merge would discard rather than keep.
+     * @description One `Budget` entry a category merge would discard rather than keep.
      *
      *     The merged-away category's own entry is what's described here — the
      *     merge target's entry for the same month/category always survives
      *     unchanged (see `store.remap_category_ids`). `month` is `None` for a
-     *     `GeneralBudget` (applies to every month alike), or `"YYYY-MM"` for a
-     *     per-month `Budget`.
+     *     general budget (applies to every month alike), or `"YYYY-MM"` for a
+     *     per-month one.
      */
     BudgetToDeletePreview: {
       /** Month */
@@ -4345,19 +4317,24 @@ export interface components {
     }
     /**
      * BudgetUpsert
-     * @description Request body for `POST /api/accounting/budgets` — sets one month's target for one category.
+     * @description Request body for `POST /api/accounting/budgets` — sets one target for one category.
+     *
+     *     `month` is what picks which kind of target this is: `"YYYY-MM"` sets
+     *     that one month's, and omitting it (`null`) sets the general,
+     *     every-month-alike one. The two are separate rows and neither
+     *     overwrites the other.
      *
      *     `budget_id` is never taken from the client — derived server-side from
      *     `(month, category_id, subcategory_id)`, the same natural key
      *     `PUT /budgets/{budget_id}` used to require the whole list to encode
-     *     implicitly. Posting this twice for the same `(month, category_id,
-     *     subcategory_id)` replaces the existing target rather than erroring —
-     *     unlike a category/tag name, there's no ambiguity a human needs to
-     *     confirm here, every tuple maps to exactly one budget.
+     *     implicitly. Posting this twice for the same triple replaces the
+     *     existing target rather than erroring — unlike a category/tag name,
+     *     there's no ambiguity a human needs to confirm here, every triple maps
+     *     to exactly one budget.
      */
     BudgetUpsert: {
       /** Month */
-      month: string
+      month?: string | null
       /** Category Id */
       category_id: string
       /** Subcategory Id */
@@ -5081,59 +5058,6 @@ export interface components {
       smoothed_rate: number
     }
     /**
-     * GeneralBudget
-     * @description A category's (or subcategory's) spending target applied to every month alike.
-     *
-     *     Independent of any per-month `Budget` rows — the Budget page's
-     *     "General" mode edits these; its "Per month" mode
-     *     edits `Budget` instead — the two are stored completely separately (see
-     *     `store.AccountingStore`), never merged or falling back to one
-     *     another, so switching modes never silently overwrites the other.
-     */
-    GeneralBudget: {
-      /** Category Id */
-      category_id: string
-      /** Subcategory Id */
-      subcategory_id?: string | null
-      /** Amount */
-      amount: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-    }
-    /**
-     * GeneralBudgetKeyResponse
-     * @description Response body naming one general budget's key, for endpoints whose only real effect is removing something.
-     */
-    GeneralBudgetKeyResponse: {
-      /** Key */
-      key: string
-    }
-    /**
-     * GeneralBudgetUpsert
-     * @description Request body for `POST /api/accounting/general-budgets` — sets one category's standing target.
-     *
-     *     Same upsert-by-natural-key reasoning as `BudgetUpsert`, keyed by
-     *     `(category_id, subcategory_id)` instead of also including a month.
-     */
-    GeneralBudgetUpsert: {
-      /** Category Id */
-      category_id: string
-      /** Subcategory Id */
-      subcategory_id?: string | null
-      /** Amount */
-      amount: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-    }
-    /**
      * Goal
      * @description A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
      *
@@ -5175,6 +5099,171 @@ export interface components {
       version: number
     }
     /**
+     * GoalAutomation
+     * @description One ordered rule for automatically moving money into — or out of — a goal.
+     *
+     *     `direction` is the discriminator, and it decides which of the fields
+     *     below are set (enforced here *and* by the `goal_automations` table's
+     *     own `schedule_matches_direction` CHECK, so neither layer can drift):
+     *
+     *     - `direction="contribution"` carries the whole schedule —
+     *       `start_date` + `frequency`, optionally bounded by `end_date`; see
+     *       `ledger.goal_automations.next_recurring_occurrence` for how a due
+     *       date is derived from those. For `frequency="monthly"`, the day of
+     *       month is `start_date`'s own day, capped at 28 so every month
+     *       actually has that day rather than silently skipping February on a
+     *       day-30 schedule. `mode`/`value`/`currency` say how much it wants.
+     *     - `direction="withdrawal"` carries none of them. The withdrawal
+     *       automation (`ledger.goal_automations.run_withdrawal_automation`) is
+     *       event-driven — triggered whenever unallocated money dips below zero
+     *       — not scheduled, so a withdrawal row is nothing but its goal and
+     *       its place in the drawdown order.
+     *
+     *     `priority` is the manually-set execution order (lowest first) the
+     *     Goals page's drag-and-drop reorders, and means the corresponding
+     *     thing in each direction: which contribution gets funded first (a
+     *     `fixed_amount` row funded first can leave less, or nothing, for a
+     *     lower-priority one when unallocated money runs out — see
+     *     `ledger.goal_automations.run_recurring_additions`), and which goal
+     *     gets drawn down first. `mode="remainder"` ("whatever's left after all
+     *     the others") is only ever valid on the single lowest-priority
+     *     contribution — enforced by the API that persists the list, not by
+     *     this model.
+     */
+    GoalAutomation: {
+      /** Automation Id */
+      automation_id: string
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Direction
+       * @enum {string}
+       */
+      direction: 'contribution' | 'withdrawal'
+      /**
+       * Priority
+       * @default 0
+       */
+      priority: number
+      /** Start Date */
+      start_date?: string | null
+      /** Frequency */
+      frequency?: ('daily' | 'weekly' | 'biweekly' | 'monthly') | null
+      /** End Date */
+      end_date?: string | null
+      /** Mode */
+      mode?: ('fixed_amount' | 'percent_of_unallocated' | 'remainder') | null
+      /** Value */
+      value?: number | null
+      /** Currency */
+      currency?: ('USD' | 'EUR') | null
+    }
+    /**
+     * GoalAutomationCreate
+     * @description Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
+     *
+     *     Only the `contribution` direction is creatable one at a time: a
+     *     withdrawal automation has no fields of its own beyond its goal and its
+     *     place in the drawdown order, so the Goals page only ever submits that
+     *     ordering wholesale (`PUT /goal-automations/withdrawals`).
+     *
+     *     `automation_id` is server-minted, same reasoning as `GoalCreate`.
+     *     `priority` is never taken from the client either — a newly created
+     *     rule always goes last (one past the current lowest-priority row),
+     *     matching the Goals page's own "append at the end of the ordered list"
+     *     behavior; drag-and-drop reordering still goes through the existing
+     *     `PUT /goal-automations/contributions`, unaffected by this.
+     */
+    GoalAutomationCreate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+    }
+    /**
+     * GoalAutomationIdResponse
+     * @description Response body naming one goal automation, for endpoints whose only real effect is removing something.
+     */
+    GoalAutomationIdResponse: {
+      /** Automation Id */
+      automation_id: string
+    }
+    /**
+     * GoalAutomationUpdate
+     * @description Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
+     *
+     *     A single-rule field edit (amount, dates, frequency, mode, goal),
+     *     scoped to its own `automation_id` so it never blanket-reinserts every
+     *     rule. Carries `priority` unchanged (the row keeps its place);
+     *     re-ordering the whole list is still
+     *     `PUT /goal-automations/contributions`. No `expected_version`: like a
+     *     budget cell, an edit of one rule is last-write-wins on that rule (see
+     *     `docs/app-stack/optimistic-concurrency-versioning.md`).
+     *
+     *     Contribution-shaped for the same reason `GoalAutomationCreate` is —
+     *     there is nothing on a withdrawal automation a `PATCH` could edit.
+     */
+    GoalAutomationUpdate: {
+      /** Goal Id */
+      goal_id: string
+      /**
+       * Start Date
+       * Format: date
+       */
+      start_date: string
+      /**
+       * Frequency
+       * @enum {string}
+       */
+      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
+      /** End Date */
+      end_date?: string | null
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
+      /**
+       * Value
+       * @default 0
+       */
+      value: number
+      /**
+       * Currency
+       * @default USD
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+      /** Priority */
+      priority: number
+    }
+    /**
      * GoalContribution
      * @description One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
      *
@@ -5190,6 +5279,12 @@ export interface components {
      *     a manually-entered contribution from one an automation wrote; `edited`
      *     flags an automation-written contribution the user has since hand-edited,
      *     so the ledger table can show it's no longer purely automatic.
+     *
+     *     `account_id` names the account the allocated money actually sits in
+     *     ("envelope over balance"). It is plumbing only for now: nothing in
+     *     `dashboard.goals` reads it, so no goal balance, net-worth figure, or
+     *     unallocated-money computation changes because it is set — a later
+     *     change makes the unallocated arithmetic account-aware.
      */
     GoalContribution: {
       /** Contribution Id */
@@ -5214,6 +5309,8 @@ export interface components {
        * @default
        */
       note: string
+      /** Account Id */
+      account_id?: string | null
       /** Source Posting Id */
       source_posting_id?: string | null
       /**
@@ -5235,6 +5332,10 @@ export interface components {
      *     `contribution_id` is never taken from the client — unlike a budget's
      *     `(month, category_id)`, a contribution is an arbitrary event with no
      *     natural key to derive one from, so the server generates an opaque one.
+     *
+     *     `account_id` records which account the allocated money actually sits
+     *     in; it is stored and echoed back, and read by nothing else yet — see
+     *     `models.GoalContribution`.
      */
     GoalContributionCreate: {
       /** Goal Id */
@@ -5257,6 +5358,8 @@ export interface components {
        * @default
        */
       note: string
+      /** Account Id */
+      account_id?: string | null
       /** Source Posting Id */
       source_posting_id?: string | null
       /**
@@ -5308,6 +5411,8 @@ export interface components {
        * @default
        */
       note: string
+      /** Account Id */
+      account_id?: string | null
       /** Source Posting Id */
       source_posting_id?: string | null
       /**
@@ -5478,8 +5583,6 @@ export interface components {
       bank_id: string | null
       /** Fixed Rate Pct */
       fixed_rate_pct: number | null
-      /** Version */
-      version: number
     }
     /**
      * HysaSettingsUpdate
@@ -5710,6 +5813,28 @@ export interface components {
      *     stored exchange rate, so a transfer between two different currencies
      *     is exactly what the user says left one side and arrived on the other,
      *     not a computed conversion.
+     *
+     *     **This is a shape, not a table.** It used to be both: `manual_transfers`
+     *     was a parallel mini-ledger holding a date, two accounts, two amounts and
+     *     a description — everything `transactions` plus two `postings` already
+     *     express, expressed a second, incompatible way, which is why its rows had
+     *     to be turned into postings by a resolution stage of their own before any
+     *     balance could count them. A manual transfer is now stored as exactly
+     *     what it is: one `Transaction` with `origin = "manual"` and its two
+     *     balancing legs (see `repositories.accounts.insert_manual_transfers`,
+     *     which writes them, and `load_manual_transfers`, which reads this shape
+     *     back out of them). This model survives as the API's vocabulary for the
+     *     pair — "money left here, money arrived there" — and as the one place
+     *     the pair's own invariant lives.
+     *
+     *     That invariant is the positivity of both legs. `Posting.amount` is
+     *     signed by design (a debit is negative, a credit positive) and must stay
+     *     unconstrained, so the constraint cannot live on the storage the legs now
+     *     share with every imported posting; it lives here, on the only thing that
+     *     still expresses "the *from* amount" and "the *to* amount" as distinct,
+     *     directional quantities. `insert_manual_transfers` is what turns them
+     *     into the signed pair (`-from_amount`, `+to_amount`), so a negative
+     *     `from_amount` sneaking through would silently invert the transfer.
      */
     ManualTransfer: {
       /** Transfer Id */
@@ -6056,6 +6181,17 @@ export interface components {
      *     hash, which bank format produced this row) the same way
      *     `LedgerEvent.meta` does for IBKR data — never a new typed column for
      *     something only one source ever needs.
+     *
+     *     `posted_at` and `description` are the *transaction's*, not this leg's —
+     *     they are stored once, on `db.core.Transaction`, and appear on every leg
+     *     here because this model is the row shape of the analytics projection
+     *     (`ledger.frame.LEDGER_FRAME_SCHEMA`), which is flat by design. An
+     *     importer building a pair sets the same value on both legs
+     *     (`importers.common.posting_pair`), and `importers.ingest.load_ledger`
+     *     joins the one stored value back onto each leg on the way out. Nothing
+     *     downstream can therefore observe two legs of one transaction disagreeing
+     *     about either, which is what the storage move made structural rather than
+     *     merely conventional.
      */
     Posting: {
       /** Posting Id */
@@ -6316,160 +6452,6 @@ export interface components {
     RebuildResult: {
       /** Total Posting Count */
       total_posting_count: number
-    }
-    /**
-     * RecurringAddition
-     * @description One ordered rule for automatically allocating unallocated money into a goal on a recurring schedule.
-     *
-     *     `priority` is the manually-set execution order (lowest first) the
-     *     Goals page's drag-and-drop reorders — a `fixed_amount` row funded
-     *     first can leave less (or nothing) for a lower-priority one when
-     *     unallocated money runs out; see `ledger.goal_automations.run_recurring_additions`.
-     *     `mode="remainder"` ("whatever's left after all the others") is only
-     *     ever valid on the single lowest-priority row — enforced by the API
-     *     that persists this list, not by this model.
-     *
-     *     The schedule itself is `start_date` + `frequency`, optionally bounded
-     *     by `end_date` — see `ledger.goal_automations.next_recurring_occurrence`
-     *     for how a due date is derived from these. For `frequency="monthly"`,
-     *     the day of month is `start_date`'s own day, capped at 28 so every
-     *     month actually has that day rather than silently skipping February on
-     *     a day-30 schedule.
-     */
-    RecurringAddition: {
-      /** Addition Id */
-      addition_id: string
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Start Date
-       * Format: date
-       */
-      start_date: string
-      /**
-       * Frequency
-       * @enum {string}
-       */
-      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
-      /** End Date */
-      end_date?: string | null
-      /**
-       * Mode
-       * @enum {string}
-       */
-      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
-      /**
-       * Value
-       * @default 0
-       */
-      value: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-      /**
-       * Priority
-       * @default 0
-       */
-      priority: number
-    }
-    /**
-     * RecurringAdditionCreate
-     * @description Request body for `POST /api/accounting/recurring-additions` — creates one new automation rule.
-     *
-     *     `addition_id` is server-minted, same reasoning as `GoalCreate`.
-     *     `priority` is never taken from the client either — a newly created
-     *     rule always goes last (one past the current lowest-priority row),
-     *     matching the Goals page's own "append at the end of the ordered list"
-     *     behavior; drag-and-drop reordering still goes through the existing
-     *     `PUT /recurring-additions`, unaffected by this.
-     */
-    RecurringAdditionCreate: {
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Start Date
-       * Format: date
-       */
-      start_date: string
-      /**
-       * Frequency
-       * @enum {string}
-       */
-      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
-      /** End Date */
-      end_date?: string | null
-      /**
-       * Mode
-       * @enum {string}
-       */
-      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
-      /**
-       * Value
-       * @default 0
-       */
-      value: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-    }
-    /**
-     * RecurringAdditionIdResponse
-     * @description Response body naming one recurring addition, for endpoints whose only real effect is removing something.
-     */
-    RecurringAdditionIdResponse: {
-      /** Addition Id */
-      addition_id: string
-    }
-    /**
-     * RecurringAdditionUpdate
-     * @description Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
-     *
-     *     A single-rule field edit (amount, dates, frequency, mode, goal), scoped
-     *     to its own `addition_id` so it never blanket-reinserts every rule.
-     *     Carries `priority` unchanged (the row keeps its place); re-ordering the
-     *     whole list is still `PUT /recurring-additions`. No `expected_version`:
-     *     like a budget cell, an edit of one rule is last-write-wins on that rule
-     *     (see `docs/app-stack/optimistic-concurrency-versioning.md`).
-     */
-    RecurringAdditionUpdate: {
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Start Date
-       * Format: date
-       */
-      start_date: string
-      /**
-       * Frequency
-       * @enum {string}
-       */
-      frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly'
-      /** End Date */
-      end_date?: string | null
-      /**
-       * Mode
-       * @enum {string}
-       */
-      mode: 'fixed_amount' | 'percent_of_unallocated' | 'remainder'
-      /**
-       * Value
-       * @default 0
-       */
-      value: number
-      /**
-       * Currency
-       * @default USD
-       * @enum {string}
-       */
-      currency: 'USD' | 'EUR'
-      /** Priority */
-      priority: number
     }
     /**
      * RiskStat
@@ -6832,23 +6814,6 @@ export interface components {
       merged: boolean
     }
     /**
-     * TargetAllocationSetting
-     * @description The persisted target allocation, plus the settings-row version so the client can echo it back.
-     *
-     *     Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
-     *     save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
-     *     back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
-     *     save. Carrying `version` (like every other settings response) closes that.
-     */
-    TargetAllocationSetting: {
-      /** Target Allocation Pct */
-      target_allocation_pct: {
-        [key: string]: number
-      }
-      /** Version */
-      version: number
-    }
-    /**
      * TaxOwedRow
      * @description One (year, regime) pair's estimated tax bill, netted against withholding already paid.
      */
@@ -6935,8 +6900,6 @@ export interface components {
       qualified_ltcg_rate_pct: number | null
       /** Resolved Qualified Ltcg Rate Pct */
       resolved_qualified_ltcg_rate_pct: number
-      /** Version */
-      version: number
     }
     /**
      * TaxSettingsUpdate
@@ -6967,8 +6930,6 @@ export interface components {
       local_zone: string | null
       /** Resolved Local Zone */
       resolved_local_zone: string
-      /** Version */
-      version: number
     }
     /**
      * TimezoneSettingUpdate
@@ -7000,11 +6961,14 @@ export interface components {
      *     `TransferRule` found a safe, unique match for at write time (see
      *     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
      *     resolution itself. `rule_id`, set only when `source == "rule"`, names
-     *     *which* rule found it — a plain historical label, not a foreign key
-     *     enforced anywhere: if that rule is later deleted, this link keeps
-     *     remembering which one originally created it rather than the id turning
-     *     meaningless, the same way a bank statement keeps a routing number that
-     *     later stops being valid.
+     *     *which* rule found it. It used to be a plain historical label deliberately
+     *     left un-foreign-keyed, on the theory that a link should keep remembering
+     *     the rule that made it even after that rule is gone; it is a real foreign
+     *     key now (DB-audit D7's "Keyless Entry"), because a label naming a row
+     *     nobody can look up is not provenance. `ON DELETE SET NULL` keeps what was
+     *     actually worth keeping: the link survives its rule, `source` still records
+     *     that a rule rather than the user proposed it, and only the reference that
+     *     no longer resolves is cleared.
      */
     TransferLink: {
       /** Link Id */
@@ -7310,24 +7274,6 @@ export interface components {
       remaining_shortfall: number
     }
     /**
-     * WithdrawalPriorityEntry
-     * @description One goal's place in the order goals are drawn down from when unallocated money goes negative.
-     *
-     *     Purely an ordering — the withdrawal automation itself
-     *     (`ledger.goal_automations.run_withdrawal_automation`) is event-driven
-     *     (triggered whenever unallocated dips below zero), not scheduled, so
-     *     there's no schedule field here the way `RecurringAddition` has one.
-     */
-    WithdrawalPriorityEntry: {
-      /** Goal Id */
-      goal_id: string
-      /**
-       * Priority
-       * @default 0
-       */
-      priority: number
-    }
-    /**
      * VerifyResult
      * @description Response body for `POST /settings/llm/verify`.
      */
@@ -7359,9 +7305,7 @@ export interface operations {
   get_store_api_accounting_store_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7376,23 +7320,12 @@ export interface operations {
           'application/json': components['schemas']['AccountingStoreResponse']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_currencies_api_accounting_currencies_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7407,23 +7340,12 @@ export interface operations {
           'application/json': components['schemas']['Currency'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_categories_api_accounting_categories_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7460,9 +7382,7 @@ export interface operations {
   post_category_api_accounting_categories_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7495,9 +7415,7 @@ export interface operations {
   post_subcategory_api_accounting_categories__parent_id__subcategories_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         parent_id: string
       }
@@ -7532,9 +7450,7 @@ export interface operations {
   get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7565,9 +7481,7 @@ export interface operations {
   delete_category_api_accounting_categories__category_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7600,9 +7514,7 @@ export interface operations {
       query: {
         name: string
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7633,9 +7545,7 @@ export interface operations {
   post_category_rename_api_accounting_categories__category_id__rename_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         category_id: string
       }
@@ -7670,9 +7580,7 @@ export interface operations {
   put_tags_api_accounting_tags_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7709,9 +7617,7 @@ export interface operations {
   post_tag_api_accounting_tags_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7744,9 +7650,7 @@ export interface operations {
   delete_tag_route_api_accounting_tags__tag_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         tag_id: string
       }
@@ -7779,9 +7683,7 @@ export interface operations {
       query: {
         name: string
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         tag_id: string
       }
@@ -7812,9 +7714,7 @@ export interface operations {
   post_tag_rename_api_accounting_tags__tag_id__rename_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         tag_id: string
       }
@@ -7849,9 +7749,7 @@ export interface operations {
   post_transfer_rule_api_accounting_transfer_rules_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7884,9 +7782,7 @@ export interface operations {
   delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         rule_id: string
       }
@@ -7917,9 +7813,7 @@ export interface operations {
   patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         rule_id: string
       }
@@ -7954,9 +7848,7 @@ export interface operations {
   put_category_patterns_api_accounting_category_patterns_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -7993,9 +7885,7 @@ export interface operations {
   post_category_pattern_api_accounting_category_patterns_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8028,9 +7918,7 @@ export interface operations {
   delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         pattern_id: string
       }
@@ -8061,9 +7949,7 @@ export interface operations {
   patch_category_pattern_api_accounting_category_patterns__pattern_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         pattern_id: string
       }
@@ -8098,9 +7984,7 @@ export interface operations {
   put_other_assets_api_accounting_other_assets_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8133,9 +8017,7 @@ export interface operations {
   post_other_asset_api_accounting_other_assets_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8168,9 +8050,7 @@ export interface operations {
   delete_other_asset_route_api_accounting_other_assets__asset_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         asset_id: string
       }
@@ -8201,9 +8081,7 @@ export interface operations {
   put_budgets_api_accounting_budgets_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8236,9 +8114,7 @@ export interface operations {
   post_budget_api_accounting_budgets_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8271,9 +8147,7 @@ export interface operations {
   delete_budget_api_accounting_budgets__budget_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         budget_id: string
       }
@@ -8301,119 +8175,10 @@ export interface operations {
       }
     }
   }
-  put_general_budgets_api_accounting_general_budgets_put: {
-    parameters: {
-      query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['GeneralBudget']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['GeneralBudget']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_general_budget_api_accounting_general_budgets_post: {
-    parameters: {
-      query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GeneralBudgetUpsert']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GeneralBudget']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_general_budget_api_accounting_general_budgets__key__delete: {
-    parameters: {
-      query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
-      path: {
-        key: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GeneralBudgetKeyResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   put_simulator_scenarios_api_accounting_simulator_scenarios_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8446,9 +8211,7 @@ export interface operations {
   post_simulator_scenario_api_accounting_simulator_scenarios_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8481,9 +8244,7 @@ export interface operations {
   delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         scenario_id: string
       }
@@ -8514,9 +8275,7 @@ export interface operations {
   post_account_api_accounting_accounts_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8549,9 +8308,7 @@ export interface operations {
   put_account_api_accounting_accounts__account_id__put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8586,9 +8343,7 @@ export interface operations {
   delete_account_api_accounting_accounts__account_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8619,9 +8374,7 @@ export interface operations {
   close_account_api_accounting_accounts__account_id__close_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8656,9 +8409,7 @@ export interface operations {
   reopen_account_api_accounting_accounts__account_id__reopen_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8689,9 +8440,7 @@ export interface operations {
   put_opening_balance_api_accounting_accounts__account_id__opening_balance_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8726,9 +8475,7 @@ export interface operations {
   delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         account_id: string
       }
@@ -8761,9 +8508,7 @@ export interface operations {
       query: {
         currency: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8794,9 +8539,7 @@ export interface operations {
       query: {
         currency: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8825,9 +8568,7 @@ export interface operations {
   post_detect_api_accounting_detect_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8860,9 +8601,7 @@ export interface operations {
   get_supported_import_kinds_api_accounting_supported_import_kinds_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8877,23 +8616,12 @@ export interface operations {
           'application/json': components['schemas']['SupportedImportKind'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_sync_status_api_accounting_sync_status_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8908,23 +8636,12 @@ export interface operations {
           'application/json': components['schemas']['SyncStatus']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   post_import_api_accounting_import_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8957,9 +8674,7 @@ export interface operations {
   post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -8992,9 +8707,7 @@ export interface operations {
   post_canonical_import_api_accounting_import_canonical_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9027,9 +8740,7 @@ export interface operations {
   post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9062,9 +8773,7 @@ export interface operations {
   post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9097,9 +8806,7 @@ export interface operations {
   post_paystub_reconciliation_api_accounting_import_paystub_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9132,9 +8839,7 @@ export interface operations {
   post_rebuild_api_accounting_rebuild_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9149,23 +8854,12 @@ export interface operations {
           'application/json': components['schemas']['RebuildResult']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_postings_api_accounting_postings_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9180,23 +8874,12 @@ export interface operations {
           'application/json': components['schemas']['PostingRow'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_ledger_export_api_accounting_ledger_export_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9211,23 +8894,12 @@ export interface operations {
           'application/json': components['schemas']['Posting'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   get_statements_export_api_accounting_statements_export_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9242,23 +8914,12 @@ export interface operations {
           'application/json': unknown
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_posting_override_api_accounting_postings__posting_id__override_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9293,9 +8954,7 @@ export interface operations {
   put_posting_split_api_accounting_postings__posting_id__split_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9330,9 +8989,7 @@ export interface operations {
   delete_posting_split_route_api_accounting_postings__posting_id__split_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9363,9 +9020,7 @@ export interface operations {
   put_posting_merges_api_accounting_posting_merges_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9402,9 +9057,7 @@ export interface operations {
   post_posting_merge_api_accounting_posting_merges_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9437,9 +9090,7 @@ export interface operations {
   delete_posting_merge_api_accounting_posting_merges__merge_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         merge_id: string
       }
@@ -9470,9 +9121,7 @@ export interface operations {
   post_transfer_link_api_accounting_transfer_links_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9505,9 +9154,7 @@ export interface operations {
   delete_transfer_link_api_accounting_transfer_links__link_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         link_id: string
       }
@@ -9538,9 +9185,7 @@ export interface operations {
   post_validate_pending_api_accounting_postings_validate_pending_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9575,9 +9220,7 @@ export interface operations {
       query?: {
         window_days?: number
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9608,9 +9251,7 @@ export interface operations {
       query?: {
         window_days?: number
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9639,9 +9280,7 @@ export interface operations {
   get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9656,23 +9295,12 @@ export interface operations {
           'application/json': components['schemas']['DismissedSuggestion'][]
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9705,9 +9333,7 @@ export interface operations {
   delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         suggestion_id: string
       }
@@ -9738,9 +9364,7 @@ export interface operations {
   get_llm_usage_api_accounting_llm_usage_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9757,15 +9381,6 @@ export interface operations {
           }
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   verify_llm_settings_api_accounting_settings_llm_verify_post: {
@@ -9773,9 +9388,7 @@ export interface operations {
       query: {
         provider: string
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9804,9 +9417,7 @@ export interface operations {
   get_llm_settings_api_accounting_settings_llm_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9821,23 +9432,12 @@ export interface operations {
           'application/json': components['schemas']['LlmSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_llm_settings_api_accounting_settings_llm_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9870,9 +9470,7 @@ export interface operations {
   delete_llm_settings_api_accounting_settings_llm_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -9887,15 +9485,6 @@ export interface operations {
           'application/json': components['schemas']['LlmSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post: {
@@ -9903,9 +9492,7 @@ export interface operations {
       query?: {
         lock_category_id?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9938,9 +9525,7 @@ export interface operations {
       query?: {
         lock_category_id?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         posting_id: string
       }
@@ -9971,9 +9556,7 @@ export interface operations {
   post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10012,9 +9595,7 @@ export interface operations {
         annual_rate_pct: number
         compounding_frequency?: 'annually' | 'monthly' | 'daily'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10045,9 +9626,7 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10079,9 +9658,7 @@ export interface operations {
         as_of?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10115,9 +9692,7 @@ export interface operations {
         interval_days?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10151,9 +9726,7 @@ export interface operations {
         interval_days?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10188,9 +9761,7 @@ export interface operations {
         tag_id?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10223,9 +9794,7 @@ export interface operations {
         end: string
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10258,9 +9827,7 @@ export interface operations {
         lookback_months?: number
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10292,9 +9859,7 @@ export interface operations {
         month: string
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10329,9 +9894,7 @@ export interface operations {
         subcategory_id?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10360,9 +9923,7 @@ export interface operations {
   put_goals_api_accounting_goals_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10399,9 +9960,7 @@ export interface operations {
   post_goal_api_accounting_goals_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10434,9 +9993,7 @@ export interface operations {
   delete_goal_route_api_accounting_goals__goal_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         goal_id: string
       }
@@ -10467,9 +10024,7 @@ export interface operations {
   patch_goal_api_accounting_goals__goal_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         goal_id: string
       }
@@ -10504,9 +10059,7 @@ export interface operations {
   put_goal_contributions_api_accounting_goal_contributions_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10543,9 +10096,7 @@ export interface operations {
   post_goal_contribution_api_accounting_goal_contributions_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10578,9 +10129,7 @@ export interface operations {
   put_goal_contribution_api_accounting_goal_contributions__contribution_id__put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         contribution_id: string
       }
@@ -10615,9 +10164,7 @@ export interface operations {
   delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
         contribution_id: string
       }
@@ -10645,18 +10192,16 @@ export interface operations {
       }
     }
   }
-  put_recurring_additions_api_accounting_recurring_additions_put: {
+  put_goal_contribution_automations_api_accounting_goal_automations_contributions_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['RecurringAddition'][]
+        'application/json': components['schemas']['GoalAutomation'][]
       }
     }
     responses: {
@@ -10666,7 +10211,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAddition'][]
+          'application/json': components['schemas']['GoalAutomation'][]
         }
       }
       /** @description Validation Error */
@@ -10680,18 +10225,16 @@ export interface operations {
       }
     }
   }
-  post_recurring_addition_api_accounting_recurring_additions_post: {
+  post_goal_automation_api_accounting_goal_automations_contributions_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['RecurringAdditionCreate']
+        'application/json': components['schemas']['GoalAutomationCreate']
       }
     }
     responses: {
@@ -10701,7 +10244,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAddition']
+          'application/json': components['schemas']['GoalAutomation']
         }
       }
       /** @description Validation Error */
@@ -10715,14 +10258,12 @@ export interface operations {
       }
     }
   }
-  delete_recurring_addition_route_api_accounting_recurring_additions__addition_id__delete: {
+  delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
-        addition_id: string
+        automation_id: string
       }
       cookie?: never
     }
@@ -10734,7 +10275,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAdditionIdResponse']
+          'application/json': components['schemas']['GoalAutomationIdResponse']
         }
       }
       /** @description Validation Error */
@@ -10748,20 +10289,18 @@ export interface operations {
       }
     }
   }
-  patch_recurring_addition_api_accounting_recurring_additions__addition_id__patch: {
+  patch_goal_automation_api_accounting_goal_automations__automation_id__patch: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path: {
-        addition_id: string
+        automation_id: string
       }
       cookie?: never
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['RecurringAdditionUpdate']
+        'application/json': components['schemas']['GoalAutomationUpdate']
       }
     }
     responses: {
@@ -10771,7 +10310,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['RecurringAddition']
+          'application/json': components['schemas']['GoalAutomation']
         }
       }
       /** @description Validation Error */
@@ -10785,18 +10324,16 @@ export interface operations {
       }
     }
   }
-  put_withdrawal_priorities_api_accounting_withdrawal_priorities_put: {
+  put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['WithdrawalPriorityEntry'][]
+        'application/json': components['schemas']['GoalAutomation'][]
       }
     }
     responses: {
@@ -10806,7 +10343,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['WithdrawalPriorityEntry'][]
+          'application/json': components['schemas']['GoalAutomation'][]
         }
       }
       /** @description Validation Error */
@@ -10826,9 +10363,7 @@ export interface operations {
         as_of?: string | null
         display_currency?: 'USD' | 'EUR'
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10859,9 +10394,7 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10892,9 +10425,7 @@ export interface operations {
       query?: {
         as_of?: string | null
       }
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -10923,9 +10454,7 @@ export interface operations {
   post_simulate_contribution_api_accounting_goals_simulate_contribution_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-store-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11334,9 +10863,7 @@ export interface operations {
   get_target_allocation_api_settings_target_allocation_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11348,16 +10875,9 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TargetAllocationSetting']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
+          'application/json': {
+            [key: string]: number
+          }
         }
       }
     }
@@ -11365,9 +10885,7 @@ export interface operations {
   put_target_allocation_api_settings_target_allocation_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11385,7 +10903,9 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TargetAllocationSetting']
+          'application/json': {
+            [key: string]: number
+          }
         }
       }
       /** @description Validation Error */
@@ -11402,9 +10922,7 @@ export interface operations {
   get_hysa_settings_api_settings_hysa_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11419,23 +10937,12 @@ export interface operations {
           'application/json': components['schemas']['HysaSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_hysa_settings_api_settings_hysa_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11468,9 +10975,7 @@ export interface operations {
   get_benchmark_setting_api_settings_benchmark_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11485,23 +10990,12 @@ export interface operations {
           'application/json': components['schemas']['BenchmarkSetting']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_benchmark_setting_api_settings_benchmark_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11534,9 +11028,7 @@ export interface operations {
   get_timezone_setting_api_settings_timezone_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11551,23 +11043,12 @@ export interface operations {
           'application/json': components['schemas']['TimezoneSetting']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_timezone_setting_api_settings_timezone_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11600,9 +11081,7 @@ export interface operations {
   get_tax_settings_api_settings_tax_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11617,23 +11096,12 @@ export interface operations {
           'application/json': components['schemas']['TaxSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_tax_settings_api_settings_tax_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11663,12 +11131,30 @@ export interface operations {
       }
     }
   }
+  get_broker_connections_api_broker_connections_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BrokerConnection'][]
+        }
+      }
+    }
+  }
   get_ibkr_settings_api_settings_ibkr_get: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11683,23 +11169,12 @@ export interface operations {
           'application/json': components['schemas']['IbkrSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   put_ibkr_settings_api_settings_ibkr_put: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11732,9 +11207,7 @@ export interface operations {
   delete_ibkr_settings_api_settings_ibkr_delete: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11749,23 +11222,12 @@ export interface operations {
           'application/json': components['schemas']['IbkrSettings']
         }
       }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
     }
   }
   verify_ibkr_settings_api_settings_ibkr_verify_post: {
     parameters: {
       query?: never
-      header?: {
-        'x-expected-dashboard-settings-version'?: number | null
-      }
+      header?: never
       path?: never
       cookie?: never
     }
@@ -11778,15 +11240,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['trades__api__api_models__VerifyResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

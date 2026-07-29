@@ -12,7 +12,7 @@ top-level category, optionally one subcategory beneath it
 (`parent_category_id`) — and always belongs to exactly one classification,
 `"income"` or `"expense"`, matching the sign of the postings it's used on.
 The default taxonomy a fresh install seeds itself with lives in
-`store._EXPENSE_TAXONOMY`/`_INCOME_TAXONOMY` (also shown for reference on
+`taxonomy._EXPENSE_TAXONOMY`/`_INCOME_TAXONOMY` (also shown for reference on
 the Categories page in the app) — it's a starting point, not a fixed list;
 renaming, merging, or deleting any of it is a normal data edit; nothing
 about the schema treats it as special.

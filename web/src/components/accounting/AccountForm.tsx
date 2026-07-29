@@ -3,7 +3,7 @@ import { InstitutionCombobox } from '@/components/accounting/InstitutionCombobox
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCurrencies } from '@/hooks/useAccountingData'
-import { useIbkrSettings } from '@/hooks/usePortfolioData'
+import { useBrokerConnections } from '@/hooks/usePortfolioData'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, AccountKind, CurrencyCode } from '@/types/accounting'
 
@@ -40,11 +40,15 @@ export interface AccountFormValue {
   name: string
   parentAccountId: string | null
   openingBalance: string
-  // Only meaningful when `kind === 'external_investment'` — `'trades'` pulls
-  // its value from the tracked portfolio in Investments (see
-  // `accounting.dashboard.net_worth.base_balance`), `null` values it
+  // Only meaningful when `kind === 'external_investment'` — the id of the
+  // broker connection this account's value is pulled from (see
+  // `accounting.dashboard.net_worth.base_balance`), or `null` to value it
   // manually from its own opening balance, same as any other account.
-  externalRef: string | null
+  // Replaces the old free-text `externalRef`, whose only legal value was
+  // the literal `'trades'`: the backend column is a real foreign key into
+  // `trades.broker_connections` now, so this has to be a connection that
+  // exists, not a magic string.
+  brokerConnectionId: string | null
 }
 
 export function AccountForm({
@@ -90,7 +94,13 @@ export function AccountForm({
     // list — carrying it over silently once the institution changes would
     // point a vault at a parent from the wrong bank.
     const parentAccountId = patch.institution !== undefined ? null : next.parentAccountId
-    onChange({ ...next, name, parentAccountId })
+    // Only an `external_investment` account may carry a broker connection —
+    // `ck_accounts_broker_link_is_an_investment` enforces it, and the API
+    // rejects the pair with a 400. The picker unmounts when the kind changes,
+    // so without this the old id would stay in the draft, be submitted, and
+    // fail on save with no control left on screen to clear it.
+    const brokerConnectionId = next.kind === 'external_investment' ? next.brokerConnectionId : null
+    onChange({ ...next, name, parentAccountId, brokerConnectionId })
   }
 
   return (
@@ -205,11 +215,11 @@ export function AccountForm({
       </label>
       {value.kind === 'external_investment' && (
         <ExternalInvestmentSourceToggle
-          value={value.externalRef}
-          onChange={(externalRef) => onChange({ ...value, externalRef })}
+          value={value.brokerConnectionId}
+          onChange={(brokerConnectionId) => onChange({ ...value, brokerConnectionId })}
         />
       )}
-      {showOpeningBalance && !(value.kind === 'external_investment' && value.externalRef === 'trades') && (
+      {showOpeningBalance && !(value.kind === 'external_investment' && value.brokerConnectionId !== null) && (
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           Opening balance (optional)
           <Input
@@ -227,10 +237,11 @@ export function AccountForm({
 }
 
 // Only shown while creating/editing an `external_investment` account —
-// lets the user choose between mirroring the tracked portfolio in
-// Investments or tracking this one manually like any other account. The
-// "pull" option is disabled whenever IBKR isn't connected, since there'd be
-// nothing for it to pull (see `useIbkrSettings`/`SettingsPage`).
+// lets the user choose between mirroring one of their synced broker
+// connections in Investments and tracking this one manually like any other
+// account. The "pull" option is offered per real connection, and disappears
+// entirely when there are none: the backend link is a foreign key, so a
+// connection that doesn't exist yet is not something this can offer.
 function ExternalInvestmentSourceToggle({
   value,
   onChange,
@@ -238,28 +249,29 @@ function ExternalInvestmentSourceToggle({
   value: string | null
   onChange: (value: string | null) => void
 }) {
-  const { data: ibkrSettings, isLoading } = useIbkrSettings()
-  const canPull = Boolean(ibkrSettings?.configured)
+  const { data: connections, isLoading } = useBrokerConnections()
+  const available = connections ?? []
 
   return (
     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
       <span>Value comes from</span>
       <div className="flex flex-col gap-1.5">
-        <label className={`flex items-center gap-1.5 ${canPull ? '' : 'opacity-50'}`}>
-          <input
-            type="radio"
-            name="external-investment-source"
-            className="size-3.5 accent-current"
-            checked={value === 'trades'}
-            disabled={!canPull}
-            onChange={() => onChange('trades')}
-          />
-          Pull from Investments
-        </label>
-        {!isLoading && !canPull && (
-          <p className="pl-5 text-[11px] text-amber-600">
-            Can't pull from there — IBKR isn't connected yet. Set it up in Settings, or set this account's value
-            manually below.
+        {available.map((connection) => (
+          <label key={connection.connection_id} className="flex items-center gap-1.5">
+            <input
+              type="radio"
+              name="external-investment-source"
+              className="size-3.5 accent-current"
+              checked={value === connection.connection_id}
+              onChange={() => onChange(connection.connection_id)}
+            />
+            Pull from Investments ({connection.broker.toUpperCase()})
+          </label>
+        ))}
+        {!isLoading && available.length === 0 && (
+          <p className="text-[11px] text-amber-600">
+            Nothing to pull from yet — no brokerage has been synced. Connect one in Settings and run a sync, or set this
+            account's value manually below.
           </p>
         )}
         <label className="flex items-center gap-1.5">
@@ -267,7 +279,7 @@ function ExternalInvestmentSourceToggle({
             type="radio"
             name="external-investment-source"
             className="size-3.5 accent-current"
-            checked={value !== 'trades'}
+            checked={value === null}
             onChange={() => onChange(null)}
           />
           Set manually

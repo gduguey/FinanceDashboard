@@ -21,7 +21,7 @@ ambiguous" contract `find_unmatched_transfer_candidates` already has,
 just scoped by a rule instead of offered to a human to pick from.
 
 Unlike every other function in `ledger`, this one's result needs to be
-*persisted* (see `store.AccountingStore.transfer_links`), not recomputed
+*persisted* (in `transfer_links`), not recomputed
 fresh on every read: a live candidate search run inside a date-scoped
 dashboard call would silently disagree with the same transaction's status
 on the unscoped Transactions page, and a transaction's transfer status
@@ -40,7 +40,13 @@ import polars as pl
 
 from accounting.ledger.categorization import real_legs_of_two_leg_transactions, rule_matches_by_transaction
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS, TransferLink
-from accounting.store import load_store, save_store
+from accounting.repositories.interpretation import (
+    insert_transfer_links,
+    load_posting_splits,
+    load_transfer_links,
+    load_transfer_rules,
+)
+from accounting.taxonomy import seeded_accounts
 from db.session import set_rls_user
 
 if TYPE_CHECKING:
@@ -289,8 +295,8 @@ def apply_transfer_links(postings: pl.DataFrame, links: list[TransferLink]) -> p
 
     The counterpart to `ledger.categorization.apply_posting_merges` in the
     resolution pipeline, and deliberately the *last* step in it (see
-    `api.dependencies._resolved_postings_and_store`) — `apply_posting_splits`/
-    `apply_manual_overrides` rebuild the frame through `Posting.polars_schema`,
+    `api.dependencies._resolved_postings`) — `apply_posting_splits`/
+    `apply_manual_overrides` rebuild the frame through `LEDGER_FRAME_SCHEMA`,
     which would silently drop a column added any earlier. Neither
     transaction's own posting is ever touched here — only these three new
     columns are added, so `dashboard.net_worth`/`ledger.replay.account_balances`
@@ -336,11 +342,15 @@ def reconcile_and_persist_rule_links(
     """Find every new rule-safe transfer link and persist it, merging into whatever's already stored.
 
     The one write-time entry point every caller (see this module's own
-    docstring) should use instead of calling `reconcile_rule_links`/`save_store`
-    separately — loads the current store, proposes new links against
-    `postings` (the *raw*, pre-`apply_rules` ledger — the same shape
-    `reconcile_rule_links` itself expects), and persists them if any were
-    found.
+    docstring) should use instead of calling `reconcile_rule_links` and
+    persisting separately — loads the rules, accounts, splits and links it
+    matches against, proposes new links
+    against `postings` (the *raw*, pre-`apply_rules` ledger — the same shape
+    `reconcile_rule_links` itself expects), and inserts them if any were
+    found. The insert is additive and scoped to the new links alone (see
+    `repositories.interpretation.insert_transfer_links`), so a link some
+    concurrent request confirmed between this function's own read and its
+    write is never swept away.
 
     Parameters
     ----------
@@ -349,15 +359,15 @@ def reconcile_and_persist_rule_links(
         ledger during an import/rebuild, or a fresh, unscoped `load_ledger`
         call when reconciling after a rule change.
     session
-        An open database session; `session.commit()` is called (via
-        `save_store`) only if at least one new link was found. Every
-        caller of this function calls `session.commit()` itself first
-        (via `_write_ledger` or `save_store`, persisting whatever it just
-        changed), so this function's own first read needs Row-Level
-        Security re-scoped — see `db.session.set_rls_user`'s own
-        docstring for why that mid-request commit alone breaks it.
+        An open database session; `session.commit()` is called only if at
+        least one new link was found. Every caller of this function commits
+        itself first (via `_write_ledger` or a scoped repository write,
+        persisting whatever it just changed), so this
+        function's own first read needs Row-Level Security re-scoped — see
+        `db.session.set_rls_user`'s own docstring for why that mid-request
+        commit alone breaks it.
     user_id
-        Whose store/ledger this is.
+        Whose rules and ledger this is.
 
     Returns
     -------
@@ -365,10 +375,15 @@ def reconcile_and_persist_rule_links(
         Newly persisted links, empty if nothing new was found.
     """
     set_rls_user(session, user_id)
-    store = load_store(session, user_id)
-    new_links = reconcile_rule_links(postings, store.rules, store.accounts, store.posting_splits, store.transfer_links)
+    new_links = reconcile_rule_links(
+        postings,
+        load_transfer_rules(session, user_id),
+        seeded_accounts(session, user_id),
+        load_posting_splits(session, user_id),
+        load_transfer_links(session, user_id),
+    )
     if not new_links:
         return []
-    store = store.model_copy(update={"transfer_links": [*store.transfer_links, *new_links]})
-    save_store(store, session, user_id)
+    insert_transfer_links(session, user_id, new_links)
+    session.commit()
     return new_links

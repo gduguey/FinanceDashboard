@@ -8,7 +8,7 @@ from accounting.ledger.transfers import (
     reconcile_rule_links,
 )
 from accounting.models import Account, PostingSplit, PostingSplitLeg, TransferRule
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 
 def _leg(amount: float, posted_at: str, description: str = "x") -> RawLeg:

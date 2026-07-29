@@ -60,8 +60,8 @@ file that uses them.
   of any real file or service. Anything that *does* need to touch disk or
   the network — reading an uploaded CSV, fetching an exchange rate, calling
   an LLM — is confined to `importers/`, `market_data/`, `llm/`, and the
-  handful of `load_*`/`save_*` functions in `store.py`, which pure logic
-  never calls directly (it's handed already-loaded data instead).
+  `load_*`/write functions in `repositories/`, which pure logic never
+  calls directly (it's handed already-loaded data instead).
 - **TransferRule** vs. **category pattern** — two different,
   easily-confused mechanisms, covered in full in `categorization.md`. In
   short: a `TransferRule` resolves a posting's *counterparty account* (and
@@ -121,12 +121,17 @@ with one exception. Closing an account (`Account.closed`) whose balance
 isn't zero needs somewhere to record where that remaining money went, and
 no future bank statement will ever describe that movement, since the
 account is closed. A `ManualTransfer` (`accounting.models`) is a
-user-entered transfer between two of their own accounts;
-`ledger.manual_transfers.postings_for_manual_transfers` turns each one into
-its two postings — one leaving the closed account, one arriving at
-wherever the user says it went — folded into the resolved ledger the same
-way rules and overrides are, never baked into the ledger cache. Closing
-and (optionally) recording where the balance went happen atomically via
+user-entered transfer between two of their own accounts, stored as
+exactly that: one `transactions` row with `origin = "manual"` and two
+balancing postings — one leaving the closed account, one arriving at
+wherever the user says it went. It used to be a `manual_transfers` table
+of its own whose rows a late resolution stage turned into postings on
+every read; the ledger expresses the same thing with the rows it already
+had, and `origin` is the one column that keeps the difference that
+matters — a rebuild from the raw archives owns the `imported` half and
+must never prune the `manual` half, since no replay could put it back
+(see `importers.ingest._write_ledger`). Closing and (optionally)
+recording where the balance went happen atomically via
 `POST /accounts/{id}/close`.
 
 ## Module map
@@ -140,15 +145,22 @@ src/accounting/
                          CategoryPattern, Goal/GoalContribution, Budget, OtherAsset,
                          ManualTransfer, PostingMerge, DismissedSuggestion, Currency —
                          canonical, declared once
-  store.py              load_store/save_store — persisted accounts/categories/tags/rules/
-                         goals/budgets/etc., in Postgres (see db/ below); seeded defaults,
-                         not fetched data
+  taxonomy.py           the pure category/tag/account tree logic (normalize, rename, delete
+                         plans, the color palette) plus the defaults every new user is
+                         seeded with — and the two seeded reads that pair with them
+  repositories/         one module per aggregate root, each owning its own tables' reads
+                         and writes: accounts, taxonomy, planning, interpretation
   db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
                          core.py (accounts/categories/tags/postings/transactions),
-                         budgets.py, goals.py, automation.py (recurring additions,
-                         withdrawal priorities), corrections.py (manual overrides,
-                         splits, merges, dismissed suggestions), simulator.py, llm.py
-                         (per-provider usage tracking)
+                         budgets.py, goals.py, automation.py (categorization_rules —
+                         one description matcher, typed transfer/categorize effect),
+                         corrections.py (manual overrides, splits, merges, and
+                         suggestions — pending + dismissed in one table), simulator.py,
+                         llm.py (per-provider usage tracking)
+
+  precedence.py         the order the interpretation overlays are applied in, declared
+                         as data — each overlay table stores its own stage, the resolver
+                         walks the declaration instead of a hard-coded call sequence
 
   ledger/               pure domain logic, no I/O
     replay.py             postings -> account balances as of any date
@@ -160,8 +172,7 @@ src/accounting/
     currency.py             convert() between any two supported currencies
     transfers.py            unmatched-internal-transfer suggestions
     duplicates.py           likely-duplicate-transaction suggestions + certainty scoring
-    manual_transfers.py     turns a ManualTransfer into its two postings (see below)
-    goal_automations.py     recurring-addition and withdrawal-automation math —
+    goal_automations.py     contribution- and withdrawal-automation math —
                             decides amounts only, never writes anything itself
 
   dashboard/            API-facing aggregation, one file per concern
@@ -180,11 +191,10 @@ src/accounting/
     ingest.py               archive raw, standardize, merge into the ledger;
                             rebuild_from_raw_statements recomputes it all
     paystub.py              PDF text extraction -> structured EarningsStatement
-    chase/                  checking.py, credit_card.py
-    sofi/                   checking.py, savings.py (CSV, both formats);
-                            statement_pdf.py (monthly PDF — checking + savings +
-                            every Vault in one file, the only source for Vault
-                            transactions and interest)
+    chase/                  checking.py, credit_card.py, models.py
+    sofi/                   csv.py, models.py (checking and savings, both CSV
+                            formats — the newer wide format also covers Vaults;
+                            the PDF statement importer is retired and deleted)
     canonical/              no-code fallback importer for any bank with no
                             dedicated standardizer — fuzzy column/date/amount
                             parsing, auto-creates categories (see
@@ -205,7 +215,8 @@ src/accounting/
     api.py                  router registration
     dependencies.py          shared per-request helpers (config, resolved postings)
     api_models.py            request/response pydantic models
-    routers/                 dashboard.py, store.py, postings.py, imports.py,
+    routers/                 dashboard.py, store.py (GET /store + entity CRUD),
+                              postings.py, imports.py,
                               goals.py, llm.py, exchange_rates.py — one file per
                               concern, each Depends(get_current_user_id)-scoped
 
@@ -213,7 +224,6 @@ data/accounting/         (gitignored) — raw archives only; every derived/persi
                           fact (ledger, store, overrides, goals, budgets, LLM usage,
                           ...) lives in Postgres instead, per-user, RLS-scoped
   raw_statements/{institution}/{account_id}/{timestamp}.csv   verbatim, never overwritten
-  raw_statements/SoFi/statement_pdf/{timestamp}.pdf            verbatim, never overwritten
   exchange_rates/raw/{timestamp}.json                          verbatim, never overwritten
   exchange_rates/rates.csv                                     disposable cache, rebuildable;
                                                                 shared across every user, not
@@ -249,13 +259,21 @@ The SoFi savings export shows money leaving to a brokerage
 twice, that posting's counterparty can be a placeholder account
 (`kind="external_investment"`) whose balance is pulled live from `trades`
 instead of being computed by replaying postings — but only when the
-account's own `external_ref` field is set to `"trades"`. This is a choice
-made once, when the account is created (or edited): "pull from
-Investments" sets `external_ref="trades"`; "set manually" leaves it `None`,
-and `dashboard.net_worth.base_balance` then values that account exactly
-like any other — from its own postings and opening balance. A manually-
-tracked `external_investment` account (a friend-managed fund, a brokerage
-this app doesn't sync with) never reaches into `trades` at all.
+account's own `broker_connection_id` names one of the user's
+`trades.broker_connections` rows. This is a choice made once, when the
+account is created (or edited): "pull from Investments" sets it to a real
+connection id; "set manually" leaves it `None`, and
+`dashboard.net_worth.base_balance` then values that account exactly like
+any other — from its own postings and opening balance. A manually-tracked
+`external_investment` account (a friend-managed fund, a brokerage this app
+doesn't sync with) never reaches into `trades` at all.
+
+The column is a real foreign key into `trades.broker_connections`, not the
+bare string `external_ref = "trades"` it replaces (DB-audit D7 / move #1),
+so the frontend offers only connections that actually exist
+(`GET /api/broker-connections`) and an account can never point at one that
+doesn't. A `CHECK` pins the link to the `external_investment` kind, which
+is why `net_worth.is_trades_linked` tests one column rather than two.
 
 When it does pull, `api.routers.dashboard._external_investment_values_usd`
 reads the value live from the *running* `trades.api` app's own

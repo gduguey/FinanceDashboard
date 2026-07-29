@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+from db.money import Rate
 from trades.config import TaxRegime, validate_iana_zone_name
 from trades.dashboard.cash_sitting import WarningLevel
 
@@ -135,28 +137,14 @@ class HysaSettingsUpdate(BaseModel):
     """Request body for `PUT /api/settings/hysa`."""
 
     bank_id: str | None = None
-    fixed_rate_pct: float | None = None
-
-
-class TargetAllocationSetting(BaseModel):
-    """The persisted target allocation, plus the settings-row version so the client can echo it back.
-
-    Previously this endpoint returned a bare `dict[str, float]` with nowhere to carry `version` — so a
-    save here bumped the shared `DashboardSettings` row counter without ever reporting the new value
-    back, leaving the client's cached version stale and spuriously 409-ing the next hysa/benchmark/tax
-    save. Carrying `version` (like every other settings response) closes that.
-    """
-
-    target_allocation_pct: dict[str, float]
-    version: int
+    fixed_rate_pct: Rate | None = None
 
 
 class HysaSettings(BaseModel):
     """The persisted HYSA bank selection / fixed-rate override."""
 
     bank_id: str | None
-    fixed_rate_pct: float | None
-    version: int
+    fixed_rate_pct: Rate | None
 
 
 class BenchmarkSettingUpdate(BaseModel):
@@ -170,7 +158,6 @@ class BenchmarkSetting(BaseModel):
 
     symbol_override: str | None
     default_symbol: str
-    version: int
 
 
 class TimezoneSettingUpdate(BaseModel):
@@ -201,7 +188,6 @@ class TimezoneSetting(BaseModel):
 
     local_zone: str | None
     resolved_local_zone: str
-    version: int
 
 
 class TaxSettingsUpdate(BaseModel):
@@ -211,9 +197,9 @@ class TaxSettingsUpdate(BaseModel):
     tax_regime: TaxRegime | None
     residency_status_change_date: date | None
     w8ben_claimed: bool
-    w8ben_treaty_rate_pct: float | None
-    marginal_ordinary_rate_pct: float | None
-    qualified_ltcg_rate_pct: float | None
+    w8ben_treaty_rate_pct: Rate | None
+    marginal_ordinary_rate_pct: Rate | None
+    qualified_ltcg_rate_pct: Rate | None
 
 
 class TaxSettings(BaseModel):
@@ -224,12 +210,11 @@ class TaxSettings(BaseModel):
     resolved_tax_regime: TaxRegime
     residency_status_change_date: date | None
     w8ben_claimed: bool
-    w8ben_treaty_rate_pct: float | None
-    marginal_ordinary_rate_pct: float | None
-    resolved_marginal_ordinary_rate_pct: float
-    qualified_ltcg_rate_pct: float | None
-    resolved_qualified_ltcg_rate_pct: float
-    version: int
+    w8ben_treaty_rate_pct: Rate | None
+    marginal_ordinary_rate_pct: Rate | None
+    resolved_marginal_ordinary_rate_pct: Rate
+    qualified_ltcg_rate_pct: Rate | None
+    resolved_qualified_ltcg_rate_pct: Rate
 
 
 class IbkrCredentialsUpdate(BaseModel):
@@ -257,6 +242,23 @@ class VerifyResult(BaseModel):
 
     ok: bool
     error: str | None
+
+
+class BrokerConnection(BaseModel):
+    """One of this user's live broker connections — what an accounting account may link its value to.
+
+    `connection_id` is the raw `trades.broker_connections.id`, not a
+    natural key, because it is what
+    `accounting.models.Account.broker_connection_id` foreign-keys to. This
+    endpoint exists so the frontend can offer only connections that
+    actually exist: the link is a real foreign key now (DB-audit move #1),
+    so "IBKR credentials are configured" is no longer close enough — the
+    connection row is only created by the first sync, and until then there
+    is nothing to point at.
+    """
+
+    connection_id: uuid.UUID
+    broker: str
 
 
 class AnnualTaxRow(BaseModel):

@@ -1,8 +1,9 @@
-"""Persisted-entity CRUD — mirrors `accounting.store`: accounts, categories, tags, rules, budgets, other assets."""
+"""Persisted-entity CRUD: accounts, categories, tags, rules, budgets, other assets — one repository call per write."""
 
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,8 +28,6 @@ from accounting.api.api_models import (
     CategoryRenamePreviewResponse,
     CategoryRenameRequest,
     CategoryRenameResponse,
-    GeneralBudgetKeyResponse,
-    GeneralBudgetUpsert,
     OtherAssetCreate,
     OtherAssetIdResponse,
     SimulatorScenarioCreate,
@@ -43,56 +42,92 @@ from accounting.api.api_models import (
     TransferRuleIdResponse,
     TransferRuleUpdate,
 )
-from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store, state
+from accounting.api.dependencies import _account_has_postings
 from accounting.importers.common import row_hash
-from accounting.importers.ingest import load_ledger, remap_ledger_category_ids, uncategorize_ledger_postings
+from accounting.importers.ingest import load_ledger
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import (
     SUPPORTED_CURRENCIES,
     Account,
+    AccountKind,
     Budget,
     Category,
     CategoryPattern,
     Currency,
-    GeneralBudget,
     OpeningBalance,
     OtherAsset,
     SimulatorScenario,
     Tag,
     TransferRule,
 )
-from accounting.store import (
-    category_ids_to_delete,
+from accounting.repositories.accounts import (
+    broker_connection_exists,
+    insert_manual_transfers,
+    load_manual_transfers,
+    load_opening_balances,
+    remove_account,
+    remove_opening_balance,
+    replace_accounts,
+    set_account_closed,
+    update_account_fields,
+    upsert_opening_balance,
+)
+from accounting.repositories.interpretation import (
     delete_category_pattern,
+    delete_transfer_rule,
+    load_category_patterns,
+    load_overrides,
+    load_posting_merges,
+    load_posting_splits,
+    load_transfer_links,
+    load_transfer_rules,
+    remove_rule_transfer_links,
+    replace_category_patterns,
+    replace_posting_splits,
+    save_overrides_for_postings,
+    update_category_pattern,
+    update_transfer_rule,
+    upsert_category_pattern,
+    upsert_transfer_rule,
+)
+from accounting.repositories.planning import (
+    budget_row_key,
+    load_budgets,
+    load_goal_automations,
+    load_goal_contributions,
+    load_goals,
+    remove_budget,
+    replace_budgets,
+    upsert_budget,
+)
+from accounting.repositories.taxonomy import (
     delete_other_asset,
     delete_simulator_scenario,
     delete_tag,
-    delete_transfer_rule,
-    get_store_version,
-    insert_manual_transfers,
-    load_overrides,
-    load_store,
+    insert_other_asset,
+    insert_simulator_scenario,
+    load_other_assets,
+    load_simulator_scenarios,
+    load_tags,
+    remap_tag_ids,
+    replace_categories,
+    replace_other_assets,
+    replace_simulator_scenarios,
+    replace_tags,
+    retire_categories,
+)
+from accounting.taxonomy import (
+    CategoryReferences,
+    category_ids_to_delete,
     normalize_categories,
     plan_category_rename,
     plan_tag_rename,
     remap_category_ids,
-    remap_tag_ids,
-    remove_account,
-    remove_budget,
-    remove_general_budget,
-    remove_opening_balance,
-    remove_rule_transfer_links,
-    save_overrides_for_postings,
-    save_store,
-    set_account_closed,
+    seed_new_user_defaults,
+    seeded_accounts,
+    seeded_categories,
     slugify,
     uncategorize_category_ids,
-    update_account_fields,
-    update_category_pattern,
-    update_transfer_rule,
-    upsert_budget,
-    upsert_general_budget,
-    upsert_opening_balance,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -111,33 +146,27 @@ def get_store(
     AccountingStoreResponse
         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
-        list). `version` is this user's current save counter (see
-        `store.get_store_version`) — a client should remember it and send
-        it back as the `X-Expected-Store-Version` header on its next
-        mutating request, so `save_store` can detect if something else
-        changed this data in the meantime.
+        list). No store-wide version: optimistic concurrency is per-row
+        (`goals`, `transfer_rules`, `category_patterns` each carry their
+        own `version`), so there is nothing store-wide to echo back.
     """
-    _postings, store = _resolved_postings_and_store(state.config, session, user_id)
     return AccountingStoreResponse(
-        accounts=store.accounts,
-        categories=store.categories,
-        tags=store.tags,
-        transfer_rules=store.rules,
-        other_assets=store.other_assets,
-        opening_balances=store.opening_balances,
-        manual_transfers=store.manual_transfers,
-        budgets=store.budgets,
-        simulator_scenarios=store.simulator_scenarios,
-        posting_splits=store.posting_splits,
-        posting_merges=store.posting_merges,
-        transfer_links=store.transfer_links,
-        general_budgets=store.general_budgets,
-        category_patterns=store.category_patterns,
-        goals=store.goals,
-        goal_contributions=store.goal_contributions,
-        recurring_additions=store.recurring_additions,
-        withdrawal_priorities=store.withdrawal_priorities,
-        version=get_store_version(session, user_id),
+        accounts=seeded_accounts(session, user_id),
+        categories=seeded_categories(session, user_id),
+        tags=load_tags(session, user_id),
+        transfer_rules=load_transfer_rules(session, user_id),
+        other_assets=load_other_assets(session, user_id),
+        opening_balances=load_opening_balances(session, user_id),
+        manual_transfers=load_manual_transfers(session, user_id),
+        budgets=load_budgets(session, user_id),
+        simulator_scenarios=load_simulator_scenarios(session, user_id),
+        posting_splits=load_posting_splits(session, user_id),
+        posting_merges=load_posting_merges(session, user_id),
+        transfer_links=load_transfer_links(session, user_id),
+        category_patterns=load_category_patterns(session, user_id),
+        goals=load_goals(session, user_id),
+        goal_contributions=load_goal_contributions(session, user_id),
+        goal_automations=load_goal_automations(session, user_id),
     )
 
 
@@ -151,6 +180,16 @@ def get_currencies() -> list[Currency]:
         One entry per supported currency.
     """
     return list(SUPPORTED_CURRENCIES.values())
+
+
+def _added_categories(before: dict[str, Category], after: dict[str, Category]) -> list[Category]:
+    """Which categories a create actually introduced or changed, so only those need writing.
+
+    Returns
+    -------
+    list[Category]
+    """
+    return [category for category_id, category in after.items() if before.get(category_id) != category]
 
 
 @router.post("/categories")
@@ -177,13 +216,13 @@ def post_category(
         409 if a top-level category of the same classification already
         has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
     """
-    store = load_store(session, user_id)
+    existing_categories = seeded_categories(session, user_id)
     normalized_name = request.name.strip().lower()
     collision = any(
         category.parent_category_id is None
         and category.classification == request.classification
         and category.name.strip().lower() == normalized_name
-        for category in store.categories.values()
+        for category in existing_categories.values()
     )
     if collision:
         raise HTTPException(
@@ -191,7 +230,7 @@ def post_category(
         )
 
     category_id = f"{request.classification}:{slugify(request.name)}"
-    if category_id in store.categories:
+    if category_id in existing_categories:
         # The name-collision check above is case-insensitive on the name, but the
         # id is a lossy slug — two distinct names can still collide on it and
         # silently overwrite the existing category. Reject instead.
@@ -205,10 +244,13 @@ def post_category(
         parent_category_id=None,
         color=request.color,
     )
-    store = store.model_copy(
-        update={"categories": normalize_categories({**store.categories, category_id: new_category})}
-    )
-    save_store(store, session, user_id)
+    # Only the rows this create actually adds get written — never the rest of
+    # the tree, and never a prune. `normalize_categories` runs because it can
+    # mint an "Other" catch-all alongside a new category, so "what this adds"
+    # isn't always just the one row the request named.
+    categories = normalize_categories({**existing_categories, category_id: new_category})
+    replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
+    session.commit()
     return new_category
 
 
@@ -232,15 +274,15 @@ def post_subcategory(
         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
         already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
     """
-    store = load_store(session, user_id)
-    parent = store.categories.get(parent_id)
+    existing_categories = seeded_categories(session, user_id)
+    parent = existing_categories.get(parent_id)
     if parent is None:
         raise HTTPException(status_code=404, detail=f"Category {parent_id!r} not found")
 
     normalized_name = request.name.strip().lower()
     collision = any(
         category.parent_category_id == parent_id and category.name.strip().lower() == normalized_name
-        for category in store.categories.values()
+        for category in existing_categories.values()
     )
     if collision:
         raise HTTPException(
@@ -248,7 +290,7 @@ def post_subcategory(
         )
 
     category_id = f"{parent_id}:{slugify(request.name)}"
-    if category_id in store.categories:
+    if category_id in existing_categories:
         # See post_category: the name check is case-insensitive, but the slug id
         # is lossy — guard against two distinct names colliding on it.
         raise HTTPException(
@@ -262,10 +304,11 @@ def post_subcategory(
         parent_category_id=parent_id,
         color=request.color,
     )
-    store = store.model_copy(
-        update={"categories": normalize_categories({**store.categories, category_id: new_category})}
-    )
-    save_store(store, session, user_id)
+    # See `post_category`: additive only, and `normalize_categories` may add
+    # the parent's "Other" catch-all alongside this first real subcategory.
+    categories = normalize_categories({**existing_categories, category_id: new_category})
+    replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
+    session.commit()
     return new_category
 
 
@@ -282,12 +325,42 @@ def put_categories(
     dict[str, Category]
         The categories just persisted, keyed by `category_id` — may
         include an "Other" subcategory the caller didn't submit, or omit
-        one it did (see `store.normalize_categories`).
+        one it did (see `taxonomy.normalize_categories`).
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"categories": normalize_categories(categories)})
-    save_store(store, session, user_id)
-    return store.categories
+    # The placeholder accounts a brand-new user needs are seeded alongside the
+    # default category tree, and replacing the tree below would otherwise make
+    # `seed_new_user_defaults` a permanent no-op for them.
+    seed_new_user_defaults(session, user_id)
+    normalized = normalize_categories(categories)
+    replace_categories(session, user_id, normalized.values())
+    session.commit()
+    return normalized
+
+
+def _category_references(session: Session, user_id: uuid.UUID) -> CategoryReferences:
+    """Load every row a category rename or delete has to repoint or clear, from each row's own repository.
+
+    Returns
+    -------
+    CategoryReferences
+    """
+    return CategoryReferences(
+        category_patterns=load_category_patterns(session, user_id),
+        budgets=load_budgets(session, user_id),
+        posting_splits=load_posting_splits(session, user_id),
+    )
+
+
+def _write_category_references(references: CategoryReferences, session: Session, user_id: uuid.UUID) -> None:
+    """Write each repointed/cleared collection back through its own repository.
+
+    Always called *before* the category rows they used to reference are
+    pruned or retired, so a foreign key never briefly points at a row
+    that is about to disappear.
+    """
+    replace_budgets(session, user_id, references.budgets)
+    replace_category_patterns(session, user_id, references.category_patterns.values())
+    replace_posting_splits(session, user_id, references.posting_splits.values())
 
 
 def _posting_count_for_categories(category_ids: set[str], session: Session, user_id: uuid.UUID) -> int:
@@ -325,11 +398,11 @@ def get_category_delete_preview(
     HTTPException
         404 if `category_id` doesn't exist.
     """
-    store = load_store(session, user_id)
-    if category_id not in store.categories:
+    categories = seeded_categories(session, user_id)
+    if category_id not in categories:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
-    ids_to_delete = category_ids_to_delete(store.categories, category_id)
+    ids_to_delete = category_ids_to_delete(categories, category_id)
     return CategoryDeletePreviewResponse(posting_count=_posting_count_for_categories(ids_to_delete, session, user_id))
 
 
@@ -342,13 +415,21 @@ def delete_category(
     """Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
 
     Every posting currently carrying `category_id` (or one of its
-    subcategories) as its own `category_id`/`subcategory_id` has that
-    field cleared rather than left dangling — the same "uncategorized"
-    state a posting that was never categorized at all is already in.
-    Anything else referencing the deleted id(s) is cleared where the
-    field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
-    entirely where it isn't (`Budget`, `GeneralBudget`, `CategoryPattern`
-    all require a `category_id`) — see `store.uncategorize_category_ids`.
+    subcategories) reads as uncategorized afterwards — the same state a
+    posting that was never categorized at all is already in — without a
+    single posting row being written. The category is *retired* rather
+    than deleted (see `accounting.db.core.Category` and
+    `repositories.taxonomy.retire_categories`): its row stays, so the raw
+    import provenance on those postings keeps a valid foreign key, and it
+    leaves the live tree with no successor, which is what
+    `repositories.taxonomy.load_category_redirects` resolves to "nothing".
+
+    Anything else referencing the deleted id(s) *is* rewritten, because
+    those references are the user's own decisions rather than raw
+    provenance: cleared where the field is optional (`PostingSplitLeg`,
+    and any `subcategory_id`) or dropped entirely where it isn't
+    (`Budget`, `CategoryPattern` both require a `category_id`) — see
+    `taxonomy.uncategorize_category_ids`.
 
     Returns
     -------
@@ -359,24 +440,23 @@ def delete_category(
     HTTPException
         404 if `category_id` doesn't exist.
     """
-    store = load_store(session, user_id)
-    if category_id not in store.categories:
+    categories = seeded_categories(session, user_id)
+    if category_id not in categories:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
-    ids_to_delete = category_ids_to_delete(store.categories, category_id)
+    ids_to_delete = category_ids_to_delete(categories, category_id)
     posting_count = _posting_count_for_categories(ids_to_delete, session, user_id)
 
-    remaining_categories = {
-        existing_id: category for existing_id, category in store.categories.items() if existing_id not in ids_to_delete
-    }
-    store = uncategorize_category_ids(store, ids_to_delete)
-    store = store.model_copy(update={"categories": normalize_categories(remaining_categories)})
+    remaining_categories = normalize_categories({
+        existing_id: category for existing_id, category in categories.items() if existing_id not in ids_to_delete
+    })
 
-    # Every reference to a deleted category must be cleared *before* `save_store`
-    # deletes that category row below — postings and manual overrides both
-    # foreign-key into `categories`, so the delete would otherwise fail with a
-    # constraint violation (same ordering `post_category_rename` needs).
-    uncategorize_ledger_postings(ids_to_delete, session, user_id)
+    # The planning and interpretation tables both reference categories, so their
+    # cleared/dropped rows land before `replace_categories` prunes the category
+    # rows they used to point at.
+    _write_category_references(
+        uncategorize_category_ids(_category_references(session, user_id), ids_to_delete), session, user_id
+    )
 
     def clear(field_id: str | None) -> str | None:
         return None if field_id in ids_to_delete else field_id
@@ -394,16 +474,19 @@ def delete_category(
     }
     save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
-    # Deliberately kept on the whole-store version check (not scoped, not opted out), for the same
-    # reason category/tag *rename* is: deleting a category is a category-graph-wide cascade — it drops
-    # every dependent Budget/GeneralBudget/CategoryPattern, clears TransferRule/PostingSplitLeg refs,
-    # and uncategorizes every posting that used it. The operation genuinely relates to much of the
-    # store, so whole-store optimistic concurrency is the correct granularity here (see the versioning
-    # doc on matching granularity to the operation's true scope), and opting out would remove the only
-    # thing stopping a concurrent delete of a *different* category from resurrecting it via the
-    # category re-merge in `save_store`.
-    save_store(store, session, user_id)
-    return CategoryDeleteResponse(categories=store.categories, uncategorized_posting_count=posting_count)
+    # This, not the prune below, is what takes the categories out of the live
+    # tree — with no successor, so every posting imported under one resolves to
+    # uncategorized. Retiring rather than deleting is what makes the stored
+    # postings' foreign keys safe without rewriting a single one of them.
+    retire_categories(session, user_id, dict.fromkeys(ids_to_delete))
+
+    # Last. The whole tree is passed because a delete genuinely is
+    # category-graph-wide — a top-level delete takes its subcategories with it,
+    # and the survivors' "Other" catch-alls were re-derived by
+    # `normalize_categories` above. Its prune never touches a retired row.
+    replace_categories(session, user_id, remaining_categories.values())
+    session.commit()
+    return CategoryDeleteResponse(categories=remaining_categories, uncategorized_posting_count=posting_count)
 
 
 @router.get("/categories/{category_id}/rename-preview")
@@ -428,39 +511,56 @@ def get_category_rename_preview(
         `will_merge` is true if this rename would fold into an existing
         category rather than just changing a name; `target_name` is that
         existing category's name, or `None` when `will_merge` is false;
-        `budgets_to_delete` lists every `Budget`/`GeneralBudget` entry the
-        merged-away category holds that the merge target already has one
-        for, and which would therefore be discarded (see
-        `store.remap_category_ids`).
+        `budgets_to_delete` lists every `Budget` entry (per-month or
+        general) the merged-away category holds that the merge target
+        already has one for, and which would therefore be discarded (see
+        `taxonomy.remap_category_ids`).
 
     Raises
     ------
     HTTPException
         404 if `category_id` doesn't exist.
     """
-    store = load_store(session, user_id)
-    if category_id not in store.categories:
+    existing_categories = seeded_categories(session, user_id)
+    if category_id not in existing_categories:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
-    categories, id_remap = plan_category_rename(store.categories, category_id, name)
+    _categories, id_remap = plan_category_rename(existing_categories, category_id, name)
     target_id = id_remap.get(category_id)
-    target_name = store.categories[target_id].name if target_id is not None else None
+    target_name = existing_categories[target_id].name if target_id is not None else None
 
-    updated = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
-    dropped_budget_ids = {budget.budget_id for budget in store.budgets} - {
-        budget.budget_id for budget in updated.budgets
-    }
-    dropped_general_keys = set(store.general_budgets) - set(updated.general_budgets)
-    budgets_to_delete = [
-        BudgetToDeletePreview(month=budget.month, amount=budget.amount, currency=budget.currency)
-        for budget in store.budgets
-        if budget.budget_id in dropped_budget_ids
-    ] + [
-        BudgetToDeletePreview(
-            month=None, amount=store.general_budgets[key].amount, currency=store.general_budgets[key].currency
+    references = _category_references(session, user_id)
+    updated = remap_category_ids(references, id_remap)
+    # Matched on the identity triple rather than on `budget_id`, because a
+    # repointed budget's id is rebuilt from its new category (see
+    # `taxonomy.remap_category_ids`) — and *counted*, because two budgets can
+    # land on the same triple and only one survives. Walking the source
+    # budgets untouched-first consumes the survivors in the same order the
+    # merge itself arbitrated them, so the entry reported as discarded is
+    # always the merged-away category's, never the target's.
+    remaining = Counter((budget.month, budget.category_id, budget.subcategory_id) for budget in updated.budgets)
+
+    def post_merge_key(budget: Budget) -> tuple[str | None, str, str | None]:
+        """Build the `(month, category_id, subcategory_id)` identity this budget would have after the merge.
+
+        Returns
+        -------
+        tuple[str | None, str, str | None]
+        """
+        subcategory_id = (
+            id_remap.get(budget.subcategory_id, budget.subcategory_id) if budget.subcategory_id is not None else None
         )
-        for key in dropped_general_keys
-    ]
+        return budget.month, id_remap.get(budget.category_id, budget.category_id), subcategory_id
+
+    budgets_to_delete: list[BudgetToDeletePreview] = []
+    for budget in sorted(references.budgets, key=lambda b: b.category_id in id_remap or b.subcategory_id in id_remap):
+        key = post_merge_key(budget)
+        if remaining[key] > 0:
+            remaining[key] -= 1
+            continue
+        budgets_to_delete.append(
+            BudgetToDeletePreview(month=budget.month, amount=budget.amount, currency=budget.currency)
+        )
     return CategoryRenamePreviewResponse(
         will_merge=target_id is not None, target_name=target_name, budgets_to_delete=budgets_to_delete
     )
@@ -475,16 +575,20 @@ def post_category_rename(
 ) -> CategoryRenameResponse:
     """Rename a category or subcategory, merging it into an existing same-named one if there is one.
 
-    A merge repoints every reference to the merged-away id — postings
-    already in the ledger cache, manual per-posting overrides, transfer
-    rules, category patterns, budgets, and posting splits — onto the
-    surviving id, then removes the merged-away category entirely. See
-    `store.plan_category_rename` for the exact matching rules: a top-level
+    A merge repoints every reference to the merged-away id that is a user
+    decision — manual per-posting overrides, transfer rules, category
+    patterns, budgets, and posting splits — onto the surviving id, and
+    *retires* the merged-away category rather than deleting it (see
+    `accounting.db.core.Category`). Stored postings are not touched at all:
+    the category one was imported under is raw provenance, and the
+    retirement's own successor is what makes it resolve to the survivor
+    from now on (`repositories.taxonomy.load_category_redirects`). See
+    `taxonomy.plan_category_rename` for the exact matching rules: a top-level
     category only merges into another top-level category of the same
     classification; a subcategory only merges into a sibling under the
     same parent. If the merge target already has a budget for a month the
     merged-away category also budgeted, the merged-away category's budget
-    is discarded (see `store.remap_category_ids`) — call
+    is discarded (see `taxonomy.remap_category_ids`) — call
     `GET /categories/{category_id}/rename-preview` first to warn about
     that before committing to the rename.
 
@@ -500,17 +604,17 @@ def post_category_rename(
     HTTPException
         404 if `category_id` doesn't exist.
     """
-    store = load_store(session, user_id)
-    if category_id not in store.categories:
+    existing_categories = seeded_categories(session, user_id)
+    if category_id not in existing_categories:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
 
-    categories, id_remap = plan_category_rename(store.categories, category_id, request.name)
-    store = remap_category_ids(store.model_copy(update={"categories": categories}), id_remap)
+    categories, id_remap = plan_category_rename(existing_categories, category_id, request.name)
 
-    # Every reference to a merged-away category must be repointed *before* `save_store`
-    # deletes that category row below — postings and manual overrides both foreign-key
-    # into `categories`, so the delete would otherwise fail with a constraint violation.
-    remap_ledger_category_ids(id_remap, session, user_id)
+    # Repointed budgets, category patterns and posting splits are written by
+    # their own repositories, before `replace_categories` below prunes the
+    # merged-away category rows they used to reference.
+    _write_category_references(remap_category_ids(_category_references(session, user_id), id_remap), session, user_id)
+
     if id_remap:
 
         def remap(category_id: str | None) -> str | None:
@@ -534,9 +638,17 @@ def post_category_rename(
         }
         save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
-    save_store(store, session, user_id)
+    # The merged-away categories leave the live tree here, each naming the one
+    # it folded into — which is the whole of how the postings imported under
+    # them start resolving to the survivor, with no posting rewritten.
+    retire_categories(session, user_id, dict(id_remap))
 
-    return CategoryRenameResponse(categories=store.categories, merged=bool(id_remap))
+    # With a prune: every *live* reference was repointed above, and a retired
+    # row is exempt from the prune (see `replace_categories`).
+    replace_categories(session, user_id, categories.values())
+    session.commit()
+
+    return CategoryRenameResponse(categories=categories, merged=bool(id_remap))
 
 
 @router.put("/tags")
@@ -552,10 +664,12 @@ def put_tags(
     dict[str, Tag]
         The tags just persisted, keyed by `tag_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"tags": tags})
-    save_store(store, session, user_id)
-    return store.tags
+    # See `put_categories`: a brand-new user's placeholder accounts and default
+    # category tree are seeded together, and only on first contact.
+    seed_new_user_defaults(session, user_id)
+    replace_tags(session, user_id, tags.values())
+    session.commit()
+    return tags
 
 
 @router.post("/tags")
@@ -582,22 +696,22 @@ def post_tag(
         409 if a tag with this name (case-insensitive) already exists, or a
         distinct name collides with an existing tag's slug id.
     """
-    store = load_store(session, user_id)
+    existing_tags = load_tags(session, user_id)
     normalized_name = request.name.strip().lower()
-    collision = any(tag.name.strip().lower() == normalized_name for tag in store.tags.values())
+    collision = any(tag.name.strip().lower() == normalized_name for tag in existing_tags.values())
     if collision:
         raise HTTPException(status_code=409, detail=f"A tag named {request.name!r} already exists")
 
     tag_id = f"tag:{slugify(request.name)}"
-    if tag_id in store.tags:
+    if tag_id in existing_tags:
         # See post_category: the name check is case-insensitive, but the slug id
         # is lossy — guard against two distinct names colliding on it.
         raise HTTPException(
             status_code=409, detail=f"The name {request.name!r} is too similar to an existing tag — pick another"
         )
     new_tag = Tag(tag_id=tag_id, name=request.name)
-    store = store.model_copy(update={"tags": {**store.tags, tag_id: new_tag}})
-    save_store(store, session, user_id)
+    replace_tags(session, user_id, [new_tag], prune=False)
+    session.commit()
     return new_tag
 
 
@@ -611,7 +725,7 @@ def delete_tag_route(
 
     Replaces deleting a tag by re-sending the whole tag list minus one
     (which risked a stale second delete resurrecting a just-removed tag);
-    see `accounting.store.delete_tag`. A tag still applied to postings is
+    see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
     removed from them too, via the `posting_tags` FK cascade.
 
     Returns
@@ -656,13 +770,13 @@ def get_tag_rename_preview(
     HTTPException
         404 if `tag_id` doesn't exist.
     """
-    store = load_store(session, user_id)
-    if tag_id not in store.tags:
+    existing_tags = load_tags(session, user_id)
+    if tag_id not in existing_tags:
         raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
 
-    _tags, id_remap = plan_tag_rename(store.tags, tag_id, name)
+    _tags, id_remap = plan_tag_rename(existing_tags, tag_id, name)
     target_id = id_remap.get(tag_id)
-    target_name = store.tags[target_id].name if target_id is not None else None
+    target_name = existing_tags[target_id].name if target_id is not None else None
     return TagRenamePreviewResponse(will_merge=target_id is not None, target_name=target_name)
 
 
@@ -677,7 +791,7 @@ def post_tag_rename(
 
     A merge repoints every reference to the merged-away id — the
     `posting_tags` and `posting_override_tags` join tables (see
-    `store.remap_tag_ids`) — before the merged-away tag itself is
+    `repositories.taxonomy.remap_tag_ids`) — before the merged-away tag itself is
     deleted, so a foreign key never briefly points at a row about to
     disappear.
 
@@ -693,20 +807,22 @@ def post_tag_rename(
     HTTPException
         404 if `tag_id` doesn't exist.
     """
-    store = load_store(session, user_id)
-    if tag_id not in store.tags:
+    existing_tags = load_tags(session, user_id)
+    if tag_id not in existing_tags:
         raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
 
-    tags, id_remap = plan_tag_rename(store.tags, tag_id, request.name)
-    store = store.model_copy(update={"tags": tags})
+    tags, id_remap = plan_tag_rename(existing_tags, tag_id, request.name)
 
-    # Every reference to a merged-away tag must be repointed *before* `save_store`
-    # deletes that tag row below — `posting_tags` foreign-keys into `tags`, so the
-    # delete would otherwise fail with a constraint violation.
+    # Every reference to a merged-away tag must be repointed *before*
+    # `replace_tags` prunes that tag row below — `posting_tags` foreign-keys
+    # into `tags`, and while its cascade would let the delete through, it would
+    # take the postings' tag rows with it instead of moving them.
     remap_tag_ids(id_remap, session, user_id)
-    save_store(store, session, user_id)
+    # With a prune: a merge removes the merged-away tag row itself.
+    replace_tags(session, user_id, tags.values())
+    session.commit()
 
-    return TagRenameResponse(tags=store.tags, merged=bool(id_remap))
+    return TagRenameResponse(tags=tags, merged=bool(id_remap))
 
 
 def _transfer_rule_id(description_contains: str, account_id: str | None, counterparty_account_id: str | None) -> str:
@@ -744,15 +860,15 @@ def post_transfer_rule(
     HTTPException
         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
     """
-    store = load_store(session, user_id)
+    accounts = seeded_accounts(session, user_id)
     # Both reference real accounts (counterparty_account_id is a DB foreign key);
     # validate up front so an unknown id is a clean 404, not an IntegrityError 500
-    # from save_store.
+    # from the insert.
     for label, ref in (
         ("account_id", request.account_id),
         ("counterparty_account_id", request.counterparty_account_id),
     ):
-        if ref is not None and ref not in store.accounts:
+        if ref is not None and ref not in accounts:
             raise HTTPException(status_code=404, detail=f"Account {ref!r} referenced by {label} does not exist")
     rule_id = _transfer_rule_id(request.description_contains, request.account_id, request.counterparty_account_id)
     # A create body can't express `active`/`excluded_transaction_ids`, so when
@@ -760,7 +876,7 @@ def post_transfer_rule(
     # replaced — otherwise re-posting would silently re-enable a disabled rule
     # and drop every exclusion the user built up. Only priority/description
     # come from the request.
-    existing = next((r for r in store.rules if r.rule_id == rule_id), None)
+    existing = next((r for r in load_transfer_rules(session, user_id) if r.rule_id == rule_id), None)
     rule = TransferRule(
         rule_id=rule_id,
         description_contains=request.description_contains,
@@ -771,10 +887,8 @@ def post_transfer_rule(
         active=existing.active if existing else True,
         excluded_transaction_ids=list(existing.excluded_transaction_ids) if existing else [],
     )
-    remaining = [r for r in store.rules if r.rule_id != rule_id]
-    store = store.model_copy(update={"rules": [*remaining, rule]})
     raw_ledger = load_ledger(session, user_id)
-    save_store(store, session, user_id)
+    upsert_transfer_rule(rule, session, user_id)
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
     return rule
 
@@ -789,13 +903,11 @@ def patch_transfer_rule(
     """Update one existing transfer rule in place, without touching any other rule already saved.
 
     A true per-resource write — unlike `POST /transfer-rules`, this
-    never round-trips through `load_store`/`save_store` (which deletes and
-    reinserts every persisted entity for the user); see
-    `accounting.store.update_transfer_rule`. Guarded by
-    `request.expected_version` instead of the whole-store
-    `X-Expected-Store-Version` header, so an edit to this one rule can
-    never spuriously conflict with — or be silently overwritten by — an
-    unrelated save elsewhere in the store.
+    never round-trips through a whole-store rewrite; see
+    `repositories.interpretation.update_transfer_rule`. Guarded by
+    `request.expected_version`, this rule's own row version, so an edit
+    to this one rule can never spuriously conflict with — or be silently
+    overwritten by — an unrelated save elsewhere in the store.
 
     Returns
     -------
@@ -837,11 +949,11 @@ def delete_transfer_rule_route(
     Deleting a rule cascades to the links it produced: a rule-created link
     (`source == "rule"`) is a consequence of the rule, so it must not outlive
     it. Manually-confirmed links are never swept up (see
-    `accounting.store.remove_rule_transfer_links`). The follow-up
+    `repositories.interpretation.remove_rule_transfer_links`). The follow-up
     `reconcile_and_persist_rule_links` re-proposes only from the *remaining*
     rules, so the deleted rule's links stay gone rather than being re-derived.
 
-    No version check — see `accounting.store.delete_transfer_rule`'s own
+    No version check — see `repositories.interpretation.delete_transfer_rule`'s own
     docstring for why deleting an already-gone rule is a plain 404, not a
     409: there's nothing left to conflict with.
 
@@ -856,10 +968,16 @@ def delete_transfer_rule_route(
         404 if no rule with `rule_id` exists.
     """
     raw_ledger = load_ledger(session, user_id)
+    # Links first, rule second. `transfer_links.rule_id` is a real foreign
+    # key with `ON DELETE SET NULL` now (DB-audit D7): deleting the rule
+    # first would clear the column this sweep matches on and strand every
+    # link the rule created. A rule that doesn't exist has no links either
+    # — that is what the foreign key guarantees — so this is a no-op on the
+    # 404 path below.
+    remove_rule_transfer_links(session, user_id, rule_id)
     deleted = delete_transfer_rule(session, user_id, rule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
-    remove_rule_transfer_links(session, user_id, rule_id)
     session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
     return TransferRuleIdResponse(rule_id=rule_id)
@@ -898,9 +1016,10 @@ def post_category_pattern(
         subcategory_id=request.subcategory_id,
         priority=request.priority,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"category_patterns": {**store.category_patterns, pattern.pattern_id: pattern}})
-    save_store(store, session, user_id)
+    # The default category tree this pattern's `category_id` foreign-keys into has to exist first;
+    # a no-op read for everyone but a brand-new user.
+    seed_new_user_defaults(session, user_id)
+    upsert_category_pattern(session, user_id, pattern)
     return pattern
 
 
@@ -917,10 +1036,10 @@ def put_category_patterns(
     dict[str, CategoryPattern]
         The patterns just persisted, keyed by `pattern_id`.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"category_patterns": category_patterns})
-    save_store(store, session, user_id)
-    return store.category_patterns
+    seed_new_user_defaults(session, user_id)  # see the equivalent note in `post_category_pattern`
+    replace_category_patterns(session, user_id, category_patterns.values())
+    session.commit()
+    return category_patterns
 
 
 @router.patch("/category-patterns/{pattern_id}")
@@ -932,8 +1051,8 @@ def patch_category_pattern(
 ) -> CategoryPattern:
     """Update one existing category pattern in place, without touching any other pattern already saved.
 
-    A true per-resource write — see `accounting.store.update_category_pattern`. Guarded by
-    `request.expected_version` instead of the whole-store `X-Expected-Store-Version` header.
+    A true per-resource write — see `repositories.interpretation.update_category_pattern`. Guarded by
+    `request.expected_version`, this pattern's own row version.
 
     Returns
     -------
@@ -968,7 +1087,7 @@ def delete_category_pattern_route(
 ) -> CategoryPatternIdResponse:
     """Delete one category pattern, without touching any other pattern already saved.
 
-    No version check — see `accounting.store.delete_category_pattern`.
+    No version check — see `repositories.interpretation.delete_category_pattern`.
 
     Returns
     -------
@@ -1011,9 +1130,7 @@ def post_other_asset(
         currency=request.currency,
         note=request.note,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"other_assets": [*store.other_assets, asset]})
-    save_store(store, session, user_id)
+    insert_other_asset(session, user_id, asset)
     return asset
 
 
@@ -1030,10 +1147,9 @@ def put_other_assets(
     list[OtherAsset]
         The assets just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"other_assets": other_assets})
-    save_store(store, session, user_id)
-    return store.other_assets
+    replace_other_assets(session, user_id, other_assets)
+    session.commit()
+    return other_assets
 
 
 @router.delete("/other-assets/{asset_id}")
@@ -1045,7 +1161,7 @@ def delete_other_asset_route(
     """Delete one manually-entered asset, without touching any other. Idempotent, no version check.
 
     Replaces deleting an asset by re-sending the whole list minus one; see
-    `accounting.store.delete_other_asset`.
+    `repositories.taxonomy.delete_other_asset`.
 
     Returns
     -------
@@ -1069,27 +1185,17 @@ def put_budgets(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[Budget]:
-    """Replace the whole budget list, across every month.
+    """Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
 
     Returns
     -------
     list[Budget]
         The budgets just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"budgets": budgets})
-    save_store(store, session, user_id)
-    return store.budgets
-
-
-def _budget_id(month: str, category_id: str, subcategory_id: str | None) -> str:
-    """Derive the natural key one `(month, category_id, subcategory_id)` tuple always maps to.
-
-    Returns
-    -------
-    str
-    """
-    return f"{month}:{category_id}:{subcategory_id}" if subcategory_id is not None else f"{month}:{category_id}"
+    seed_new_user_defaults(session, user_id)
+    replace_budgets(session, user_id, budgets)
+    session.commit()
+    return budgets
 
 
 @router.post("/budgets")
@@ -1098,7 +1204,11 @@ def post_budget(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Budget:
-    """Set one month's spending target for one category (or subcategory), replacing any prior target for it.
+    """Set one spending target for one category (or subcategory), replacing any prior target for it.
+
+    `request.month` picks which target: a `"YYYY-MM"` sets that month's,
+    and omitting it sets the general, every-month-alike one. The two are
+    separate rows, so setting one never overwrites the other.
 
     Unlike `PUT /budgets`, only the one budget in the request body is
     sent or touched — every other month/category's target is left alone,
@@ -1110,12 +1220,11 @@ def post_budget(
     Budget
         The budget just persisted.
     """
-    # Ensures the default category tree this budget's `category_id` foreign-keys into has been seeded
-    # for a brand-new user (see `load_store` — it persists defaults on first access); a no-op read for
-    # everyone else. The actual write below is scoped to this one budget row, not a whole-store save.
-    load_store(session, user_id)
+    # The default category tree this budget's `category_id` foreign-keys into has to exist first;
+    # a no-op read for everyone but a brand-new user.
+    seed_new_user_defaults(session, user_id)
     budget = Budget(
-        budget_id=_budget_id(request.month, request.category_id, request.subcategory_id),
+        budget_id=budget_row_key(request.month, request.category_id, request.subcategory_id),
         month=request.month,
         category_id=request.category_id,
         subcategory_id=request.subcategory_id,
@@ -1132,7 +1241,7 @@ def delete_budget(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> BudgetIdResponse:
-    """Remove one month's target for one category.
+    """Remove one target — a month's, or the general one — for one category.
 
     Returns
     -------
@@ -1148,96 +1257,6 @@ def delete_budget(
         raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
     session.commit()
     return BudgetIdResponse(budget_id=budget_id)
-
-
-@router.put("/general-budgets")
-def put_general_budgets(
-    general_budgets: dict[str, GeneralBudget],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, GeneralBudget]:
-    """Replace the whole general-budget map, keyed by `category_id` — the same amount applies to every month.
-
-    Stored, edited, and displayed completely separately from `Budget`'s
-    per-month rows (see `models.GeneralBudget`); this never falls back to
-    or overwrites a per-month budget, or vice versa.
-
-    Returns
-    -------
-    dict[str, GeneralBudget]
-        The general budgets just persisted.
-    """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"general_budgets": general_budgets})
-    save_store(store, session, user_id)
-    return store.general_budgets
-
-
-def _general_budget_key(category_id: str, subcategory_id: str | None) -> str:
-    """Which of `category_id`/`subcategory_id` a general budget is keyed by — whichever is more specific.
-
-    Returns
-    -------
-    str
-    """
-    return subcategory_id if subcategory_id is not None else category_id
-
-
-@router.post("/general-budgets")
-def post_general_budget(
-    request: GeneralBudgetUpsert,
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GeneralBudget:
-    """Set one category's (or subcategory's) standing target, replacing any prior one for it.
-
-    Unlike `PUT /general-budgets`, only the one entry in the request body
-    is sent or touched.
-
-    Returns
-    -------
-    GeneralBudget
-        The general budget just persisted.
-    """
-    load_store(session, user_id)  # seed defaults for a new user (see the equivalent note in `post_budget`)
-    general_budget = GeneralBudget(
-        category_id=request.category_id,
-        subcategory_id=request.subcategory_id,
-        amount=request.amount,
-        currency=request.currency,
-    )
-    upsert_general_budget(general_budget, session, user_id)
-    return general_budget
-
-
-@router.delete("/general-budgets/{key}")
-def delete_general_budget(
-    key: str,
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GeneralBudgetKeyResponse:
-    """Remove one category's (or subcategory's) standing target.
-
-    Returns
-    -------
-    GeneralBudgetKeyResponse
-        The key just removed.
-
-    Raises
-    ------
-    HTTPException
-        404 if no general budget has this key.
-    """
-    # Read (not a whole-store save) to resolve `key` back to its full category/subcategory pair, since
-    # the row id derives from both and `key` alone (subcategory-or-category) can't reconstruct it. The
-    # actual delete is scoped to the one row, so it never blanket-rewrites the general-budget table.
-    store = load_store(session, user_id)
-    entry = store.general_budgets.get(key)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"General budget {key!r} not found")
-    remove_general_budget(session, user_id, entry.category_id, entry.subcategory_id)
-    session.commit()
-    return GeneralBudgetKeyResponse(key=key)
 
 
 @router.post("/simulator/scenarios")
@@ -1267,9 +1286,7 @@ def post_simulator_scenario(
         compounding_frequency=request.compounding_frequency,
         currency=request.currency,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"simulator_scenarios": [*store.simulator_scenarios, scenario]})
-    save_store(store, session, user_id)
+    insert_simulator_scenario(session, user_id, scenario)
     return scenario
 
 
@@ -1286,10 +1303,9 @@ def put_simulator_scenarios(
     list[SimulatorScenario]
         The scenarios just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"simulator_scenarios": scenarios})
-    save_store(store, session, user_id)
-    return store.simulator_scenarios
+    replace_simulator_scenarios(session, user_id, scenarios)
+    session.commit()
+    return scenarios
 
 
 @router.delete("/simulator/scenarios/{scenario_id}")
@@ -1301,7 +1317,7 @@ def delete_simulator_scenario_route(
     """Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
 
     Replaces deleting a scenario by re-sending the whole list minus one;
-    see `accounting.store.delete_simulator_scenario`.
+    see `repositories.taxonomy.delete_simulator_scenario`.
 
     Returns
     -------
@@ -1317,6 +1333,46 @@ def delete_simulator_scenario_route(
         raise HTTPException(status_code=404, detail=f"Simulator scenario {scenario_id!r} not found")
     session.commit()
     return SimulatorScenarioIdResponse(scenario_id=scenario_id)
+
+
+def _check_broker_link(
+    session: Session, user_id: uuid.UUID, kind: AccountKind, broker_connection_id: uuid.UUID | None
+) -> None:
+    """Reject a broker link the database itself would reject, with a status code that says which way it is wrong.
+
+    Both rules are enforced structurally — a foreign key into
+    `trades.broker_connections` and a `CHECK` pinning the link to the
+    `external_investment` kind (see `db.core.Account`). Both are also
+    checked here, because a foreign-key or check violation reaches a
+    client as a 500, and neither of these is a server error: one is a
+    reference to something that isn't there (404) and the other is a
+    malformed request (400).
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose account this is.
+    kind
+        The account kind being created or updated to.
+    broker_connection_id
+        The connection being linked, or `None` for a locally-valued account.
+
+    Raises
+    ------
+    HTTPException
+        404 if the connection doesn't exist; 400 if `kind` cannot carry one.
+    """
+    if broker_connection_id is None:
+        return
+    if kind != "external_investment":
+        raise HTTPException(
+            status_code=400,
+            detail="Only an external_investment account can pull its value from a broker connection",
+        )
+    if not broker_connection_exists(session, user_id, broker_connection_id):
+        raise HTTPException(status_code=404, detail=f"Broker connection {broker_connection_id} does not exist")
 
 
 @router.post("/accounts")
@@ -1335,11 +1391,14 @@ def post_account(
     Raises
     ------
     HTTPException
-        404 if `parent_account_id` is set but names an account that doesn't exist.
+        404 if `parent_account_id` is set but names an account that doesn't
+        exist, or if `broker_connection_id` names a connection that doesn't;
+        400 if a broker connection is named on a non-investment account.
     """
-    store = load_store(session, user_id)
-    if account.parent_account_id is not None and account.parent_account_id not in store.accounts:
+    accounts = seeded_accounts(session, user_id)
+    if account.parent_account_id is not None and account.parent_account_id not in accounts:
         raise HTTPException(status_code=404, detail=f"Parent account {account.parent_account_id!r} does not exist")
+    _check_broker_link(session, user_id, account.kind, account.broker_connection_id)
     new_account = Account(
         account_id=uuid.uuid4().hex,
         name=account.name,
@@ -1348,11 +1407,11 @@ def post_account(
         currency=account.currency,
         last_four=account.last_four,
         parent_account_id=account.parent_account_id,
-        external_ref=account.external_ref,
+        broker_connection_id=account.broker_connection_id,
         meta=account.meta,
     )
-    store = store.model_copy(update={"accounts": {**store.accounts, new_account.account_id: new_account}})
-    save_store(store, session, user_id)
+    replace_accounts(session, user_id, [new_account], prune=False)
+    session.commit()
     return new_account
 
 
@@ -1373,11 +1432,12 @@ def put_account(
     Raises
     ------
     HTTPException
-        404 if the account doesn't exist; 400 if institution/kind/currency
-        changed on an account that already has postings.
+        404 if the account doesn't exist or `broker_connection_id` names a
+        connection that doesn't; 400 if institution/kind/currency changed on
+        an account that already has postings, or a broker connection is
+        named on a non-investment account.
     """
-    store = load_store(session, user_id)
-    existing = store.accounts.get(account_id)
+    existing = seeded_accounts(session, user_id).get(account_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
 
@@ -1386,12 +1446,13 @@ def put_account(
         or update.kind != existing.kind
         or update.currency != existing.currency
     )
-    if locked_fields_changed and _account_has_postings(account_id, state.config, session, user_id):
+    if locked_fields_changed and _account_has_postings(account_id, session, user_id):
         raise HTTPException(
             status_code=400,
             detail="This account already has transactions — only its display name and meta can be edited",
         )
 
+    _check_broker_link(session, user_id, update.kind, update.broker_connection_id)
     updated = existing.model_copy(
         update={
             "name": update.name,
@@ -1399,7 +1460,7 @@ def put_account(
             "kind": update.kind,
             "currency": update.currency,
             "last_four": update.last_four,
-            "external_ref": update.external_ref,
+            "broker_connection_id": update.broker_connection_id,
             "meta": update.meta,
         }
     )
@@ -1427,10 +1488,9 @@ def delete_account(
     HTTPException
         404 if the account doesn't exist; 400 if it already has postings.
     """
-    store = load_store(session, user_id)
-    if account_id not in store.accounts:
+    if account_id not in seeded_accounts(session, user_id):
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
-    if _account_has_postings(account_id, state.config, session, user_id):
+    if _account_has_postings(account_id, session, user_id):
         raise HTTPException(status_code=400, detail="This account already has transactions and can't be deleted")
     remove_account(session, user_id, account_id)
     session.commit()
@@ -1464,14 +1524,16 @@ def close_account(
         404 if the account doesn't exist; 400 if a transfer doesn't move
         money out of `account_id`, or names an unknown `to_account_id`.
     """
-    store = load_store(session, user_id)
-    account = store.accounts.get(account_id)
+    accounts = seeded_accounts(session, user_id)
+    # Read before the insert below, so the response lists each transfer once.
+    existing_transfers = load_manual_transfers(session, user_id)
+    account = accounts.get(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     for transfer in request.transfers:
         if transfer.from_account_id != account_id:
             raise HTTPException(status_code=400, detail="Each transfer must move money out of the account being closed")
-        if transfer.to_account_id not in store.accounts:
+        if transfer.to_account_id not in accounts:
             raise HTTPException(status_code=400, detail=f"Account {transfer.to_account_id!r} not found")
 
     updated_account = account.model_copy(update={"closed": True})
@@ -1479,7 +1541,7 @@ def close_account(
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     insert_manual_transfers(request.transfers, session, user_id)
     session.commit()
-    return AccountCloseResponse(account=updated_account, manual_transfers=[*store.manual_transfers, *request.transfers])
+    return AccountCloseResponse(account=updated_account, manual_transfers=[*existing_transfers, *request.transfers])
 
 
 @router.post("/accounts/{account_id}/reopen")
@@ -1500,8 +1562,7 @@ def reopen_account(
     HTTPException
         404 if the account doesn't exist.
     """
-    store = load_store(session, user_id)
-    account = store.accounts.get(account_id)
+    account = seeded_accounts(session, user_id).get(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     updated_account = account.model_copy(update={"closed": False})
@@ -1530,8 +1591,7 @@ def put_opening_balance(
     HTTPException
         404 if the account doesn't exist; 400 if `opening_balance.account_id` doesn't match the path.
     """
-    store = load_store(session, user_id)
-    if account_id not in store.accounts:
+    if account_id not in seeded_accounts(session, user_id):
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     if opening_balance.account_id != account_id:
         raise HTTPException(status_code=400, detail="account_id in the body must match the URL")

@@ -10,7 +10,7 @@ import { PageErrorFallback } from '@/components/shared/PageErrorFallback'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { useSyncBrowserTimezone } from '@/hooks/usePortfolioData'
-import { StoreVersionConflictError } from '@/lib/api'
+import { RowVersionConflictError } from '@/lib/api'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import { routePathFromFile } from '@/lib/routing'
 
@@ -42,7 +42,7 @@ const queryClient = new QueryClient({
   // permission error on the VM caused, with no error anywhere in the UI.
   mutationCache: new MutationCache({
     onError: (error) => {
-      if (error instanceof StoreVersionConflictError) {
+      if (error instanceof RowVersionConflictError) {
         toast.error(error.message, { action: { label: 'Reload', onClick: () => window.location.reload() } })
         return
       }

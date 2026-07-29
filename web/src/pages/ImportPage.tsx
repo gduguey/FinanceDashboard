@@ -27,7 +27,7 @@ import {
   useRebuildLedger,
   useSupportedImportKinds,
 } from '@/hooks/useAccountingData'
-import { accountingApi, type ImportAccountInfo } from '@/lib/accountingApi'
+import { accountingApi } from '@/lib/accountingApi'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, CanonicalCategoryOverrides, Category, CurrencyCode } from '@/types/accounting'
 
@@ -381,28 +381,12 @@ export function ImportPage() {
     setPending((prev) => prev.filter((entry) => entry.key !== key))
   }
 
-  function buildImportInfo(entry: PendingCsvImport): ImportAccountInfo {
-    // `entry.accountId` is always a real, already-existing account by
-    // construction (the `Import` button is disabled while it's empty — see
-    // below), so its name/parent are always safe to look up here rather
-    // than carried on the pending entry itself.
-    const account = store?.accounts[entry.accountId]
-    return {
-      institution: entry.institution,
-      account_kind: entry.accountKind,
-      account_id: entry.accountId,
-      account_name: account?.name ?? '',
-      currency: entry.currency,
-      parent_account_id: account?.parent_account_id ?? null,
-    }
-  }
-
   async function runCanonicalImport(entry: PendingCsvImport, overrides?: CanonicalCategoryOverrides) {
     updateEntry(entry.key, { status: 'importing' })
     try {
       const result = await importCanonicalCsv.mutateAsync({
         file: entry.file,
-        info: buildImportInfo(entry),
+        accountId: entry.accountId,
         separator: entry.separator,
         dateOrder: entry.dateOrder,
         categoryOverrides: overrides,
@@ -422,7 +406,7 @@ export function ImportPage() {
     updateEntry(entry.key, { status: 'importing' })
     if (supportedKinds.has(`${entry.institution}:${entry.accountKind}`)) {
       try {
-        const result = await importCsv.mutateAsync({ file: entry.file, info: buildImportInfo(entry) })
+        const result = await importCsv.mutateAsync({ file: entry.file, accountId: entry.accountId })
         updateEntry(entry.key, { status: 'done', message: `${result.new_posting_count} new postings` })
       } catch (error) {
         updateEntry(entry.key, { status: 'error', message: error instanceof Error ? error.message : 'Import failed' })

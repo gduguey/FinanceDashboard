@@ -13,97 +13,120 @@ for, and the exact commands for the scenarios you'll actually run into.
 |---|---|
 | `settings.py` | Where the two Postgres connection strings come from (`DATABASE_URL`, `DATABASE_URL_APP`) — see "Two roles" below. |
 | `session.py` | Builds the one shared connection pool (`get_engine`) and hands each web request its own database session (`get_db`), tagged with which user is making the request. |
-| `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus `derive_id`/`natural_keys_by_id`, a shared helper for turning a human-chosen string into a stable internal id. |
-| `models.py` | The three tables that live outside any one module's own schema: `users`, `user_secrets`, and `external_identities`. |
+| `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus the `uuid7()` primary-key default; the `MONEY`/`SHARES`/`RATE` column types; the `Timestamped` mixin; `ids_by_natural_key`/`natural_keys_by_id` (the one seam translating a human-chosen string to a row's internal id) and its `UnknownNaturalKeyError`; the write helpers `merge_by_natural_key`, `upsert_and_prune` and `ensure_reference_rows`; and `check_and_bump_row_version`/`VersionConflictError`, the whole of optimistic concurrency. |
+| `models.py` | The four tables that live outside any one module's own schema: `users`, `user_secrets`, `external_identities`, and the `currencies` reference table both schemas foreign-key against. |
+| `tenant.py` | Which tables are tenant-owned, derived from the schema rather than listed by hand — `tenant_tables`, `enable_rls_statements`, `POLICY_NAME`, `is_reference_table`, and `RLS_EXEMPT`. The baseline migration emits whatever this computes; see "Row-Level Security" below. |
+| `money.py` | `MONEY_SCALE`/`MONEY_QUANTUM`/`ROUNDING` (`ROUND_HALF_UP`) and the `Money`/`Rate` wire types — the one place money's scale and rounding mode are decided. |
+| `currency.py` | The `CurrencyCode` literal and `CURRENCY_REFERENCE`, the seed data for `public.currencies`. Lives here so `trades` and `accounting` share one list instead of one of them going unvalidated. |
+| `indexes.py` | Generates the foreign-key and `(user_id, hot_col)` indexes from the schema, so a new FK cannot ship unindexed (DB-audit D1/D2). Skips reference tables, whose columns are too low-cardinality to be worth an index. |
+| `timestamped_backups.py` | Shared newest-N pruning that `db.backup.prune_old_backups` and both cache-backup modules call through to. |
 | `current_user.py` | Which user is making the current request — a placeholder name FastAPI resolves to the real Clerk-session-derived identity at runtime; see "Which user is making this request" below for exactly how. Deliberately has no `DEFAULT_USER_ID` or any other fallback identity — that's a test-only concept, defined in `tests/conftest.py` instead. |
 | `external_identities.py` | `lookup_user_id`/`link_identity` — the only place a `(provider, external id)` pair is ever read or written; see "The two tables here" below. |
 | `encryption.py` | Encrypts/decrypts anything stored in `user_secrets.ciphertext`. |
 | `secrets.py` | `get_secret`/`set_secret`/`delete_secret` — the only way any code in this repo reads or writes a credential. |
 | `backup.py` | Dumps the whole database and uploads it somewhere durable. |
 
-## Stable ids: `derive_id`, and why its namespace constant is a plain constant, not a secret
+## Ids: `uuid7()`, and why a row's id is minted rather than computed
 
-Most tables' `id` column isn't a random id — it's computed from something
-human-chosen (an account's `institution:kind:last4`, a category's own
-name-based key, ...) via `db.base.derive_id`, so that re-deriving it later
-from the same input always gives back the exact same id (see that
-function's own docstring for why: some tables get fully rewritten on every
-save, and re-imports need to recognize "this already exists" instead of
-creating a duplicate).
+Every table's `id` is a UUID the *database* generates, from one SQL function
+this repo defines: `public.uuid7()` (see `db.base`). It carries no meaning.
+You cannot work out a row's id from what the row is about — the only way to
+learn it is to ask, which is what `ids_by_natural_key` is for.
 
-The mechanism is `uuid.uuid5(namespace, name)` — a **hash function**, not a
-random generator: think of it as a recipe. Feed it the exact same two
-ingredients twice, and you get the exact same output both times, no
-randomness involved; feed it different ingredients, and the output comes
-out completely different. The two ingredients it needs:
+**Why version 7 specifically.** A UUID is 128 bits, and v7 spends the first
+48 of them on the current time in milliseconds, big-endian, with the
+remaining bits random. That ordering is the entire point. A primary key is
+backed by a B-tree, and a B-tree stores keys in sorted order — so with a
+*random* key, consecutive inserts land at random points in the index,
+dirtying pages all over it and splitting them as they fill. With a
+time-ordered key, every insert sorts after every insert before it, so they
+all land at the right-hand edge: one hot page instead of hundreds of cold
+ones. This is DB-audit finding **D3**.
 
-- **`name`** — the actual thing being described, e.g.
-  `"<user id>:accounts:chase:checking:1234"`.
-- **`namespace`** — a second ingredient the recipe requires that's always
-  the *same* value no matter what's being described. It doesn't need to
-  mean anything; it just needs to never change.
+**Why we define the function ourselves.** Postgres grew a built-in
+`uuidv7()` in version 18. This project runs 16 (`deploy/docker-compose.yml`
+pins `postgres:16-alpine`), so `db.base._CREATE_UUID7_SQL` implements RFC
+9562 §5.7 directly — timestamp prefix, version nibble, variant bits, random
+remainder. When this project moves to Postgres 18+, that function body can
+be replaced by a call to the built-in; nothing else has to change, because
+every table only ever names `public.uuid7()`.
 
-`_ID_NAMESPACE` is that second ingredient: one arbitrary UUID, generated a
-single time, hardcoded directly in `base.py`. Change it, and every id this
-function has ever produced would come out different if recomputed — every
-foreign key pointing at an old id would suddenly point at nothing.
+**Where it gets installed.** Alembic's autogenerate cannot see functions, so
+the definition is executed from two places against one source of truth —
+exactly the arrangement `accounting.db.triggers` uses for the zero-sum
+constraint trigger:
 
-**Should it live in `.env`, or somewhere with backups, instead of hardcoded
-in source?** No — that would make it *less* safe, not more. `.env` files
-are gitignored on purpose (that's what makes them safe for actual secrets)
-and exist only as loose, uncommitted copies on whichever machines they've
-been manually pasted onto — no version history, no diff if someone edits
-one character by mistake, and nothing stopping the value from silently
-drifting between a laptop's `.env` and the server's `.env.docker`. This
-constant needs the exact opposite properties: it must be **identical in
-every environment, forever**, and a plain constant in versioned source
-code already guarantees both, for free — every clone of this repo has the
-same value, every change to it shows up in `git log`/`git blame` as an
-ordinary, reviewable commit, and reverting it is a normal `git revert`.
-Putting it in `.env` instead would introduce the exact failure mode it's
-protecting against: a copy-paste slip, or someone regenerating "a new
-one" thinking it's like `APP_SECRETS_ENCRYPTION_KEY`, would quietly break
-every id derivation in that one environment.
+- the baseline migration (`upgrade` runs `UUID7_STATEMENTS`), for real
+  databases;
+- a `before_create` hook on `Base.metadata`, for the test suite's
+  `Base.metadata.create_all`.
 
-This isn't a workaround specific to this app, either — it's how `uuid5` is
-meant to be used. The `uuid` module itself ships several of these same
-fixed namespace constants built in (`uuid.NAMESPACE_DNS`,
-`uuid.NAMESPACE_URL`, ...), hardcoded in the Python standard library's own
-source, unchanged since the format was standardized. `_ID_NAMESPACE` is
-the same idea at this app's scale: mint one arbitrary constant, commit it,
-never touch it again.
+`before_create`, not `after_create`: every table declares
+`DEFAULT public.uuid7()` on its primary key, and Postgres resolves that
+function when the *table* is created, not when a row is inserted — so it has
+to exist first. (For the same reason the downgrade drops it last, after the
+tables that depend on it are gone.) Without the hook, the function would
+exist in production and in no test.
 
-The real risk isn't "it gets deleted" (`git revert` fixes that
-immediately) — it's a one-character edit slipping through review
-unnoticed. `tests/db/test_base.py` pins the exact expected output of
-`derive_id` for a fixed input, so a change to `_ID_NAMESPACE` fails a test
-immediately instead of silently shipping.
+### What replaced the content-hashed id
+
+There used to be a helper here that computed a row's id by hashing
+`(user_id, table, natural_key)` with `uuid5`, so the same natural key always
+produced the same id without a lookup. It is gone, because a content hash
+scatters keys uniformly — precisely the worst case for the B-tree above.
+
+What it *guaranteed* did not go away; it moved to where it belonged all
+along. "The same natural key always names the same row" was never really a
+property of the id — it is `UNIQUE (user_id, natural_key)`, which every
+natural-keyed table still carries. So:
+
+- every **write** conflicts on `(user_id, natural_key)` (or, for a table
+  with no natural key, on whatever its genuine unique constraint is —
+  `opening_balances` on `(user_id, account_id)`, `posting_splits` on
+  `(user_id, posting_id)`), never on `id`;
+- every **read** that needs an id resolves it, via `ids_by_natural_key`;
+- every **insert** that needs the id it just created reads it off the
+  flushed row (SQLAlchemy fetches server-generated primary keys with
+  `INSERT ... RETURNING id`).
+
+`ids_by_natural_key` and `natural_keys_by_id` are the **only** two places in
+this repo where an id and a natural key meet. Above that line — pydantic
+models, API paths, every domain function — a row is addressed by its natural
+key string, and nothing else. Subscript the lookup (`ids[key]`) when you
+hold a reference that must resolve: a key with no row raises
+`UnknownNaturalKeyError`, which is the loud failure the foreign key used to
+provide when a made-up id reached Postgres. Use `.get(key)` only where the
+absence itself is the answer.
 
 ## Primary key patterns across every table
 
-Every table in this database falls into exactly one of three key shapes.
+Every table in this database falls into exactly one of four key shapes.
 Which one a new table should use isn't a free choice — it follows directly
-from two questions: *does this table get bulk-rewritten or re-imported?*
-and *does anything else foreign-key against its `id`?*
+from three questions: *is this tenant data at all?*, *does this table get
+bulk-rewritten or re-imported?* and *does anything else foreign-key against
+its `id`?*
 
-**1. `derive_id`-derived `id`, plus a `natural_key` column** — for tables
+**1. A `uuid7()` surrogate `id`, plus a `natural_key` column** — for tables
 that get fully rewritten on every save, or re-imported from an external
-source (so "insert, or recognize this already exists" has to work without
-a lookup). This is the majority of user-owned tables:
+source, so "insert, or recognize this already exists" has to work. The
+recognizing is done by `UNIQUE (user_id, natural_key)`, which is what every
+write conflicts on. This is the majority of user-owned tables:
 `accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
-`manual_transfers`, `other_assets`, `posting_merges`,
-`dismissed_suggestions`, `goals`, `goal_contributions`,
-`recurring_additions`, `transfer_rules`, `category_patterns`, `budgets`,
-`simulator_scenarios`; `trades.broker_connections`, `ledger_events`.
+`other_assets`, `posting_merges`, `suggestions`, `transfer_links`,
+`goals`, `goal_contributions`, `goal_automations`,
+`categorization_rules`, `budgets`, `simulator_scenarios`;
+`trades.broker_connections`, `ledger_events`.
 
-**2. A plain random `uuid.uuid4()` surrogate `id`** — for tables that are
-never bulk-rewritten and have no re-import/dedup concept, just an ordinary
-"create one row, maybe delete it later" lifecycle. Uniqueness (where it
-matters) comes from a separate `UniqueConstraint`, not the id itself:
-`public.users`; `accounting.posting_tags`, `posting_splits`,
-`posting_split_legs`, `posting_merge_duplicates`, `posting_overrides`,
-`posting_pending_suggestions`, `general_budgets`,
-`withdrawal_priority_entries`.
+**2. A `uuid7()` surrogate `id` and no `natural_key`** — for tables that are
+never re-imported and have no human-chosen name of their own, because their
+identity is entirely "which row do I hang off". Uniqueness comes from a
+`UniqueConstraint` over those owning columns, and that constraint is what a
+write conflicts on and what a caller addresses the row by:
+`public.users` (whose identity is the external one in
+`external_identities`); `accounting.opening_balances`
+(`(user_id, account_id)`), `posting_overrides` (`(user_id, posting_id)`),
+`posting_splits` (`(user_id, posting_id)`), `posting_split_legs`
+(`(user_id, posting_split_id, ordinal)`).
 
 **3. No surrogate `id` at all — the real key(s) are the primary key,
 directly.** This is the right choice specifically when nothing else ever
@@ -125,57 +148,167 @@ The last two are new tables (added to move `trades`'s dashboard
 preferences and `accounting`'s LLM call counters out of flat JSON files —
 see each package's own docstrings on `trades.db.models.DashboardSettings`
 and `accounting.db.llm.LLMUsage`), and deliberately follow this third
-pattern rather than `derive_id`: neither is ever bulk-rewritten or
+pattern rather than the majority one: neither is ever bulk-rewritten or
 re-imported, and nothing else in the schema foreign-keys against either
 one's identity — so a surrogate id would just be one more column with no
-job to do. Using `derive_id` here would be following the majority
-pattern out of habit rather than for a reason that actually applies.
+job to do. Giving these a surrogate id would be following the majority
+pattern out of habit rather than for a reason that actually applies. The
+pure association tables (`accounting.posting_tags`,
+`posting_override_tags`, `posting_merge_duplicates`,
+`categorization_rule_exclusions`, `transfer_linked_transactions`) belong
+here too: the association *is* the key, and their surrogate ids were dropped
+for exactly that reason (DB-audit D9).
+
+**4. No `user_id` at all, and the vocabulary value itself is the primary
+key** — the reference/dimension tables. These are shared across every
+tenant, so there is nothing to isolate and no surrogate to mint:
+
+- `public.currencies` → PK `code` (the FK target every `currency` column in
+  both schemas names).
+- `accounting.institutions` → PK `code`.
+- `trades.securities` → PK `symbol`.
+
+`db.tenant.is_reference_table` is the formal predicate — no `user_id`, and
+not `users`. That one predicate does three jobs: it keeps these tables out of
+the RLS derivation without needing an exemption, it keeps `db.indexes` from
+minting a useless index over a handful of distinct values, and it tells a
+reader that the missing `user_id` is the point rather than an oversight.
+`db.base.ensure_reference_rows` is the one batched, concurrency-safe seam
+that populates them. `accounting.db.institutions`' docstring carries the
+"why a table rather than a repeated `CHECK (... IN (...))`" argument
+(Karwin's "31 Flavors") — these three tables replaced eight copied currency
+CHECKs, and gave `trades.ledger_events.currency` its first constraint.
 
 ## How a save actually writes to Postgres: wipe-and-reinsert vs. upsert-and-prune
 
-The primary-key pattern above (`derive_id` + `natural_key`) is what *lets*
+The `natural_key` column above (and its `UNIQUE` constraint) is what *lets*
 a table be safely rewritten — but rewriting is still a choice each write
-path makes, table by table. `accounting.store.save_store` (the one
-function every mutating endpoint funnels through) uses two different
-techniques, and picking the wrong one for a new table is a real mistake,
-not just a style preference — see "Which technique to use" below.
+path makes, table by table. Two techniques are in use across the
+accounting write paths, and picking the wrong one for a new table is a
+real mistake, not just a style preference — see "Which technique to use"
+below.
+
+There used to be exactly one write path — a single whole-store save every
+mutating endpoint funnelled through, always passing the complete desired
+end-state of *every* table. It is gone. Every accounting table is now
+owned by one per-aggregate repository under `accounting.repositories`,
+each writing only the rows a request actually names:
+
+- `accounting.repositories.accounts` owns `accounts` and
+  `opening_balances` (and projects manual transfers on and off the
+  ledger's own `transactions`/`postings` — see below);
+- `accounting.repositories.taxonomy` owns `categories`, `tags`, and — for
+  want of a better home so far — `other_assets`, `simulator_scenarios`;
+- `accounting.repositories.planning` owns `budgets`, `goals`,
+  `goal_contributions`, `goal_automations`;
+- `accounting.repositories.interpretation` owns `categorization_rules`,
+  `categorization_rule_exclusions`, `posting_splits`,
+  `posting_split_legs`, `posting_merges`, `posting_merge_duplicates`,
+  `transfer_links`, `transfer_linked_transactions`, `posting_overrides`,
+  `posting_override_tags`, `suggestions`.
+
+The read side went the same way. There is no whole-store read either:
+each repository exposes its own `load_*`, and a caller asks for the
+collections it actually uses — the resolution pipeline takes the five
+overlay tables plus accounts, a net-worth request takes accounts,
+opening balances and other assets, and `GET /store` is a router-level
+recomposition of every `load_*` rather than a type anything passes
+around (see `accounting.api.routers.store.get_store`). What survives of
+the old whole-store read is `accounting.taxonomy.seeded_categories`/
+`seeded_accounts`: the same `load_*`, with a brand-new user's defaults
+seeded first.
+
+One consequence worth knowing: the whole-store save counter went with
+the whole-store save, since its granularity is exactly what made two
+unrelated edits conflict, and its `accounting.store_versions` table is
+gone. Writes are now guarded by row scope, or by a per-row `version`
+column where a real lost-update risk exists.
+
+That per-row column is the **only** optimistic-concurrency mechanism left
+in this repo: `db.base.check_and_bump_row_version`, against the `version`
+column on `accounting.goals` and `accounting.categorization_rules`
+(both effects alike). A caller sends the version it last read as
+`expected_version` in the request body; a mismatch raises
+`db.base.VersionConflictError`, which one global handler in
+`trades.api.api` turns into an HTTP 409. `expected_version=None` opts a
+write out of the check entirely (last-write-wins), which is the right
+choice for an idempotent toggle. There is no version header, no per-user
+counter table, and nothing store-wide — a second, identical mechanism for
+`trades.dashboard_settings` was deleted alongside the accounting one; that
+row is deliberately last-write-wins (see
+`trades.dashboard.settings.save_settings`). The reasoning behind which
+fields deserve a check at all is in
+`docs/app-stack/optimistic-concurrency-versioning.md`.
 
 **Wipe-and-reinsert**: delete every row this user owns in a table, then
 insert fresh rows for everything currently held in memory. Not "diff and
 patch what changed" — the *entire* table is thrown away and rebuilt on
 every single save, even a save that only touched one unrelated field.
-This is safe here specifically because every row's `id` is `derive_id`-
-derived: a row deleted and reinserted with the same `natural_key` comes
-back with the *exact same* `id` it had before, so nothing that
-(hypothetically) referenced it would ever see it as "gone," even
-mid-rewrite.
-`save_store` uses this for 17 tables — several of which *are* foreign-keyed
-against by others in the same wipe-and-reinsert set (e.g. `posting_split_legs`
-→ `posting_splits`, `goal_contributions`/`recurring_additions` → `goals`),
-which is exactly why the derived id must stay stable: a reinserted parent
-keeps its id, so a child's foreign key still resolves across the rewrite:
+This is only safe for a table **nothing outside the rewrite references**. A
+reinserted row comes back with a *new* `id` — ids are minted, not
+recomputed — so any foreign key held elsewhere would be left pointing at a
+row that no longer exists. (That is why `accounts`/`categories`/`tags`, which
+the ledger does reference, use upsert-and-prune instead.)
+This is the technique for 15 tables. Several *are* foreign-keyed against by
+others in the same wipe-and-reinsert set (e.g. `posting_split_legs` →
+`posting_splits`, `goal_contributions`/`goal_automations` → `goals`) — which
+works because parent and child are rewritten in the same transaction, the
+parents flushed first so each child reads its parent's brand-new id straight
+off the flushed row:
 
-`posting_split_legs`, `posting_splits`, `posting_merge_duplicates`,
-`posting_merges`, `goal_contributions`, `recurring_additions`,
-`withdrawal_priority_entries`, `goals`, `budgets`, `general_budgets`,
-`manual_transfers`, `opening_balances`, `transfer_rules`,
-`category_patterns`, `other_assets`, `simulator_scenarios`,
-`dismissed_suggestions`.
+Every one of them is now behind a `replace_*` function that runs only
+when a request genuinely submits that whole list:
 
-**Upsert-and-prune** (`accounting.store._upsert_and_prune`): for each row
-currently held in memory, `session.merge()` it — update it in place if a
-row with that `id` already exists, insert it if not — then, separately,
+- `repositories.accounts` (`PUT /accounts/{id}/opening-balance`'s
+  whole-list sibling, and the store round-trip): `opening_balances`.
+- `repositories.taxonomy` (`PUT /other-assets`, `PUT /simulator/scenarios`):
+  `other_assets`, `simulator_scenarios`.
+- `repositories.planning` (`PUT /budgets`, `PUT /goals`, ...):
+  `goal_contributions`, `goal_automations`, `goals`, `budgets`.
+- `repositories.interpretation` (`PUT /category-patterns`,
+  `PUT /posting-merges`, ...): `posting_split_legs`, `posting_splits`,
+  `posting_merge_duplicates`, `posting_merges`, `transfer_links`,
+  `transfer_linked_transactions`.
+
+Note the difference the split makes: these used to be wiped on *every*
+save, however unrelated, because one function wrote every table at once.
+Single-entity endpoints (`POST /budgets`, `POST /transfer-rules`,
+`PUT /postings/{id}/split`, ...) go through the scoped
+`upsert_*`/`insert_*`/`remove_*` functions instead, which touch one row's
+worth of state and nothing else.
+
+One table in the interpretation set is neither: `categorization_rules`
+carries a `version` column that per-row optimistic concurrency depends on,
+so its rows are upserted by raw
+`INSERT ... ON CONFLICT (user_id, natural_key) DO UPDATE` whose `SET` clause
+omits `version`, then pruned — scoped to one `effect`, so rewriting the
+transfer rules cannot delete a category pattern sharing the table (see
+`repositories.interpretation.replace_transfer_rules`). A dismissed
+`suggestions` row is only ever upserted one at a time.
+
+**Upsert-and-prune** (`db.base.upsert_and_prune`): for each row
+currently held in memory, `session.merge()` it — update it in place if a row
+with that `(user_id, natural_key)` already exists, insert it if not (see
+`db.base.merge_by_natural_key`, which resolves the real key to the row's `id`
+so `merge()` can do one or the other) — then, separately,
 delete only whichever rows *used to* exist for this user but aren't in
 the new set anymore. Nothing not mentioned in the new state gets touched;
-nothing mentioned gets torn down and rebuilt. `save_store` uses this for
-exactly three tables — `accounts`, `categories`, `tags` — because
-`postings.account_id`/`category_id`/`subcategory_id` and
+nothing mentioned gets torn down and rebuilt. Exactly three tables use
+this — `accounts` and `categories` (`repositories.accounts`/`taxonomy`'s
+`replace_accounts`/`replace_categories`) and `tags` (`replace_tags`) —
+because `postings.account_id`/`category_id`/`subcategory_id` and
 `posting_tags.tag_id` are real foreign keys into them. Wiping these the
-same way as the 17 above would mean, for one instant mid-transaction, a
+same way as the 15 above would mean, for one instant mid-transaction, a
 category your real transaction history still points at doesn't exist —
 Postgres would reject that outright (see "What happens if you delete
-something still in use" below), turning every single save into a hard
+something still in use" below), turning every single write into a hard
 failure the moment any account/category/tag existed at all.
+
+`accounts` and `categories` additionally reference *themselves*
+(`parent_account_id`, `parent_category_id`), so both `replace_*` functions
+run the upsert in two passes — parents first, children second — while
+pruning against the complete desired set on both passes, so a child
+written in the second pass is never swept up by the first pass's prune.
 
 **Which technique to use, for a new table**: wipe-and-reinsert *unless*
 something else foreign-keys against this table's `id` — in which case it
@@ -184,7 +317,7 @@ moment a real reference existed. This is exactly the same "does anything
 foreign-key against this?" question the primary-key section above asks,
 applied one layer up: at the *write path* instead of the *id* itself.
 
-**Why the 17 wipe-and-reinsert tables stay small**: every one of them
+**Why the 15 wipe-and-reinsert tables stay small**: every one of them
 holds *settings you configured by hand* — a budget you typed a number
 into, a savings goal you created, a transfer rule you wrote — never
 anything an import can add on its own. A heavy user might have dozens of
@@ -195,8 +328,8 @@ everything" cheap enough to do on every save without it mattering.
 
 ## `transactions`/`postings`: written once at import time, never wiped
 
-Your actual transaction history isn't part of either pattern above.
-`save_store` never mentions `transactions` or `postings` at all — they're
+Your actual transaction history isn't part of either pattern above. No
+repository mentions `transactions` or `postings` at all — they're
 owned by a completely separate write path,
 `accounting.importers.ingest._write_ledger`, called only when you import
 a statement (`ingest_csv`, the canonical CSV/Excel importer) or rebuild
@@ -215,8 +348,8 @@ each import call only ever adds the new rows a fresh statement actually
 contains, on top of whatever was already there — it doesn't re-derive
 your whole history from scratch the way `rebuild_from_raw_statements`
 does. A statement's rows are matched to existing ones by their own
-content-derived id (see `derive_id` above), not by position in the file
-or by upload order.
+content-addressed `natural_key`, not by position in the file or by upload
+order; a row already there keeps the `id` it was first given.
 
 **What happens if you import the same statement twice**: every
 transaction's id is a hash of the facts that describe it — account, date,
@@ -252,6 +385,22 @@ whole transaction with a foreign-key-violation error, before anything is
 written. Nothing is silently orphaned, and no posting is ever
 auto-deleted as a side effect of deleting something it references.
 
+For `categories`, that rejection is not something the delete/merge paths
+have to dance around any more, because **a category in use is never
+deleted at all — it is retired**. `accounting.db.core.Category` carries
+`retired_at` plus a `superseded_by_category_id` self-reference, and
+`repositories.taxonomy.retire_categories` sets them instead of issuing a
+`DELETE`: the row leaves the live tree (`load_categories` returns only
+live rows, so nothing in the app sees it) while every posting's foreign
+key into it stays valid forever. That is what lets a posting's imported
+`category_id` be raw provenance that is never rewritten (DB-audit D14):
+what a merged-away category *resolves to* is read back at query time from
+its successor (`load_category_redirects`), never written down onto the
+rows that point at it. `replace_categories`' prune deliberately skips
+retired rows, since no caller-supplied tree could ever contain one; and
+writing a category again clears its retirement, which is how re-creating
+one by name resurrects the same row rather than colliding with it.
+
 `posting_tags` (linking a posting to a tag) is the one deliberate
 exception — it's declared with `ondelete="CASCADE"` on both
 `posting_tags.tag_id` and `posting_tags.posting_id`. Deleting a tag
@@ -266,7 +415,7 @@ describing the relationship has nothing left to mean — unlike a
 category/account reference, which is a fact *about* the posting itself
 and should never silently disappear out from under it.
 
-## The three tables here: `users`, `user_secrets`, and `external_identities`
+## The four tables here: `users`, `user_secrets`, `external_identities`, `currencies`
 
 - **`users`** — one row per person using the app, created automatically
   (via `trades.api.webhooks`) the moment someone accepts a Clerk invite —
@@ -305,6 +454,18 @@ and should never silently disappear out from under it.
   `ciphertext` is never plaintext — see Encryption below. This is the only
   place a credential is ever stored; nothing in this app keeps a secret in
   a `.env` file, a JSON file on disk, or anywhere else.
+- **`currencies`** — one row per ISO currency code, keyed by the code
+  itself. The odd one out here: it is not tenant data at all, but shared
+  reference data, and it lives in `public` for the same reason `users` does
+  — both `accounting` and `trades` foreign-key against it, so it cannot sit
+  inside either one's schema. All nine `currency` columns across both
+  schemas point at it, which is what let the eight copied
+  `currency IN (...)` CHECKs be deleted. It needs no `RLS_EXEMPT` entry
+  because it has no `user_id`: `db.tenant.is_reference_table` recognises it
+  as a shared vocabulary rather than a tenant table with a hole in it.
+  Seeded from `db.currency.CURRENCY_REFERENCE`, the same data the
+  `CurrencyCode` literal projects, in both the baseline migration and
+  `create_all`.
 
 ## Two Postgres roles, and why there are two
 
@@ -338,27 +499,68 @@ worse than refusing to start, so it's not allowed to happen silently.
 
 ## Row-Level Security (RLS): the actual backstop
 
-RLS is **opt-in per table**, not a database-wide switch. The
-`817ace9deb09` migration has a plain list, `_USER_SCOPED_TABLES` — every
-`(schema, table, ownership_column)` that should be isolated by user —
-covering `users`, `user_secrets`, every `accounting.*` table,
-`broker_connections`, `ledger_events`, and so on. Its `upgrade()` just
-loops over that list and runs this on each one:
+RLS is **derived from the schema**, not opted into per table. `db.tenant`
+owns the derivation, and `src/migration/versions/000000000001_baseline_schema.py`
+just emits what it computes:
+
+- `tenant_tables(Base.metadata)` walks the metadata and returns every table
+  that has a `user_id` column (`OWNER_COLUMN`), with `public.users`
+  special-cased on its own `id`.
+- `enable_rls_statements(...)` turns each one into the three statements
+  below. The policy name is one constant, `POLICY_NAME = "user_isolation"`.
 
 ```sql
 ALTER TABLE some_table ENABLE ROW LEVEL SECURITY;
 ALTER TABLE some_table FORCE ROW LEVEL SECURITY;
 CREATE POLICY user_isolation ON some_table
-  USING (user_id = current_setting('app.current_user_id', true)::uuid)
-  WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+  USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
+  WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 ```
 
-A table gets this protection by being added to `_USER_SCOPED_TABLES` —
-there's no separate "disable RLS" command anywhere; a table simply never
-gets it if it's never added to that list. `external_identities` is the
-one deliberate case of that (see "The three tables here" above, and "Why
-`external_identities` can't have RLS" below) — everything else this app
-owns is in the list.
+Two details in that SQL are load-bearing. `FORCE` matters as much as
+`ENABLE`: migrations run as the table owner, and a plain `ENABLE` does not
+apply to the owner, so without `FORCE` the policy would be silently inert for
+exactly the role that created it. And the `NULLIF(..., '')` is there because
+`app.current_user_id` is an undeclared placeholder GUC — Postgres resets it to
+the empty string rather than `NULL`, so a bare cast would raise instead of
+matching nothing. Failing closed (zero rows) beats a 500, and beats returning
+everything.
+
+`public.users` is the one table whose owner column is `id` rather than
+`user_id` — it *is* the tenant — and `tenant_tables` special-cases it.
+
+**A table therefore cannot ship with a `user_id` and no policy.** It used to
+be able to: RLS was applied by hand-copying a table list into each migration,
+and three tables — `transfer_links`, `transfer_linked_transactions`,
+`categorization_rule_exclusions` — shipped with a `user_id` column and no
+policy, which nothing noticed (VISION-AUDIT T3). Deriving the list from the
+metadata removes the step a human could skip.
+
+There are exactly two ways a table can legitimately have no policy, and both
+are explicit rather than accidental:
+
+- **It is reference data.** `db.tenant.is_reference_table` says so: no
+  `user_id` and not `users`, so it is a shared vocabulary
+  (`public.currencies`, `accounting.institutions`, `trades.securities`) with
+  no tenant rows to isolate.
+- **It is in `db.tenant.RLS_EXEMPT`**, a dict keyed by `(schema, table)` whose
+  value is a mandatory prose reason. `public.external_identities` is the only
+  entry: it must be readable *before* the acting user is known, so a policy
+  keyed on `user_id` could never match. That is an accepted hole rather than a
+  solved problem — see "Why `external_identities` can't have RLS" below for the
+  compensating controls.
+
+`tests/db/test_rls_coverage.py` migrates its own scratch database and asserts
+the live `pg_policies` matches — every tenant table forced, and every
+unprotected table either reference data or a declared exemption.
+
+It runs in **both** backend CI jobs, which is the point — the `test` job sets
+`DATABASE_URL_APP` as well as `DATABASE_URL_TEST` precisely so these tests
+execute there rather than erroring out. The module does still skip itself when
+`DATABASE_URL_TEST` is unset, which is the "no Postgres on this machine at all"
+case; what it deliberately does *not* do is skip when Postgres is present but
+half-configured, because a green CI run that silently proved nothing is how the
+three unprotected tables shipped in the first place.
 
 This means: even if a query somewhere in the code forgot its own
 `WHERE user_id = ...` filter, Postgres itself still refuses to return
@@ -503,14 +705,33 @@ own row" before anyone knew who "my" was. Every request would then hit
 step 3's 401 ("no account found for this session yet"), for every real,
 already-provisioned user, forever.
 
-So `external_identities` is simply never added to `817ace9deb09`'s
-`_USER_SCOPED_TABLES` list (see "Row-Level Security" above) — there's no
-special "turn RLS off" command involved, it's protected the way any table
-not in that list is: not at all, by omission. That's an acceptable,
-deliberate trade-off specifically *because* this table holds no financial
-data, only an identity mapping (`provider`, `external_id`, `user_id`) —
-every other table this app owns, which does hold real user data, stays in
-the list.
+So `external_identities` is the one entry in `db.tenant.RLS_EXEMPT` (see
+"Row-Level Security" above) — a dict that requires a prose reason next to
+every exemption, so the absence of a policy is a recorded decision rather
+than something a reader has to infer from a table's absence from a list.
+There's no "turn RLS off" command involved: the baseline simply never emits
+a policy for an exempt table.
+
+This is a genuine hole in the isolation guarantee, not a solved problem, and
+worth being precise about: the `(provider, external_id)` primary key enforces
+*uniqueness*, not access control. It stops one external account mapping to two
+internal users; it does not stop a query reading a row that isn't yours. What
+makes the hole acceptable is the three compensating controls, none of which is
+the primary key:
+
+- **The table holds no financial data** — only `provider`, `external_id`,
+  `user_id`. Reading every row of it reveals who has an account, not what
+  anyone owns.
+- **`db.external_identities` is the only code that touches it**, and it offers
+  no listing or enumeration path — just exact-match lookup on a
+  `(provider, external_id)` pair, returning an opaque internal id.
+- **That pair has to come from somewhere trusted**: a Clerk session JWT this
+  app has already verified (`trades.api.auth`) or a signature-checked webhook
+  (`trades.api.webhooks`). A caller cannot supply another user's pair without
+  first forging one of those.
+
+Every table that does hold real user data has a forced policy, derived from its
+`user_id` column and asserted by `tests/db/test_rls_coverage.py`.
 
 ## Encryption: what's protected, and how
 
@@ -596,8 +817,10 @@ in order:
    whichever backend is active (R2 or local disk), backups are sorted
    newest-first by their timestamp-prefixed filename (already
    lexicographically = chronologically sortable) and anything beyond that
-   count is deleted. Only ever runs after a successful verify + upload, so
-   a failed backup never causes a good one to be pruned away.
+   count is deleted. The sort-and-prune itself lives in
+   `db.timestamped_backups`, shared with the two cache-backup modules that
+   need the identical rule. Only ever runs after a successful verify +
+   upload, so a failed backup never causes a good one to be pruned away.
 
 **This does not run by itself.** `python -m db.backup` is just a command —
 nothing in this repo schedules it automatically. Making it run on a

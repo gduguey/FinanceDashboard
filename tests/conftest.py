@@ -261,6 +261,6 @@ def db_session(_db_engine: Engine) -> Iterator[Session]:
 def test_user_id(db_session: Session) -> uuid.UUID:
     """A `User` row that exists for the duration of one test, for other rows to foreign-key against."""
     user_id = uuid.uuid4()
-    db_session.add(db.models.User(id=user_id, email=f"{user_id}@example.com", hashed_password="unset"))  # noqa: S106
+    db_session.add(db.models.User(id=user_id, email=f"{user_id}@example.com"))
     db_session.commit()
     return user_id

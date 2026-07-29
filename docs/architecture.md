@@ -64,18 +64,27 @@ whichever `/api/...` path it needs.
 two things: reading the *running* `trades.api` app's own `app.state.config`
 to (1) replay its ledger and answer "what is the tracked portfolio worth
 as of this date" (used only for an `Account` of `kind="external_investment"`
-whose `external_ref` field is set to `"trades"` — a choice made once, when
-that account is created, see the in-app Guide's Investments tab), and (2)
-look up its published HYSA benchmark rate for the interest-summary view.
-An `external_investment` account left as `external_ref=None` is tracked
-manually instead, exactly like any other account, and never touches
+whose `broker_connection_id` names one of the user's
+`trades.broker_connections` rows — a choice made once, when that account is
+created, see the in-app Guide's Investments tab), and (2) look up its
+published HYSA benchmark rate for the interest-summary view. An
+`external_investment` account left with `broker_connection_id=None` is
+tracked manually instead, exactly like any other account, and never touches
 `trades` at all.
 
-Everywhere else, the two modules are strangers on purpose. If `trades`
-were deleted entirely, `accounting` would still run, still pass its own
-tests, and still be fully usable — any `external_investment` account
-would just fall back to being valued from its own postings, the same as
-a manually-tracked one already is.
+That link is the one place the two schemas touch, and it is a real foreign
+key rather than the string `external_ref = "trades"` it replaces (DB-audit
+move #1): a brokerage account naming a connection that was never created,
+or that has since been deleted, is not a state the database can hold.
+`ON DELETE SET NULL` means removing the connection degrades the account to
+a manually-valued one rather than stranding it. The price is that
+`accounting`'s DDL now names `trades.broker_connections` — the schemas are
+no longer creatable in isolation, even though the Python packages still
+are: `accounting` imports nothing from `trades`, and the one bit it reads
+across the seam (`repositories.accounts.broker_connection_exists`) goes
+through the qualified table name, not an import.
+
+Everywhere else, the two modules are strangers on purpose.
 
 ## Local (function-level) imports: when they're justified
 

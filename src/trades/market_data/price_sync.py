@@ -25,9 +25,9 @@ import logging
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-from db.session import session_scope
+from db.session import create_one_shot_engine, session_scope
 from db.settings import DatabaseSettings
 from trades import dashboard
 from trades.api.dependencies import _first_event_date
@@ -45,7 +45,7 @@ def _all_user_ids() -> list[uuid.UUID]:
     """Every real user's id, listed via the migration-owning role — bypasses Row-Level Security on purpose.
 
     `users` itself has an RLS policy scoping a normal session to its own
-    row only (migration `817ace9deb09`) — appropriate for every other
+    row only (see `db.tenant`) — appropriate for every other
     caller, wrong for this one, which genuinely needs the full list to
     know whose portfolios to check. `DatabaseSettings` (`DATABASE_URL`) is
     the same superuser/owner role `db.backup` already uses for the
@@ -57,9 +57,12 @@ def _all_user_ids() -> list[uuid.UUID]:
     """
     # database_url has no default (see db.session.get_engine's own note) — pydantic-settings
     # fills it from DATABASE_URL at runtime, but mypy has no pydantic plugin configured here.
-    engine = create_engine(DatabaseSettings().database_url)  # type: ignore[call-arg]
-    with engine.connect() as connection:
-        rows = connection.execute(text("SELECT id FROM users")).fetchall()
+    engine = create_one_shot_engine(DatabaseSettings().database_url)  # type: ignore[call-arg]
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(text("SELECT id FROM users")).fetchall()
+    finally:
+        engine.dispose()
     return [row.id for row in rows]
 
 

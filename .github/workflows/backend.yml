@@ -66,10 +66,81 @@ jobs:
       - name: mypy
         run: uv run mypy
 
+      # DATABASE_URL_APP is needed even though this job runs no migration of its
+      # own: tests/db/test_rls_coverage.py migrates its own scratch database, and
+      # the baseline creates the restricted app_runtime role from this URL's
+      # password. Without it those tests error out instead of running.
       - name: pytest
         env:
           DATABASE_URL_TEST: postgresql+psycopg://postgres:postgres@localhost:5432/test
+          DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/test
         run: uv run pytest
+
+  migrations:
+    name: Migrations apply and match the models
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migrations
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python (from .python-version)
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --all-extras --locked
+
+      # The suite builds its schema with `Base.metadata.create_all`, which creates
+      # no policies and never runs a migration. Without this job the baseline is
+      # only ever verified on a developer's laptop, and model/migration drift is
+      # structurally undetectable.
+      - name: Apply migrations to an empty database
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
+          DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/migrations
+        run: uv run alembic upgrade head
+
+      # Autogenerate must produce an empty diff: the migrated schema and the ORM
+      # metadata cannot drift apart without this failing.
+      - name: Assert the migrated schema matches the models
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
+          DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/migrations
+        run: uv run alembic check
+
+      # Proves the isolation guarantee is actually installed by the migrations,
+      # against its own migrated scratch database (see tests/db/test_rls_coverage.py).
+      - name: Row-Level Security coverage
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
+          DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/migrations
+          DATABASE_URL_TEST: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
+        run: uv run pytest tests/db/test_rls_coverage.py -v
+
+      - name: Migrations are reversible
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
+          DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/migrations
+        run: uv run alembic downgrade base
 
   version-check:
     name: Version bump check

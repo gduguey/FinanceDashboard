@@ -8,8 +8,9 @@ without any router needing to know about another router's models.
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -23,8 +24,10 @@ from accounting.models import (
     CompoundingFrequency,
     CurrencyCode,
     EarningsStatement,
-    GeneralBudget,
     Goal,
+    GoalAutomation,
+    GoalAutomationFrequency,
+    GoalAutomationMode,
     GoalContribution,
     GoalContributionOrigin,
     ManualTransfer,
@@ -35,28 +38,31 @@ from accounting.models import (
     PostingMerge,
     PostingSplit,
     PostingSplitLeg,
-    RecurringAddition,
-    RecurringAdditionFrequency,
-    RecurringAdditionMode,
     SimulatorScenario,
     Tag,
     TransferLink,
     TransferLinkSource,
     TransferRule,
-    WithdrawalPriorityEntry,
 )
+from db.money import ZERO, Money, Rate
 
 
 class AccountingStoreResponse(BaseModel):
     """Every persisted accounting entity: accounts, categories, tags, rules, other assets.
 
-    Mirrors `store.AccountingStore` field-for-field, except `rules` is
-    exposed as `transfer_rules` (the name every other endpoint and the
-    frontend already use for it). Dismissed suggestions aren't part of
-    `AccountingStore` at all — see `GET /dismissed-suggestions` and
-    `store.list_dismissed_suggestions`/`dismissed_suggestion_ids`, which
-    query that table directly rather than through the whole-store
-    round-trip every other entity here goes through.
+    One field per repository `load_*`, recomposed at the router (see
+    `api.routers.store.get_store`) — this response model is the only
+    place the whole set is named together; nothing server-side passes it
+    around. `transfer_rules` is `repositories.interpretation`'s
+    `load_transfer_rules`, under the name every other endpoint and the
+    frontend already use for it.
+
+    Dismissed suggestions are deliberately not here: unlike every entity
+    that is, they're never read as "give me the whole list to build
+    something", only ever checked as "has this one already been
+    dismissed" — see `GET /dismissed-suggestions` and
+    `repositories.interpretation.dismissed_suggestion_ids`, which query
+    that table directly.
     """
 
     accounts: dict[str, Account]
@@ -71,13 +77,10 @@ class AccountingStoreResponse(BaseModel):
     posting_splits: dict[str, PostingSplit]
     posting_merges: dict[str, PostingMerge]
     transfer_links: list[TransferLink]
-    general_budgets: dict[str, GeneralBudget]
     category_patterns: dict[str, CategoryPattern]
     goals: dict[str, Goal]
     goal_contributions: dict[str, GoalContribution]
-    recurring_additions: list[RecurringAddition]
-    withdrawal_priorities: list[WithdrawalPriorityEntry]
-    version: int
+    goal_automations: list[GoalAutomation]
 
 
 class CurrentExchangeRate(BaseModel):
@@ -112,49 +115,41 @@ class CategoryRenameResponse(BaseModel):
 
 
 class BudgetToDeletePreview(BaseModel):
-    """One `Budget`/`GeneralBudget` entry a category merge would discard rather than keep.
+    """One `Budget` entry a category merge would discard rather than keep.
 
     The merged-away category's own entry is what's described here — the
     merge target's entry for the same month/category always survives
     unchanged (see `store.remap_category_ids`). `month` is `None` for a
-    `GeneralBudget` (applies to every month alike), or `"YYYY-MM"` for a
-    per-month `Budget`.
+    general budget (applies to every month alike), or `"YYYY-MM"` for a
+    per-month one.
     """
 
     month: str | None
-    amount: float
+    amount: Money
     currency: CurrencyCode
 
 
 class BudgetUpsert(BaseModel):
-    """Request body for `POST /api/accounting/budgets` — sets one month's target for one category.
+    """Request body for `POST /api/accounting/budgets` — sets one target for one category.
+
+    `month` is what picks which kind of target this is: `"YYYY-MM"` sets
+    that one month's, and omitting it (`null`) sets the general,
+    every-month-alike one. The two are separate rows and neither
+    overwrites the other.
 
     `budget_id` is never taken from the client — derived server-side from
     `(month, category_id, subcategory_id)`, the same natural key
     `PUT /budgets/{budget_id}` used to require the whole list to encode
-    implicitly. Posting this twice for the same `(month, category_id,
-    subcategory_id)` replaces the existing target rather than erroring —
-    unlike a category/tag name, there's no ambiguity a human needs to
-    confirm here, every tuple maps to exactly one budget.
+    implicitly. Posting this twice for the same triple replaces the
+    existing target rather than erroring — unlike a category/tag name,
+    there's no ambiguity a human needs to confirm here, every triple maps
+    to exactly one budget.
     """
 
-    month: str = Field(pattern=r"^\d{4}-\d{2}$")
+    month: Annotated[str, Field(pattern=r"^\d{4}-\d{2}$")] | None = None
     category_id: str = Field(min_length=1)
     subcategory_id: str | None = None
-    amount: float
-    currency: CurrencyCode = "USD"
-
-
-class GeneralBudgetUpsert(BaseModel):
-    """Request body for `POST /api/accounting/general-budgets` — sets one category's standing target.
-
-    Same upsert-by-natural-key reasoning as `BudgetUpsert`, keyed by
-    `(category_id, subcategory_id)` instead of also including a month.
-    """
-
-    category_id: str = Field(min_length=1)
-    subcategory_id: str | None = None
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
 
 
@@ -247,7 +242,7 @@ class GoalCreate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    target_amount: float
+    target_amount: Money
     target_currency: CurrencyCode = "USD"
     target_date: datetime
 
@@ -265,7 +260,7 @@ class GoalUpdate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    target_amount: float
+    target_amount: Money
     target_currency: CurrencyCode = "USD"
     target_date: datetime
     color: str = Field(min_length=1)
@@ -282,51 +277,60 @@ class SimulatorScenarioCreate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    initial_capital: float
-    monthly_contribution: float
-    horizon_years: float
-    annual_rate_pct: float
+    initial_capital: Money
+    monthly_contribution: Money
+    horizon_years: Rate
+    annual_rate_pct: Rate
     compounding_frequency: CompoundingFrequency = "monthly"
     currency: CurrencyCode = "USD"
 
 
-class RecurringAdditionCreate(BaseModel):
-    """Request body for `POST /api/accounting/recurring-additions` — creates one new automation rule.
+class GoalAutomationCreate(BaseModel):
+    """Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
 
-    `addition_id` is server-minted, same reasoning as `GoalCreate`.
+    Only the `contribution` direction is creatable one at a time: a
+    withdrawal automation has no fields of its own beyond its goal and its
+    place in the drawdown order, so the Goals page only ever submits that
+    ordering wholesale (`PUT /goal-automations/withdrawals`).
+
+    `automation_id` is server-minted, same reasoning as `GoalCreate`.
     `priority` is never taken from the client either — a newly created
     rule always goes last (one past the current lowest-priority row),
     matching the Goals page's own "append at the end of the ordered list"
     behavior; drag-and-drop reordering still goes through the existing
-    `PUT /recurring-additions`, unaffected by this.
+    `PUT /goal-automations/contributions`, unaffected by this.
     """
 
     goal_id: str = Field(min_length=1)
     start_date: date
-    frequency: RecurringAdditionFrequency
+    frequency: GoalAutomationFrequency
     end_date: date | None = None
-    mode: RecurringAdditionMode
-    value: float = 0.0
+    mode: GoalAutomationMode
+    value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
     currency: CurrencyCode = "USD"
 
 
-class RecurringAdditionUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/recurring-additions/{addition_id}` — edits one rule in place.
+class GoalAutomationUpdate(BaseModel):
+    """Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
 
-    A single-rule field edit (amount, dates, frequency, mode, goal), scoped
-    to its own `addition_id` so it never blanket-reinserts every rule.
-    Carries `priority` unchanged (the row keeps its place); re-ordering the
-    whole list is still `PUT /recurring-additions`. No `expected_version`:
-    like a budget cell, an edit of one rule is last-write-wins on that rule
-    (see `docs/app-stack/optimistic-concurrency-versioning.md`).
+    A single-rule field edit (amount, dates, frequency, mode, goal),
+    scoped to its own `automation_id` so it never blanket-reinserts every
+    rule. Carries `priority` unchanged (the row keeps its place);
+    re-ordering the whole list is still
+    `PUT /goal-automations/contributions`. No `expected_version`: like a
+    budget cell, an edit of one rule is last-write-wins on that rule (see
+    `docs/app-stack/optimistic-concurrency-versioning.md`).
+
+    Contribution-shaped for the same reason `GoalAutomationCreate` is —
+    there is nothing on a withdrawal automation a `PATCH` could edit.
     """
 
     goal_id: str = Field(min_length=1)
     start_date: date
-    frequency: RecurringAdditionFrequency
+    frequency: GoalAutomationFrequency
     end_date: date | None = None
-    mode: RecurringAdditionMode
-    value: float = 0.0
+    mode: GoalAutomationMode
+    value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
     currency: CurrencyCode = "USD"
     priority: int
 
@@ -339,7 +343,7 @@ class OtherAssetCreate(BaseModel):
     """
 
     name: str = Field(min_length=1)
-    value: float
+    value: Money
     currency: CurrencyCode = "USD"
     note: str = ""
 
@@ -384,12 +388,6 @@ class SimulatorScenarioIdResponse(BaseModel):
     """Response body naming one simulator scenario, for endpoints whose only real effect is removing something."""
 
     scenario_id: str
-
-
-class GeneralBudgetKeyResponse(BaseModel):
-    """Response body naming one general budget's key, for endpoints whose only real effect is removing something."""
-
-    key: str
 
 
 class CategoryRenamePreviewResponse(BaseModel):
@@ -476,7 +474,7 @@ class AccountCreate(BaseModel):
     currency: CurrencyCode
     last_four: str | None = None
     parent_account_id: str | None = None
-    external_ref: str | None = None
+    broker_connection_id: uuid.UUID | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
 
@@ -488,11 +486,12 @@ class AccountUpdate(BaseModel):
     `put_account`, not here, since that check needs the ledger. `closed`
     isn't edited here — see `close_account`/`reopen_account`, which pair it
     with recording where a closed account's remaining balance went.
-    `external_ref` is never locked — it only ever changes which value an
-    `external_investment` account shows (see `dashboard.net_worth`), never
-    what it has already recorded, so it's free to toggle regardless of postings.
-    `last_four` is never locked either, for the same reason: it never
-    affects identity or any stored history.
+    `broker_connection_id` is never locked — it only ever changes which
+    value an `external_investment` account shows (see
+    `dashboard.net_worth`), never what it has already recorded, so it's
+    free to toggle regardless of postings. `last_four` is never locked
+    either, for the same reason: it never affects identity or any stored
+    history.
     """
 
     name: str
@@ -500,7 +499,7 @@ class AccountUpdate(BaseModel):
     kind: AccountKind
     currency: CurrencyCode
     last_four: str | None = None
-    external_ref: str | None = None
+    broker_connection_id: uuid.UUID | None = None
     meta: dict[str, str] = Field(default_factory=dict)
 
 
@@ -600,7 +599,7 @@ class CategorizationMatch(BaseModel):
     row_number: int
     posted_at: datetime
     description: str
-    amount: float
+    amount: Money
     proposed_category_id: str | None
     proposed_category_name: str | None
     proposed_subcategory_id: str | None
@@ -631,7 +630,7 @@ class DepositMatch(BaseModel):
     """One paystub deposit, matched (or not) against a real bank posting — see `dashboard.paystub.DepositMatch`."""
 
     label: str
-    amount: float
+    amount: Money
     account_last4: str | None
     posting_id: str | None
     account_id: str | None
@@ -745,13 +744,18 @@ class GoalContributionCreate(BaseModel):
     `contribution_id` is never taken from the client — unlike a budget's
     `(month, category_id)`, a contribution is an arbitrary event with no
     natural key to derive one from, so the server generates an opaque one.
+
+    `account_id` records which account the allocated money actually sits
+    in; it is stored and echoed back, and read by nothing else yet — see
+    `models.GoalContribution`.
     """
 
     goal_id: str = Field(min_length=1)
     date: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
     note: str = ""
+    account_id: str | None = None
     source_posting_id: str | None = None
     origin: GoalContributionOrigin = "manual"
     edited: bool = False
@@ -767,9 +771,10 @@ class GoalContributionUpdate(BaseModel):
 
     goal_id: str = Field(min_length=1)
     date: datetime
-    amount: float
+    amount: Money
     currency: CurrencyCode = "USD"
     note: str = ""
+    account_id: str | None = None
     source_posting_id: str | None = None
     origin: GoalContributionOrigin = "manual"
     edited: bool = False
@@ -781,10 +786,10 @@ class GoalContributionIdResponse(BaseModel):
     contribution_id: str
 
 
-class RecurringAdditionIdResponse(BaseModel):
-    """Response body naming one recurring addition, for endpoints whose only real effect is removing something."""
+class GoalAutomationIdResponse(BaseModel):
+    """Response body naming one goal automation, for endpoints whose only real effect is removing something."""
 
-    addition_id: str
+    automation_id: str
 
 
 class LlmProviderUsage(BaseModel):
@@ -1006,7 +1011,7 @@ class BudgetComparisonRow(BaseModel):
     subcategory_id: str | None
     subcategory_name: str | None
     color: str
-    budgeted: float
+    budgeted: Money
     actual: float
     currency: CurrencyCode
 

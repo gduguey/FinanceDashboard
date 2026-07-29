@@ -1,4 +1,4 @@
-import { ApiError, StoreVersionConflictError } from '@/lib/api'
+import { ApiError, RowVersionConflictError } from '@/lib/api'
 import type {
   Account,
   AccountingStore,
@@ -24,9 +24,10 @@ import type {
   DismissSuggestionRequest,
   DuplicateGroup,
   ExchangeRateHistoryPoint,
-  GeneralBudget,
-  GeneralBudgetUpsert,
   Goal,
+  GoalAutomation,
+  GoalAutomationCreate,
+  GoalAutomationUpdate,
   GoalContribution,
   GoalContributionCreate,
   GoalContributionUpdate,
@@ -53,9 +54,6 @@ import type {
   PostingMergeUpsert,
   PostingSplitLeg,
   ProjectionPoint,
-  RecurringAddition,
-  RecurringAdditionCreate,
-  RecurringAdditionUpdate,
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
@@ -68,72 +66,32 @@ import type {
   TransferRuleUpdate,
   TransferSuggestion,
   VerifyResult,
-  WithdrawalPriorityEntry,
 } from '@/types/accounting'
 
-// The most recent `version` this module has seen out of any accounting
-// response — updated below on every response that carries one (in
-// practice only `GET /store`, including the refetch most mutations
-// trigger via query invalidation), and sent back on every non-GET
-// request so the backend can tell whether anything changed in between.
-// Module-level rather than threaded through every one of ~30 mutation
-// call sites individually, mirroring how the backend reads it off
-// `session.info` in one place (`accounting.store.save_store`) instead of
-// threading it through its own ~30 call sites.
-let lastKnownStoreVersion: number | null = null
-
-async function requestRaw<T>(path: string, init?: RequestInit): Promise<T> {
+// One request path for every accounting endpoint. Nothing store-wide is
+// sent or cached here: a write that needs conflict detection carries its
+// own row's `expected_version` in the request body (goals, transfer
+// rules, category patterns), and every other write is either scoped to
+// the rows it names or deliberately last-write-wins. A 409 therefore
+// only ever means *that one row* moved, which is what
+// `RowVersionConflictError` says and what App.tsx's one global handler
+// turns into a reload prompt.
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     const message = body?.detail ?? `${response.status} ${response.statusText}`
-    if (response.status === 409) throw new StoreVersionConflictError(message)
+    if (response.status === 409) throw new RowVersionConflictError(message)
     throw new ApiError(message)
   }
   return (await response.json()) as T
 }
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const method = init?.method ?? 'GET'
-  const headers = new Headers(init?.headers)
-  if (method !== 'GET' && lastKnownStoreVersion !== null) {
-    headers.set('X-Expected-Store-Version', String(lastKnownStoreVersion))
-  }
-  const data = await requestRaw<T>(path, { ...init, headers })
-  if (data && typeof data === 'object' && 'version' in data && typeof data.version === 'number') {
-    lastKnownStoreVersion = data.version
-  }
-  return data
-}
-
-// For per-resource endpoints that must never touch the whole-store version
-// cache — used across transfer rules, tags, other-assets, category patterns,
-// simulator scenarios, goals, and recurring additions. Some carry their own
-// row-scoped `version`; others (several deletes) do no version check at all.
-// Routing any of these through `request` would both send the unrelated
-// whole-store version as `X-Expected-Store-Version` (harmless; these backends
-// never read it) and, more importantly, overwrite `lastKnownStoreVersion` with
-// the *resource's own* version number, corrupting every other resource's own
-// conflict check on its next save. A 409 here
-// still throws the same `StoreVersionConflictError` `App.tsx`'s one
-// global handler already knows how to show — it's a version conflict
-// either way, just scoped to one row instead of the whole store.
-const requestScoped = requestRaw
 
 const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 })
-
-export interface ImportAccountInfo {
-  institution: string
-  account_kind: string
-  account_id: string
-  account_name: string
-  currency?: string
-  parent_account_id?: string | null
-}
 
 export interface AccountCreate {
   name: string
@@ -142,7 +100,7 @@ export interface AccountCreate {
   currency: string
   last_four?: string | null
   parent_account_id?: string | null
-  external_ref?: string | null
+  broker_connection_id?: string | null
   meta: Record<string, string>
 }
 
@@ -152,7 +110,7 @@ export interface AccountUpdate {
   kind: string
   currency: string
   last_four?: string | null
-  external_ref?: string | null
+  broker_connection_id?: string | null
   meta: Record<string, string>
 }
 
@@ -246,7 +204,7 @@ export const accountingApi = {
     ),
   createTag: (tag: TagCreate) => request<Tag>('/api/accounting/tags', jsonInit('POST', tag)),
   deleteTag: (tagId: string) =>
-    requestScoped<{ tag_id: string }>(`/api/accounting/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
+    request<{ tag_id: string }>(`/api/accounting/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }),
   tagRenamePreview: (tagId: string, name: string) =>
     request<TagRenamePreview>(
       `/api/accounting/tags/${encodeURIComponent(tagId)}/rename-preview${queryString({ name })}`,
@@ -257,20 +215,17 @@ export const accountingApi = {
       jsonInit('POST', { name }),
     ),
   createTransferRule: (rule: TransferRuleCreate) =>
-    requestScoped<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
+    request<TransferRule>('/api/accounting/transfer-rules', jsonInit('POST', rule)),
   patchTransferRule: (ruleId: string, update: TransferRuleUpdate) =>
-    requestScoped<TransferRule>(
-      `/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`,
-      jsonInit('PATCH', update),
-    ),
+    request<TransferRule>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, jsonInit('PATCH', update)),
   deleteTransferRule: (ruleId: string) =>
-    requestScoped<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
+    request<{ rule_id: string }>(`/api/accounting/transfer-rules/${encodeURIComponent(ruleId)}`, {
       method: 'DELETE',
     }),
   createOtherAsset: (asset: OtherAssetCreate) =>
     request<OtherAsset>('/api/accounting/other-assets', jsonInit('POST', asset)),
   deleteOtherAsset: (assetId: string) =>
-    requestScoped<{ asset_id: string }>(`/api/accounting/other-assets/${encodeURIComponent(assetId)}`, {
+    request<{ asset_id: string }>(`/api/accounting/other-assets/${encodeURIComponent(assetId)}`, {
       method: 'DELETE',
     }),
   postAccount: (account: AccountCreate) => request<Account>('/api/accounting/accounts', jsonInit('POST', account)),
@@ -301,15 +256,10 @@ export const accountingApi = {
     ),
   supportedImportKinds: () =>
     request<{ institution: string; account_kind: string }[]>('/api/accounting/supported-import-kinds'),
-  importCsv: (file: File, info: ImportAccountInfo) => {
+  importCsv: (file: File, accountId: string) => {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('institution', info.institution)
-    formData.append('account_kind', info.account_kind)
-    formData.append('account_id', info.account_id)
-    formData.append('account_name', info.account_name)
-    if (info.currency) formData.append('currency', info.currency)
-    if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
+    formData.append('account_id', accountId)
     return request<ImportResult>('/api/accounting/import', { method: 'POST', body: formData })
   },
   previewCanonicalImport: (
@@ -332,19 +282,14 @@ export const accountingApi = {
   },
   importCanonicalCsv: (
     file: File,
-    info: ImportAccountInfo,
+    accountId: string,
     separator?: string,
     dateOrder?: string,
     categoryOverrides?: CanonicalCategoryOverrides,
   ) => {
     const formData = new FormData()
     formData.append('file', file)
-    formData.append('institution', info.institution)
-    formData.append('account_kind', info.account_kind)
-    formData.append('account_id', info.account_id)
-    formData.append('account_name', info.account_name)
-    if (info.currency) formData.append('currency', info.currency)
-    if (info.parent_account_id) formData.append('parent_account_id', info.parent_account_id)
+    formData.append('account_id', accountId)
     if (separator) formData.append('separator', separator)
     if (dateOrder) formData.append('date_order', dateOrder)
     if (categoryOverrides) formData.append('category_overrides', JSON.stringify(categoryOverrides))
@@ -418,14 +363,14 @@ export const accountingApi = {
       jsonInit('POST', { posting_ids: postingIds }),
     ),
   createCategoryPattern: (pattern: CategoryPatternCreate) =>
-    requestScoped<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
+    request<CategoryPattern>('/api/accounting/category-patterns', jsonInit('POST', pattern)),
   patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>
-    requestScoped<CategoryPattern>(
+    request<CategoryPattern>(
       `/api/accounting/category-patterns/${encodeURIComponent(patternId)}`,
       jsonInit('PATCH', update),
     ),
   deleteCategoryPattern: (patternId: string) =>
-    requestScoped<{ pattern_id: string }>(`/api/accounting/category-patterns/${encodeURIComponent(patternId)}`, {
+    request<{ pattern_id: string }>(`/api/accounting/category-patterns/${encodeURIComponent(patternId)}`, {
       method: 'DELETE',
     }),
   transferSuggestions: (windowDays?: number) =>
@@ -478,10 +423,6 @@ export const accountingApi = {
   setBudget: (budget: BudgetUpsert) => request<Budget>('/api/accounting/budgets', jsonInit('POST', budget)),
   removeBudget: (budgetId: string) =>
     request<{ budget_id: string }>(`/api/accounting/budgets/${encodeURIComponent(budgetId)}`, { method: 'DELETE' }),
-  setGeneralBudget: (generalBudget: GeneralBudgetUpsert) =>
-    request<GeneralBudget>('/api/accounting/general-budgets', jsonInit('POST', generalBudget)),
-  removeGeneralBudget: (key: string) =>
-    request<{ key: string }>(`/api/accounting/general-budgets/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   budgetComparison: (month: string, displayCurrency?: string) =>
     request<BudgetComparisonRow[]>(
       `/api/accounting/budgets/comparison${queryString({ month, display_currency: displayCurrency })}`,
@@ -501,7 +442,7 @@ export const accountingApi = {
   createSimulatorScenario: (scenario: SimulatorScenarioCreate) =>
     request<SimulatorScenario>('/api/accounting/simulator/scenarios', jsonInit('POST', scenario)),
   deleteSimulatorScenario: (scenarioId: string) =>
-    requestScoped<{ scenario_id: string }>(`/api/accounting/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
+    request<{ scenario_id: string }>(`/api/accounting/simulator/scenarios/${encodeURIComponent(scenarioId)}`, {
       method: 'DELETE',
     }),
   simulatorProject: (
@@ -520,11 +461,11 @@ export const accountingApi = {
         compounding_frequency: compoundingFrequency,
       })}`,
     ),
-  createGoal: (goal: GoalCreate) => requestScoped<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
+  createGoal: (goal: GoalCreate) => request<Goal>('/api/accounting/goals', jsonInit('POST', goal)),
   patchGoal: (goalId: string, update: GoalUpdate) =>
-    requestScoped<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
+    request<Goal>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, jsonInit('PATCH', update)),
   deleteGoal: (goalId: string) =>
-    requestScoped<{ goal_id: string }>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
+    request<{ goal_id: string }>(`/api/accounting/goals/${encodeURIComponent(goalId)}`, { method: 'DELETE' }),
   createGoalContribution: (contribution: GoalContributionCreate) =>
     request<GoalContribution>('/api/accounting/goal-contributions', jsonInit('POST', contribution)),
   updateGoalContribution: (contributionId: string, contribution: GoalContributionUpdate) =>
@@ -536,21 +477,21 @@ export const accountingApi = {
     request<{ contribution_id: string }>(`/api/accounting/goal-contributions/${encodeURIComponent(contributionId)}`, {
       method: 'DELETE',
     }),
-  putRecurringAdditions: (additions: RecurringAddition[]) =>
-    request<RecurringAddition[]>('/api/accounting/recurring-additions', jsonInit('PUT', additions)),
-  createRecurringAddition: (addition: RecurringAdditionCreate) =>
-    request<RecurringAddition>('/api/accounting/recurring-additions', jsonInit('POST', addition)),
-  patchRecurringAddition: (additionId: string, update: RecurringAdditionUpdate) =>
-    requestScoped<RecurringAddition>(
-      `/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`,
+  putContributionAutomations: (automations: GoalAutomation[]) =>
+    request<GoalAutomation[]>('/api/accounting/goal-automations/contributions', jsonInit('PUT', automations)),
+  createContributionAutomation: (automation: GoalAutomationCreate) =>
+    request<GoalAutomation>('/api/accounting/goal-automations/contributions', jsonInit('POST', automation)),
+  patchGoalAutomation: (automationId: string, update: GoalAutomationUpdate) =>
+    request<GoalAutomation>(
+      `/api/accounting/goal-automations/${encodeURIComponent(automationId)}`,
       jsonInit('PATCH', update),
     ),
-  deleteRecurringAddition: (additionId: string) =>
-    requestScoped<{ addition_id: string }>(`/api/accounting/recurring-additions/${encodeURIComponent(additionId)}`, {
+  deleteGoalAutomation: (automationId: string) =>
+    request<{ automation_id: string }>(`/api/accounting/goal-automations/${encodeURIComponent(automationId)}`, {
       method: 'DELETE',
     }),
-  putWithdrawalPriorities: (priorities: WithdrawalPriorityEntry[]) =>
-    request<WithdrawalPriorityEntry[]>('/api/accounting/withdrawal-priorities', jsonInit('PUT', priorities)),
+  putWithdrawalAutomations: (automations: GoalAutomation[]) =>
+    request<GoalAutomation[]>('/api/accounting/goal-automations/withdrawals', jsonInit('PUT', automations)),
   syncStatus: () => request<SyncStatus>('/api/accounting/sync-status'),
   goalsSummary: (asOf?: string, displayCurrency?: string) =>
     request<GoalsSummary>(

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import numpy as np
 import polars as pl
 
+from trades.ledger.signs import signed_cash_effect
 from trades.utils.frames import collect_if_lazy
 
 if TYPE_CHECKING:
@@ -425,6 +426,9 @@ def _symbol_cashflows(rows: pl.DataFrame) -> tuple[list[date], list[float]]:
     `symbol_metrics`'s `net_dividends` toggle (which only changes how
     `dividends_received` is reported, not the underlying cashflows).
 
+    The signs are the cash effect itself (`ledger.signs`) — this is a cash
+    XIRR, so the flows are literally what moved in and out of cash.
+
     Parameters
     ----------
     rows
@@ -437,13 +441,7 @@ def _symbol_cashflows(rows: pl.DataFrame) -> tuple[list[date], list[float]]:
         `SELL`/`DIVIDEND` positive).
     """
     types = ["BUY", "SELL", "DIVIDEND", "WITHHOLDING"]
-    flows = rows.filter(pl.col("event_type").is_in(types)).select(
-        "event_datetime",
-        amount=pl
-        .when(pl.col("event_type").is_in(["BUY", "WITHHOLDING"]))
-        .then(-pl.col("amount"))
-        .otherwise(pl.col("amount")),
-    )
+    flows = rows.filter(pl.col("event_type").is_in(types)).select("event_datetime", amount=signed_cash_effect())
     return flows["event_datetime"].dt.date().to_list(), flows["amount"].to_list()
 
 

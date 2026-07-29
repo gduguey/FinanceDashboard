@@ -1,0 +1,1408 @@
+"""Every accounting repository, plus the taxonomy module's seeded reads, against real Postgres.
+
+Complements `test_taxonomy.py`, which covers the pure in-memory logic
+(`plan_category_rename`, `normalize_categories`, ...) that never touches
+storage. Everything here exercises the actual Postgres-backed
+persistence boundary — the `db_session`/`test_user_id` fixtures come from
+`tests/conftest.py`.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+import accounting.db as adb
+import db.models
+from db.base import UnknownNaturalKeyError, ids_by_natural_key
+from accounting.models import (
+    Account,
+    Budget,
+    CategoryPattern,
+    DismissedSuggestion,
+    Goal,
+    GoalAutomation,
+    GoalContribution,
+    ManualOverride,
+    ManualTransfer,
+    OpeningBalance,
+    OtherAsset,
+    PostingMerge,
+    PostingSplit,
+    PostingSplitLeg,
+    SimulatorScenario,
+    Tag,
+    TransferLink,
+    TransferRule,
+)
+from accounting.repositories.accounts import (
+    insert_manual_transfers,
+    load_accounts,
+    load_manual_transfers,
+    load_opening_balances,
+    replace_accounts,
+    replace_opening_balances,
+    update_account_fields,
+)
+from accounting.repositories.planning import (
+    insert_goal,
+    load_budgets,
+    load_goal_automations,
+    load_goal_contributions,
+    load_goals,
+    replace_budgets,
+    replace_goal_automations,
+    replace_goal_contributions,
+    withdrawal_automation_id,
+)
+from accounting.repositories.interpretation import (
+    delete_posting_split,
+    delete_transfer_rule,
+    dismiss_suggestion,
+    dismissed_suggestion_ids,
+    insert_transfer_links,
+    list_dismissed_suggestions,
+    load_category_patterns,
+    load_overrides,
+    load_overrides_for_postings,
+    load_posting_merges,
+    load_posting_splits,
+    load_transfer_links,
+    load_transfer_rules,
+    replace_category_patterns,
+    replace_posting_merges,
+    replace_posting_splits,
+    replace_rule_exclusions,
+    replace_transfer_rules,
+    save_overrides,
+    save_overrides_for_postings,
+    save_posting_split,
+    undismiss_suggestion,
+    update_transfer_rule,
+    upsert_posting_merge,
+    upsert_transfer_rule,
+)
+from accounting.repositories.taxonomy import (
+    load_categories,
+    load_other_assets,
+    load_simulator_scenarios,
+    load_tags,
+    remap_tag_ids,
+    replace_categories,
+    replace_other_assets,
+    replace_simulator_scenarios,
+    replace_tags,
+)
+from accounting.taxonomy import (
+    UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
+    UNCATEGORIZED_INCOME_ACCOUNT_ID,
+    seed_new_user_defaults,
+    seeded_accounts,
+    seeded_categories,
+)
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+
+def _row_id(session: Session, user_id: uuid.UUID, model: type, natural_key: str) -> uuid.UUID:
+    """Look up one row's `id` by the natural key the API addresses it with.
+
+    What the retired content-hashed id used to give without asking. A test
+    that needs a row's opaque id — to write a foreign key by hand, or to
+    assert one — has to resolve it the same way production code does, through
+    `db.base.ids_by_natural_key`; there is no longer any way to know an id
+    without the row existing first, which is the point of the change.
+
+    Returns
+    -------
+    uuid.UUID
+    """
+    return ids_by_natural_key(session, model, user_id, [natural_key])[natural_key]
+
+
+def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, posting_id: str) -> None:
+    """Insert the minimal Account/Transaction/Posting rows a PostingSplit/PostingMerge/GoalContribution can FK to.
+
+    The account is registered *through* the accounts repository, not by
+    inserting an `adb.Account` row directly — in real usage, that's the only
+    way an account comes to exist at all. `seeded_accounts` is used for the
+    same reason every router uses it: it seeds a brand-new user's default
+    category tree, which the overrides and splits below FK into. Safe to
+    call more than once per test (e.g. one posting per transaction) — the
+    shared "checking:test" account is only registered the first time.
+    """
+    if "checking:test" not in seeded_accounts(session, user_id):
+        replace_accounts(
+            session,
+            user_id,
+            [Account(account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD")],
+            prune=False,
+        )
+        session.commit()
+    transaction_row = adb.Transaction(
+        user_id=user_id, natural_key=transaction_id, posted_at=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    session.add(transaction_row)
+    # Flushed before the posting: `transaction_id` is the id `uuid7()` mints
+    # for the transaction, read off the instance rather than recomputed.
+    session.flush()
+    session.add(
+        adb.Posting(
+            user_id=user_id,
+            natural_key=posting_id,
+            transaction_id=transaction_row.id,
+            account_id=_row_id(session, user_id, adb.Account, "checking:test"),
+            amount=10,
+            currency="USD",
+        )
+    )
+    session.flush()
+
+
+def _seed_tags(session: Session, user_id: uuid.UUID, *tag_ids_and_names: tuple[str, str]) -> None:
+    """Persist real `Tag` rows so a `PostingTag`/override can FK or reference them by natural key."""
+    replace_tags(session, user_id, [Tag(tag_id=tag_id, name=name) for tag_id, name in tag_ids_and_names], prune=False)
+    session.commit()
+
+
+def _seed_posting_tag(session: Session, user_id: uuid.UUID, posting_id: str, tag_id: str) -> None:
+    session.add(
+        adb.PostingTag(
+            user_id=user_id,
+            posting_id=_row_id(session, user_id, adb.Posting, posting_id),
+            tag_id=_row_id(session, user_id, adb.Tag, tag_id),
+        )
+    )
+    session.flush()
+
+
+def test_remap_tag_ids_is_a_noop_for_an_empty_remap(db_session: Session, test_user_id: uuid.UUID) -> None:
+    remap_tag_ids({}, db_session, user_id=test_user_id)
+
+
+def test_remap_tag_ids_repoints_a_posting_tags_row(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting_tag(db_session, test_user_id, "p1", "tag:trip")
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    row = db_session.query(adb.PostingTag).filter_by(user_id=test_user_id).one()
+    assert row.tag_id == _row_id(db_session, test_user_id, adb.Tag, "tag:vacation")
+
+
+def test_remap_tag_ids_deletes_the_old_row_when_the_posting_already_has_the_target_tag(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting_tag(db_session, test_user_id, "p1", "tag:trip")
+    _seed_posting_tag(db_session, test_user_id, "p1", "tag:vacation")
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    rows = db_session.query(adb.PostingTag).filter_by(user_id=test_user_id).all()
+    assert len(rows) == 1
+    assert rows[0].tag_id == _row_id(db_session, test_user_id, adb.Tag, "tag:vacation")
+
+
+def test_remap_tag_ids_repoints_a_tag_ids_override(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"), ("tag:other", "Other"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:other"])}, db_session, user_id=test_user_id)
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
+    # A join table carries no inherent order — unlike the old array, membership is
+    # all that's preserved, not insertion order.
+    assert set(reloaded.tag_ids) == {"tag:vacation", "tag:other"}
+
+
+def test_remap_tag_ids_deletes_the_old_override_row_when_the_posting_already_has_the_target_tag(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"), ("tag:vacation", "Vacation"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip", "tag:vacation"])}, db_session, user_id=test_user_id)
+
+    remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
+
+    reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
+    assert reloaded.tag_ids == ["tag:vacation"]
+
+
+def test_save_overrides_rejects_a_tag_id_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    with pytest.raises(UnknownNaturalKeyError):
+        save_overrides({"p1": ManualOverride(tag_ids=["tag:does-not-exist"])}, db_session, user_id=test_user_id)
+
+
+def test_deleting_a_tag_row_cascades_and_clears_a_posting_override_tag(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_tags(db_session, test_user_id, ("tag:trip", "Trip"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(tag_ids=["tag:trip"])}, db_session, user_id=test_user_id)
+
+    db_session.query(adb.Tag).filter_by(user_id=test_user_id, natural_key="tag:trip").delete()
+    db_session.commit()
+
+    assert db_session.query(adb.PostingOverrideTag).filter_by(user_id=test_user_id).count() == 0
+
+
+def test_a_seeded_read_with_no_data_yet_creates_the_defaults(db_session: Session, test_user_id: uuid.UUID) -> None:
+    accounts = seeded_accounts(db_session, test_user_id)
+    assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in accounts
+    assert UNCATEGORIZED_INCOME_ACCOUNT_ID in accounts
+    assert "expense:food-drink" in seeded_categories(db_session, test_user_id)
+    assert load_transfer_rules(db_session, test_user_id) == []
+
+
+def test_seeding_persists_the_placeholder_accounts(db_session: Session, test_user_id: uuid.UUID) -> None:
+    seed_new_user_defaults(db_session, test_user_id)
+    persisted = db_session.query(adb.Account).filter_by(user_id=test_user_id).all()
+    assert {a.natural_key for a in persisted} >= {UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID}
+
+
+def test_replace_categories_with_an_empty_tree_prunes_every_category(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    seed_new_user_defaults(db_session, test_user_id)  # seeds the default tree
+    replace_categories(db_session, test_user_id, [])
+    db_session.commit()
+    assert load_categories(db_session, test_user_id) == {}
+
+
+def test_seeded_accounts_backfills_a_missing_placeholder_account(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The user still *has* accounts, so seeding is a no-op for them — the backfill is what covers this."""
+    seed_new_user_defaults(db_session, test_user_id)
+    replace_accounts(
+        db_session,
+        test_user_id,
+        [Account(account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD")],
+    )
+    db_session.commit()
+
+    reloaded = seeded_accounts(db_session, test_user_id)
+    assert UNCATEGORIZED_EXPENSE_ACCOUNT_ID in reloaded
+    assert UNCATEGORIZED_INCOME_ACCOUNT_ID in reloaded
+
+
+def test_persisted_rows_are_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
+    other_user_id = uuid.uuid4()
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
+    db_session.commit()
+
+    replace_tags(db_session, test_user_id, [Tag(tag_id="trip", name="Trip")], prune=False)
+    db_session.commit()
+
+    assert "trip" not in load_tags(db_session, other_user_id)
+
+
+def test_load_overrides_with_none_yet_is_empty(db_session: Session, test_user_id: uuid.UUID) -> None:
+    assert load_overrides(db_session, user_id=test_user_id) == {}
+
+
+def test_save_then_load_overrides_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
+    seed_new_user_defaults(db_session, test_user_id)  # seeds the default categories an override can point at
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    save_overrides({"p1": ManualOverride(category_id="expense:food-drink")}, db_session, user_id=test_user_id)
+    reloaded = load_overrides(db_session, user_id=test_user_id)
+    assert reloaded["p1"].category_id == "expense:food-drink"
+
+
+def test_save_then_load_overrides_round_trips_a_tag_override_and_pending_fields(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    seed_new_user_defaults(db_session, test_user_id)  # seeds the default categories an override can point at
+    _seed_tags(db_session, test_user_id, ("a", "A"), ("b", "B"))
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    override = ManualOverride(
+        category_id="expense:food-drink",
+        tag_ids=["a", "b"],
+        pending_source="ai",
+        pending_selected=False,
+        pending_previous_category_id="expense:travel",
+    )
+    save_overrides({"p1": override}, db_session, user_id=test_user_id)
+    reloaded = load_overrides(db_session, user_id=test_user_id)["p1"]
+    assert set(reloaded.tag_ids) == {"a", "b"}
+    assert reloaded.pending_source == "ai"
+    assert reloaded.pending_selected is False
+    assert reloaded.pending_previous_category_id == "expense:travel"
+
+
+def test_save_then_load_overrides_distinguishes_no_tag_override_from_cleared_to_no_tags(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    save_overrides(
+        {
+            "p1": ManualOverride(category_id=None, tag_ids=None),  # no tag override at all
+            "p2": ManualOverride(category_id=None, tag_ids=[]),  # explicitly overridden to no tags
+        },
+        db_session,
+        user_id=test_user_id,
+    )
+    reloaded = load_overrides(db_session, user_id=test_user_id)
+    assert "p1" not in reloaded  # no field set at all, so no row was written in the first place
+    assert reloaded["p2"].tag_ids == []
+
+
+def test_save_overrides_for_postings_does_not_clobber_a_concurrently_saved_different_posting(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Reproduces the actual bug `save_overrides_for_postings` exists to fix: two requests racing on
+
+    *different* postings must not have one silently erase the other. `save_overrides` (the old whole-table
+    path) always rewrote every posting's override from whatever in-memory dict it was handed — a second
+    caller working off a snapshot taken before the first caller's write would resave that stale snapshot
+    and wipe the first caller's change out. `save_overrides_for_postings` takes an explicit `posting_ids`
+    scope instead, so it only ever touches the postings a given call is actually about.
+    """
+    seed_new_user_defaults(db_session, test_user_id)
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    # Both "requests" read their own snapshot before either one writes.
+    snapshot_a = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    snapshot_b = load_overrides_for_postings(db_session, test_user_id, ["p2"])
+    assert snapshot_a == {}
+    assert snapshot_b == {}
+
+    # "Request A" commits its change to p1 first.
+    save_overrides_for_postings(
+        ["p1"], {"p1": ManualOverride(category_id="expense:food-drink")}, db_session, test_user_id
+    )
+
+    # "Request B" saves its own change to p2, from a snapshot that never saw p1's write.
+    save_overrides_for_postings(["p2"], {"p2": ManualOverride(category_id="expense:travel")}, db_session, test_user_id)
+
+    final = load_overrides(db_session, user_id=test_user_id)
+    assert final["p1"].category_id == "expense:food-drink"  # would be silently wiped by the old save_overrides
+    assert final["p2"].category_id == "expense:travel"
+
+
+def test_save_posting_split_does_not_clobber_a_concurrently_saved_different_postings_split(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Same scoping guarantee as the overrides test above, for `save_posting_split`: splitting one posting
+
+    must never touch another posting's already-saved split (the old whole-store path blanket-reinserted
+    the entire `posting_splits`/`posting_split_leg` tables on every save).
+    """
+    seed_new_user_defaults(db_session, test_user_id)
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    save_posting_split(
+        PostingSplit(
+            posting_id="p1",
+            legs=[PostingSplitLeg(amount=6.0, category_id="expense:food-drink"), PostingSplitLeg(amount=4.0)],
+        ),
+        db_session,
+        test_user_id,
+    )
+    save_posting_split(
+        PostingSplit(
+            posting_id="p2",
+            legs=[PostingSplitLeg(amount=7.0, category_id="expense:travel"), PostingSplitLeg(amount=3.0)],
+        ),
+        db_session,
+        test_user_id,
+    )
+
+    splits = load_posting_splits(db_session, test_user_id)
+    assert set(splits.keys()) == {"p1", "p2"}
+    assert splits["p1"].legs[0].amount == pytest.approx(6.0)
+    assert splits["p2"].legs[0].amount == pytest.approx(7.0)
+
+    assert delete_posting_split(db_session, test_user_id, "p1") is True
+    assert delete_posting_split(db_session, test_user_id, "p1") is False  # idempotent
+    # p2 untouched by p1's delete
+    assert set(load_posting_splits(db_session, test_user_id)) == {"p2"}
+
+
+def test_every_repository_round_trips_its_own_entity_type(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+
+    accounts = seeded_accounts(db_session, test_user_id)
+
+    # The accounts aggregate. A child account goes in the same call as its
+    # parent on purpose: `replace_accounts` two-passes so the self-referencing
+    # FK resolves. Opening balances and manual transfers FK into `accounts`, so
+    # they can only be written once those rows exist.
+    replace_accounts(
+        db_session,
+        test_user_id,
+        [
+            *accounts.values(),
+            Account(account_id="savings:vault-parent", name="Savings", kind="savings", institution="x", currency="USD"),
+            Account(
+                account_id="savings:vault-parent:trip",
+                name="Trip vault",
+                kind="vault",
+                institution="x",
+                currency="USD",
+                parent_account_id="savings:vault-parent",
+            ),
+        ],
+    )
+    replace_opening_balances(
+        db_session,
+        test_user_id,
+        [OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1))],
+    )
+    insert_manual_transfers(
+        [
+            ManualTransfer(
+                transfer_id="mt1",
+                date=datetime(2026, 1, 2),
+                from_account_id="checking:test",
+                to_account_id="savings:vault-parent",
+                from_amount=50,
+                to_amount=50,
+            )
+        ],
+        db_session,
+        test_user_id,
+    )
+
+    # The taxonomy aggregate.
+    replace_tags(db_session, test_user_id, [Tag(tag_id="trip", name="Trip")])
+    replace_other_assets(db_session, test_user_id, [OtherAsset(asset_id="oa1", name="Car", value=5000)])
+    replace_simulator_scenarios(
+        db_session,
+        test_user_id,
+        [
+            SimulatorScenario(
+                scenario_id="s1",
+                name="Retirement",
+                initial_capital=1000,
+                monthly_contribution=100,
+                horizon_years=10,
+                annual_rate_pct=5,
+            )
+        ],
+    )
+
+    # The interpretation aggregate.
+    replace_transfer_rules(
+        db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="uber", priority=1)]
+    )
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="cp1", description_contains="uber", category_id="expense:transport")],
+    )
+    replace_posting_splits(
+        db_session,
+        test_user_id,
+        [
+            PostingSplit(
+                posting_id="p1",
+                legs=[
+                    PostingSplitLeg(amount=6, category_id="expense:food-drink", description="groceries"),
+                    PostingSplitLeg(amount=4, category_id="expense:transport", description="cab"),
+                ],
+            )
+        ],
+    )
+    replace_posting_merges(
+        db_session,
+        test_user_id,
+        [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
+    )
+
+    # The planning aggregate.
+    replace_budgets(
+        db_session,
+        test_user_id,
+        [
+            Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300),
+            Budget(budget_id="b2", month=None, category_id="expense:food-drink", amount=250),
+        ],
+    )
+    insert_goal(
+        db_session,
+        test_user_id,
+        Goal(
+            goal_id="g1",
+            name="Emergency fund",
+            target_amount=1000,
+            target_date=datetime(2027, 1, 1),
+            color="#abcdef",
+            created_at=datetime(2026, 1, 1),
+        ),
+    )
+    replace_goal_contributions(
+        db_session,
+        test_user_id,
+        [GoalContribution(contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5), amount=100)],
+    )
+    replace_goal_automations(
+        db_session,
+        test_user_id,
+        [
+            GoalAutomation(
+                automation_id="ra1",
+                goal_id="g1",
+                direction="contribution",
+                start_date=datetime(2026, 1, 1).date(),
+                frequency="monthly",
+                mode="fixed_amount",
+                value=50,
+                currency="USD",
+            )
+        ],
+        "contribution",
+    )
+    replace_goal_automations(
+        db_session,
+        test_user_id,
+        [
+            GoalAutomation(
+                automation_id=withdrawal_automation_id("g1"), goal_id="g1", direction="withdrawal", priority=1
+            )
+        ],
+        "withdrawal",
+    )
+    db_session.commit()
+
+    assert seeded_accounts(db_session, test_user_id)["savings:vault-parent:trip"].parent_account_id == (
+        "savings:vault-parent"
+    )
+    assert load_tags(db_session, test_user_id)["trip"].name == "Trip"
+    assert load_transfer_rules(db_session, test_user_id)[0].description_contains == "uber"
+    assert load_category_patterns(db_session, test_user_id)["cp1"].category_id == "expense:transport"
+    assert load_other_assets(db_session, test_user_id)[0].name == "Car"
+    assert load_opening_balances(db_session, test_user_id)["checking:test"].amount == 100
+    assert load_manual_transfers(db_session, test_user_id)[0].to_account_id == "savings:vault-parent"
+    assert {(budget.month, budget.amount) for budget in load_budgets(db_session, test_user_id)} == {
+        ("2026-01", 300),
+        (None, 250),
+    }
+    assert load_simulator_scenarios(db_session, test_user_id)[0].name == "Retirement"
+    split = load_posting_splits(db_session, test_user_id)["p1"]
+    assert [leg.amount for leg in split.legs] == [6, 4]
+    assert [leg.description for leg in split.legs] == ["groceries", "cab"]
+    assert load_posting_merges(db_session, test_user_id)["m1"].duplicate_transaction_ids == ["t2"]
+    assert load_goals(db_session, test_user_id)["g1"].name == "Emergency fund"
+    assert load_goal_contributions(db_session, test_user_id)["gc1"].amount == 100
+    by_direction = {automation.direction: automation for automation in load_goal_automations(db_session, test_user_id)}
+    assert by_direction["contribution"].value == 50
+    assert by_direction["withdrawal"].goal_id == "g1"
+    assert by_direction["withdrawal"].start_date is None
+
+
+def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
+    seed_new_user_defaults(db_session, test_user_id)
+    replace_accounts(
+        db_session,
+        test_user_id,
+        [
+            Account(account_id="checking:test", name="Test", kind="checking", institution="x", currency="USD"),
+            Account(account_id="employer:eqore", name="Eqore", kind="income_source", institution="x", currency="USD"),
+        ],
+        prune=False,
+    )
+    db_session.commit()
+    replace_transfer_rules(
+        db_session,
+        test_user_id,
+        [
+            TransferRule(
+                rule_id="r1",
+                description_contains="payroll",
+                account_id="checking:test",
+                counterparty_account_id="employer:eqore",
+                priority=1,
+            )
+        ],
+    )
+    db_session.commit()
+    rule = load_transfer_rules(db_session, test_user_id)[0]
+    assert rule.account_id == "checking:test"
+    assert rule.counterparty_account_id == "employer:eqore"
+
+
+def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
+    seed_new_user_defaults(db_session, test_user_id)
+    rule = TransferRule(rule_id="r1", description_contains="payroll", counterparty_account_id="does-not-exist")
+    with pytest.raises(UnknownNaturalKeyError):
+        replace_transfer_rules(db_session, test_user_id, [rule])
+
+
+def test_transfer_rule_round_trips_an_excluded_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"])
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    replace_rule_exclusions(db_session, test_user_id, [rule])
+    db_session.commit()
+    assert load_transfer_rules(db_session, test_user_id)[0].excluded_transaction_ids == ["t1"]
+
+
+def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transaction_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    seed_new_user_defaults(db_session, test_user_id)
+    rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    with pytest.raises(UnknownNaturalKeyError):
+        replace_rule_exclusions(db_session, test_user_id, [rule])
+
+
+def test_upsert_transfer_rule_leaves_every_other_rule_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The scoped seam that replaced routing `POST /transfer-rules` through the whole-store save.
+
+    That path rewrote every one of this user's rules from the caller's snapshot, so creating one rule
+    from a snapshot taken before someone else's create would silently delete the other rule again.
+    `upsert_transfer_rule` only ever writes the one `rule_id` it's given.
+    """
+    seed_new_user_defaults(db_session, test_user_id)
+    upsert_transfer_rule(TransferRule(rule_id="r1", description_contains="uber"), db_session, test_user_id)
+    upsert_transfer_rule(TransferRule(rule_id="r2", description_contains="lyft"), db_session, test_user_id)
+
+    assert {rule.rule_id for rule in load_transfer_rules(db_session, test_user_id)} == {"r1", "r2"}
+
+    # Re-posting r1 replaces only r1, and leaves r2 exactly where it was.
+    upsert_transfer_rule(TransferRule(rule_id="r1", description_contains="uber", priority=5), db_session, test_user_id)
+    assert {rule.rule_id: rule.priority for rule in load_transfer_rules(db_session, test_user_id)} == {
+        "r1": 5,
+        "r2": 0,
+    }
+
+
+def test_update_transfer_rule_echoes_the_bumped_version_even_when_the_row_is_already_loaded(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The version the client is told to send back next time must be the one the database now holds.
+
+    `check_and_bump_row_version` bumps the column with raw SQL, which leaves
+    an already-loaded ORM instance carrying its pre-bump value, so
+    `session.get` hands that stale value straight back. Reading
+    `row.version` after the bump therefore depends on the instance having
+    been evicted from SQLAlchemy's *weakly* referencing identity map —
+    which is why the API path gets away with it today: it discards its ORM
+    rows before updating. Holding one reference is enough to break it, and
+    echoing a stale version makes the client's next PATCH fail with a 409
+    about a conflict that never happened.
+    """
+    upsert_transfer_rule(TransferRule(rule_id="r1", description_contains="uber"), db_session, test_user_id)
+    row_id = ids_by_natural_key(db_session, adb.CategorizationRule, test_user_id, ["r1"])["r1"]
+    # The strong reference is the point: it keeps the instance in the identity
+    # map, so the bump below cannot be observed through it.
+    cached = db_session.get(adb.CategorizationRule, row_id)
+    assert cached.version == 1
+
+    updated = update_transfer_rule(
+        db_session,
+        test_user_id,
+        TransferRule(rule_id="r1", description_contains="uber", priority=7),
+        1,
+    )
+
+    assert updated is not None
+    assert cached.version == 1, "precondition: the cached instance must still be stale"
+    assert updated.version == 2
+    # The cached instance would otherwise serve this read too, so drop its stale
+    # state and confirm the database itself really holds the bumped version.
+    db_session.expire(cached)
+    assert load_transfer_rules(db_session, test_user_id)[0].version == 2
+
+
+def test_upsert_transfer_rule_round_trips_its_own_exclusions(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    upsert_transfer_rule(
+        TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["t1"]),
+        db_session,
+        test_user_id,
+    )
+
+    assert load_transfer_rules(db_session, test_user_id)[0].excluded_transaction_ids == ["t1"]
+
+    upsert_transfer_rule(
+        TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=[]),
+        db_session,
+        test_user_id,
+    )
+    assert load_transfer_rules(db_session, test_user_id)[0].excluded_transaction_ids == []
+
+
+def test_upsert_posting_merge_leaves_every_other_merge_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The scoped seam that replaced routing `POST /posting-merges` through the whole-store save.
+
+    That path blanket-deleted and reinserted every merge from the caller's snapshot, so recording one
+    merge could resurrect a merge another request had just undone. `upsert_posting_merge` only ever
+    touches the one `merge_id` it's given.
+    """
+    for index in range(1, 6):
+        _seed_posting(db_session, test_user_id, transaction_id=f"t{index}", posting_id=f"p{index}")
+
+    upsert_posting_merge(
+        PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2", "t5"]),
+        db_session,
+        test_user_id,
+    )
+    upsert_posting_merge(
+        PostingMerge(merge_id="m2", kept_transaction_id="t3", duplicate_transaction_ids=["t4"]),
+        db_session,
+        test_user_id,
+    )
+
+    assert set(load_posting_merges(db_session, test_user_id)) == {"m1", "m2"}
+
+    # Re-upserting m1 with a narrower duplicate set replaces only m1's rows.
+    upsert_posting_merge(
+        PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"], description="redone"),
+        db_session,
+        test_user_id,
+    )
+    reloaded = load_posting_merges(db_session, test_user_id)
+    assert set(reloaded) == {"m1", "m2"}
+    assert reloaded["m1"].duplicate_transaction_ids == ["t2"]
+    assert reloaded["m1"].description == "redone"
+    assert reloaded["m2"].duplicate_transaction_ids == ["t4"]
+
+
+def test_transfer_link_round_trips(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    replace_transfer_rules(
+        db_session, test_user_id, [TransferRule(rule_id="chase-card-payoff", description_contains="payoff")]
+    )
+    link = TransferLink(
+        link_id="transfer-link:t1:t2",
+        transaction_id_a="t1",
+        transaction_id_b="t2",
+        source="rule",
+        rule_id="chase-card-payoff",
+    )
+    insert_transfer_links(db_session, test_user_id, [link])
+    db_session.commit()
+    reloaded = load_transfer_links(db_session, test_user_id)
+
+    assert reloaded == [link]
+    assert reloaded[0].rule_id == "chase-card-payoff"
+
+
+def test_inserting_the_same_transfer_link_twice_is_a_no_op_rather_than_an_integrity_error(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Reconciliation derives a canonical `link_id` from the pair, so two callers propose the same link.
+
+    Both read the same pre-state, both see no existing link, and both write.
+    A plain insert made the loser a `unique_violation` on
+    `(user_id, natural_key)` — an `IntegrityError` with no handler above it,
+    so a 500. Two rule saves from two tabs, or a rule save racing an import,
+    reach this. The membership rows must be skipped along with the parent,
+    or they would duplicate what the winner already wrote.
+    """
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    link = TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2", source="rule")
+
+    insert_transfer_links(db_session, test_user_id, [link])
+    db_session.commit()
+    insert_transfer_links(db_session, test_user_id, [link])
+    db_session.commit()
+
+    assert load_transfer_links(db_session, test_user_id) == [link]
+    memberships = db_session.query(adb.TransferLinkedTransaction).filter_by(user_id=test_user_id).count()
+    assert memberships == 2, "one membership per side of the pair, not four"
+
+
+def test_transfer_link_cannot_name_a_rule_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """DB-audit D7: `rule_id` was a bare string, so a link could reference a rule nobody could look up."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    with pytest.raises(UnknownNaturalKeyError):
+        insert_transfer_links(
+            db_session,
+            test_user_id,
+            [
+                TransferLink(
+                    link_id="transfer-link:t1:t2",
+                    transaction_id_a="t1",
+                    transaction_id_b="t2",
+                    source="rule",
+                    rule_id="never-created",
+                )
+            ],
+        )
+
+
+def test_deleting_a_rule_clears_its_links_reference_rather_than_stranding_it(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`ON DELETE SET NULL`: the link survives its rule, the dangling reference does not."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="r1", description_contains="payoff")])
+    insert_transfer_links(
+        db_session,
+        test_user_id,
+        [
+            TransferLink(
+                link_id="transfer-link:t1:t2",
+                transaction_id_a="t1",
+                transaction_id_b="t2",
+                source="rule",
+                rule_id="r1",
+            )
+        ],
+    )
+    db_session.commit()
+
+    delete_transfer_rule(db_session, test_user_id, "r1")
+    db_session.commit()
+
+    reloaded = load_transfer_links(db_session, test_user_id)
+    assert [link.rule_id for link in reloaded] == [None]
+    assert [link.source for link in reloaded] == ["rule"]
+
+
+def test_transfer_link_naming_an_already_linked_transaction_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    _seed_posting(db_session, test_user_id, transaction_id="t3", posting_id="p3")
+    with pytest.raises(IntegrityError):
+        insert_transfer_links(
+            db_session,
+            test_user_id,
+            [
+                TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2"),
+                TransferLink(link_id="transfer-link:t1:t3", transaction_id_a="t1", transaction_id_b="t3"),
+            ],
+        )
+
+
+def test_writing_accounts_and_taxonomy_never_touches_any_interpretation_row(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The whole point of the extraction: a stale accounts/taxonomy write can't clobber interpretation data.
+
+    Replaces the old round-trip assertions, which persisted rules/patterns/splits/merges/links *through*
+    the whole-store save and so only held because it blanket-reinserted them. Now a caller holding a
+    snapshot taken before any of this data existed can write its own aggregate back without erasing a
+    single row — which is exactly what every unrelated request (adding an account, renaming a tag) does.
+    """
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
+    stale_accounts = seeded_accounts(db_session, test_user_id)
+    stale_categories = load_categories(db_session, test_user_id)
+    stale_tags = load_tags(db_session, test_user_id)
+    stale_other_assets = load_other_assets(db_session, test_user_id)
+    stale_scenarios = load_simulator_scenarios(db_session, test_user_id)
+    assert load_transfer_rules(db_session, test_user_id) == []
+
+    rule = TransferRule(rule_id="r1", description_contains="uber", excluded_transaction_ids=["t1"])
+    replace_transfer_rules(db_session, test_user_id, [rule])
+    replace_rule_exclusions(db_session, test_user_id, [rule])
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="cp1", description_contains="uber", category_id="expense:transport")],
+    )
+    replace_posting_splits(
+        db_session,
+        test_user_id,
+        [PostingSplit(posting_id="p1", legs=[PostingSplitLeg(amount=6), PostingSplitLeg(amount=4)])],
+    )
+    replace_posting_merges(
+        db_session,
+        test_user_id,
+        [PostingMerge(merge_id="m1", kept_transaction_id="t1", duplicate_transaction_ids=["t2"])],
+    )
+    insert_transfer_links(
+        db_session,
+        test_user_id,
+        [TransferLink(link_id="transfer-link:t1:t2", transaction_id_a="t1", transaction_id_b="t2")],
+    )
+    db_session.commit()
+
+    # The snapshot taken above still carries none of it — the old whole-store save would wipe all five.
+    replace_accounts(db_session, test_user_id, stale_accounts.values())
+    replace_categories(db_session, test_user_id, stale_categories.values())
+    replace_tags(db_session, test_user_id, stale_tags.values())
+    replace_other_assets(db_session, test_user_id, stale_other_assets)
+    replace_simulator_scenarios(db_session, test_user_id, stale_scenarios)
+    db_session.commit()
+
+    reloaded_rules = load_transfer_rules(db_session, test_user_id)
+    assert [r.rule_id for r in reloaded_rules] == ["r1"]
+    assert reloaded_rules[0].excluded_transaction_ids == ["t1"]
+    assert set(load_category_patterns(db_session, test_user_id)) == {"cp1"}
+    assert set(load_posting_splits(db_session, test_user_id)) == {"p1"}
+    assert set(load_posting_merges(db_session, test_user_id)) == {"m1"}
+    assert [link.link_id for link in load_transfer_links(db_session, test_user_id)] == ["transfer-link:t1:t2"]
+
+
+def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
+    contribution = GoalContribution(
+        contribution_id="gc1", goal_id="does-not-exist", date=datetime(2026, 1, 5), amount=100
+    )
+    with pytest.raises(UnknownNaturalKeyError):
+        replace_goal_contributions(db_session, test_user_id, [contribution])
+
+
+def test_contribution_automation_referencing_a_nonexistent_goal_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    automation = GoalAutomation(
+        automation_id="ra1",
+        goal_id="does-not-exist",
+        direction="contribution",
+        start_date=datetime(2026, 1, 1).date(),
+        frequency="monthly",
+        mode="fixed_amount",
+        value=50,
+        currency="USD",
+    )
+    with pytest.raises(UnknownNaturalKeyError):
+        replace_goal_automations(db_session, test_user_id, [automation], "contribution")
+
+
+def test_withdrawal_automation_referencing_a_nonexistent_goal_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    automation = GoalAutomation(automation_id="w1", goal_id="does-not-exist", direction="withdrawal")
+    with pytest.raises(UnknownNaturalKeyError):
+        replace_goal_automations(db_session, test_user_id, [automation], "withdrawal")
+
+
+def test_posting_budget_id_round_trips_a_real_budget_reference(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    replace_budgets(
+        db_session,
+        test_user_id,
+        [Budget(budget_id="b1", month="2026-01", category_id="expense:food-drink", amount=300)],
+    )
+    db_session.commit()
+
+    budget_row_id = _row_id(db_session, test_user_id, adb.Budget, "b1")
+    posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
+    posting_row.budget_id = budget_row_id
+    db_session.commit()
+
+    reloaded_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
+    assert reloaded_row.budget_id == budget_row_id
+
+
+def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
+    posting_row.budget_id = uuid.uuid4()
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_dismissed_suggestion_ids_is_empty_for_a_user_who_never_dismissed_anything(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    assert dismissed_suggestion_ids(db_session, test_user_id, {"transfer:a", "duplicate:b"}) == set()
+
+
+def test_dismiss_then_check_ids_finds_only_the_dismissed_ones(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    found = dismissed_suggestion_ids(db_session, test_user_id, {"transfer:a", "duplicate:b"})
+
+    assert found == {"transfer:a"}
+
+
+def test_dismiss_suggestion_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID) -> None:
+    other_user_id = uuid.uuid4()
+    db_session.add(db.models.User(id=other_user_id, email=f"{other_user_id}@x.com"))
+    db_session.commit()
+    dismiss_suggestion(
+        db_session,
+        other_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    assert dismissed_suggestion_ids(db_session, test_user_id, {"transfer:a"}) == set()
+
+
+def test_list_dismissed_suggestions_is_empty_when_none_dismissed(db_session: Session, test_user_id: uuid.UUID) -> None:
+    assert list_dismissed_suggestions(db_session, test_user_id) == []
+
+
+def test_list_dismissed_suggestions_orders_most_recent_first(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+    )
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="duplicate:b",
+            kind="duplicate",
+            description="b",
+            dismissed_at=datetime(2026, 1, 5, tzinfo=UTC),
+        ),
+    )
+
+    listed = list_dismissed_suggestions(db_session, test_user_id)
+
+    assert [entry.suggestion_id for entry in listed] == ["duplicate:b", "transfer:a"]
+
+
+def test_dismiss_suggestion_twice_replaces_rather_than_duplicates(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a",
+            kind="transfer",
+            description="first",
+            dismissed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a",
+            kind="transfer",
+            description="second",
+            dismissed_at=datetime(2026, 1, 2, tzinfo=UTC),
+        ),
+    )
+
+    listed = list_dismissed_suggestions(db_session, test_user_id)
+
+    assert len(listed) == 1
+    assert listed[0].description == "second"
+
+
+def test_undismiss_suggestion_removes_it_and_reports_it_existed(db_session: Session, test_user_id: uuid.UUID) -> None:
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    removed = undismiss_suggestion(db_session, test_user_id, "transfer:a")
+
+    assert removed is True
+    assert list_dismissed_suggestions(db_session, test_user_id) == []
+
+
+def test_undismiss_suggestion_reports_false_when_nothing_to_remove(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    assert undismiss_suggestion(db_session, test_user_id, "transfer:nope") is False
+
+
+# --- One table, two effects / two lifecycles -------------------------------
+#
+# `transfer_rules` + `category_patterns` are now one `categorization_rules`
+# table, and `posting_pending_suggestions` + `dismissed_suggestions` one
+# `suggestions` table. Sharing a table creates two hazards that did not exist
+# while each concept had its own: a scoped rewrite of one effect/lifecycle
+# could prune the other's rows, and a row could be written holding a mixture
+# of both shapes. Everything below is a guard on one of those two.
+
+
+def test_replacing_the_transfer_rules_leaves_the_category_patterns_alone(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """Both effects share `categorization_rules`, so the transfer prune must be scoped to its own."""
+    seed_new_user_defaults(db_session, test_user_id)  # seeds the default categories the pattern FKs into
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:keep", description_contains="uber", category_id="expense:transport")],
+    )
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:a", description_contains="a")])
+    db_session.commit()
+
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:b", description_contains="b")])
+    db_session.commit()
+
+    assert [rule.rule_id for rule in load_transfer_rules(db_session, test_user_id)] == ["rule:b"]
+    assert set(load_category_patterns(db_session, test_user_id)) == {"pattern:keep"}
+
+
+def test_replacing_the_category_patterns_leaves_the_transfer_rules_alone(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    seed_new_user_defaults(db_session, test_user_id)
+    replace_transfer_rules(db_session, test_user_id, [TransferRule(rule_id="rule:keep", description_contains="a")])
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:a", description_contains="uber", category_id="expense:transport")],
+    )
+    db_session.commit()
+
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:b", description_contains="lyft", category_id="expense:transport")],
+    )
+    db_session.commit()
+
+    assert set(load_category_patterns(db_session, test_user_id)) == {"pattern:b"}
+    assert [rule.rule_id for rule in load_transfer_rules(db_session, test_user_id)] == ["rule:keep"]
+
+
+def test_deleting_a_transfer_rule_never_matches_a_category_pattern_row(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """`delete_transfer_rule` is scoped to `effect="transfer"`, so a pattern id can't be deleted through it."""
+    seed_new_user_defaults(db_session, test_user_id)
+    replace_category_patterns(
+        db_session,
+        test_user_id,
+        [CategoryPattern(pattern_id="pattern:p", description_contains="uber", category_id="expense:transport")],
+    )
+    db_session.commit()
+
+    assert delete_transfer_rule(db_session, test_user_id, "pattern:p") is False
+    assert set(load_category_patterns(db_session, test_user_id)) == {"pattern:p"}
+
+
+def test_a_transfer_rule_row_carrying_a_category_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_categorization_rules_effect_columns` — a row holds its own effect's columns and nothing else."""
+    seed_new_user_defaults(db_session, test_user_id)
+    db_session.add(
+        adb.CategorizationRule(
+            user_id=test_user_id,
+            natural_key="rule:mixed",
+            effect="transfer",
+            stage="counterparty",
+            description_contains="uber",
+            category_id=_row_id(db_session, test_user_id, adb.Category, "expense:transport"),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_category_pattern_row_without_a_category_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    db_session.add(
+        adb.CategorizationRule(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="pattern:empty",
+            effect="categorize",
+            stage="override",
+            description_contains="uber",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_rule_claiming_the_wrong_stage_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """Declared precedence is only worth anything if a row can't claim a stage its effect never runs at."""
+    db_session.add(
+        adb.CategorizationRule(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="rule:wrong-stage",
+            effect="transfer",
+            stage="override",
+            description_contains="uber",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_saving_every_override_leaves_the_dismissed_archive_alone(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """Both lifecycles share `suggestions`, so the pending rewrite must be scoped to `status="pending"`."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="transfer:a", kind="transfer", description="a", dismissed_at=datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+    )
+
+    save_overrides(
+        {"p1": ManualOverride(pending_source="ai", category_id="expense:transport")}, db_session, test_user_id
+    )
+    save_overrides({}, db_session, test_user_id)
+
+    assert [entry.suggestion_id for entry in list_dismissed_suggestions(db_session, test_user_id)] == ["transfer:a"]
+
+
+def test_dismissing_a_suggestion_never_looks_like_a_pending_one(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """A dismissed row must not be picked up by the override read, which only wants pending ones."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    dismiss_suggestion(
+        db_session,
+        test_user_id,
+        DismissedSuggestion(
+            suggestion_id="duplicate:g", kind="duplicate", description="g", dismissed_at=datetime.now(UTC)
+        ),
+    )
+
+    assert load_overrides(db_session, test_user_id) == {}
+
+
+def test_one_posting_can_only_be_pending_once(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The old `UNIQUE(user_id, posting_id)` survives as a posting-derived `natural_key`."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    save_overrides({"p1": ManualOverride(pending_source="ai")}, db_session, test_user_id)
+
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="pending:p1",
+            status="pending",
+            kind="category",
+            source="pattern",
+            posting_id=_row_id(db_session, test_user_id, adb.Posting, "p1"),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_suggestion_kind_outside_the_vocabulary_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_suggestions_kind` — the DB audit flagged this column as unconstrained free text."""
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="transfer:a",
+            status="dismissed",
+            kind="whatever",
+            source="detector",
+            description="a",
+            dismissed_at=datetime.now(UTC),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_dismissed_suggestion_pointing_at_a_posting_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_suggestions_dismissed_shape` — the archive lifecycle owns none of the pending one's columns."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="transfer:a",
+            status="dismissed",
+            kind="transfer",
+            source="detector",
+            description="a",
+            posting_id=_row_id(db_session, test_user_id, adb.Posting, "p1"),
+            dismissed_at=datetime.now(UTC),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_a_pending_suggestion_from_the_detector_is_rejected(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """`ck_suggestions_pending_shape` — only the two categorizers stage a category on a posting."""
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.add(
+        adb.Suggestion(
+            id=uuid.uuid4(),
+            user_id=test_user_id,
+            natural_key="pending:p1",
+            status="pending",
+            kind="category",
+            source="detector",
+            posting_id=_row_id(db_session, test_user_id, adb.Posting, "p1"),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+
+def test_restaging_a_pending_suggestion_replaces_the_row_the_posting_already_had(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The `POST /postings/{id}/…-suggest-category` flow, twice: load in one session, then save over it.
+
+    A pending row's id is now derived from its posting rather than random,
+    so the second save writes the *same* id the first one did — the case
+    where a delete-then-add inside one session can collide on the identity
+    map instead of quietly inserting a second row.
+    """
+    _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
+    db_session.commit()
+    save_overrides_for_postings(
+        ["p1"],
+        {"p1": ManualOverride(category_id="income:salary", pending_source="ai")},
+        db_session,
+        test_user_id,
+    )
+
+    loaded = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    save_overrides_for_postings(
+        ["p1"],
+        {"p1": loaded["p1"].model_copy(update={"pending_source": "pattern"})},
+        db_session,
+        test_user_id,
+    )
+
+    reloaded = load_overrides_for_postings(db_session, test_user_id, ["p1"])
+    assert reloaded["p1"].pending_source == "pattern"
+    assert db_session.query(adb.Suggestion).filter_by(user_id=test_user_id).count() == 1
+
+
+def test_moving_an_account_to_an_institution_nobody_has_named_before_creates_it(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The scoped edit path needs the same create-or-reference as the bulk one, and used to have neither.
+
+    `accounts.institution` is a foreign key now (move #3), and this is the one
+    write that changes it without going through `replace_accounts` — so
+    without its own `ensure_reference_rows` call, editing an account to a
+    newly-typed bank name would raise a `ForeignKeyViolation` and surface as a
+    500 rather than saving.
+    """
+    original = Account(
+        account_id="bank:checking", name="Checking", kind="checking", institution="chase", currency="USD"
+    )
+    replace_accounts(db_session, test_user_id, [original], prune=False)
+    db_session.commit()
+
+    assert update_account_fields(
+        db_session, test_user_id, original.model_copy(update={"institution": "A Bank With A New Name"})
+    )
+    db_session.commit()
+
+    assert load_accounts(db_session, test_user_id)["bank:checking"].institution == "A Bank With A New Name"
+    assert db_session.get(adb.Institution, "A Bank With A New Name") is not None

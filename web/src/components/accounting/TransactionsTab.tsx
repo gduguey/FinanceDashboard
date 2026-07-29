@@ -936,8 +936,8 @@ function TransactionsTable({
   // rule-found transfer link, or just the one transaction for a direct
   // single-account repoint) so this rule only gets patched once — a
   // second, separate `PATCH` for the same rule fired before this one's
-  // response lands would still be caught (409) by the rule's own
-  // `expected_version`, but there's no reason to invite that race.
+  // response lands would be a genuine conflict on that row, caught (409)
+  // by the rule's own `expected_version`; there's no reason to invite it.
   const handleExcludeFromRule = useCallback(
     (transactionIds: string[], ruleId: string) => {
       const rule = rules.find((r) => r.rule_id === ruleId)
@@ -965,12 +965,10 @@ function TransactionsTable({
   // Excluding a rule-found link must also delete the `TransferLink` itself
   // so both transactions actually revert to normal (see
   // `TransferDetailDialog`'s "Exclude this specific transfer…" button).
-  // Both calls are now per-resource and scoped — the rule patch by its own
-  // row `expected_version` (see `usePatchTransferRule`), the unlink by a
-  // scoped `DELETE /transfer-links/{id}` that no longer touches the
-  // whole-store version at all — so they can't spuriously conflict with
-  // each other or with an unrelated save. Kept sequential (`await`) purely
-  // so the success toast only fires once both have actually landed.
+  // The two calls touch disjoint rows — the rule patch governed by its own
+  // `expected_version` (see `usePatchTransferRule`), the unlink naming one
+  // link by id — so they can't conflict with each other. Awaited in
+  // sequence purely so the success toast only fires once both have landed.
   const handleExcludeAndUnlinkFromRule = useCallback(
     async (transactionIds: string[], ruleId: string, linkId: string) => {
       const rule = rules.find((r) => r.rule_id === ruleId)

@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from db.base import check_and_bump_version, get_version
+from db.base import ensure_reference_rows
+from db.money import Rate
 from trades.config import TaxRegime
 from trades.db.models import DashboardSettings as DashboardSettingsRow
+from trades.db.models import Security
 from trades.ledger.taxes import after_tax_rate_lookup
 from trades.market_data import hysa_rates as hysa_rates_module
-
-_DASHBOARD_SETTINGS_VERSION_TABLE = "trades.dashboard_settings_versions"
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,18 +49,18 @@ class DashboardSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    target_allocation_pct: dict[str, float] = Field(default_factory=dict)
+    target_allocation_pct: dict[str, Rate] = Field(default_factory=dict)
     hysa_bank_id: str | None = None
-    hysa_fixed_rate_pct: float | None = None
+    hysa_fixed_rate_pct: Rate | None = None
     benchmark_symbol_override: str | None = None
     local_zone: str | None = None
     tax_enabled: bool = False
     tax_regime: TaxRegime | None = None
     residency_status_change_date: date | None = None
     w8ben_claimed: bool = False
-    w8ben_treaty_rate_pct: float | None = None
-    marginal_ordinary_rate_pct: float | None = None
-    qualified_ltcg_rate_pct: float | None = None
+    w8ben_treaty_rate_pct: Rate | None = None
+    marginal_ordinary_rate_pct: Rate | None = None
+    qualified_ltcg_rate_pct: Rate | None = None
 
 
 def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
@@ -96,40 +96,23 @@ def load_settings(session: Session, user_id: uuid.UUID) -> DashboardSettings:
     )
 
 
-def get_dashboard_settings_version(session: Session, user_id: uuid.UUID) -> int:
-    """Read this user's current dashboard-settings save-version counter.
-
-    Parameters
-    ----------
-    session
-        An active database session.
-    user_id
-        Whose counter to read.
-
-    Returns
-    -------
-    int
-        `0` if this user has never saved settings yet (no row exists).
-    """
-    return get_version(session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id)
-
-
 def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.UUID) -> None:
     """Persist this user's dashboard settings, overwriting whatever was saved before.
 
-    Reads an expected version from `session.info["expected_dashboard_settings_version"]`
-    — stashed once per request by `trades.api.dependencies`'s
-    `_stash_expected_dashboard_settings_version`, from the client's own
-    `X-Expected-Dashboard-Settings-Version` header — the same optimistic-
-    concurrency mechanism `accounting.store.save_store` uses (see
-    `db.base.check_and_bump_version`), since every one of this module's
-    five settings endpoints reads-modifies-writes the same one shared row.
-    Re-stashes the freshly-bumped version back into `session.info` after a
-    successful check, the same defensive reason
-    `accounting.store._check_and_bump_store_version` does — so that if any
-    endpoint here ever calls `save_settings` more than once in one request,
-    a later call checks against the version this call just bumped to,
-    not the stale one the client originally submitted.
+    Deliberately last-write-wins: no optimistic concurrency at all, no
+    version column, no expected-version argument. This is one row per
+    user, edited from one settings panel by the one person who owns it,
+    and every field on it is an idempotent preference (a bank id, a
+    benchmark symbol, a tax rate, a browser-reported timezone) — the only
+    thing that matters about the end state is which value was actually
+    wanted last, exactly the case `docs/app-stack/
+    optimistic-concurrency-versioning.md` identifies as *not* worth
+    version-checking. A version check here bought no protection against
+    real lost work and instead made two unrelated saves against the same
+    row (a timezone report racing a tax-rate edit) spuriously 409.
+    Optimistic concurrency in this repo lives per-row on the accounting
+    tables that hold genuinely conflicting user intent — see
+    `db.base.check_and_bump_row_version`.
 
     Parameters
     ----------
@@ -140,15 +123,16 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     user_id
         Whose settings this is.
     """
-    expected_version = session.info.get("expected_dashboard_settings_version")
-    session.info["expected_dashboard_settings_version"] = check_and_bump_version(
-        session, _DASHBOARD_SETTINGS_VERSION_TABLE, user_id, expected_version
-    )
-
     row = session.get(DashboardSettingsRow, user_id)
     if row is None:
         row = DashboardSettingsRow(user_id=user_id)
         session.add(row)
+    # `benchmark_symbol_override` references `trades.securities` now. The
+    # picker's symbols come from a live Yahoo search (`market_data.symbol_search`),
+    # so the chosen instrument may well be one this database has never seen —
+    # the reference is created here rather than rejecting the save. `None`
+    # (no override) is dropped by the helper, not tested for here.
+    ensure_reference_rows(session, Security, [settings.benchmark_symbol_override])
     row.target_allocation_pct = settings.target_allocation_pct
     row.hysa_bank_id = settings.hysa_bank_id
     row.hysa_fixed_rate_pct = settings.hysa_fixed_rate_pct
@@ -194,7 +178,7 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
             -------
             float
             """
-            return fixed_rate
+            return float(fixed_rate)
 
         return fixed
 
@@ -319,7 +303,7 @@ def resolved_marginal_ordinary_rate(config: AppConfig, settings: DashboardSettin
         `config.tax.marginal_ordinary_rate` unless the user has entered their own rate.
     """
     override = settings.marginal_ordinary_rate_pct
-    return override / 100 if override is not None else config.tax.marginal_ordinary_rate
+    return float(override / 100) if override is not None else config.tax.marginal_ordinary_rate
 
 
 def resolved_qualified_ltcg_rate(config: AppConfig, settings: DashboardSettings) -> float:
@@ -338,7 +322,7 @@ def resolved_qualified_ltcg_rate(config: AppConfig, settings: DashboardSettings)
         `config.tax.qualified_ltcg_rate` unless the user has entered their own rate.
     """
     override = settings.qualified_ltcg_rate_pct
-    return override / 100 if override is not None else config.tax.qualified_ltcg_rate
+    return float(override / 100) if override is not None else config.tax.qualified_ltcg_rate
 
 
 def resolved_nra_dividend_tax_rate(config: AppConfig, settings: DashboardSettings) -> float:
@@ -363,5 +347,5 @@ def resolved_nra_dividend_tax_rate(config: AppConfig, settings: DashboardSetting
         The claimed treaty rate, or `config.tax.nra_statutory_dividend_withholding_rate`.
     """
     if settings.w8ben_claimed and settings.w8ben_treaty_rate_pct is not None:
-        return settings.w8ben_treaty_rate_pct / 100
+        return float(settings.w8ben_treaty_rate_pct / 100)
     return config.tax.nra_statutory_dividend_withholding_rate

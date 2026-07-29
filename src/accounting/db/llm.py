@@ -10,10 +10,10 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
-from db.base import Base
+from db.base import Base, Timestamped
 
 
-class LLMUsage(Base):
+class LLMUsage(Base, Timestamped):
     """One (user, provider) pair's call count and rate-limit state for its current tracking period."""
 
     __tablename__ = "llm_usage"

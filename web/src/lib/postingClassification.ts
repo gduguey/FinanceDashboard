@@ -4,7 +4,7 @@ const VIRTUAL_ACCOUNT_KINDS = new Set(['income_source', 'expense_payee'])
 
 // True once the user has added at least one account of their own — the
 // two virtual placeholder counterparties every fresh install seeds
-// (`uncategorized:expense`/`uncategorized:income`, see `accounting.store`)
+// (`uncategorized:expense`/`uncategorized:income`, see `accounting.taxonomy`)
 // don't count, since they never represent money the user actually has.
 // Takes any iterable of account-shaped rows (the full `Account` store, or a
 // lighter `NetWorthAccountRow` list) rather than one specific type, since

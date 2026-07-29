@@ -21,6 +21,7 @@ from accounting.ledger.currency import DisplayCurrency
 
 if TYPE_CHECKING:
     from accounting.models import Account, Budget, Category
+    from db.money import Money
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class BudgetComparisonRow:
     subcategory_id: str | None
     subcategory_name: str | None
     color: str
-    budgeted: float
+    budgeted: Money
     actual: float
     currency: str
 

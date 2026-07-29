@@ -7,27 +7,21 @@ import { Input } from '@/components/ui/input'
 import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
-  useCreateRecurringAddition,
-  useDeleteRecurringAddition,
-  usePatchRecurringAddition,
-  useSetRecurringAdditions,
-  useSetWithdrawalPriorities,
+  useCreateContributionAutomation,
+  useDeleteGoalAutomation,
+  usePatchGoalAutomation,
+  useSetContributionAutomations,
+  useSetWithdrawalAutomations,
 } from '@/hooks/useAccountingData'
-import type {
-  Goal,
-  RecurringAddition,
-  RecurringAdditionFrequency,
-  RecurringAdditionMode,
-  WithdrawalPriorityEntry,
-} from '@/types/accounting'
+import type { Goal, GoalAutomation, GoalAutomationFrequency, GoalAutomationMode } from '@/types/accounting'
 
-const MODE_LABELS: Record<RecurringAdditionMode, string> = {
+const MODE_LABELS: Record<GoalAutomationMode, string> = {
   fixed_amount: 'Fixed amount',
   percent_of_unallocated: '% of unallocated',
   remainder: 'Remainder (whatever is left)',
 }
 
-const FREQUENCY_LABELS: Record<RecurringAdditionFrequency, string> = {
+const FREQUENCY_LABELS: Record<GoalAutomationFrequency, string> = {
   daily: 'Daily',
   weekly: 'Weekly',
   biweekly: 'Biweekly',
@@ -65,11 +59,11 @@ function goalName(goals: Record<string, Goal>, goalId: string): string {
   return goals[goalId]?.name ?? goalId
 }
 
-function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddition[]; goals: Record<string, Goal> }) {
-  const setAdditions = useSetRecurringAdditions()
-  const patchAddition = usePatchRecurringAddition()
-  const deleteAddition = useDeleteRecurringAddition()
-  const createAddition = useCreateRecurringAddition()
+function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomation[]; goals: Record<string, Goal> }) {
+  const setAdditions = useSetContributionAutomations()
+  const patchAddition = usePatchGoalAutomation()
+  const deleteAddition = useDeleteGoalAutomation()
+  const createAddition = useCreateContributionAutomation()
   const ordered = [...additions].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
   // Drag-to-reorder is the one whole-list operation (renumbers every rule's priority at once).
@@ -79,27 +73,31 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
 
   // A single-rule field edit is scoped to its own id (last-write-wins), so it can't revert a
   // concurrent edit to a different rule the way the old whole-list PUT could.
-  function update(additionId: string, patch: Partial<RecurringAddition>) {
-    const existing = ordered.find((a) => a.addition_id === additionId)
+  // Every row here is a `contribution` automation, so its schedule fields are
+  // never actually null (the API's own CHECK guarantees it) — the fallbacks
+  // below only satisfy the shared `GoalAutomation` type, which has to allow
+  // null for the withdrawal rows sharing it.
+  function update(automationId: string, patch: Partial<GoalAutomation>) {
+    const existing = ordered.find((a) => a.automation_id === automationId)
     if (!existing) return
     const merged = { ...existing, ...patch }
     patchAddition.mutate({
-      additionId,
+      automationId,
       update: {
         goal_id: merged.goal_id,
-        start_date: merged.start_date,
-        frequency: merged.frequency,
+        start_date: merged.start_date ?? today(),
+        frequency: merged.frequency ?? 'monthly',
         end_date: merged.end_date,
-        mode: merged.mode,
-        value: merged.value,
-        currency: merged.currency,
+        mode: merged.mode ?? 'fixed_amount',
+        value: merged.value ?? 0,
+        currency: merged.currency ?? 'USD',
         priority: merged.priority,
       },
     })
   }
 
-  function remove(additionId: string) {
-    deleteAddition.mutate(additionId)
+  function remove(automationId: string) {
+    deleteAddition.mutate(automationId)
   }
 
   function add() {
@@ -129,7 +127,7 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
           const isLast = index === ordered.length - 1
           return (
             <div
-              key={addition.addition_id}
+              key={addition.automation_id}
               draggable
               onDragStart={drag.onDragStart(index)}
               onDragOver={drag.onDragOver(index)}
@@ -139,7 +137,7 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
               <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
               <Select
                 value={addition.goal_id}
-                onValueChange={(value) => value && update(addition.addition_id, { goal_id: value })}
+                onValueChange={(value) => value && update(addition.automation_id, { goal_id: value })}
               >
                 <SelectTrigger size="sm" className="min-w-36">
                   <SelectValue items={Object.fromEntries(goalList.map((g) => [g.goal_id, g.name]))} />
@@ -157,21 +155,21 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
                 <Input
                   type="date"
                   className="w-36"
-                  value={addition.start_date}
-                  onChange={(event) => update(addition.addition_id, { start_date: event.target.value })}
+                  value={addition.start_date ?? ''}
+                  onChange={(event) => update(addition.automation_id, { start_date: event.target.value })}
                 />
               </label>
               <Select
-                value={addition.frequency}
+                value={addition.frequency ?? 'monthly'}
                 onValueChange={(value) =>
-                  value && update(addition.addition_id, { frequency: value as RecurringAdditionFrequency })
+                  value && update(addition.automation_id, { frequency: value as GoalAutomationFrequency })
                 }
               >
                 <SelectTrigger size="sm" className="min-w-28">
                   <SelectValue items={FREQUENCY_LABELS} />
                 </SelectTrigger>
                 <SelectContent>
-                  {(Object.entries(FREQUENCY_LABELS) as [RecurringAdditionFrequency, string][]).map(
+                  {(Object.entries(FREQUENCY_LABELS) as [GoalAutomationFrequency, string][]).map(
                     ([frequency, label]) => (
                       <SelectItem key={frequency} value={frequency}>
                         {label}
@@ -184,19 +182,19 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
                 Until (optional)
                 <OptionalDateInput
                   value={addition.end_date ?? ''}
-                  onChange={(value) => update(addition.addition_id, { end_date: value || null })}
+                  onChange={(value) => update(addition.automation_id, { end_date: value || null })}
                   placeholder="No end date"
                 />
               </label>
               <Select
-                value={addition.mode}
-                onValueChange={(value) => update(addition.addition_id, { mode: value as RecurringAdditionMode })}
+                value={addition.mode ?? 'fixed_amount'}
+                onValueChange={(value) => update(addition.automation_id, { mode: value as GoalAutomationMode })}
               >
                 <SelectTrigger size="sm" className="min-w-44">
                   <SelectValue items={MODE_LABELS} />
                 </SelectTrigger>
                 <SelectContent>
-                  {(Object.entries(MODE_LABELS) as [RecurringAdditionMode, string][]).map(([mode, label]) => (
+                  {(Object.entries(MODE_LABELS) as [GoalAutomationMode, string][]).map(([mode, label]) => (
                     <SelectItem key={mode} value={mode} disabled={mode === 'remainder' && !isLast}>
                       {label}
                     </SelectItem>
@@ -206,11 +204,11 @@ function RecurringAdditionsList({ additions, goals }: { additions: RecurringAddi
               {addition.mode !== 'remainder' && (
                 <NumberInput
                   className="w-24"
-                  value={addition.value}
-                  onCommit={(value) => update(addition.addition_id, { value: value ?? 0 })}
+                  value={addition.value ?? 0}
+                  onCommit={(value) => update(addition.automation_id, { value: value ?? 0 })}
                 />
               )}
-              <Button variant="ghost" size="icon" onClick={() => remove(addition.addition_id)}>
+              <Button variant="ghost" size="icon" onClick={() => remove(addition.automation_id)}>
                 <Trash2 className="size-3.5 text-muted-foreground" />
               </Button>
             </div>
@@ -228,16 +226,16 @@ function WithdrawalPrioritiesList({
   priorities,
   goals,
 }: {
-  priorities: WithdrawalPriorityEntry[]
+  priorities: GoalAutomation[]
   goals: Record<string, Goal>
 }) {
-  const setPriorities = useSetWithdrawalPriorities()
+  const setPriorities = useSetWithdrawalAutomations()
   const ordered = [...priorities].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
   const drag = useRowDrag(ordered, (next) => persist(next))
   const unranked = goalList.filter((goal) => !ordered.some((entry) => entry.goal_id === goal.goal_id))
 
-  function persist(next: WithdrawalPriorityEntry[]) {
+  function persist(next: GoalAutomation[]) {
     setPriorities.mutate(next.map((entry, index) => ({ ...entry, priority: index })))
   }
 
@@ -246,7 +244,13 @@ function WithdrawalPrioritiesList({
   }
 
   function add(goalId: string) {
-    persist([...ordered, { goal_id: goalId, priority: ordered.length }])
+    // A withdrawal automation has no identity beyond its goal — the id mirrors
+    // `repositories.planning.withdrawal_automation_id`, which the server
+    // derives the row's own id from.
+    persist([
+      ...ordered,
+      { automation_id: `withdrawal:${goalId}`, goal_id: goalId, direction: 'withdrawal', priority: ordered.length },
+    ])
   }
 
   return (
@@ -296,17 +300,23 @@ function WithdrawalPrioritiesList({
 
 export function GoalAutomationsPanel({
   goals,
-  recurringAdditions,
-  withdrawalPriorities,
+  automations,
 }: {
   goals: Record<string, Goal>
-  recurringAdditions: RecurringAddition[]
-  withdrawalPriorities: WithdrawalPriorityEntry[]
+  automations: GoalAutomation[]
 }) {
+  // One list arrives from the store (one `goal_automations` table); `direction`
+  // is what splits it back into the two panels the page shows.
   return (
     <div className="space-y-4">
-      <RecurringAdditionsList additions={recurringAdditions} goals={goals} />
-      <WithdrawalPrioritiesList priorities={withdrawalPriorities} goals={goals} />
+      <RecurringAdditionsList
+        additions={automations.filter((automation) => automation.direction === 'contribution')}
+        goals={goals}
+      />
+      <WithdrawalPrioritiesList
+        priorities={automations.filter((automation) => automation.direction === 'withdrawal')}
+        goals={goals}
+      />
     </div>
   )
 }

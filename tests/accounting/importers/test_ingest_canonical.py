@@ -13,10 +13,12 @@ from accounting.importers.ingest import (
     ingest_canonical_csv,
     ingest_canonical_excel,
     load_ledger,
-    remap_ledger_category_ids,
 )
+from accounting.ledger.categorization import apply_category_redirects
 from accounting.models import Account, AccountKind
-from accounting.store import load_store, save_store
+from accounting.repositories.accounts import replace_accounts
+from accounting.repositories.taxonomy import load_categories, load_category_redirects, retire_categories
+from accounting.taxonomy import seed_new_user_defaults
 
 if TYPE_CHECKING:
     import uuid
@@ -32,11 +34,12 @@ def _config(tmp_path) -> AccountingConfig:
 
 
 def _register_account(session: Session, user_id: uuid.UUID, kind: AccountKind = "checking") -> None:
-    store = load_store(session, user_id=user_id)
+    seed_new_user_defaults(session, user_id)  # seeds a brand-new user's defaults, exactly as a router would
     account = Account(
         account_id=ACCOUNT_ID, name="Generic Checking", kind=kind, institution="Generic Bank", currency="USD"
     )
-    save_store(store.model_copy(update={"accounts": {**store.accounts, ACCOUNT_ID: account}}), session, user_id=user_id)
+    replace_accounts(session, user_id, [account], prune=False)
+    session.commit()
 
 
 def test_ingest_canonical_csv_archives_the_raw_file_verbatim(
@@ -69,45 +72,46 @@ def test_ingest_canonical_csv_persists_newly_created_categories(
     category = next(iter(result.new_categories.values()))
     assert category.name == "Groceries"
 
-    store = load_store(db_session, user_id=test_user_id)
-    assert category.category_id in store.categories
+    assert category.category_id in load_categories(db_session, test_user_id)
 
 
-def test_remap_ledger_category_ids_repoints_a_postings_baked_in_category(
+def test_retiring_a_baked_in_category_resolves_it_without_rewriting_the_stored_posting(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
+    """The D14 property: the imported category stays put, and only what it resolves to changes."""
     config = _config(tmp_path)
     _register_account(db_session, test_user_id)
     result = ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
     category = next(iter(result.new_categories.values()))
 
-    remap_ledger_category_ids({category.category_id: "expense:food-drink"}, db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {category.category_id: "expense:food-drink"})
+    db_session.commit()
 
-    ledger = load_ledger(db_session, user_id=test_user_id)
-    category_ids = set(ledger["category_id"].to_list())
-    assert category.category_id not in category_ids
-    assert "expense:food-drink" in category_ids
+    raw = load_ledger(db_session, user_id=test_user_id)
+    assert category.category_id in set(raw["category_id"].to_list())
+
+    resolved = apply_category_redirects(raw, load_category_redirects(db_session, test_user_id))
+    resolved_ids = set(resolved["category_id"].to_list())
+    assert category.category_id not in resolved_ids
+    assert "expense:food-drink" in resolved_ids
 
 
-def test_remap_ledger_category_ids_is_a_no_op_with_an_empty_remap(
-    tmp_path, db_session: Session, test_user_id: uuid.UUID
-) -> None:
+def test_nothing_retired_means_no_redirects_to_apply(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id)
     ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
-    before = load_ledger(db_session, user_id=test_user_id).sort("posting_id")["category_id"].to_list()
+    raw = load_ledger(db_session, user_id=test_user_id).sort("posting_id")
 
-    remap_ledger_category_ids({}, db_session, user_id=test_user_id)
-
-    after = load_ledger(db_session, user_id=test_user_id).sort("posting_id")["category_id"].to_list()
-    assert before == after
+    assert load_category_redirects(db_session, test_user_id) == {}
+    resolved = apply_category_redirects(raw, load_category_redirects(db_session, test_user_id))
+    assert resolved["category_id"].to_list() == raw["category_id"].to_list()
 
 
 def test_ingest_canonical_csv_raises_when_the_account_isnt_registered(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     config = _config(tmp_path)
-    load_store(db_session, user_id=test_user_id)  # seeds defaults, but never registers ACCOUNT_ID
+    seed_new_user_defaults(db_session, test_user_id)  # seeds defaults, but never registers ACCOUNT_ID
     with pytest.raises(KeyError):
         ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
 

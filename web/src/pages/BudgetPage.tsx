@@ -16,9 +16,7 @@ import {
   useCategoryTotals,
   usePostings,
   useRemoveBudget,
-  useRemoveGeneralBudget,
   useSetBudget,
-  useSetGeneralBudget,
   useSuggestedBudgetAmount,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
@@ -200,8 +198,6 @@ export function BudgetPage() {
   const { data: postings } = usePostings()
   const setBudget = useSetBudget()
   const removeBudget = useRemoveBudget()
-  const setGeneralBudget = useSetGeneralBudget()
-  const removeGeneralBudget = useRemoveGeneralBudget()
 
   const { start, end } = monthBounds(month)
   const { data: actualCategoryTotals } = useCategoryTotals(start, end, undefined, undefined, displayCurrency)
@@ -244,52 +240,42 @@ export function BudgetPage() {
     }
   }
 
-  function budgetedAmountFor(categoryId: string, subcategoryId: string | null): string {
-    if (mode === 'general') {
-      const general = store?.general_budgets[subcategoryId ?? categoryId]
-      return general ? String(general.amount) : ''
-    }
-    const perMonth = (store?.budgets ?? []).find(
+  // A general budget is just a budget row whose `month` is null (one
+  // `budgets` table holds both) — the mode picks which month value to match
+  // and to write, nothing else differs.
+  const budgetedMonth = mode === 'general' ? null : month
+
+  function budgetFor(categoryId: string, subcategoryId: string | null) {
+    return (store?.budgets ?? []).find(
       (budget) =>
-        budget.month === month &&
+        budget.month === budgetedMonth &&
         budget.category_id === categoryId &&
         (budget.subcategory_id ?? null) === subcategoryId,
     )
-    return perMonth ? String(perMonth.amount) : ''
+  }
+
+  function budgetedAmountFor(categoryId: string, subcategoryId: string | null): string {
+    const budget = budgetFor(categoryId, subcategoryId)
+    return budget ? String(budget.amount) : ''
   }
 
   // Each edit only sends the one budget that changed, not the user's
-  // whole budget history — see accounting.api.routers.store.post_budget/
-  // post_general_budget.
+  // whole budget history — see accounting.api.routers.store.post_budget.
   function commitAmount(categoryId: string, subcategoryId: string | null, rawValue: string) {
     const amount = Number.parseFloat(rawValue)
     const isValid = rawValue.trim() !== '' && !Number.isNaN(amount)
-    if (mode === 'general') {
-      const key = subcategoryId ?? categoryId
-      if (isValid) {
-        setGeneralBudget.mutate({
-          category_id: categoryId,
-          subcategory_id: subcategoryId,
-          amount,
-          currency: displayCurrency,
-        })
-      } else if (store?.general_budgets[key]) {
-        removeGeneralBudget.mutate(key)
-      }
-      return
-    }
-    const budgetId = subcategoryId ? `${month}:${categoryId}:${subcategoryId}` : `${month}:${categoryId}`
     if (isValid) {
       setBudget.mutate({
-        month,
+        month: budgetedMonth,
         category_id: categoryId,
         subcategory_id: subcategoryId,
         amount,
         currency: displayCurrency,
       })
-    } else if ((store?.budgets ?? []).some((budget) => budget.budget_id === budgetId)) {
-      removeBudget.mutate(budgetId)
+      return
     }
+    const existing = budgetFor(categoryId, subcategoryId)
+    if (existing) removeBudget.mutate(existing.budget_id)
   }
 
   const comparison = expenseCategories

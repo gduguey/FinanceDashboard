@@ -8,6 +8,7 @@ from typing import ClassVar
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from db.money import Money, Shares
 from trades.config import LedgerEventType
 
 
@@ -27,9 +28,9 @@ class LedgerEvent(BaseModel):
     event_datetime: datetime
     symbol: str = Field(min_length=1)
     event_type: LedgerEventType
-    shares: float | None = Field(default=None, gt=0)
-    price: float | None = Field(default=None, gt=0)
-    amount: float = Field(ge=0)
+    shares: Shares | None = Field(default=None, gt=0)
+    price: Money | None = Field(default=None, gt=0)
+    amount: Money = Field(ge=0)
     currency: str = Field(min_length=1)
     meta: dict[str, str] = Field(default_factory=dict)
 
@@ -102,7 +103,15 @@ class LedgerEvent(BaseModel):
 
 
 class PriceObservation(BaseModel):
-    """One validated (symbol, day, close) triple from the price API."""
+    """One validated (symbol, day, close) triple from the price API.
+
+    `close` is a `float`, deliberately, unlike every stored money field.
+    This is market data on its way into the Polars analytics projection —
+    it is never a balance the user holds and is never written to a
+    `NUMERIC` column, so it belongs on the float side of the boundary
+    `db.money.to_analytics_float` documents. Same for `CpiObservation` and
+    `HysaRateObservation` below.
+    """
 
     symbol: str = Field(min_length=1)
     price_date: date

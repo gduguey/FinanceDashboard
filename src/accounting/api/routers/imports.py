@@ -27,7 +27,7 @@ from accounting.api.api_models import (
     SupportedImportKind,
     SyncStatus,
 )
-from accounting.api.dependencies import _resolved_postings_and_store, state
+from accounting.api.dependencies import _resolved_postings, state
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
@@ -57,7 +57,8 @@ from accounting.importers.ingest import (
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
 from accounting.models import CurrencyCode, PostingSplitLeg
-from accounting.store import load_store, save_store
+from accounting.repositories.taxonomy import replace_categories
+from accounting.taxonomy import seeded_accounts, seeded_categories
 from db.current_user import get_current_user_id
 from db.session import get_db
 
@@ -106,29 +107,20 @@ def get_sync_status(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)])
 
 
 @router.post("/import")
-async def post_import(  # noqa: PLR0913
+async def post_import(
     file: UploadFile,
-    institution: Annotated[str, Form()],  # noqa: ARG001 (superseded by the account's own institution; see docstring)
-    account_kind: Annotated[str, Form()],  # noqa: ARG001 (superseded by the account's own kind; see docstring)
     account_id: Annotated[str, Form()],
-    account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    parent_account_id: Annotated[str | None, Form()] = None,  # noqa: ARG001 (kept for request-contract stability)
     *,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ImportResult:
     """Archive and import the uploaded CSV against an already-registered account.
 
-    `institution`, `account_kind`, `account_name`, `currency`, and
-    `parent_account_id` are no longer used to select the importer or
-    construct anything here — every account this endpoint is called with
-    must already exist (see `AccountCreate`/`POST /accounts`), so the
-    account's own `institution`/`kind`/`parent_account_id` (not these form
-    fields) are the source of truth: a form value that disagreed with the
-    registered account would otherwise pick the wrong importer. Kept as
-    accepted form fields anyway rather than narrowing this endpoint's
-    request contract as part of this change.
+    Every account this endpoint is called with must already exist (see
+    `AccountCreate`/`POST /accounts`), so the account's own
+    `institution`/`kind`/`parent_account_id` are the source of truth for
+    picking the importer — a form field that disagreed with the registered
+    account would pick the wrong one.
 
     Returns
     -------
@@ -140,8 +132,7 @@ async def post_import(  # noqa: PLR0913
         422 if `account_id` doesn't already exist; 400 if no importer exists
         for this institution/account-kind combination.
     """
-    store = load_store(session, user_id)
-    account = store.accounts.get(account_id)
+    account = seeded_accounts(session, user_id).get(account_id)
     if account is None:
         message = f"Account {account_id!r} does not exist — create this account first, then import."
         raise HTTPException(status_code=422, detail=message)
@@ -182,7 +173,6 @@ async def post_import(  # noqa: PLR0913
             state.config,
             session,
             user_id,
-            parent_account_id=account.parent_account_id,
         )
     except UnsupportedImportError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -206,6 +196,39 @@ def _read_category_overrides(raw: str | None) -> CategoryOverrides | None:
         return None
     parsed = CanonicalCategoryOverridesRequest.model_validate_json(raw)
     return CategoryOverrides(categories=parsed.categories, subcategories=parsed.subcategories)
+
+
+def _read_confirmed_row_numbers(raw: str) -> set[int]:
+    """Parse the JSON-encoded list of row numbers the client confirmed.
+
+    Parsed before anything is written, not after. It used to be read *below*
+    the commit that persists the file's new categories, so a malformed value
+    left those categories in the database and then raised
+    `json.JSONDecodeError` into a 500 — a write the caller was told had
+    failed.
+
+    Returns
+    -------
+    set[int]
+
+    Raises
+    ------
+    HTTPException
+        422 if the value is not a JSON array of integers.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        message = f"confirmed_row_numbers must be a JSON array of row numbers: {error}"
+        raise HTTPException(status_code=422, detail=message) from error
+    if not isinstance(parsed, list):
+        message = "confirmed_row_numbers must be a JSON array of integers."
+        raise HTTPException(status_code=422, detail=message)
+    # `bool` is a subclass of `int`, so `[true]` would otherwise pass as `[1]`.
+    if any(not isinstance(number, int) or isinstance(number, bool) for number in parsed):
+        message = "confirmed_row_numbers must be a JSON array of integers."
+        raise HTTPException(status_code=422, detail=message)
+    return set(parsed)
 
 
 @router.post("/import/canonical/preview")
@@ -238,18 +261,18 @@ async def post_canonical_import_preview(
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session, user_id)
+    categories = seeded_categories(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     try:
         if is_excel:
             outcome = standardize_canonical_excel(
-                await file.read(), account_id, cast("CurrencyCode", currency), store.categories, date_order_literal
+                await file.read(), account_id, cast("CurrencyCode", currency), categories, date_order_literal
             )
         else:
             csv_text = (await file.read()).decode("utf-8-sig")
             outcome = standardize_canonical_csv(
-                csv_text, account_id, cast("CurrencyCode", currency), store.categories, separator, date_order_literal
+                csv_text, account_id, cast("CurrencyCode", currency), categories, separator, date_order_literal
             )
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -257,14 +280,9 @@ async def post_canonical_import_preview(
 
 
 @router.post("/import/canonical")
-async def post_canonical_import(  # noqa: PLR0913, PLR0917
+async def post_canonical_import(
     file: UploadFile,
-    institution: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    account_kind: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
     account_id: Annotated[str, Form()],
-    account_name: Annotated[str, Form()],  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    currency: Annotated[str, Form()] = "USD",  # noqa: ARG001 (kept for request-contract stability; see docstring)
-    parent_account_id: Annotated[str | None, Form()] = None,  # noqa: ARG001 (kept for request-contract stability)
     separator: Annotated[str | None, Form()] = None,
     date_order: Annotated[str, Form()] = "MDY",
     category_overrides: Annotated[str | None, Form()] = None,
@@ -274,8 +292,8 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
 ) -> CanonicalImportResult:
     """Import the file, against an already-registered account, through the canonical fallback parser.
 
-    Used when no dedicated standardizer exists for `institution`/`account_kind`
-    (see `supported_import_kinds`) — the canonical parser guesses column
+    Used when no dedicated standardizer exists for the account's own
+    institution/kind (see `supported_import_kinds`) — the canonical parser guesses column
     names and date/amount formats instead of expecting an exact shape (see
     `importers.canonical.csv`). Both `.csv` and `.xlsx` files are accepted
     (dispatched on `file.filename`'s extension); an Excel workbook has every
@@ -284,12 +302,6 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
     automatically, unless `category_overrides` (a JSON-encoded
     `CanonicalCategoryOverridesRequest`) renames or merges it — typically
     collected via `post_canonical_import_preview` first.
-
-    `institution`, `account_name`, `currency`, and `parent_account_id` are
-    accepted but unused — every account this endpoint is called with must
-    already exist (see `AccountCreate`/`POST /accounts`). Kept as accepted
-    form fields anyway rather than narrowing this endpoint's request
-    contract as part of this change.
 
     Returns
     -------
@@ -308,8 +320,7 @@ async def post_canonical_import(  # noqa: PLR0913, PLR0917
         can never be canonically imported into, the same guarantee the
         bank-specific `/import` route already has by construction.
     """
-    store = load_store(session, user_id)
-    if account_id not in store.accounts:
+    if account_id not in seeded_accounts(session, user_id):
         message = f"Account {account_id!r} does not exist — create this account first, then import."
         raise HTTPException(status_code=422, detail=message)
 
@@ -411,7 +422,7 @@ async def post_categorize_from_file_preview(
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session, user_id)
+    categories = seeded_categories(session, user_id)
     ledger = load_ledger(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
@@ -420,7 +431,7 @@ async def post_categorize_from_file_preview(
         preview = preview_categorize_from_file(
             await file.read(),
             is_excel=is_excel,
-            existing_categories=store.categories,
+            existing_categories=categories,
             ledger=ledger,
             account_ids=ids,
             separator=separator,
@@ -485,17 +496,19 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     HTTPException
         422 if the file couldn't be parsed.
     """
-    store = load_store(session, user_id)
+    categories = seeded_categories(session, user_id)
     ledger = load_ledger(session, user_id)
     date_order_literal = cast("DateOrder", date_order)
     is_excel = (file.filename or "").lower().endswith((".xlsx", ".xls"))
     ids = [account_id.strip() for account_id in account_ids.split(",") if account_id.strip()] if account_ids else None
     overrides = _read_category_overrides(category_overrides)
+    # Validated before the category commit below — see `_read_confirmed_row_numbers`.
+    wanted_row_numbers = _read_confirmed_row_numbers(confirmed_row_numbers)
     try:
         preview = preview_categorize_from_file(
             await file.read(),
             is_excel=is_excel,
-            existing_categories=store.categories,
+            existing_categories=categories,
             ledger=ledger,
             account_ids=ids,
             separator=separator,
@@ -507,10 +520,11 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     if preview.new_categories:
-        store = store.model_copy(update={"categories": {**store.categories, **preview.new_categories}})
-        save_store(store, session, user_id)
+        # Additive only: these are categories the uploaded file introduced, so
+        # nothing already in the tree is rewritten and nothing is pruned.
+        replace_categories(session, user_id, preview.new_categories.values(), prune=False)
+        session.commit()
 
-    wanted_row_numbers = set(json.loads(confirmed_row_numbers))
     to_apply = [
         ConfirmedCategorization(
             posting_id=match.posting_id,
@@ -561,8 +575,8 @@ async def post_paystub_reconciliation(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
-    result = reconcile_earnings_statement(statement, postings, store.accounts)
+    postings = _resolved_postings(session, user_id)
+    result = reconcile_earnings_statement(statement, postings, seeded_accounts(session, user_id))
     proposed_splits = propose_posting_splits(statement, result.matches)
     return PaystubReconciliationResult(
         statement=statement,

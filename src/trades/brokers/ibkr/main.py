@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 
 import trades.db as tdb
-from db.base import derive_id
+from db.base import ensure_reference_rows, merge_by_natural_key
+from db.money import quantize_money, quantize_shares, to_analytics_float
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
 from trades.models import LedgerEvent
@@ -101,9 +102,10 @@ def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
             "event_datetime": event.event_datetime,
             "symbol": event.symbol,
             "event_type": event.event_type,
-            "shares": details.shares if details is not None else None,
-            "price": details.price if details is not None else None,
-            "amount": event.amount,
+            # Crossing into the float analytics projection — see `db.money.to_analytics_float`.
+            "shares": to_analytics_float(details.shares) if details is not None else None,
+            "price": to_analytics_float(details.price) if details is not None else None,
+            "amount": to_analytics_float(event.amount),
             "currency": event.currency,
             "meta": event.meta,
         }
@@ -129,42 +131,68 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     user_id
         Whose ledger this is.
     """
-    connection_id = derive_id(user_id, "broker_connections", _DEFAULT_CONNECTION_ID)
-    session.merge(
-        tdb.BrokerConnection(id=connection_id, user_id=user_id, natural_key=_DEFAULT_CONNECTION_ID, broker="ibkr")
+    connection_ids = merge_by_natural_key(
+        session,
+        tdb.BrokerConnection,
+        user_id,
+        [tdb.BrokerConnection(user_id=user_id, natural_key=_DEFAULT_CONNECTION_ID, broker="ibkr")],
     )
-    session.flush()
+    connection_id = connection_ids[_DEFAULT_CONNECTION_ID]
 
     # ON DELETE CASCADE on ledger_event_trade_details.ledger_event_id means this alone
     # also removes every deleted event's trade details — no separate delete needed.
     session.query(tdb.LedgerEvent).filter_by(user_id=user_id).delete()
 
-    new_events: list[tdb.LedgerEvent] = []
-    new_trade_details: list[tdb.LedgerEventTradeDetails] = []
-    for row in ledger.to_dicts():
-        event_id = derive_id(user_id, "ledger_events", row["event_id"])
-        new_events.append(
-            tdb.LedgerEvent(
-                id=event_id,
-                user_id=user_id,
-                natural_key=row["event_id"],
-                connection_id=connection_id,
-                event_datetime=row["event_datetime"],
-                symbol=row["symbol"],
-                event_type=row["event_type"],
-                amount=row["amount"],
-                currency=row["currency"],
-                meta=row["meta"],
-            )
+    rows = ledger.to_dicts()
+    # `ledger_events.symbol` references `trades.securities` now, and symbols
+    # arrive dynamically — this statement is the first time this database has
+    # heard of whatever the user bought since the last sync — so the
+    # instrument is created before the events that name it. Whole batch in one
+    # statement, so a thousand-event ledger costs one round trip.
+    ensure_reference_rows(session, tdb.Security, [row["symbol"] for row in rows])
+    new_events = [
+        tdb.LedgerEvent(
+            user_id=user_id,
+            natural_key=row["event_id"],
+            connection_id=connection_id,
+            event_datetime=row["event_datetime"],
+            symbol=row["symbol"],
+            event_type=row["event_type"],
+            # Back out of the float projection before Postgres sees this. `ledger`
+            # is the `Float64` analytics frame (`_events_to_frame`), and `amount`
+            # is a `MONEY` = `NUMERIC(18, 4)` column: handing psycopg a Python
+            # float makes Postgres cast `float8 -> numeric`, which truncates at 15
+            # significant digits — `12345678901234.5678` persisted as
+            # `12345678901234.6000`. That would be a *second* loss stacked on the
+            # projection's own rounding. `quantize_money` routes the float through
+            # `str()`, recovering the shortest round-trip literal, so the only
+            # imprecision left is the one `accounting.ledger.frame` documents
+            # ("Exact again on the way out").
+            amount=quantize_money(row["amount"]),
+            currency=row["currency"],
+            meta=row["meta"],
         )
-        if row["shares"] is not None:
-            new_trade_details.append(
-                tdb.LedgerEventTradeDetails(
-                    ledger_event_id=event_id, user_id=user_id, shares=row["shares"], price=row["price"]
-                )
-            )
+        for row in rows
+    ]
     session.add_all(new_events)
-    session.add_all(new_trade_details)
+    # Flushed before the trade details, whose `ledger_event_id` is both their
+    # own primary key and a foreign key into the event — so it is the id
+    # `uuid7()` just minted, read off the flushed instance.
+    session.flush()
+    session.add_all(
+        # Same float-projection exit as `amount` above, at each column's own
+        # scale — `shares` is `SHARES` = `NUMERIC(20, 8)`, `price` is `MONEY`.
+        # Quantizing at the wrong one here would silently drop four decimal
+        # places off a fractional share count, which feeds cost basis.
+        tdb.LedgerEventTradeDetails(
+            ledger_event_id=event.id,
+            user_id=user_id,
+            shares=quantize_shares(row["shares"]),
+            price=quantize_money(row["price"]),
+        )
+        for event, row in zip(new_events, rows, strict=True)
+        if row["shares"] is not None
+    )
     session.commit()
 
 

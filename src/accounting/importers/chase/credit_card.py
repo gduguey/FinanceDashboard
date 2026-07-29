@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from accounting.importers.chase.models import ChaseCreditCardRow
 from accounting.importers.common import RawLeg, parse_us_date, posting_pair, postings_to_frame, row_hash
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     import polars as pl
@@ -17,9 +17,7 @@ if TYPE_CHECKING:
     from accounting.models import Posting
 
 
-def standardize_chase_credit_card(
-    csv_text: str, account_id: str, _parent_account_id: str | None = None
-) -> pl.DataFrame:
+def standardize_chase_credit_card(csv_text: str, account_id: str) -> pl.DataFrame:
     """Map Chase credit-card export rows onto postings against `account_id`.
 
     Uses `Post Date` over `Transaction Date` when both are present, the
@@ -44,9 +42,6 @@ def standardize_chase_credit_card(
         The raw CSV file contents, exactly as uploaded.
     account_id
         The real Chase credit-card account these rows belong to.
-    _parent_account_id
-        Unused — Chase credit-card accounts never have vaults. Accepted
-        only so this function matches `_STANDARDIZERS`' shared call signature.
 
     Returns
     -------
@@ -59,7 +54,10 @@ def standardize_chase_credit_card(
         date_text = row.post_date.strip() or row.transaction_date.strip()
         posted_at = datetime.combine(parse_us_date(date_text), datetime.min.time())
         counterparty = UNCATEGORIZED_INCOME_ACCOUNT_ID if row.amount >= 0 else UNCATEGORIZED_EXPENSE_ACCOUNT_ID
-        transaction_row_id = row_hash(account_id, date_text, str(row.amount), row.description)
+        # `:.4f` at `MONEY_SCALE`, never `str(row.amount)` — see the same line in
+        # `importers.chase.checking` for why the `Decimal`'s own scale must not leak
+        # into a transaction id.
+        transaction_row_id = row_hash(account_id, date_text, f"{row.amount:.4f}", row.description)
         leg = RawLeg(
             posted_at=posted_at,
             amount=row.amount,

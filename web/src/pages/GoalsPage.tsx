@@ -259,12 +259,11 @@ export function GoalsPage() {
   // the withdrawal automation are instead "caught up" every time this
   // page loads, which is the natural moment a user would notice a change
   // anyway (see api.post_run_recurring_additions's own docstring). Run in
-  // sequence, not fired together: each request snapshots the last-known
-  // store version, which only advances once its own mutation's `onSuccess`
-  // invalidation has refetched the store — firing both at once would have
-  // the second spuriously 409 against the version the first just bumped.
-  // Sequencing also means the withdrawal check sees whatever the recurring
-  // addition just contributed, not a stale pre-addition balance.
+  // sequence, not fired together, for a real data dependency: the
+  // withdrawal check must see whatever the recurring addition just
+  // contributed, not a stale pre-addition balance. Nothing about
+  // versioning requires this ordering — the two calls could not conflict
+  // with each other — but the ordering itself is load-bearing.
   useEffect(() => {
     async function catchUpAutomations() {
       await runRecurringAdditions.mutateAsync(undefined)
@@ -388,11 +387,7 @@ export function GoalsPage() {
             />
           </TabsContent>
           <TabsContent value="automations">
-            <GoalAutomationsPanel
-              goals={store.goals}
-              recurringAdditions={store.recurring_additions}
-              withdrawalPriorities={store.withdrawal_priorities}
-            />
+            <GoalAutomationsPanel goals={store.goals} automations={store.goal_automations} />
           </TabsContent>
           <TabsContent value="ledger">
             <ContributionLedgerTable contributions={store.goal_contributions} goals={store.goals} />

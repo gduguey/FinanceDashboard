@@ -27,7 +27,7 @@ from accounting.api.api_models import (
     ValidatePendingRequest,
     ValidatePendingResult,
 )
-from accounting.api.dependencies import _resolved_postings_and_store, state
+from accounting.api.dependencies import _resolved_postings, state
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
@@ -43,23 +43,29 @@ from accounting.models import (
     PostingSplitLeg,
     TransferLink,
 )
-from accounting.store import (
+from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
     dismissed_suggestion_ids,
+    insert_transfer_links,
     list_dismissed_suggestions,
     load_overrides,
     load_overrides_for_postings,
-    load_store,
+    load_posting_splits,
+    load_transfer_links,
+    load_transfer_rules,
     remove_posting_merge,
     remove_transfer_link,
+    replace_posting_merges,
     save_overrides_for_postings,
     save_posting_split,
-    save_store,
     undismiss_suggestion,
+    upsert_posting_merge,
 )
+from accounting.taxonomy import seeded_accounts
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
+from db.money import ZERO, quantize_money
 from db.session import get_db
 
 router = APIRouter()
@@ -82,7 +88,7 @@ def get_postings(
     "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
     manual override always wins if both somehow apply to the same
     transaction (it's applied after rules — see
-    `api.dependencies._resolved_postings_and_store`), so
+    `api.dependencies._resolved_postings`), so
     `resolved_by_transfer_rule_id` is suppressed whenever
     `manual_transfer_override_posting_id` is set for that transaction —
     see `PostingRow`'s own docstring.
@@ -92,14 +98,16 @@ def get_postings(
     list[PostingRow]
         One row per posting.
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     overrides = load_overrides(session, user_id)
-    # Recomputed from the raw ledger rather than threaded through
-    # `_resolved_postings_and_store`'s return value — that function's
-    # signature is shared by every other endpoint in this module, and this
-    # is purely a display concern only `get_postings` needs.
+    # Recomputed from the raw ledger rather than threaded out of
+    # `_resolved_postings` — that function is shared by every other endpoint
+    # in this module, and this is purely a display concern only
+    # `get_postings` needs.
     raw = load_ledger(session, user_id)
-    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(raw, store.rules, store.accounts)
+    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(
+        raw, load_transfer_rules(session, user_id), seeded_accounts(session, user_id)
+    )
     rows = postings.to_dicts()
 
     posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
@@ -194,9 +202,6 @@ def put_posting_override(
     return override
 
 
-_SPLIT_ZERO_SUM_TOLERANCE = 1e-6
-
-
 def _current_amount_for_split(postings: pl.DataFrame, posting_id: str) -> float | None:
     """Return the amount a split of `posting_id` must sum to — its own amount, or (if already split) its legs' total.
 
@@ -238,12 +243,15 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
-    total = sum(leg.amount for leg in legs)
-    if abs(total - current_amount) > _SPLIT_ZERO_SUM_TOLERANCE:
+    # Both sides are exact `Decimal` now, so this is a true equality check —
+    # no float slack, and a genuinely off-by-a-hundredth split is caught
+    # instead of being absorbed by a tolerance.
+    total = sum((leg.amount for leg in legs), start=ZERO)
+    if total != quantize_money(current_amount):
         raise HTTPException(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )
@@ -282,10 +290,9 @@ def put_posting_merges(
     dict[str, PostingMerge]
         The merges just persisted.
     """
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"posting_merges": merges})
-    save_store(store, session, user_id)
-    return store.posting_merges
+    replace_posting_merges(session, user_id, merges.values())
+    session.commit()
+    return merges
 
 
 def _merge_id(kept_transaction_id: str) -> str:
@@ -317,9 +324,7 @@ def post_posting_merge(
         duplicate_transaction_ids=request.duplicate_transaction_ids,
         description=request.description,
     )
-    store = load_store(session, user_id)
-    store = store.model_copy(update={"posting_merges": {**store.posting_merges, merge.merge_id: merge}})
-    save_store(store, session, user_id)
+    upsert_posting_merge(merge, session, user_id)
     return merge
 
 
@@ -376,15 +381,15 @@ def post_transfer_link(
         raise HTTPException(status_code=400, detail="Cannot link a transaction to itself")
 
     link = make_transfer_link(request.transaction_id_a, request.transaction_id_b, source="manual")
-    store = load_store(session, user_id)
+    transfer_links = load_transfer_links(session, user_id)
 
-    already_this_link = next((existing for existing in store.transfer_links if existing.link_id == link.link_id), None)
+    already_this_link = next((existing for existing in transfer_links if existing.link_id == link.link_id), None)
     if already_this_link is not None:
         return already_this_link
 
     linked_transaction_ids = {
         transaction_id
-        for existing in store.transfer_links
+        for existing in transfer_links
         for transaction_id in (existing.transaction_id_a, existing.transaction_id_b)
     }
     for transaction_id in (link.transaction_id_a, link.transaction_id_b):
@@ -397,7 +402,7 @@ def post_transfer_link(
     posting_to_transaction = dict(zip(raw["posting_id"].to_list(), raw["transaction_id"].to_list(), strict=True))
     split_transaction_ids = {
         posting_to_transaction[posting_id]
-        for posting_id in store.posting_splits
+        for posting_id in load_posting_splits(session, user_id)
         if posting_id in posting_to_transaction
     }
     for transaction_id in (link.transaction_id_a, link.transaction_id_b):
@@ -407,8 +412,8 @@ def post_transfer_link(
                 detail=f"Transaction {transaction_id!r} has already been split and can't be linked",
             )
 
-    store = store.model_copy(update={"transfer_links": [*store.transfer_links, link]})
-    save_store(store, session, user_id)
+    insert_transfer_links(session, user_id, [link])
+    session.commit()
     return link
 
 
@@ -522,9 +527,9 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `POST /dismissed-suggestions`).
     """
-    postings, store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     candidates = find_unmatched_transfer_candidates(
-        postings, window_days=window_days, existing_links=store.transfer_links
+        postings, window_days=window_days, existing_links=load_transfer_links(session, user_id)
     )
     rows = candidates.to_dicts()
     suggestion_ids = [_transfer_suggestion_id(row) for row in rows]
@@ -557,7 +562,7 @@ def get_duplicate_suggestions(
         Each carries a `suggestion_id` for dismissing it. Excludes any
         group already dismissed (see `POST /dismissed-suggestions`).
     """
-    postings, _store = _resolved_postings_and_store(state.config, session, user_id)
+    postings = _resolved_postings(session, user_id)
     groups = find_duplicate_candidates(postings, window_days=window_days)
     suggestion_ids = [_duplicate_suggestion_id(group) for group in groups]
     dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)

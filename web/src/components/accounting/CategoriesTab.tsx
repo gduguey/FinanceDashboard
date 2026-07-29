@@ -82,7 +82,7 @@ export function InlineNameInput({
 }
 
 // The taxonomy every fresh install is seeded with (see
-// `accounting.store._EXPENSE_TAXONOMY`/`_INCOME_TAXONOMY`) — shown here
+// `accounting.taxonomy._EXPENSE_TAXONOMY`/`_INCOME_TAXONOMY`) — shown here
 // purely as reference, since it's just a starting point: renaming,
 // merging, or deleting any of it above is completely safe once seeded.
 const DEFAULT_EXPENSE_TAXONOMY: [string, string[]][] = [

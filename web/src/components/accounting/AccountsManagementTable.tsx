@@ -21,7 +21,7 @@ import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import type { Account, ManualTransfer } from '@/types/accounting'
 
 // The two placeholder counterparties every posting starts pointed at (see
-// `accounting.store.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
+// `accounting.taxonomy.UNCATEGORIZED_EXPENSE_ACCOUNT_ID`/`UNCATEGORIZED_INCOME_ACCOUNT_ID`)
 // aren't a real account or counterparty a user manages — they're re-seeded
 // by the backend if ever missing — so they're the only accounts hidden here.
 // Every other `income_source`/`expense_payee` counterparty a user creates
@@ -37,7 +37,7 @@ function emptyDraft(): AccountFormValue {
     name: '',
     parentAccountId: null,
     openingBalance: '',
-    externalRef: null,
+    brokerConnectionId: null,
   }
 }
 
@@ -131,7 +131,7 @@ export function AccountsManagementTable({
         currency: value.currency,
         last_four: value.last4 || null,
         parent_account_id: value.parentAccountId,
-        external_ref: value.externalRef,
+        broker_connection_id: value.brokerConnectionId,
         meta: {},
       })
       const amount = Number.parseFloat(value.openingBalance)
@@ -161,7 +161,7 @@ export function AccountsManagementTable({
           kind: value.kind,
           currency: value.currency,
           last_four: value.last4 || null,
-          external_ref: value.externalRef,
+          broker_connection_id: value.brokerConnectionId,
           meta: {},
         },
       })
@@ -323,7 +323,7 @@ export function AccountsManagementTable({
             name: editing.name,
             parentAccountId: editing.parent_account_id ?? null,
             openingBalance: '',
-            externalRef: editing.external_ref ?? null,
+            brokerConnectionId: editing.broker_connection_id ?? null,
           }}
           locked={accountIdsWithPostings.has(editing.account_id)}
           knownInstitutions={knownInstitutions}

@@ -29,8 +29,9 @@ from typing import TYPE_CHECKING, overload
 
 import polars as pl
 
-from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, Posting, PostingMerge, PostingSplit
-from accounting.store import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
+from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
+from accounting.models import IMPORTABLE_ACCOUNT_KINDS, Account, ManualOverride, PostingMerge, PostingSplit
+from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 
 if TYPE_CHECKING:
     from accounting.models import TransferRule
@@ -190,7 +191,7 @@ def apply_rules(
     -------
     polars.DataFrame or polars.LazyFrame
         The postings with resolved counterparties where a rule matched,
-        rebuilt through `Posting.polars_schema` exactly like every other
+        rebuilt through `LEDGER_FRAME_SCHEMA` exactly like every other
         step in this resolution chain — same type (lazy or eager) as `postings`.
     """
     lf = postings.lazy() if isinstance(postings, pl.DataFrame) else postings
@@ -208,7 +209,7 @@ def apply_rules(
             .otherwise(pl.col("account_id"))
             .alias("account_id")
         )
-        .select(*Posting.polars_schema)
+        .select(*LEDGER_FRAME_SCHEMA)
         .sort("posted_at", "posting_id")
     )
     return result.collect() if isinstance(postings, pl.DataFrame) else result
@@ -247,6 +248,43 @@ def resolved_transfer_rule_ids_by_transaction(
     """
     matches = _safe_rule_matches(postings, rules, accounts).select("transaction_id", "rule_id").collect()
     return dict(zip(matches["transaction_id"].to_list(), matches["rule_id"].to_list(), strict=True))
+
+
+def apply_category_redirects(postings: pl.DataFrame, redirects: dict[str, str | None]) -> pl.DataFrame:
+    """Resolve the category a posting was *imported* under into the one it means today.
+
+    A posting stores the category its statement named and is never
+    rewritten afterwards (see `accounting.db.core.Posting`), so renaming a
+    category into an existing one, or deleting it outright, changes nothing
+    in `postings` at all — it retires the `categories` row instead
+    (`accounting.db.core.Category`), and this is where that retirement
+    becomes visible. A merged-away category's postings pick up its
+    successor; a deleted category's postings go back to uncategorized,
+    the same state a posting that was never categorized is already in.
+
+    Runs before the first overlay stage rather than as one of them — see
+    `accounting.precedence` for why a dimension lookup isn't an overlay.
+    Anything an overlay sets afterwards (a split leg's category, an
+    override's) is already a live category, since those are real foreign
+    keys the merge/delete endpoints repoint directly.
+
+    Parameters
+    ----------
+    postings
+        The raw posting ledger, as `accounting.importers.ingest.load_ledger` returns it.
+    redirects
+        Retired category natural key to its successor's, or `None` for one
+        deleted outright — `accounting.repositories.taxonomy.load_category_redirects`.
+        A no-op when empty, which is the usual case.
+
+    Returns
+    -------
+    polars.DataFrame
+        The same postings, with `category_id`/`subcategory_id` resolved.
+    """
+    if not redirects or postings.is_empty():
+        return postings
+    return postings.with_columns(pl.col("category_id").replace(redirects), pl.col("subcategory_id").replace(redirects))
 
 
 def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]) -> pl.DataFrame:
@@ -288,7 +326,7 @@ def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]
                 "subcategory_id": leg.subcategory_id,
                 "description": leg.description or row["description"],
             })
-    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
 
 def apply_manual_overrides(postings: pl.DataFrame, overrides: dict[str, ManualOverride]) -> pl.DataFrame:
@@ -318,7 +356,7 @@ def apply_manual_overrides(postings: pl.DataFrame, overrides: dict[str, ManualOv
             value = getattr(override, field)
             if value is not None:
                 row[field] = value
-    return pl.DataFrame(rows, schema=Posting.polars_schema).sort("posted_at", "posting_id")
+    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
 
 
 def apply_posting_merges(postings: pl.DataFrame, merges: dict[str, PostingMerge]) -> pl.DataFrame:

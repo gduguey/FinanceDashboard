@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from accounting.store import OTHER_SUBCATEGORY_SUFFIX
+from accounting.taxonomy import OTHER_SUBCATEGORY_SUFFIX
 
 if TYPE_CHECKING:
     from accounting.models import Category, CategoryClassification

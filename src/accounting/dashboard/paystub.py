@@ -14,6 +14,9 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from accounting.ledger.frame import to_analytics_amount
+from db.money import ZERO, Money
+
 if TYPE_CHECKING:
     from accounting.models import Account, EarningsDeposit, EarningsStatement
 
@@ -85,7 +88,7 @@ def reconcile_earnings_statement(
         for row in candidate_rows:
             if row["posting_id"] in used_posting_ids:
                 continue
-            if abs(row["amount"] - deposit.amount) > _AMOUNT_TOLERANCE:
+            if abs(row["amount"] - to_analytics_amount(deposit.amount)) > _AMOUNT_TOLERANCE:
                 continue
             account = accounts.get(row["account_id"])
             # When the deposit names a last-4, skip any candidate we can't
@@ -115,7 +118,7 @@ def reconcile_earnings_statement(
 class ProposedSplitLeg:
     """One leg of a proposed split — the same shape `PostingSplitLeg` needs, before a user has confirmed it."""
 
-    amount: float
+    amount: Money
     category_id: str | None
     subcategory_id: str | None
     description: str
@@ -180,7 +183,7 @@ def propose_posting_splits(statement: EarningsStatement, matches: list[DepositMa
         # the deposit if two lines each fit alone but not together.
         assigned_lines = []
         for line in list(remaining_lines):
-            if line.amount <= deposit_remaining + _AMOUNT_TOLERANCE:
+            if line.amount <= deposit_remaining:
                 assigned_lines.append(line)
                 remaining_lines.remove(line)
                 deposit_remaining -= line.amount
@@ -194,10 +197,10 @@ def propose_posting_splits(statement: EarningsStatement, matches: list[DepositMa
             )
             for line in assigned_lines
         ]
-        if deposit_remaining > _AMOUNT_TOLERANCE or not legs:
+        if deposit_remaining > ZERO or not legs:
             legs.append(
                 ProposedSplitLeg(
-                    amount=max(deposit_remaining, 0.0),
+                    amount=max(deposit_remaining, ZERO),
                     category_id=_SALARY_CATEGORY_ID,
                     subcategory_id=None,
                     description="Salary",

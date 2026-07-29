@@ -16,7 +16,7 @@ export function colorForIndex(index: number): string {
 }
 
 // A large, deterministic set of visually distinct colors for categories and
-// subcategories — mirrors `accounting.store.CATEGORY_COLOR_PALETTE` on the
+// subcategories — mirrors `accounting.taxonomy.CATEGORY_COLOR_PALETTE` on the
 // backend (same named colors first, then the same golden-angle HSL
 // stepping), so a category created from this UI never repeats a color
 // already in use and never lands on white (the app's own background color).
