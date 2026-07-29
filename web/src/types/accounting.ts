@@ -51,6 +51,20 @@ export type InterestAccountRow = components['schemas']['InterestAccountRow']
 // what every consumer of this `Posting` alias actually reads. The bare
 // `Posting` schema (no bolted-on fields) backs request bodies elsewhere.
 export type Posting = components['schemas']['PostingRow']
+
+// One page of `GET /postings`. `total` and `limit` both count
+// *transactions*, while `items` holds every leg of every transaction on the
+// page — see the backend's `api_models.PostingPage`.
+export type PostingPage = components['schemas']['PostingPage']
+
+// One page of `GET /ledger/export`. Unlike `PostingPage`, `total` and
+// `limit` count postings — the raw export applies no overlay.
+export type LedgerExportPage = components['schemas']['LedgerExportPage']
+
+// A posting exactly as imported, with none of `PostingRow`'s resolution
+// state — what `GET /ledger/export` returns. `Posting` above is the resolved
+// row; this is the raw one, and the two are not interchangeable.
+export type RawPosting = components['schemas']['Posting']
 export type PendingSuggestionSource = NonNullable<Posting['pending_source']>
 
 export type CategoryPattern = components['schemas']['CategoryPattern']

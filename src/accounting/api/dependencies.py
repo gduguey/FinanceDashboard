@@ -8,6 +8,7 @@ without a circular import back through the module that imports them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
@@ -31,11 +32,13 @@ from accounting.models import CurrencyCode
 from accounting.precedence import OVERLAY_PRECEDENCE
 from accounting.repositories.interpretation import (
     load_overrides,
+    load_overrides_for_postings,
     load_posting_merges,
     load_posting_splits,
     load_transfer_links,
     load_transfer_rules,
 )
+from accounting.repositories.ledger import visible_transaction_page
 from accounting.repositories.planning import load_goal_contributions
 from accounting.repositories.taxonomy import load_category_redirects, load_other_assets
 from accounting.taxonomy import seeded_accounts
@@ -44,6 +47,7 @@ if TYPE_CHECKING:
     import uuid
     from collections.abc import Callable, Iterable
 
+    from accounting.models import Account, ManualOverride, TransferRule
     from accounting.precedence import OverlayStage
 
 
@@ -61,6 +65,10 @@ state = _State()
 def _overlay_appliers(
     session: Session,
     user_id: uuid.UUID,
+    *,
+    rules: list[TransferRule],
+    accounts: dict[str, Account],
+    overrides: dict[str, ManualOverride],
 ) -> dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]]:
     """Bind one applier per declared overlay stage, so the caller only has to walk the declared order.
 
@@ -83,10 +91,18 @@ def _overlay_appliers(
     loaded one collection at a time here rather than as one snapshot of
     everything persisted.
 
+    Three of the collections a stage needs are passed in rather than read
+    here: `get_postings` needs the same rules, accounts and overrides for
+    its own display columns, and loading them once for both is what stops
+    that endpoint reading each of them twice per request.
+
     Parameters
     ----------
     session, user_id
-        See `_resolved_postings`.
+        See `_resolve_postings`.
+    rules, accounts, overrides
+        Already loaded by `_resolve_postings`, which hands them back to its
+        caller alongside the resolved frame.
 
     Returns
     -------
@@ -99,15 +115,13 @@ def _overlay_appliers(
         If a declared stage has no applier registered here — an overlay
         that would otherwise silently never be applied.
     """
-    rules = load_transfer_rules(session, user_id)
-    accounts = seeded_accounts(session, user_id)
     posting_splits = load_posting_splits(session, user_id)
     posting_merges = load_posting_merges(session, user_id)
     transfer_links = load_transfer_links(session, user_id)
     appliers: dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]] = {
         "counterparty": lambda postings: apply_rules(postings, rules, accounts),
         "split": lambda postings: apply_posting_splits(postings, posting_splits),
-        "override": lambda postings: apply_manual_overrides(postings, load_overrides(session, user_id)),
+        "override": lambda postings: apply_manual_overrides(postings, overrides),
         "merge": lambda postings: apply_posting_merges(postings, posting_merges),
         "link": lambda postings: apply_transfer_links(postings, transfer_links),
     }
@@ -184,12 +198,109 @@ def _resolved_postings(
     polars.DataFrame
         The fully resolved postings.
     """
-    raw = load_ledger(session, user_id, since=since, until=until)
-    appliers = _overlay_appliers(session, user_id)
+    return _resolve_postings(session, user_id, since=since, until=until).resolved
+
+
+@dataclass(frozen=True)
+class ResolvedPostings:
+    """The resolved frame, plus the raw ledger and overlay rows it was resolved from.
+
+    Exists so `GET /postings` can build its display-only columns —
+    `resolved_by_transfer_rule_id`, `manual_transfer_override_posting_id`,
+    `pending_source`, `pending_selected` — from what resolution already
+    read, instead of re-reading it. That endpoint used to load the full
+    ledger twice per request, and the overrides, rules and accounts twice
+    each, purely because `_resolved_postings` returned only the frame.
+    """
+
+    resolved: pl.DataFrame
+    """The postings with every overlay applied, in declared precedence order."""
+    raw: pl.DataFrame
+    """The ledger as stored, before any overlay — what `apply_rules` matched against."""
+    overrides: dict[str, ManualOverride]
+    """Every persisted per-posting override, keyed by posting id."""
+    rules: list[TransferRule]
+    """Every counterparty-resolution rule."""
+    accounts: dict[str, Account]
+    """Every account, keyed by natural key."""
+    total: int
+    """How many transactions the request's filters match, ignoring its page window.
+
+    Equal to the number of transactions in `resolved` for an unpaged call.
+    A client needs it to know whether there is another page."""
+
+
+def _resolve_postings(
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> ResolvedPostings:
+    """Resolve the ledger and hand back both the result and the rows it was resolved from.
+
+    `_resolved_postings` is this function for the callers that only want
+    the frame; read its docstring for what resolution actually does and why
+    `apply_category_redirects` runs outside the stage walk.
+
+    With `limit` set, the ledger read is bounded to one page of
+    *transactions* — see `repositories.ledger.visible_transaction_page` for
+    why the page is cut there and not at a posting, and why merged-away
+    duplicates are excluded before the `LIMIT` rather than filtered out of
+    the frame afterwards. The overlay stages then run over that page instead
+    of over all history, which is what makes the read O(what is shown).
+
+    Two overlay collections stay unbounded on purpose even for a paged call.
+    Transfer links are loaded whole because a link's *partner* is usually a
+    much older transaction, and scoping the load to the page would flip a
+    genuinely linked row to `is_linked_transfer=False`. Posting merges are
+    loaded whole because `apply_posting_merges` also rewrites the *kept*
+    transaction's description, which is on the page even when the duplicate
+    it absorbed is not. Both are small next to the ledger, and both were
+    measured at well under a millisecond.
+
+    Parameters
+    ----------
+    session, user_id, since, until
+        See `_resolved_postings`.
+    limit
+        How many transactions to resolve, newest first. `None` (the
+        default, used by every dashboard aggregation) is all of them.
+    offset
+        How many transactions to skip. Ignored unless `limit` is set.
+
+    Returns
+    -------
+    ResolvedPostings
+    """
+    paged_total: int | None = None
+    if limit is None:
+        raw = load_ledger(session, user_id, since=since, until=until)
+        overrides = load_overrides(session, user_id)
+    else:
+        page = visible_transaction_page(session, user_id, limit=limit, offset=offset, since=since, until=until)
+        raw = load_ledger(session, user_id, transaction_ids=page.transaction_ids)
+        # Scoped to the page's own postings; the whole-table read would
+        # otherwise be the one thing left that scaled with total history.
+        overrides = load_overrides_for_postings(session, user_id, raw["posting_id"].to_list())
+        paged_total = page.total
+    rules = load_transfer_rules(session, user_id)
+    accounts = seeded_accounts(session, user_id)
+    appliers = _overlay_appliers(session, user_id, rules=rules, accounts=accounts, overrides=overrides)
     resolved = apply_category_redirects(raw, load_category_redirects(session, user_id))
     for stage in OVERLAY_PRECEDENCE:
         resolved = appliers[stage](resolved)
-    return resolved
+    # Counted off the *resolved* frame for an unpaged call, not the raw one:
+    # `apply_posting_merges` drops a merged-away duplicate's postings, and the
+    # paged branch excludes those in SQL before its own `LIMIT`. Counting raw
+    # transactions here would give the same field two different meanings
+    # depending on how it was called.
+    total = paged_total if paged_total is not None else resolved.select("transaction_id").n_unique()
+    return ResolvedPostings(
+        resolved=resolved, raw=raw, overrides=overrides, rules=rules, accounts=accounts, total=total
+    )
 
 
 def _resolved_postings_for_aggregation(

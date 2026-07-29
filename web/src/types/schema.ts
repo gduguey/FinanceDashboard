@@ -18,11 +18,16 @@ export interface paths {
      *     Returns
      *     -------
      *     AccountingStoreResponse
-     *         `accounts`, `categories`, `tags`, `opening_balances` (each a dict
-     *         keyed by id), `transfer_rules`, `other_assets`, `budgets` (each a
-     *         list). No store-wide version: optimistic concurrency is per-row
-     *         (`goals`, `transfer_rules`, `category_patterns` each carry their
-     *         own `version`), so there is nothing store-wide to echo back.
+     *         `accounts`, `categories`, `tags`, `category_patterns`, `goals`
+     *         and `goal_contributions` (each a dict keyed by id), plus
+     *         `transfer_rules`, `other_assets`, `budgets`,
+     *         `simulator_scenarios`, `transfer_links` and `goal_automations`
+     *         (each a list). No store-wide version: optimistic concurrency is
+     *         per-row (`goals`, `transfer_rules`, `category_patterns` each
+     *         carry their own `version`), so there is nothing store-wide to
+     *         echo back. Opening balances, manual transfers, posting splits
+     *         and posting merges are deliberately absent — see
+     *         `AccountingStoreResponse` for why.
      */
     get: operations['get_store_api_accounting_store_get']
     put?: never
@@ -1479,7 +1484,7 @@ export interface paths {
     }
     /**
      * Get Postings
-     * @description Return every posting, resolved against the current rules and manual overrides.
+     * @description Return one page of postings, resolved against the current rules and manual overrides.
      *
      *     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
      *     `None`) and `pending_selected` — an automated categorizer's
@@ -1497,10 +1502,28 @@ export interface paths {
      *     `manual_transfer_override_posting_id` is set for that transaction —
      *     see `PostingRow`'s own docstring.
      *
+     *     `limit` counts **transactions**, not postings, and the page carries
+     *     every leg of every transaction it covers — so `len(items)` is normally
+     *     larger than `limit`, and larger still where a transaction has been
+     *     split. `repositories.ledger.visible_transaction_page` explains why the
+     *     page cannot be cut at a posting instead.
+     *
+     *     A `limit` above `PAGE_LIMIT_MAX` is clamped rather than rejected; see
+     *     that constant for why.
+     *
+     *     Parameters
+     *     ----------
+     *     limit
+     *         How many transactions to return, newest first. Clamped to
+     *         `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many transactions to skip.
+     *
      *     Returns
      *     -------
-     *     list[PostingRow]
-     *         One row per posting.
+     *     PostingPage
+     *         The page's postings, plus the total transaction count a client needs
+     *         in order to ask for the next page.
      */
     get: operations['get_postings_api_accounting_postings_get']
     put?: never
@@ -1520,14 +1543,34 @@ export interface paths {
     }
     /**
      * Get Ledger Export
-     * @description Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
+     * @description Export one page of the raw ledger, exactly as imported — before any rule, override, split, or merge.
+     *
+     *     An export's caller wants the whole ledger by definition, so this is
+     *     bounded rather than filtered: a page is capped at `PAGE_LIMIT_MAX` and
+     *     the client walks `offset` until it has `total` postings. That is
+     *     deliberately not the same as returning a truncated file — a partial
+     *     backup presented as a complete one is worse than several requests. A
+     *     streaming response would suit this endpoint better still, but choosing a
+     *     media type for it is a contract question rather than a read-path one.
+     *
+     *     `limit` counts postings here, not transactions as it does on
+     *     `GET /postings`, because the raw ledger has no overlay applied and so
+     *     nothing needing a transaction's legs kept together.
+     *
+     *     Parameters
+     *     ----------
+     *     limit
+     *         How many postings to return, oldest first. Clamped to `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many postings to skip.
      *
      *     Returns
      *     -------
-     *     list[Posting]
-     *         Every posting for the user's own backup. See `GET /postings` for
-     *         the same data after every rule/override/split/merge is applied on
-     *         top — what the Transactions page actually shows.
+     *     LedgerExportPage
+     *         The page's raw postings for the user's own backup, plus the total. See
+     *         `GET /postings` for the same data after every
+     *         rule/override/split/merge is applied on top — what the Transactions
+     *         page actually shows.
      */
     get: operations['get_ledger_export_api_accounting_ledger_export_get']
     put?: never
@@ -1733,7 +1776,13 @@ export interface paths {
      *     HTTPException
      *         400 if either transaction names itself, or already has a
      *         `PostingSplit`; 409 if either transaction is already part of a
-     *         *different* transfer link.
+     *         *different* transfer link — whether that was already true when the
+     *         request arrived, or became true concurrently while it was being
+     *         served.
+     *     sqlalchemy.exc.IntegrityError
+     *         Any constraint violation that is *not* the one-link-per-transaction
+     *         rule. Re-raised untouched rather than folded into the 409, so a
+     *         genuinely unexpected violation stays a loud 500.
      */
     post: operations['post_transfer_link_api_accounting_transfer_links_post']
     delete?: never
@@ -3991,6 +4040,17 @@ export interface components {
      *     dismissed" — see `GET /dismissed-suggestions` and
      *     `repositories.interpretation.dismissed_suggestion_ids`, which query
      *     that table directly.
+     *
+     *     Neither are `opening_balances`, `manual_transfers`, `posting_splits`
+     *     or `posting_merges`, which this response used to carry. No frontend
+     *     code path ever read them: the store is read-only (there is no
+     *     `PUT /store` to round-trip them back), splits and merges only ever
+     *     reach the client already folded into `GET /postings`' resolved rows,
+     *     opening balances are edited one account at a time through
+     *     `PUT /accounts/{account_id}/opening-balance`, and the UI's "manually
+     *     added transfers" are `transfer_links` with no `rule_id` — a different
+     *     table from `manual_transfers`, which holds only the balancing legs
+     *     behind an opening or closing balance.
      */
     AccountingStoreResponse: {
       /** Accounts */
@@ -4009,24 +4069,10 @@ export interface components {
       transfer_rules: components['schemas']['TransferRule'][]
       /** Other Assets */
       other_assets: components['schemas']['OtherAsset'][]
-      /** Opening Balances */
-      opening_balances: {
-        [key: string]: components['schemas']['OpeningBalance']
-      }
-      /** Manual Transfers */
-      manual_transfers: components['schemas']['ManualTransfer'][]
       /** Budgets */
       budgets: components['schemas']['Budget'][]
       /** Simulator Scenarios */
       simulator_scenarios: components['schemas']['SimulatorScenario'][]
-      /** Posting Splits */
-      posting_splits: {
-        [key: string]: components['schemas']['PostingSplit']
-      }
-      /** Posting Merges */
-      posting_merges: {
-        [key: string]: components['schemas']['PostingMerge']
-      }
       /** Transfer Links */
       transfer_links: components['schemas']['TransferLink'][]
       /** Category Patterns */
@@ -5716,6 +5762,24 @@ export interface components {
       }
     }
     /**
+     * LedgerExportPage
+     * @description One page of the raw ledger, as exported.
+     *
+     *     Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
+     *     export applies no overlay, so nothing here needs a transaction's legs
+     *     kept together. See `repositories.ledger.load_ledger_page`.
+     */
+    LedgerExportPage: {
+      /** Items */
+      items: components['schemas']['Posting'][]
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
+    }
+    /**
      * LlmProviderUsage
      * @description One LLM provider's self-tracked call count this period, and whether it's currently rate-limited.
      */
@@ -6284,6 +6348,26 @@ export interface components {
       duplicate_transaction_ids: string[]
       /** Description */
       description?: string | null
+    }
+    /**
+     * PostingPage
+     * @description One page of resolved postings, with what a client needs to ask for the next one.
+     *
+     *     Pages are cut by *transaction*, so `items` holds every leg of every
+     *     transaction on the page and its length is not `limit` — `limit` counts
+     *     transactions, `items` counts postings, and a split transaction
+     *     contributes more rows than legs it was imported with. See
+     *     `repositories.ledger.visible_transaction_page` for why the cut is there.
+     */
+    PostingPage: {
+      /** Items */
+      items: components['schemas']['PostingRow'][]
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
     }
     /**
      * PostingRow
@@ -8858,7 +8942,12 @@ export interface operations {
   }
   get_postings_api_accounting_postings_get: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description How many transactions to return, newest first. */
+        limit?: number
+        /** @description How many transactions to skip. */
+        offset?: number
+      }
       header?: never
       path?: never
       cookie?: never
@@ -8871,14 +8960,28 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['PostingRow'][]
+          'application/json': components['schemas']['PostingPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }
   }
   get_ledger_export_api_accounting_ledger_export_get: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description How many postings to return, oldest first. */
+        limit?: number
+        /** @description How many postings to skip. */
+        offset?: number
+      }
       header?: never
       path?: never
       cookie?: never
@@ -8891,7 +8994,16 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['Posting'][]
+          'application/json': components['schemas']['LedgerExportPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -30,16 +30,16 @@ from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.replay import validate_balanced
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import IMPORTABLE_ACCOUNT_KINDS
+from accounting.repositories.ledger import ledger_rows_to_frame, ledger_statement
 from accounting.repositories.taxonomy import replace_categories
 from accounting.taxonomy import normalize_categories, seeded_accounts, seeded_categories
 from accounting.utils.statement_archive import StatementArchive
-from db.base import ids_by_natural_key, natural_keys_by_id
+from db.base import ids_by_natural_key
 from db.money import quantize_money
-from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import date
     from typing import Any
 
@@ -99,8 +99,9 @@ def load_ledger(
     since: date | None = None,
     until: date | None = None,
     origin: TransactionOrigin | None = None,
+    transaction_ids: Sequence[uuid.UUID] | None = None,
 ) -> pl.DataFrame:
-    """Load the posting ledger, optionally restricted to `[since, until]` or to one transaction origin.
+    """Load the posting ledger, optionally restricted to a date range, an origin, or a named set of transactions.
 
     Parameters
     ----------
@@ -128,6 +129,10 @@ def load_ledger(
         result) would flag a legitimate cross-currency manual transfer,
         whose two legs are equal-and-opposite only after a conversion it
         deliberately doesn't store.
+    transaction_ids
+        Restrict to the postings of these transactions, which is how a page
+        of `repositories.ledger.visible_transaction_page` becomes a frame.
+        `None` (the default) is every transaction.
 
     Returns
     -------
@@ -137,78 +142,17 @@ def load_ledger(
         actually stored, so nothing downstream of this function needed to
         change when its own storage moved from `ledger.csv` to Postgres,
         nor when `posted_at`/`description` moved off `postings` onto
-        `transactions` and became the join below. An empty frame if nothing
+        `transactions` and became a join. An empty frame if nothing
         matches.
+
+        The statement that produces these rows, and why it selects columns
+        rather than entities, is `repositories.ledger`.
     """
-    # Always joined, not just when `origin` is given: `posted_at` and
-    # `description` are the transaction's (see `db.core.Transaction`), and
-    # the frame carries one of each per *leg* — so this join is what
-    # denormalizes one event's date and text back onto every posting of it,
-    # keeping `LEDGER_FRAME_SCHEMA` the single shape every downstream module
-    # reads. The date bounds filter `transactions` (where the index now
-    # lives) and stay naive to match that naive column, or psycopg rejects
-    # the comparison outright.
-    query = (
-        session
-        .query(adb.Posting, adb.Transaction)
-        .join(adb.Transaction, adb.Posting.transaction_id == adb.Transaction.id)
-        .filter(adb.Posting.user_id == user_id)
-    )
-    if origin is not None:
-        query = query.filter(adb.Transaction.origin == origin)
-    if since is not None:
-        query = query.filter(adb.Transaction.posted_at >= datetime.combine(since, time.min))
-    if until is not None:
-        query = query.filter(adb.Transaction.posted_at <= datetime.combine(until, time.max))
-    rows = query.all()
+    statement = ledger_statement(user_id, since=since, until=until, origin=origin, transaction_ids=transaction_ids)
+    rows = session.execute(statement).all()
     if not rows:
         return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
-
-    account_natural_key_by_id = natural_keys_by_id(
-        session, adb.Account, user_id, [posting.account_id for posting, _ in rows]
-    )
-    category_natural_key_by_id = natural_keys_by_id(
-        session,
-        adb.Category,
-        user_id,
-        [posting.category_id for posting, _ in rows] + [posting.subcategory_id for posting, _ in rows],
-    )
-    tag_ids_by_posting: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
-    tag_ids: set[uuid.UUID] = set()
-    for posting_tag in session.query(adb.PostingTag).filter_by(user_id=user_id):
-        tag_ids_by_posting[posting_tag.posting_id].append(posting_tag.tag_id)
-        tag_ids.add(posting_tag.tag_id)
-    tag_natural_key_by_id = natural_keys_by_id(session, adb.Tag, user_id, tag_ids)
-    budget_natural_key_by_id = natural_keys_by_id(
-        session, adb.Budget, user_id, [posting.budget_id for posting, _ in rows]
-    )
-
-    records = [
-        {
-            "posting_id": posting.natural_key,
-            "transaction_id": transaction.natural_key,
-            "account_id": account_natural_key_by_id[posting.account_id],
-            "posted_at": transaction.posted_at,
-            # Explicit at the sanctioned helper rather than left to Polars to
-            # coerce inside the constructor — same value either way, but the
-            # `Decimal -> float` crossing stays greppable, which is the whole
-            # point of `ledger.frame` declaring one seam.
-            "amount": to_analytics_amount(posting.amount),
-            "currency": posting.currency,
-            "category_id": category_natural_key_by_id.get(posting.category_id)
-            if posting.category_id is not None
-            else None,
-            "subcategory_id": category_natural_key_by_id.get(posting.subcategory_id)
-            if posting.subcategory_id is not None
-            else None,
-            "budget_id": budget_natural_key_by_id.get(posting.budget_id) if posting.budget_id is not None else None,
-            "tag_ids": [tag_natural_key_by_id[tag_id] for tag_id in tag_ids_by_posting.get(posting.id, [])],
-            "description": transaction.description,
-            "meta": posting.meta,
-        }
-        for posting, transaction in rows
-    ]
-    return pl.DataFrame(records, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")
+    return ledger_rows_to_frame(rows)
 
 
 def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) -> None:

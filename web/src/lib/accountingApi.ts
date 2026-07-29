@@ -36,6 +36,7 @@ import type {
   GoalUpdate,
   ImportResult,
   InterestAccountRow,
+  LedgerExportPage,
   LlmSettings,
   LlmSettingsUpdate,
   LlmUsage,
@@ -52,8 +53,10 @@ import type {
   Posting,
   PostingMerge,
   PostingMergeUpsert,
+  PostingPage,
   PostingSplitLeg,
   ProjectionPoint,
+  RawPosting,
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
@@ -148,6 +151,24 @@ export interface TagCreate {
 export interface TagRenamePreview {
   will_merge: boolean
   target_name: string | null
+}
+
+const POSTINGS_PAGE_LIMIT = 5000
+/** The server's own hard cap (`api_models.PAGE_LIMIT_MAX`) — the fewest round trips it will allow. */
+
+/**
+ * How far a paging loop may advance, given the page size the server applied.
+ *
+ * Guards the one input that could hang the tab: a stride of zero would make
+ * the loop re-request the same offset forever. The server validates
+ * `limit >= 1`, so this should be unreachable — which is exactly why it
+ * should fail loudly rather than spin.
+ */
+function pageStride(appliedLimit: number): number {
+  if (!Number.isInteger(appliedLimit) || appliedLimit < 1) {
+    throw new Error(`Server returned an unusable page limit: ${appliedLimit}`)
+  }
+  return appliedLimit
 }
 
 function queryString(params: Record<string, string | number | undefined>): string {
@@ -322,8 +343,51 @@ export const accountingApi = {
     })
   },
   rebuild: () => request<{ total_posting_count: number }>('/api/accounting/rebuild', { method: 'POST' }),
-  postings: () => request<Posting[]>('/api/accounting/postings'),
-  ledgerExport: () => request<Posting[]>('/api/accounting/ledger/export'),
+  // Pages through the collection until it is exhausted, rather than asking
+  // for one page. The server caps any single page (`PAGE_LIMIT_MAX`), so a
+  // single request cannot return a large user's whole ledger — and returning
+  // a silently truncated ledger is not an option for a money app. PR 4
+  // replaces this loop with real pagination in the Transactions table; until
+  // then every consumer still receives the complete list it expects.
+  //
+  // `total` counts *transactions* and `limit` is in transactions too, so the
+  // loop advances by the page's own size and stops once `offset` covers
+  // `total`. It advances by `page.limit`, the size the server actually
+  // applied after clamping, never by the size we asked for: if this
+  // constant is ever above the server's cap — mid-deploy, say — advancing
+  // by the request would step past records the server never sent and
+  // truncate the ledger silently, which is the exact failure paging exists
+  // to avoid.
+  postings: async () => {
+    const limit = POSTINGS_PAGE_LIMIT
+    const items: Posting[] = []
+    let offset = 0
+    let total = 0
+    do {
+      const page = await request<PostingPage>(`/api/accounting/postings${queryString({ limit, offset })}`)
+      items.push(...page.items)
+      total = page.total
+      offset += pageStride(page.limit)
+    } while (offset < total)
+    return items
+  },
+  // Same paging loop as `postings` above, and for the same reason — an
+  // export that silently stopped at the cap would write a partial backup to
+  // a file the user believes is complete. `total` and `limit` count postings
+  // here, not transactions.
+  ledgerExport: async () => {
+    const limit = POSTINGS_PAGE_LIMIT
+    const items: RawPosting[] = []
+    let offset = 0
+    let total = 0
+    do {
+      const page = await request<LedgerExportPage>(`/api/accounting/ledger/export${queryString({ limit, offset })}`)
+      items.push(...page.items)
+      total = page.total
+      offset += pageStride(page.limit)
+    } while (offset < total)
+    return items
+  },
   // A request only ever carries the fields the caller means to change —
   // `put_posting_override` merges into whatever's already stored for
   // fields left out, so the request body is a genuine partial, unlike

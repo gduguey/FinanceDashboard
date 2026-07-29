@@ -1,4 +1,5 @@
 import io
+import operator
 import uuid
 import zipfile
 from datetime import UTC, date, datetime, timedelta
@@ -11,6 +12,7 @@ from fastapi.testclient import TestClient
 import db.models as dbm
 import trades.db as tdb
 from accounting import api as accounting_api
+from accounting.api.routers import postings as postings_router
 from accounting.api.routers import imports as accounting_imports_router
 from accounting.api.routers import llm as accounting_llm_router
 from accounting.config import AccountingConfig
@@ -20,6 +22,8 @@ from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.market_data import exchange_rates
 from accounting.models import Posting
 from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA
+from accounting.repositories.accounts import load_manual_transfers
+from accounting.repositories.interpretation import load_posting_merges
 from db.current_user import get_current_user_id
 from db.session import get_db
 from tests.conftest import DEFAULT_USER_ID
@@ -80,6 +84,29 @@ def broker_connection_id(db_session) -> uuid.UUID:
     db_session.add(tdb.BrokerConnection(id=connection_id, user_id=DEFAULT_USER_ID, natural_key="ibkr", broker="ibkr"))
     db_session.commit()
     return connection_id
+
+
+def _postings(client, **params) -> list[dict]:
+    """The `items` of one page of `GET /postings` — see `api.api_models.PostingPage`.
+
+    `limit` counts transactions and defaults to `PAGE_LIMIT_DEFAULT`, which
+    every seed here stays well under, so an unparameterized call returns the
+    whole ledger. Pass `limit=` explicitly for a test that seeds more.
+    """
+    response = client.get("/api/accounting/postings", params=params)
+    assert response.status_code == 200
+    return response.json()["items"]
+
+
+def _ledger_export(client, **params) -> list[dict]:
+    """The `items` of one page of `GET /ledger/export` — see `api.api_models.LedgerExportPage`.
+
+    Raw postings, so these rows carry none of `PostingRow`'s resolution
+    fields; `limit` here counts postings, not transactions.
+    """
+    response = client.get("/api/accounting/ledger/export", params=params)
+    assert response.status_code == 200
+    return response.json()["items"]
 
 
 def test_get_store_seeds_default_categories_and_placeholder_accounts(client) -> None:
@@ -275,7 +302,7 @@ def test_canonical_import_date_order_dmy_reads_day_first(client) -> None:
         },
     )
     assert response.status_code == 200
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     real_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert real_leg["posted_at"].startswith("2026-12-01")
 
@@ -412,7 +439,7 @@ def test_categorize_from_file_preview_does_not_persist_anything(client) -> None:
         "/api/accounting/import/categorize-from-file/preview",
         files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     real_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert real_leg["category_id"] is None
 
@@ -450,7 +477,7 @@ def test_categorize_from_file_apply_sets_the_category_on_the_matched_posting(cli
     assert response.status_code == 200
     assert response.json()["updated_posting_count"] == 1
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     real_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert real_leg["category_id"] is not None
     store = client.get("/api/accounting/store").json()
@@ -496,7 +523,7 @@ def test_categorize_from_file_apply_skips_rows_not_confirmed(client) -> None:
         files={"file": ("my-sheet.csv", sheet_csv, "text/csv")},
         data={"confirmed_row_numbers": "[2]"},  # only the payroll row (header is row 1, so first data row is row 2)
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     payment_leg = next(p for p in postings if p["account_id"] == account_id and p["amount"] < 0)
     assert payroll_leg["category_id"] is not None
@@ -531,14 +558,14 @@ def test_categorize_from_file_apply_never_matches_the_same_posting_twice(client)
 
 def test_postings_leaves_category_none_when_no_seed_rule_matches(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["category_id"] is None  # generic payroll text doesn't match the EQORE-specific seed rule
 
 
 def test_manual_override_wins_over_no_rule_match(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.put(
@@ -546,14 +573,14 @@ def test_manual_override_wins_over_no_rule_match(client) -> None:
     )
     assert response.status_code == 200
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"
 
 
 def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     posting_id = payroll["posting_id"]
 
@@ -566,7 +593,7 @@ def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -
     assert response.json()["category_id"] == "income:reimbursement"
     assert response.json()["subcategory_id"] == "income:reimbursement:employer"
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == posting_id)
     assert updated_payroll["category_id"] == "income:reimbursement"
     assert updated_payroll["subcategory_id"] == "income:reimbursement:employer"
@@ -574,7 +601,7 @@ def test_setting_a_subcategory_after_a_category_preserves_the_category(client) -
 
 def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.put(
@@ -586,7 +613,7 @@ def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) ->
     )
     assert response.status_code == 200
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     assert not any(p["posting_id"] == payroll["posting_id"] for p in updated)
     legs = [p for p in updated if p["posting_id"].startswith(f"{payroll['posting_id']}:split:")]
     assert sorted(leg["amount"] for leg in legs) == pytest.approx([100.0, 1400.0])
@@ -595,7 +622,7 @@ def test_put_posting_split_replaces_one_posting_with_categorized_legs(client) ->
 
 def test_put_posting_split_rejects_legs_that_dont_sum_correctly(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.put(
@@ -607,7 +634,7 @@ def test_put_posting_split_rejects_legs_that_dont_sum_correctly(client) -> None:
 
 def test_delete_posting_split_restores_the_original_posting(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     client.put(
@@ -616,7 +643,7 @@ def test_delete_posting_split_restores_the_original_posting(client) -> None:
     )
     client.delete(f"/api/accounting/postings/{payroll['posting_id']}/split")
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     assert any(p["posting_id"] == payroll["posting_id"] for p in updated)
 
 
@@ -635,7 +662,7 @@ def test_import_paystub_reconciles_against_a_matching_bank_posting(client, monke
     body = response.json()
     assert body["statement"]["gross_pay"] == pytest.approx(2000.0)
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert body["is_fully_matched"]
     assert body["matches"][0]["posting_id"] == payroll["posting_id"]
@@ -673,7 +700,7 @@ class _FakeLLMProvider:
 
 def test_ai_suggest_category_applies_a_valid_suggestion(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
@@ -686,14 +713,14 @@ def test_ai_suggest_category_applies_a_valid_suggestion(client, monkeypatch) -> 
     body = response.json()
     assert body == {"category_id": "income:salary", "subcategory_id": None, "applied": True}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"
 
 
 def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "not-a-real-category", "subcategory_id": null}'
@@ -705,14 +732,14 @@ def test_ai_suggest_category_does_not_apply_a_hallucinated_category(client, monk
     assert response.status_code == 200
     assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] is None
 
 
 def test_ai_suggest_category_with_lock_category_id_only_fills_the_subcategory(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:reimbursement"}
@@ -737,7 +764,7 @@ def test_ai_suggest_category_with_lock_category_id_only_fills_the_subcategory(cl
 
 def test_ai_suggest_category_with_lock_category_id_discards_a_disagreeing_guess(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     client.put(f"/api/accounting/postings/{payroll['posting_id']}/override", json={"category_id": "income:salary"})
 
@@ -753,14 +780,14 @@ def test_ai_suggest_category_with_lock_category_id_discards_a_disagreeing_guess(
     assert response.status_code == 200
     assert response.json() == {"category_id": None, "subcategory_id": None, "applied": False}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"  # untouched, never overwritten
 
 
 def test_ai_suggest_category_503s_when_no_provider_is_configured(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     monkeypatch.setattr(accounting_llm_router, "_llm_providers", lambda session, user_id: [])
@@ -776,7 +803,7 @@ def test_ai_suggest_category_404s_for_an_unknown_posting(client, monkeypatch) ->
 
 def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
@@ -785,7 +812,7 @@ def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, m
     )
     client.post(f"/api/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"
     assert updated_payroll["pending_source"] == "ai"
@@ -794,7 +821,7 @@ def test_ai_suggest_category_marks_the_posting_pending_until_validated(client, m
 
 def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
@@ -807,7 +834,7 @@ def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> 
     assert response.status_code == 200
     assert response.json() == {"accepted": 1, "reverted": 0}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"
     assert updated_payroll["pending_source"] is None
@@ -815,7 +842,7 @@ def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> 
 
 def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["category_id"] is None
 
@@ -830,7 +857,7 @@ def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) 
     assert response.status_code == 200
     assert response.json() == {"accepted": 0, "reverted": 1}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] is None
     assert updated_payroll["pending_source"] is None
@@ -838,7 +865,7 @@ def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) 
 
 def test_validate_pending_ignores_postings_outside_the_given_list(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'
@@ -850,14 +877,14 @@ def test_validate_pending_ignores_postings_outside_the_given_list(client, monkey
     response = client.post("/api/accounting/postings/validate-pending", json={"posting_ids": ["some-other-posting"]})
     assert response.json() == {"accepted": 0, "reverted": 0}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["pending_source"] == "ai"
 
 
 def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     client.put(
@@ -869,7 +896,7 @@ def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
     assert response.status_code == 200
     assert response.json() == {"category_id": "income:salary", "subcategory_id": None, "applied": True}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"
     assert updated_payroll["pending_source"] == "pattern"
@@ -877,7 +904,7 @@ def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
 
 def test_pattern_suggest_category_returns_unapplied_when_nothing_matches(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     response = client.post(f"/api/accounting/postings/{payroll['posting_id']}/pattern-suggest-category")
@@ -886,7 +913,7 @@ def test_pattern_suggest_category_returns_unapplied_when_nothing_matches(client)
 
 def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_one_call(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     card_payment = next(p for p in postings if p["account_id"] == account_id and p["amount"] < 0)
 
@@ -905,7 +932,7 @@ def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_o
     assert response.status_code == 200
     assert response.json() == {"applied": 2}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     updated_card = next(p for p in updated if p["posting_id"] == card_payment["posting_id"])
     assert updated_payroll["category_id"] == "income:salary"
@@ -916,7 +943,7 @@ def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_o
 
 def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_disagrees(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     client.put(
         f"/api/accounting/postings/{payroll['posting_id']}/override",
@@ -933,7 +960,7 @@ def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_di
     )
     assert response.json() == {"applied": 0}
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:bonus"
     assert updated_payroll["pending_source"] is None
@@ -1299,7 +1326,7 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
     assert merge_response.status_code == 200
     assert client.get("/api/accounting/duplicate-suggestions").json() == []
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     remaining_transaction_ids = {
         posting["transaction_id"] for posting in postings if posting["account_id"] == account["account_id"]
     }
@@ -1309,12 +1336,12 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
 def test_monthly_income_expense_correctly_drops_a_duplicate_that_straddles_the_query_window(client) -> None:
     """A dashboard endpoint scoped to one month must still resolve a merge whose two sides are in different months.
 
-    `_resolved_postings_and_store` now passes `since`/`until` straight
+    `_resolved_postings` now passes `since`/`until` straight
     through to `load_ledger`'s own SQL filter — safe even for a merge like
     this one (kept side dated the last day of June, duplicate dated the
     first day of July) because `apply_posting_merges` drops a duplicate
-    purely by transaction id, read from `store.posting_merges` in full
-    (never date-filtered), regardless of whether the transaction it was
+    purely by transaction id, read by `api.dependencies`' own
+    `load_posting_merges` in full (never date-filtered), regardless of whether the transaction it was
     merged into even appears in this same date-limited frame. So querying
     "July only" still correctly drops the July-dated duplicate, even
     though the June-dated kept transaction was never loaded at all.
@@ -1412,7 +1439,16 @@ def test_post_posting_merge_creates_one_and_resolves_the_duplicate(client) -> No
     assert client.get("/api/accounting/duplicate-suggestions").json() == []
 
 
-def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_than_duplicates(client) -> None:
+def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_than_duplicates(
+    client, db_session
+) -> None:
+    """Merges have no read endpoint, so this reads the stored rows directly.
+
+    `GET /store` deliberately doesn't carry `posting_merges` — the client
+    only ever sees a merge already folded into `GET /postings` — so the
+    repository is the only place "exactly one merge row, with the second
+    call's description" can be observed.
+    """
     kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
     client.post(
         "/api/accounting/posting-merges",
@@ -1425,12 +1461,12 @@ def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_
     )
 
     assert response.status_code == 200
-    merges = client.get("/api/accounting/store").json()["posting_merges"]
+    merges = load_posting_merges(db_session, DEFAULT_USER_ID)
     assert list(merges.keys()) == [f"merge:{kept_id}"]
-    assert merges[f"merge:{kept_id}"]["description"] == "updated"
+    assert merges[f"merge:{kept_id}"].description == "updated"
 
 
-def test_delete_posting_merge_undoes_it(client) -> None:
+def test_delete_posting_merge_undoes_it(client, db_session) -> None:
     kept_id, duplicate_id = _two_duplicate_transaction_ids(client)
     client.post(
         "/api/accounting/posting-merges",
@@ -1440,7 +1476,7 @@ def test_delete_posting_merge_undoes_it(client) -> None:
     response = client.delete(f"/api/accounting/posting-merges/merge:{kept_id}")
 
     assert response.status_code == 200
-    assert client.get("/api/accounting/store").json()["posting_merges"] == {}
+    assert load_posting_merges(db_session, DEFAULT_USER_ID) == {}
     assert len(client.get("/api/accounting/duplicate-suggestions").json()) == 1
 
 
@@ -1515,8 +1551,24 @@ def test_restoring_an_unknown_suggestion_is_a_404(client) -> None:
     assert response.status_code == 404
 
 
+def _real_leg(postings: list[dict], account_id: str) -> dict:
+    """The oldest real leg on this account, by date then posting id.
+
+    Sorted rather than taking whatever arrives first, so a caller picks the
+    same posting regardless of the order `GET /postings` returns its page in
+    — that endpoint answers newest first (see `api.api_models.PostingPage`)
+    while the underlying frame is built oldest first.
+    """
+    on_account = sorted(
+        (posting for posting in postings if posting["account_id"] == account_id),
+        key=operator.itemgetter("posted_at", "posting_id"),
+    )
+    return on_account[0]
+
+
 def _real_leg_transaction_id(postings: list[dict], account_id: str) -> str:
-    return next(p for p in postings if p["account_id"] == account_id)["transaction_id"]
+    """The transaction of `_real_leg` — the two must agree, or a test splits one row and links another."""
+    return _real_leg(postings, account_id)["transaction_id"]
 
 
 def test_post_transfer_link_confirms_a_pair_and_excludes_it_from_income_statement(client) -> None:
@@ -1525,7 +1577,7 @@ def test_post_transfer_link_confirms_a_pair_and_excludes_it_from_income_statemen
         client,
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
     card_transaction_id = _real_leg_transaction_id(postings, card_id)
 
@@ -1538,9 +1590,9 @@ def test_post_transfer_link_confirms_a_pair_and_excludes_it_from_income_statemen
     assert {link["transaction_id_a"], link["transaction_id_b"]} == {checking_transaction_id, card_transaction_id}
     assert link["source"] == "manual"
 
-    updated = client.get("/api/accounting/postings").json()
-    checking_row = next(p for p in updated if p["account_id"] == checking_id)
-    card_row = next(p for p in updated if p["account_id"] == card_id)
+    updated = _postings(client)
+    checking_row = _real_leg(updated, checking_id)
+    card_row = _real_leg(updated, card_id)
     assert checking_row["is_linked_transfer"] is True
     assert checking_row["linked_transaction_id"] == card_transaction_id
     assert card_row["is_linked_transfer"] is True
@@ -1576,7 +1628,7 @@ def test_post_transfer_link_rejects_a_transaction_already_in_another_link(client
             "account_name": "Other Card",
         },
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
     card_transaction_id = _real_leg_transaction_id(postings, card_id)
     other_card_transaction_id = _real_leg_transaction_id(postings, other_card_id)
@@ -1592,13 +1644,67 @@ def test_post_transfer_link_rejects_a_transaction_already_in_another_link(client
     assert response.status_code == 409
 
 
+def test_post_transfer_link_409s_when_the_transaction_was_linked_concurrently(client, monkeypatch) -> None:
+    """The loser of a link race gets the same 409 the sequential path gives, not an unhandled `IntegrityError`.
+
+    Every check in `post_transfer_link` reads before it writes, so two
+    requests linking one transaction to two *different* partners both pass
+    them; the membership insert then collides on
+    `uq_transfer_linked_transactions_user_transaction`. Blinding
+    `load_transfer_links` reproduces that deterministically — returning
+    nothing is exactly what the loser saw, having read before the winner
+    committed.
+    """
+    checking_id = _import_chase_checking(client)
+    card_id = _import_chase_credit_card(
+        client,
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
+    )
+    other_card_id = _create_account(client, name="Other Card", kind="credit_card", institution="Chase")["account_id"]
+    client.post(
+        "/api/accounting/import",
+        files={
+            "file": (
+                "other.csv",
+                "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Also Payment Thank You,,Payment,70.00,\n",
+                "text/csv",
+            )
+        },
+        data={
+            "institution": "Chase",
+            "account_kind": "credit_card",
+            "account_id": other_card_id,
+            "account_name": "Other Card",
+        },
+    )
+    postings = _postings(client)
+    checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
+    card_transaction_id = _real_leg_transaction_id(postings, card_id)
+    other_card_transaction_id = _real_leg_transaction_id(postings, other_card_id)
+    assert (
+        client.post(
+            "/api/accounting/transfer-links",
+            json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
+        ).status_code
+        == 200
+    )
+
+    monkeypatch.setattr(postings_router, "load_transfer_links", lambda *_args, **_kwargs: [])
+    response = client.post(
+        "/api/accounting/transfer-links",
+        json={"transaction_id_a": checking_transaction_id, "transaction_id_b": other_card_transaction_id},
+    )
+
+    assert response.status_code == 409
+
+
 def test_post_transfer_link_is_idempotent_for_the_same_pair(client) -> None:
     checking_id = _import_chase_checking(client)
     card_id = _import_chase_credit_card(
         client,
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
     card_transaction_id = _real_leg_transaction_id(postings, card_id)
     first = client.post(
@@ -1620,7 +1726,7 @@ def test_delete_transfer_link_unlinks_it(client) -> None:
         client,
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
     card_transaction_id = _real_leg_transaction_id(postings, card_id)
     link = client.post(
@@ -1632,7 +1738,7 @@ def test_delete_transfer_link_unlinks_it(client) -> None:
 
     assert response.status_code == 200
     assert client.get("/api/accounting/store").json()["transfer_links"] == []
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     assert next(p for p in updated if p["account_id"] == checking_id)["is_linked_transfer"] is False
 
 
@@ -1647,10 +1753,10 @@ def test_post_transfer_link_rejects_an_already_split_transaction(client) -> None
         client,
         "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n06/29/2026,06/29/2026,Payment Thank You,,Payment,70.00,\n",
     )
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     checking_transaction_id = _real_leg_transaction_id(postings, checking_id)
     card_transaction_id = _real_leg_transaction_id(postings, card_id)
-    checking_posting_id = next(p for p in postings if p["account_id"] == checking_id)["posting_id"]
+    checking_posting_id = _real_leg(postings, checking_id)["posting_id"]
     client.put(
         f"/api/accounting/postings/{checking_posting_id}/split",
         json=[{"amount": -50.0}, {"amount": -20.0}],
@@ -1700,7 +1806,7 @@ def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(cli
 
 def test_postings_report_which_rule_resolved_them(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["resolved_by_transfer_rule_id"] is None
 
@@ -1713,14 +1819,14 @@ def test_postings_report_which_rule_resolved_them(client) -> None:
         json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
     ).json()
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
     assert updated_payroll["resolved_by_transfer_rule_id"] == rule["rule_id"]
 
 
 def test_postings_report_a_manual_transfer_override(client) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     assert payroll["manual_transfer_override_posting_id"] is None
     placeholder = next(p for p in postings if p["account_id"] == "uncategorized:income")
@@ -1731,7 +1837,7 @@ def test_postings_report_a_manual_transfer_override(client) -> None:
     )
     assert response.status_code == 200
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
     updated_counterparty = next(p for p in updated if p["account_id"] == employer["account_id"])
     assert updated_payroll["manual_transfer_override_posting_id"] == placeholder["posting_id"]
@@ -1745,7 +1851,7 @@ def test_postings_suppress_via_rule_badge_when_a_manual_override_also_applies(cl
     manual override is what actually decided the account shown.
     """
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     placeholder = next(p for p in postings if p["account_id"] == "uncategorized:income")
 
     manual_employer = _create_account(client, name="Manual Employer", kind="income_source", institution="internal")
@@ -1760,7 +1866,7 @@ def test_postings_suppress_via_rule_badge_when_a_manual_override_also_applies(cl
         json={"description_contains": "PAYROLL", "counterparty_account_id": rule_employer["account_id"]},
     )
 
-    updated = client.get("/api/accounting/postings").json()
+    updated = _postings(client)
     updated_payroll = next(p for p in updated if p["account_id"] == account_id and p["amount"] > 0)
     assert updated_payroll["resolved_by_transfer_rule_id"] is None
     assert updated_payroll["manual_transfer_override_posting_id"] == placeholder["posting_id"]
@@ -1806,7 +1912,7 @@ def test_post_transfer_rule_twice_with_the_same_criteria_replaces_rather_than_du
 
 def test_post_transfer_rule_replacing_an_existing_one_preserves_active_and_exclusions(client) -> None:
     _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     transaction_id = next(p["transaction_id"] for p in postings if p["transaction_id"])
     employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
     rule = client.post(
@@ -2077,9 +2183,7 @@ def test_patch_transfer_rule_updates_excluded_transaction_ids(client) -> None:
         },
     ).json()
     assert rule["excluded_transaction_ids"] == []
-    payroll_posting = next(
-        p for p in client.get("/api/accounting/postings").json() if p["account_id"] == checking_id and p["amount"] > 0
-    )
+    payroll_posting = next(p for p in _postings(client) if p["account_id"] == checking_id and p["amount"] > 0)
 
     response = client.patch(
         f"/api/accounting/transfer-rules/{rule['rule_id']}",
@@ -2259,7 +2363,7 @@ def test_category_rename_merges_into_an_existing_category_and_repoints_postings(
     assert nourriture["category_id"] not in body["categories"]
     assert "expense:food" in body["categories"]
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     grocery_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert grocery_leg["category_id"] == "expense:food"
 
@@ -2300,11 +2404,11 @@ def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_categ
 
     client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
 
-    raw = client.get("/api/accounting/ledger/export").json()
+    raw = _ledger_export(client)
     raw_leg = next(p for p in raw if p["account_id"] == account["account_id"])
     assert raw_leg["category_id"] == nourriture["category_id"]
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     resolved_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert resolved_leg["category_id"] == "expense:food"
 
@@ -2324,7 +2428,7 @@ def test_category_rename_merge_repoints_a_manual_override(client) -> None:
     )
     store = client.get("/api/accounting/store").json()
     nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     other_posting = next(p for p in postings if p["account_id"] != account["account_id"])
     client.put(
         f"/api/accounting/postings/{other_posting['posting_id']}/override",
@@ -2345,7 +2449,7 @@ def test_category_rename_merge_repoints_a_manual_override(client) -> None:
 
     client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     overridden = next(p for p in postings if p["posting_id"] == other_posting["posting_id"])
     assert overridden["category_id"] == "expense:food"
 
@@ -2404,7 +2508,7 @@ def test_category_delete_removes_the_category_and_uncategorizes_its_postings(cli
     assert body["uncategorized_posting_count"] == 1
     assert nourriture["category_id"] not in body["categories"]
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     grocery_leg = next(p for p in postings if p["account_id"] == account["account_id"])
     assert grocery_leg["category_id"] is None
 
@@ -2649,7 +2753,7 @@ def test_tag_rename_merges_into_an_existing_tag_and_repoints_posting_tags(client
     assert trip["tag_id"] not in body["tags"]
     assert vacation["tag_id"] in body["tags"]
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     p1 = next(p for p in postings if p["posting_id"] == "p1")
     assert p1["tag_ids"] == [vacation["tag_id"]]
 
@@ -2663,7 +2767,7 @@ def test_tag_rename_merge_handles_a_posting_already_tagged_with_both(client, db_
     response = client.post(f"/api/accounting/tags/{trip['tag_id']}/rename", json={"name": "Vacation"})
     assert response.status_code == 200
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     p1 = next(p for p in postings if p["posting_id"] == "p1")
     assert p1["tag_ids"] == [vacation["tag_id"]]
 
@@ -2677,7 +2781,7 @@ def test_tag_rename_merge_repoints_a_tag_ids_override(client, db_session) -> Non
 
     client.post(f"/api/accounting/tags/{trip['tag_id']}/rename", json={"name": "Vacation"})
 
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     p1 = next(p for p in postings if p["posting_id"] == "p1")
     assert p1["tag_ids"] == [vacation["tag_id"]]
 
@@ -2820,8 +2924,10 @@ def test_post_other_asset_twice_with_identical_fields_creates_two_distinct_rows(
 
 def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> None:
     _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
-    payment = next(p for p in postings if p["amount"] < 0)
+    postings = _postings(client)
+    # By amount, not "the first negative leg": the +1500 payroll row's
+    # placeholder counterparty leg is -1500 and also negative.
+    payment = next(p for p in postings if p["amount"] == pytest.approx(-70.0))
     client.put(f"/api/accounting/postings/{payment['posting_id']}/override", json={"category_id": "expense:admin-fees"})
 
     response = client.put(
@@ -3236,9 +3342,7 @@ def test_ledger_export_returns_every_raw_posting_unresolved_by_rules(client) -> 
         "/api/accounting/transfer-rules",
         json={"description_contains": "SOME EMPLOYER PAYROLL", "counterparty_account_id": account_id},
     )
-    response = client.get("/api/accounting/ledger/export")
-    assert response.status_code == 200
-    body = response.json()
+    body = _ledger_export(client)
     assert len(body) == 4  # two transactions, two postings each
     placeholder_legs = [row for row in body if row["account_id"] == "uncategorized:income"]
     assert len(placeholder_legs) == 1  # still on the placeholder — the rule never touched this export
@@ -3312,7 +3416,7 @@ def test_close_account_marks_it_closed_with_no_transfers(client) -> None:
     assert client.get("/api/accounting/store").json()["accounts"][account["account_id"]]["closed"] is True
 
 
-def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client) -> None:
+def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client, db_session) -> None:
     checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
     savings = _create_account(client, name="BNP Savings", kind="savings", institution="BNP", currency="USD")
     response = client.post(
@@ -3332,9 +3436,22 @@ def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client)
         },
     )
     assert response.status_code == 200
-    store = client.get("/api/accounting/store").json()
-    assert store["accounts"][checking["account_id"]]["closed"] is True
-    assert len(store["manual_transfers"]) == 1
+    assert response.json()["manual_transfers"] == [
+        {
+            "transfer_id": "close-bnp-checking-0001",
+            "date": "2026-06-30T00:00:00",
+            "from_account_id": checking["account_id"],
+            "to_account_id": savings["account_id"],
+            "from_amount": 100.0,
+            "to_amount": 100.0,
+            "description": "Closing out BNP checking",
+        }
+    ]
+    assert client.get("/api/accounting/store").json()["accounts"][checking["account_id"]]["closed"] is True
+    # `GET /store` doesn't carry `manual_transfers` — they're only ever an
+    # implementation detail of a close or an opening balance, never a
+    # collection the client reads — so the stored rows are read directly.
+    assert len(load_manual_transfers(db_session, DEFAULT_USER_ID)) == 1
 
     net_worth = client.get("/api/accounting/net-worth", params={"as_of": "2026-07-01"}).json()
     balances = {row["account_id"]: row["balance"] for row in net_worth["accounts"]}
@@ -3368,7 +3485,7 @@ def test_close_account_records_the_transfer_as_a_manual_origin_transaction_in_th
         },
     )
 
-    raw = client.get("/api/accounting/ledger/export").json()
+    raw = _ledger_export(client)
     legs = {posting["posting_id"]: posting for posting in raw}
     assert legs["manual-transfer:close-bnp-checking-0001:from"]["amount"] == pytest.approx(-100.0)
     assert legs["manual-transfer:close-bnp-checking-0001:to"]["amount"] == pytest.approx(100.0)
@@ -3450,7 +3567,7 @@ def test_category_totals_buckets_uncategorized_payroll_as_income(client) -> None
 
 def test_category_totals_excludes_unconfirmed_pending_suggestions(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
-    postings = client.get("/api/accounting/postings").json()
+    postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
     fake_response = '{"category_id": "income:salary", "subcategory_id": null}'

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from db.current_user import get_current_user_id
-from db.settings import AppRuntimeDatabaseSettings
+from db.settings import AppRuntimeDatabaseSettings, StatementTimeoutSettings
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -110,8 +110,19 @@ def session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(), expire_on_commit=False)
 
 
-def set_rls_user(session: Session, user_id: uuid.UUID) -> None:
-    """(Re-)establish the `app.current_user_id` session variable every Row-Level Security policy checks.
+@lru_cache(maxsize=1)
+def _statement_timeouts() -> StatementTimeoutSettings:
+    """Read the statement-timeout settings once per process — `set_rls_user` runs on every request.
+
+    Returns
+    -------
+    StatementTimeoutSettings
+    """
+    return StatementTimeoutSettings()
+
+
+def set_rls_user(session: Session, user_id: uuid.UUID, *, background: bool = False) -> None:
+    """(Re-)establish the `app.current_user_id` session variable every RLS policy checks, and bound the transaction.
 
     Scoped to the session's *current* transaction only (`set_config`'s
     `is_local=true` — Postgres has no bind-parameter form of `SET LOCAL`
@@ -132,18 +143,41 @@ def set_rls_user(session: Session, user_id: uuid.UUID) -> None:
     fails outright on the empty string — confirmed empirically, not
     theoretical (see `tests.db.test_session`).
 
+    `statement_timeout` is set here, in the same call and with the same
+    transaction-local scope, rather than anywhere else. That is deliberate
+    and structural: acquiring a scoped session and acquiring a time bound are
+    now one action, so no new code path can obtain one without the other. It
+    is the same reasoning that makes tenant isolation a policy rather than a
+    convention — the audit's finding was that store, postings, goals and LLM
+    paths passed no time bound at all (VISION-AUDIT T5), and a bound that
+    each call site has to remember is a bound that some call site will
+    forget.
+
+    Both are `is_local=true`, so a pooled connection's next request starts
+    from the server default again rather than inheriting either.
+
     Parameters
     ----------
     session
         An open database session, already inside (or about to start) a transaction.
     user_id
         The user to scope this transaction's RLS policies to.
+    background
+        Use the much larger `background_statement_timeout_seconds` instead of
+        the per-request bound. For work that is legitimately slow — a broker
+        sync, a statement import, a ledger rebuild, an LLM categorization
+        pass. Still bounded; nothing runs unbounded.
     """
+    timeouts = _statement_timeouts()
+    seconds = timeouts.background_statement_timeout_seconds if background else timeouts.statement_timeout_seconds
     session.execute(text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": str(user_id)})
+    # A unit-bearing string rather than a bare number, so the value cannot be
+    # misread as milliseconds; `set_config`'s third argument is the local flag.
+    session.execute(text("SELECT set_config('statement_timeout', :timeout, true)"), {"timeout": f"{seconds}s"})
 
 
 @contextmanager
-def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
+def session_scope(user_id: uuid.UUID, *, background: bool = True) -> Iterator[Session]:
     """Open one `Session` scoped to `user_id` for Row-Level Security, outside a FastAPI request.
 
     Does exactly what `get_db` does for a request — build a session and
@@ -163,14 +197,45 @@ def session_scope(user_id: uuid.UUID) -> Iterator[Session]:
     ----------
     user_id
         The user to scope this session's RLS policies to.
+    background
+        Defaults to `True`, unlike `get_db`'s per-request bound: every caller
+        of this function is a cron job, CLI entrypoint or webhook doing work
+        that is expected to take a while. Pass `False` for a short-lived
+        script that should be held to the request bound.
 
     Yields
     ------
     Session
     """
     with session_factory()() as session:
-        set_rls_user(session, user_id)
+        set_rls_user(session, user_id, background=background)
         yield session
+
+
+def allow_background_runtime(session: Session, user_id: uuid.UUID) -> None:
+    """Raise this request's statement timeout to the background bound.
+
+    For the handful of endpoints that are legitimately slow — importing a
+    statement, rebuilding the ledger from every archive, a bulk LLM
+    categorization pass. They are still bounded (see
+    `db.settings.StatementTimeoutSettings`), just far more generously than a
+    read is; the point of the per-request bound is that an ordinary read
+    cannot run for minutes, not that nothing may.
+
+    A call rather than a parameter on `get_db`, because the bound belongs to
+    the *handler* that knows it is slow, not to the dependency that hands out
+    sessions — and because it re-establishes the RLS variable at the same
+    time, which is what a mid-request `commit()` requires anyway (see
+    `set_rls_user`).
+
+    Parameters
+    ----------
+    session
+        The request's session.
+    user_id
+        The acting user, re-established along with the new bound.
+    """
+    set_rls_user(session, user_id, background=True)
 
 
 def get_db(user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]) -> Iterator[Session]:

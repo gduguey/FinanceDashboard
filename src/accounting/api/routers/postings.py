@@ -10,15 +10,20 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
+    PAGE_LIMIT_DEFAULT,
+    PAGE_LIMIT_MAX,
     DismissSuggestionRequest,
     DuplicateGroup,
+    LedgerExportPage,
     PostingIdResponse,
     PostingMergeIdResponse,
     PostingMergeUpsert,
+    PostingPage,
     PostingRow,
     SuggestionIdResponse,
     TransferLinkCreate,
@@ -27,8 +32,7 @@ from accounting.api.api_models import (
     ValidatePendingRequest,
     ValidatePendingResult,
 )
-from accounting.api.dependencies import _resolved_postings, state
-from accounting.importers.ingest import load_ledger
+from accounting.api.dependencies import _resolve_postings, _resolved_postings, state
 from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
@@ -49,11 +53,9 @@ from accounting.repositories.interpretation import (
     dismissed_suggestion_ids,
     insert_transfer_links,
     list_dismissed_suggestions,
-    load_overrides,
     load_overrides_for_postings,
     load_posting_splits,
     load_transfer_links,
-    load_transfer_rules,
     remove_posting_merge,
     remove_transfer_link,
     replace_posting_merges,
@@ -62,7 +64,11 @@ from accounting.repositories.interpretation import (
     undismiss_suggestion,
     upsert_posting_merge,
 )
-from accounting.taxonomy import seeded_accounts
+from accounting.repositories.ledger import (
+    ledger_posting_count,
+    load_ledger_page,
+    transaction_keys_by_posting_key,
+)
 from accounting.utils.statement_archive import StatementArchive
 from db.current_user import get_current_user_id
 from db.money import ZERO, quantize_money
@@ -70,12 +76,20 @@ from db.session import get_db
 
 router = APIRouter()
 
+_LINK_MEMBERSHIP_CONSTRAINT = "uq_transfer_linked_transactions_user_transaction"
+"""The unique index holding "a transaction is in at most one transfer link" — see `accounting.db.transfers`."""
+
 
 @router.get("/postings")
 def get_postings(
-    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
-) -> list[PostingRow]:
-    """Return every posting, resolved against the current rules and manual overrides.
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    limit: Annotated[int, Query(ge=1, description="How many transactions to return, newest first.")] = (
+        PAGE_LIMIT_DEFAULT
+    ),
+    offset: Annotated[int, Query(ge=0, description="How many transactions to skip.")] = 0,
+) -> PostingPage:
+    """Return one page of postings, resolved against the current rules and manual overrides.
 
     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
     `None`) and `pending_selected` — an automated categorizer's
@@ -93,22 +107,46 @@ def get_postings(
     `manual_transfer_override_posting_id` is set for that transaction —
     see `PostingRow`'s own docstring.
 
+    `limit` counts **transactions**, not postings, and the page carries
+    every leg of every transaction it covers — so `len(items)` is normally
+    larger than `limit`, and larger still where a transaction has been
+    split. `repositories.ledger.visible_transaction_page` explains why the
+    page cannot be cut at a posting instead.
+
+    A `limit` above `PAGE_LIMIT_MAX` is clamped rather than rejected; see
+    that constant for why.
+
+    Parameters
+    ----------
+    limit
+        How many transactions to return, newest first. Clamped to
+        `PAGE_LIMIT_MAX`.
+    offset
+        How many transactions to skip.
+
     Returns
     -------
-    list[PostingRow]
-        One row per posting.
+    PostingPage
+        The page's postings, plus the total transaction count a client needs
+        in order to ask for the next page.
     """
-    postings = _resolved_postings(session, user_id)
-    overrides = load_overrides(session, user_id)
-    # Recomputed from the raw ledger rather than threaded out of
-    # `_resolved_postings` — that function is shared by every other endpoint
-    # in this module, and this is purely a display concern only
-    # `get_postings` needs.
-    raw = load_ledger(session, user_id)
-    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(
-        raw, load_transfer_rules(session, user_id), seeded_accounts(session, user_id)
-    )
-    rows = postings.to_dicts()
+    limit = min(limit, PAGE_LIMIT_MAX)
+    # Everything below the resolved frame — the raw ledger, the overrides, the
+    # rules and the accounts — comes back out of resolution rather than being
+    # read again. These four display columns are only `get_postings`'
+    # concern, but re-reading them for it meant loading the whole ledger
+    # twice per request (speed-audit S1).
+    resolution = _resolve_postings(session, user_id, limit=limit, offset=offset)
+    overrides = resolution.overrides
+    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(resolution.raw, resolution.rules, resolution.accounts)
+    # Newest first, matching the order the page window itself was cut in.
+    # The frame is sorted ascending because every dashboard aggregation over
+    # it wants that (a running balance reads forwards), but a *page* returned
+    # ascending inside a descending window is a trap: a client concatenating
+    # pages would get ascending runs in descending page order rather than one
+    # sorted list. Sorting here rather than in the frame keeps both callers
+    # honest.
+    rows = resolution.resolved.sort("posted_at", "posting_id", descending=[True, False]).to_dicts()
 
     posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
     manual_override_posting_by_transaction: dict[str, str] = {}
@@ -128,23 +166,53 @@ def get_postings(
         row["resolved_by_transfer_rule_id"] = (
             None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
         )
-    return [PostingRow(**row) for row in rows]
+    return PostingPage(items=[PostingRow(**row) for row in rows], total=resolution.total, limit=limit, offset=offset)
 
 
 @router.get("/ledger/export")
 def get_ledger_export(
-    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
-) -> list[Posting]:
-    """Export the raw ledger, exactly as imported — before any rule, override, split, or merge is applied.
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    limit: Annotated[int, Query(ge=1, description="How many postings to return, oldest first.")] = PAGE_LIMIT_DEFAULT,
+    offset: Annotated[int, Query(ge=0, description="How many postings to skip.")] = 0,
+) -> LedgerExportPage:
+    """Export one page of the raw ledger, exactly as imported — before any rule, override, split, or merge.
+
+    An export's caller wants the whole ledger by definition, so this is
+    bounded rather than filtered: a page is capped at `PAGE_LIMIT_MAX` and
+    the client walks `offset` until it has `total` postings. That is
+    deliberately not the same as returning a truncated file — a partial
+    backup presented as a complete one is worse than several requests. A
+    streaming response would suit this endpoint better still, but choosing a
+    media type for it is a contract question rather than a read-path one.
+
+    `limit` counts postings here, not transactions as it does on
+    `GET /postings`, because the raw ledger has no overlay applied and so
+    nothing needing a transaction's legs kept together.
+
+    Parameters
+    ----------
+    limit
+        How many postings to return, oldest first. Clamped to `PAGE_LIMIT_MAX`.
+    offset
+        How many postings to skip.
 
     Returns
     -------
-    list[Posting]
-        Every posting for the user's own backup. See `GET /postings` for
-        the same data after every rule/override/split/merge is applied on
-        top — what the Transactions page actually shows.
+    LedgerExportPage
+        The page's raw postings for the user's own backup, plus the total. See
+        `GET /postings` for the same data after every
+        rule/override/split/merge is applied on top — what the Transactions
+        page actually shows.
     """
-    return [Posting(**row) for row in load_ledger(session, user_id).to_dicts()]
+    limit = min(limit, PAGE_LIMIT_MAX)
+    page = load_ledger_page(session, user_id, limit=limit, offset=offset)
+    return LedgerExportPage(
+        items=[Posting(**row) for row in page.to_dicts()],
+        total=ledger_posting_count(session, user_id),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/statements/export")
@@ -375,7 +443,13 @@ def post_transfer_link(
     HTTPException
         400 if either transaction names itself, or already has a
         `PostingSplit`; 409 if either transaction is already part of a
-        *different* transfer link.
+        *different* transfer link — whether that was already true when the
+        request arrived, or became true concurrently while it was being
+        served.
+    sqlalchemy.exc.IntegrityError
+        Any constraint violation that is *not* the one-link-per-transaction
+        rule. Re-raised untouched rather than folded into the 409, so a
+        genuinely unexpected violation stays a loud 500.
     """
     if request.transaction_id_a == request.transaction_id_b:
         raise HTTPException(status_code=400, detail="Cannot link a transaction to itself")
@@ -398,22 +472,38 @@ def post_transfer_link(
                 status_code=409, detail=f"Transaction {transaction_id!r} is already part of another transfer link"
             )
 
-    raw = load_ledger(session, user_id)
-    posting_to_transaction = dict(zip(raw["posting_id"].to_list(), raw["transaction_id"].to_list(), strict=True))
-    split_transaction_ids = {
-        posting_to_transaction[posting_id]
-        for posting_id in load_posting_splits(session, user_id)
-        if posting_id in posting_to_transaction
-    }
-    for transaction_id in (link.transaction_id_a, link.transaction_id_b):
-        if transaction_id in split_transaction_ids:
+    # Scoped to the two transactions being linked. This used to load the whole
+    # ledger to build a posting -> transaction map for exactly two ids.
+    pair = (link.transaction_id_a, link.transaction_id_b)
+    transaction_by_posting = transaction_keys_by_posting_key(session, user_id, pair)
+    splits = load_posting_splits(session, user_id)
+    for transaction_id in pair:
+        if any(
+            transaction == transaction_id and posting_id in splits
+            for posting_id, transaction in transaction_by_posting.items()
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"Transaction {transaction_id!r} has already been split and can't be linked",
             )
 
-    insert_transfer_links(session, user_id, [link])
-    session.commit()
+    # Every check above read before writing, so two requests linking the same
+    # transaction to two *different* partners both pass them. The parent rows
+    # they insert have different natural keys, so `insert_transfer_links`'
+    # `ON CONFLICT DO NOTHING` skips neither; the membership rows then collide
+    # on `uq_transfer_linked_transactions_user_transaction`. The database is
+    # what actually holds "a transaction is in at most one link", so the loser
+    # corrupts nothing — it just used to surface as an unhandled
+    # `IntegrityError`, i.e. a 500 where the sequential path gives a 409.
+    try:
+        insert_transfer_links(session, user_id, [link])
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        if _LINK_MEMBERSHIP_CONSTRAINT not in str(error.orig):
+            raise
+        detail = f"One of {link.transaction_id_a!r}, {link.transaction_id_b!r} is already part of another transfer link"
+        raise HTTPException(status_code=409, detail=detail) from error
     return link
 
 

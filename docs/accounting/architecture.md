@@ -149,7 +149,9 @@ src/accounting/
                          plans, the color palette) plus the defaults every new user is
                          seeded with — and the two seeded reads that pair with them
   repositories/         one module per aggregate root, each owning its own tables' reads
-                         and writes: accounts, taxonomy, planning, interpretation
+                         and writes: accounts, taxonomy, planning, interpretation,
+                         ledger.py (the posting-frame statement, its page window,
+                         and the projection into LEDGER_FRAME_SCHEMA)
   db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
                          core.py (accounts/categories/tags/postings/transactions),
                          budgets.py, goals.py, automation.py (categorization_rules —
