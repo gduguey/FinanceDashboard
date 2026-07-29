@@ -41,7 +41,7 @@ from accounting.repositories.interpretation import (
 from accounting.taxonomy import seeded_categories
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
-from db.session import get_db
+from db.session import allow_background_runtime, get_db
 
 router = APIRouter()
 
@@ -418,6 +418,7 @@ def post_pattern_suggest_category_bulk(
     BulkSuggestResult
         How many postings got a staged suggestion.
     """
+    allow_background_runtime(session, user_id)
     postings = _resolved_postings(session, user_id)
     targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
     if targets.is_empty():

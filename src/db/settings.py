@@ -94,6 +94,43 @@ class AppRuntimeDatabaseSettings(BaseSettings):
     )
 
 
+class StatementTimeoutSettings(BaseSettings):
+    """How long a statement may run — the per-request time bound, applied by `db.session.set_rls_user`.
+
+    Deliberately its own settings class rather than two more fields on
+    `AppRuntimeDatabaseSettings`: that one requires a `database_url` with no
+    default, so reading a timeout from it would mean constructing a
+    connection config to answer a question that has nothing to do with
+    connecting. Every field here has a default, so this is always readable.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=str(_REPO_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    statement_timeout_seconds: int = Field(
+        default=15,
+        ge=1,
+        validation_alias="DB_STATEMENT_TIMEOUT_SECONDS",
+        description=(
+            "How long any single statement may run before Postgres cancels it. The per-request time bound: a "
+            "pathological query fails its own request instead of holding a connection and a worker indefinitely. "
+            "Applied by `db.session.set_rls_user`; long-running background work overrides it explicitly."
+        ),
+    )
+    background_statement_timeout_seconds: int = Field(
+        default=600,
+        ge=1,
+        validation_alias="DB_BACKGROUND_STATEMENT_TIMEOUT_SECONDS",
+        description=(
+            "The bound for work that is legitimately slow — a broker sync, a statement import, a ledger rebuild, "
+            "an LLM categorization pass. Still a bound, just a much larger one: nothing runs unbounded."
+        ),
+    )
+
+
 class TestDatabaseSettings(BaseSettings):
     """The test suite's own Postgres connection string — never `DatabaseSettings`'s.
 

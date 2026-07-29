@@ -60,7 +60,7 @@ from accounting.models import CurrencyCode, PostingSplitLeg
 from accounting.repositories.taxonomy import replace_categories
 from accounting.taxonomy import seeded_accounts, seeded_categories
 from db.current_user import get_current_user_id
-from db.session import get_db
+from db.session import allow_background_runtime, get_db
 
 router = APIRouter()
 
@@ -132,6 +132,7 @@ async def post_import(
         422 if `account_id` doesn't already exist; 400 if no importer exists
         for this institution/account-kind combination.
     """
+    allow_background_runtime(session, user_id)
     account = seeded_accounts(session, user_id).get(account_id)
     if account is None:
         message = f"Account {account_id!r} does not exist — create this account first, then import."
@@ -617,6 +618,7 @@ def post_rebuild(
     HTTPException
         404 if nothing has ever been imported.
     """
+    allow_background_runtime(session, user_id)
     try:
         ledger = rebuild_from_raw_statements(state.config, session, user_id)
     except FileNotFoundError as error:
