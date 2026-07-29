@@ -36,7 +36,7 @@ from accounting.api import router as accounting_router
 from db.current_user import get_current_user_id
 from trades.api.auth import require_clerk_session, resolve_current_user_id
 from trades.api.dependencies import app
-from trades.api.routers import dashboard, market_data, settings, sync
+from trades.api.routers import broker_connections, dashboard, market_data, settings, sync
 from trades.api.webhooks import router as webhooks_router
 
 # Every `/api/...` route across both modules requires a valid Clerk session
@@ -60,6 +60,7 @@ _authenticated = [Depends(require_clerk_session)]
 _trades_router = APIRouter(prefix="/api/v1/trades")
 _trades_router.include_router(dashboard.router)
 _trades_router.include_router(settings.router)
+_trades_router.include_router(broker_connections.router)
 _trades_router.include_router(market_data.router)
 _trades_router.include_router(sync.router)
 

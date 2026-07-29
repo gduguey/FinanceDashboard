@@ -1,4 +1,10 @@
-"""Settings endpoints — mirrors `trades.config`/`trades.brokers.ibkr.credentials`: allocation, HYSA, tax, IBKR."""
+"""Settings endpoints — mirrors `trades.config`/`trades.brokers.ibkr.credentials`: allocation, HYSA, tax, IBKR.
+
+Every route here is a user preference under `/settings/...`, so the file's
+contents and its URL prefix say the same thing. `GET /broker-connections`
+used to live here and did not — it is a collection of rows a sync creates,
+not something a user sets, and now has its own `broker_connections.py`.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-import trades.db as tdb
 from db.current_user import get_current_user_id
 from db.money import Rate, quantize_rate
 from db.session import get_db
@@ -16,7 +21,6 @@ from trades import dashboard
 from trades.api.api_models import (
     BenchmarkSetting,
     BenchmarkSettingUpdate,
-    BrokerConnection,
     HysaSettings,
     HysaSettingsUpdate,
     IbkrCredentialsUpdate,
@@ -291,24 +295,6 @@ def put_tax_settings(
     )
     dashboard.save_settings(updated, session, user_id)
     return _tax_settings_response(config, updated)
-
-
-@router.get("/broker-connections")
-def get_broker_connections(
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[BrokerConnection]:
-    """List this user's broker connections — the only things an account may pull its value from.
-
-    Returns
-    -------
-    list[BrokerConnection]
-        Ordered by broker then id, so the frontend's list is stable across
-        requests. Empty until a sync has actually created a connection.
-    """
-    rows = session.query(tdb.BrokerConnection).filter_by(user_id=user_id).all()
-    connections = [BrokerConnection(connection_id=row.id, broker=row.broker) for row in rows]
-    return sorted(connections, key=lambda connection: (connection.broker, str(connection.connection_id)))
 
 
 @router.get("/settings/ibkr")
