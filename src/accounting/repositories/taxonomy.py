@@ -28,33 +28,13 @@ from typing import TYPE_CHECKING
 
 import accounting.db as adb
 from accounting.models import Category, OtherAsset, SimulatorScenario, Tag
-from db.base import derive_id, upsert_and_prune
+from db.base import ids_by_natural_key, merge_by_natural_key, upsert_and_prune
 
 if TYPE_CHECKING:
     import uuid
     from collections.abc import Iterable, Mapping
 
     from sqlalchemy.orm import Session
-
-
-def _category_id(user_id: uuid.UUID, category_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the category natural-keyed `category_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "categories", category_id)
-
-
-def _tag_id(user_id: uuid.UUID, tag_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the tag natural-keyed `tag_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "tags", tag_id)
 
 
 def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.UUID, str]) -> Category:
@@ -75,8 +55,8 @@ def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.
     )
 
 
-def _category_row(user_id: uuid.UUID, category: Category) -> adb.Category:
-    """Build the ORM row for one live category.
+def _category_row(user_id: uuid.UUID, category: Category, parent_ids: Mapping[str, uuid.UUID]) -> adb.Category:
+    """Build the ORM row for one live category, resolving its parent reference through `parent_ids`.
 
     Every row this builds is explicitly un-retired
     (`retired_at`/`superseded_by_category_id` both `NULL`), which is what
@@ -85,19 +65,33 @@ def _category_row(user_id: uuid.UUID, category: Category) -> adb.Category:
     that `UNIQUE(user_id, natural_key)` would otherwise refuse a second
     copy of. Retirement is only ever *entered* through `retire_categories`.
 
+    No `id`: the column's `uuid7()` default mints one on insert, and
+    `db.base.merge_by_natural_key` fills it in from `(user_id, natural_key)`
+    when this row is an update — which is exactly how the resurrection above
+    finds the retired row again rather than colliding with it.
+
+    Parameters
+    ----------
+    user_id
+        Whose category this is.
+    category
+        The pydantic category to convert.
+    parent_ids
+        Category natural key to row id, covering at least this category's
+        `parent_category_id`. Subscripted rather than `.get`, so naming a
+        parent that doesn't exist raises here instead of silently promoting a
+        subcategory to a top-level one. See `db.base.ids_by_natural_key`.
+
     Returns
     -------
     accounting.db.Category
     """
     return adb.Category(
-        id=_category_id(user_id, category.category_id),
         user_id=user_id,
         natural_key=category.category_id,
         name=category.name,
         classification=category.classification,
-        parent_category_id=_category_id(user_id, category.parent_category_id)
-        if category.parent_category_id is not None
-        else None,
+        parent_category_id=parent_ids[category.parent_category_id] if category.parent_category_id is not None else None,
         color=category.color,
         retired_at=None,
         superseded_by_category_id=None,
@@ -228,9 +222,16 @@ def retire_categories(session: Session, user_id: uuid.UUID, successors: Mapping[
     if not successors:
         return
     retired_at = datetime.now(tz=UTC)
+    # One lookup for every category named on either side of the mapping: the
+    # rows being retired and the successors they fold into. A key naming no
+    # category is simply skipped below rather than resolved to `None`, which
+    # would silently turn "merge A into B" into "delete A".
+    category_ids = ids_by_natural_key(session, adb.Category, user_id, [*successors, *successors.values()])
     for natural_key, successor in successors.items():
-        retiring_id = _category_id(user_id, natural_key)
-        successor_id = _category_id(user_id, successor) if successor is not None else None
+        retiring_id = category_ids.get(natural_key)
+        if retiring_id is None:
+            continue
+        successor_id = category_ids[successor] if successor is not None else None
         # Whatever already resolved *to* this category now resolves to
         # whatever this category itself resolves to — one hop, always.
         session.query(adb.Category).filter(
@@ -247,11 +248,14 @@ def replace_categories(
 ) -> None:
     """Insert-or-update every one of `categories`, then delete this user's categories not among them.
 
-    Two passes, top-level categories first: `categories.parent_category_id`
+    Two passes, top-level categories first, for the two reasons
+    `accounts.replace_accounts` spells out: `categories.parent_category_id`
     references this same table, so a subcategory row inserted before its
-    parent exists would violate that foreign key. Both passes prune against
-    the *complete* desired set, so a subcategory written in the second pass
-    is never swept up by the first pass's prune.
+    parent exists would violate that foreign key — and a parent's id is
+    minted by the database, so it isn't knowable until the first pass has
+    flushed. Both passes prune against the *complete* desired set, so a
+    subcategory written in the second pass is never swept up by the first
+    pass's prune.
 
     Retired categories are never pruned, whatever the caller passes. They
     are deliberately absent from every tree a caller can build (see
@@ -290,17 +294,19 @@ def replace_categories(
     if prune:
         keep_natural_keys |= _retired_natural_keys(session, user_id)
     for has_parent in (False, True):
-        rows = [
-            _category_row(user_id, category)
-            for category in categories
-            if (category.parent_category_id is not None) is has_parent
-        ]
+        batch = [category for category in categories if (category.parent_category_id is not None) is has_parent]
+        # Only the second pass has parents to resolve, and by then the first
+        # pass has flushed them — including any it just inserted.
+        parent_ids = (
+            ids_by_natural_key(session, adb.Category, user_id, [category.parent_category_id for category in batch])
+            if has_parent
+            else {}
+        )
+        rows = [_category_row(user_id, category, parent_ids) for category in batch]
         if prune:
             upsert_and_prune(session, adb.Category, user_id, rows, keep_natural_keys)
         else:
-            for row in rows:
-                session.merge(row)
-            session.flush()
+            merge_by_natural_key(session, adb.Category, user_id, rows)
 
 
 def load_tags(session: Session, user_id: uuid.UUID) -> dict[str, Tag]:
@@ -345,15 +351,11 @@ def replace_tags(session: Session, user_id: uuid.UUID, tags: Iterable[Tag], *, p
         (`POST /tags`), which must never remove a tag it wasn't given.
     """
     tags = list(tags)
-    rows = [
-        adb.Tag(id=_tag_id(user_id, tag.tag_id), user_id=user_id, natural_key=tag.tag_id, name=tag.name) for tag in tags
-    ]
+    rows = [adb.Tag(user_id=user_id, natural_key=tag.tag_id, name=tag.name) for tag in tags]
     if prune:
         upsert_and_prune(session, adb.Tag, user_id, rows, {tag.tag_id for tag in tags})
         return
-    for row in rows:
-        session.merge(row)
-    session.flush()
+    merge_by_natural_key(session, adb.Tag, user_id, rows)
 
 
 def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
@@ -368,7 +370,7 @@ def delete_tag(session: Session, user_id: uuid.UUID, tag_id: str) -> bool:
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    deleted = session.query(adb.Tag).filter_by(id=_tag_id(user_id, tag_id), user_id=user_id).delete()
+    deleted = session.query(adb.Tag).filter_by(user_id=user_id, natural_key=tag_id).delete()
     session.flush()
     return deleted > 0
 
@@ -402,9 +404,18 @@ def remap_tag_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID
     if not id_remap:
         return
 
+    # One lookup for both sides of every pair in the remap. Asymmetric on
+    # purpose, and the asymmetry is the pre-existing behaviour: a *source* tag
+    # with no row simply has no rows to repoint, so it is skipped; a *target*
+    # with no row is a reference nothing could satisfy, and subscripting
+    # raises rather than pointing a real `posting_tags` row at nothing (which
+    # is what its foreign key used to reject). See `db.base.ids_by_natural_key`.
+    tag_ids = ids_by_natural_key(session, adb.Tag, user_id, [*id_remap, *id_remap.values()])
     for old_tag_id, new_tag_id in id_remap.items():
-        old_id = _tag_id(user_id, old_tag_id)
-        new_id = _tag_id(user_id, new_tag_id)
+        old_id = tag_ids.get(old_tag_id)
+        if old_id is None:
+            continue
+        new_id = tag_ids[new_tag_id]
 
         already_tagged_postings = {
             row.posting_id for row in session.query(adb.PostingTag.posting_id).filter_by(user_id=user_id, tag_id=new_id)
@@ -457,7 +468,6 @@ def _other_asset_row(user_id: uuid.UUID, asset: OtherAsset) -> adb.OtherAsset:
     accounting.db.OtherAsset
     """
     return adb.OtherAsset(
-        id=derive_id(user_id, "other_assets", asset.asset_id),
         user_id=user_id,
         natural_key=asset.asset_id,
         name=asset.name,
@@ -512,8 +522,7 @@ def delete_other_asset(session: Session, user_id: uuid.UUID, asset_id: str) -> b
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "other_assets", asset_id)
-    deleted = session.query(adb.OtherAsset).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.OtherAsset).filter_by(user_id=user_id, natural_key=asset_id).delete()
     session.flush()
     return deleted > 0
 
@@ -555,7 +564,6 @@ def _simulator_scenario_row(user_id: uuid.UUID, scenario: SimulatorScenario) -> 
     accounting.db.SimulatorScenario
     """
     return adb.SimulatorScenario(
-        id=derive_id(user_id, "simulator_scenarios", scenario.scenario_id),
         user_id=user_id,
         natural_key=scenario.scenario_id,
         name=scenario.name,
@@ -613,7 +621,6 @@ def delete_simulator_scenario(session: Session, user_id: uuid.UUID, scenario_id:
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "simulator_scenarios", scenario_id)
-    deleted = session.query(adb.SimulatorScenario).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.SimulatorScenario).filter_by(user_id=user_id, natural_key=scenario_id).delete()
     session.flush()
     return deleted > 0

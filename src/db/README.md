@@ -13,7 +13,7 @@ for, and the exact commands for the scenarios you'll actually run into.
 |---|---|
 | `settings.py` | Where the two Postgres connection strings come from (`DATABASE_URL`, `DATABASE_URL_APP`) — see "Two roles" below. |
 | `session.py` | Builds the one shared connection pool (`get_engine`) and hands each web request its own database session (`get_db`), tagged with which user is making the request. |
-| `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus `derive_id`/`natural_keys_by_id`, a shared helper for turning a human-chosen string into a stable internal id. |
+| `base.py` | The shared SQLAlchemy `Base` every table (in every module) is declared on, plus the `uuid7()` primary-key default and `ids_by_natural_key`/`natural_keys_by_id`, the one seam that translates between a human-chosen string and a row's internal id. |
 | `models.py` | The three tables that live outside any one module's own schema: `users`, `user_secrets`, and `external_identities`. |
 | `current_user.py` | Which user is making the current request — a placeholder name FastAPI resolves to the real Clerk-session-derived identity at runtime; see "Which user is making this request" below for exactly how. Deliberately has no `DEFAULT_USER_ID` or any other fallback identity — that's a test-only concept, defined in `tests/conftest.py` instead. |
 | `external_identities.py` | `lookup_user_id`/`link_identity` — the only place a `(provider, external id)` pair is ever read or written; see "The two tables here" below. |
@@ -21,63 +21,77 @@ for, and the exact commands for the scenarios you'll actually run into.
 | `secrets.py` | `get_secret`/`set_secret`/`delete_secret` — the only way any code in this repo reads or writes a credential. |
 | `backup.py` | Dumps the whole database and uploads it somewhere durable. |
 
-## Stable ids: `derive_id`, and why its namespace constant is a plain constant, not a secret
+## Ids: `uuid7()`, and why a row's id is minted rather than computed
 
-Most tables' `id` column isn't a random id — it's computed from something
-human-chosen (an account's `institution:kind:last4`, a category's own
-name-based key, ...) via `db.base.derive_id`, so that re-deriving it later
-from the same input always gives back the exact same id (see that
-function's own docstring for why: some tables get fully rewritten on every
-save, and re-imports need to recognize "this already exists" instead of
-creating a duplicate).
+Every table's `id` is a UUID the *database* generates, from one SQL function
+this repo defines: `public.uuid7()` (see `db.base`). It carries no meaning.
+You cannot work out a row's id from what the row is about — the only way to
+learn it is to ask, which is what `ids_by_natural_key` is for.
 
-The mechanism is `uuid.uuid5(namespace, name)` — a **hash function**, not a
-random generator: think of it as a recipe. Feed it the exact same two
-ingredients twice, and you get the exact same output both times, no
-randomness involved; feed it different ingredients, and the output comes
-out completely different. The two ingredients it needs:
+**Why version 7 specifically.** A UUID is 128 bits, and v7 spends the first
+48 of them on the current time in milliseconds, big-endian, with the
+remaining bits random. That ordering is the entire point. A primary key is
+backed by a B-tree, and a B-tree stores keys in sorted order — so with a
+*random* key, consecutive inserts land at random points in the index,
+dirtying pages all over it and splitting them as they fill. With a
+time-ordered key, every insert sorts after every insert before it, so they
+all land at the right-hand edge: one hot page instead of hundreds of cold
+ones. This is DB-audit finding **D3**.
 
-- **`name`** — the actual thing being described, e.g.
-  `"<user id>:accounts:chase:checking:1234"`.
-- **`namespace`** — a second ingredient the recipe requires that's always
-  the *same* value no matter what's being described. It doesn't need to
-  mean anything; it just needs to never change.
+**Why we define the function ourselves.** Postgres grew a built-in
+`uuidv7()` in version 18. This project runs 16 (`deploy/docker-compose.yml`
+pins `postgres:16-alpine`), so `db.base._CREATE_UUID7_SQL` implements RFC
+9562 §5.7 directly — timestamp prefix, version nibble, variant bits, random
+remainder. When this project moves to Postgres 18+, that function body can
+be replaced by a call to the built-in; nothing else has to change, because
+every table only ever names `public.uuid7()`.
 
-`_ID_NAMESPACE` is that second ingredient: one arbitrary UUID, generated a
-single time, hardcoded directly in `base.py`. Change it, and every id this
-function has ever produced would come out different if recomputed — every
-foreign key pointing at an old id would suddenly point at nothing.
+**Where it gets installed.** Alembic's autogenerate cannot see functions, so
+the definition is executed from two places against one source of truth —
+exactly the arrangement `accounting.db.triggers` uses for the zero-sum
+constraint trigger:
 
-**Should it live in `.env`, or somewhere with backups, instead of hardcoded
-in source?** No — that would make it *less* safe, not more. `.env` files
-are gitignored on purpose (that's what makes them safe for actual secrets)
-and exist only as loose, uncommitted copies on whichever machines they've
-been manually pasted onto — no version history, no diff if someone edits
-one character by mistake, and nothing stopping the value from silently
-drifting between a laptop's `.env` and the server's `.env.docker`. This
-constant needs the exact opposite properties: it must be **identical in
-every environment, forever**, and a plain constant in versioned source
-code already guarantees both, for free — every clone of this repo has the
-same value, every change to it shows up in `git log`/`git blame` as an
-ordinary, reviewable commit, and reverting it is a normal `git revert`.
-Putting it in `.env` instead would introduce the exact failure mode it's
-protecting against: a copy-paste slip, or someone regenerating "a new
-one" thinking it's like `APP_SECRETS_ENCRYPTION_KEY`, would quietly break
-every id derivation in that one environment.
+- the baseline migration (`upgrade` runs `UUID7_STATEMENTS`), for real
+  databases;
+- a `before_create` hook on `Base.metadata`, for the test suite's
+  `Base.metadata.create_all`.
 
-This isn't a workaround specific to this app, either — it's how `uuid5` is
-meant to be used. The `uuid` module itself ships several of these same
-fixed namespace constants built in (`uuid.NAMESPACE_DNS`,
-`uuid.NAMESPACE_URL`, ...), hardcoded in the Python standard library's own
-source, unchanged since the format was standardized. `_ID_NAMESPACE` is
-the same idea at this app's scale: mint one arbitrary constant, commit it,
-never touch it again.
+`before_create`, not `after_create`: every table declares
+`DEFAULT public.uuid7()` on its primary key, and Postgres resolves that
+function when the *table* is created, not when a row is inserted — so it has
+to exist first. (For the same reason the downgrade drops it last, after the
+tables that depend on it are gone.) Without the hook, the function would
+exist in production and in no test.
 
-The real risk isn't "it gets deleted" (`git revert` fixes that
-immediately) — it's a one-character edit slipping through review
-unnoticed. `tests/db/test_base.py` pins the exact expected output of
-`derive_id` for a fixed input, so a change to `_ID_NAMESPACE` fails a test
-immediately instead of silently shipping.
+### What replaced the content-hashed id
+
+There used to be a helper here that computed a row's id by hashing
+`(user_id, table, natural_key)` with `uuid5`, so the same natural key always
+produced the same id without a lookup. It is gone, because a content hash
+scatters keys uniformly — precisely the worst case for the B-tree above.
+
+What it *guaranteed* did not go away; it moved to where it belonged all
+along. "The same natural key always names the same row" was never really a
+property of the id — it is `UNIQUE (user_id, natural_key)`, which every
+natural-keyed table still carries. So:
+
+- every **write** conflicts on `(user_id, natural_key)` (or, for a table
+  with no natural key, on whatever its genuine unique constraint is —
+  `opening_balances` on `(user_id, account_id)`, `posting_splits` on
+  `(user_id, posting_id)`), never on `id`;
+- every **read** that needs an id resolves it, via `ids_by_natural_key`;
+- every **insert** that needs the id it just created reads it off the
+  flushed row (SQLAlchemy fetches server-generated primary keys with
+  `INSERT ... RETURNING id`).
+
+`ids_by_natural_key` and `natural_keys_by_id` are the **only** two places in
+this repo where an id and a natural key meet. Above that line — pydantic
+models, API paths, every domain function — a row is addressed by its natural
+key string, and nothing else. Subscript the lookup (`ids[key]`) when you
+hold a reference that must resolve: a key with no row raises
+`UnknownNaturalKeyError`, which is the loud failure the foreign key used to
+provide when a made-up id reached Postgres. Use `.get(key)` only where the
+absence itself is the answer.
 
 ## Primary key patterns across every table
 
@@ -86,22 +100,27 @@ Which one a new table should use isn't a free choice — it follows directly
 from two questions: *does this table get bulk-rewritten or re-imported?*
 and *does anything else foreign-key against its `id`?*
 
-**1. `derive_id`-derived `id`, plus a `natural_key` column** — for tables
+**1. A `uuid7()` surrogate `id`, plus a `natural_key` column** — for tables
 that get fully rewritten on every save, or re-imported from an external
-source (so "insert, or recognize this already exists" has to work without
-a lookup). This is the majority of user-owned tables:
+source, so "insert, or recognize this already exists" has to work. The
+recognizing is done by `UNIQUE (user_id, natural_key)`, which is what every
+write conflicts on. This is the majority of user-owned tables:
 `accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
 `other_assets`, `posting_merges`, `suggestions`,
 `goals`, `goal_contributions`, `goal_automations`,
 `categorization_rules`, `budgets`, `simulator_scenarios`;
 `trades.broker_connections`, `ledger_events`.
 
-**2. A plain random `uuid.uuid4()` surrogate `id`** — for tables that are
-never bulk-rewritten and have no re-import/dedup concept, just an ordinary
-"create one row, maybe delete it later" lifecycle. Uniqueness (where it
-matters) comes from a separate `UniqueConstraint`, not the id itself:
-`public.users`; `accounting.posting_tags`, `posting_splits`,
-`posting_split_legs`, `posting_merge_duplicates`, `posting_overrides`.
+**2. A `uuid7()` surrogate `id` and no `natural_key`** — for tables that are
+never re-imported and have no human-chosen name of their own, because their
+identity is entirely "which row do I hang off". Uniqueness comes from a
+`UniqueConstraint` over those owning columns, and that constraint is what a
+write conflicts on and what a caller addresses the row by:
+`public.users` (whose identity is the external one in
+`external_identities`); `accounting.opening_balances`
+(`(user_id, account_id)`), `posting_overrides` (`(user_id, posting_id)`),
+`posting_splits` (`(user_id, posting_id)`), `posting_split_legs`
+(`(user_id, posting_split_id, ordinal)`).
 
 **3. No surrogate `id` at all — the real key(s) are the primary key,
 directly.** This is the right choice specifically when nothing else ever
@@ -123,15 +142,19 @@ The last two are new tables (added to move `trades`'s dashboard
 preferences and `accounting`'s LLM call counters out of flat JSON files —
 see each package's own docstrings on `trades.db.models.DashboardSettings`
 and `accounting.db.llm.LLMUsage`), and deliberately follow this third
-pattern rather than `derive_id`: neither is ever bulk-rewritten or
+pattern rather than the majority one: neither is ever bulk-rewritten or
 re-imported, and nothing else in the schema foreign-keys against either
 one's identity — so a surrogate id would just be one more column with no
-job to do. Using `derive_id` here would be following the majority
-pattern out of habit rather than for a reason that actually applies.
+job to do. Giving these a surrogate id would be following the majority
+pattern out of habit rather than for a reason that actually applies. The
+pure association tables (`accounting.posting_tags`,
+`posting_override_tags`, `posting_merge_duplicates`,
+`categorization_rule_exclusions`, `trades`' own join tables) belong here
+too: the association *is* the key (DB-audit D9).
 
 ## How a save actually writes to Postgres: wipe-and-reinsert vs. upsert-and-prune
 
-The primary-key pattern above (`derive_id` + `natural_key`) is what *lets*
+The `natural_key` column above (and its `UNIQUE` constraint) is what *lets*
 a table be safely rewritten — but rewriting is still a choice each write
 path makes, table by table. Two techniques are in use across the
 accounting write paths, and picking the wrong one for a new table is a
@@ -194,16 +217,17 @@ fields deserve a check at all is in
 insert fresh rows for everything currently held in memory. Not "diff and
 patch what changed" — the *entire* table is thrown away and rebuilt on
 every single save, even a save that only touched one unrelated field.
-This is safe here specifically because every row's `id` is `derive_id`-
-derived: a row deleted and reinserted with the same `natural_key` comes
-back with the *exact same* `id` it had before, so nothing that
-(hypothetically) referenced it would ever see it as "gone," even
-mid-rewrite.
-This is the technique for 15 tables — several of which *are* foreign-keyed
-against by others in the same wipe-and-reinsert set (e.g. `posting_split_legs`
-→ `posting_splits`, `goal_contributions`/`goal_automations` → `goals`),
-which is exactly why the derived id must stay stable: a reinserted parent
-keeps its id, so a child's foreign key still resolves across the rewrite:
+This is only safe for a table **nothing outside the rewrite references**. A
+reinserted row comes back with a *new* `id` — ids are minted, not
+recomputed — so any foreign key held elsewhere would be left pointing at a
+row that no longer exists. (That is why `accounts`/`categories`/`tags`, which
+the ledger does reference, use upsert-and-prune instead.)
+This is the technique for 15 tables. Several *are* foreign-keyed against by
+others in the same wipe-and-reinsert set (e.g. `posting_split_legs` →
+`posting_splits`, `goal_contributions`/`goal_automations` → `goals`) — which
+works because parent and child are rewritten in the same transaction, the
+parents flushed first so each child reads its parent's brand-new id straight
+off the flushed row:
 
 Every one of them is now behind a `replace_*` function that runs only
 when a request genuinely submits that whole list:
@@ -228,15 +252,18 @@ worth of state and nothing else.
 
 One table in the interpretation set is neither: `categorization_rules`
 carries a `version` column that per-row optimistic concurrency depends on,
-so its rows are upserted by raw `INSERT ... ON CONFLICT (id) DO UPDATE`
-whose `SET` clause omits `version`, then pruned — scoped to one `effect`,
-so rewriting the transfer rules cannot delete a category pattern sharing
-the table (see `repositories.interpretation.replace_transfer_rules`). A
-dismissed `suggestions` row is only ever `session.merge()`d one at a time.
+so its rows are upserted by raw
+`INSERT ... ON CONFLICT (user_id, natural_key) DO UPDATE` whose `SET` clause
+omits `version`, then pruned — scoped to one `effect`, so rewriting the
+transfer rules cannot delete a category pattern sharing the table (see
+`repositories.interpretation.replace_transfer_rules`). A dismissed
+`suggestions` row is only ever upserted one at a time.
 
 **Upsert-and-prune** (`db.base.upsert_and_prune`): for each row
-currently held in memory, `session.merge()` it — update it in place if a
-row with that `id` already exists, insert it if not — then, separately,
+currently held in memory, `session.merge()` it — update it in place if a row
+with that `(user_id, natural_key)` already exists, insert it if not (see
+`db.base.merge_by_natural_key`, which resolves the real key to the row's `id`
+so `merge()` can do one or the other) — then, separately,
 delete only whichever rows *used to* exist for this user but aren't in
 the new set anymore. Nothing not mentioned in the new state gets touched;
 nothing mentioned gets torn down and rebuilt. Exactly three tables use
@@ -294,8 +321,8 @@ each import call only ever adds the new rows a fresh statement actually
 contains, on top of whatever was already there — it doesn't re-derive
 your whole history from scratch the way `rebuild_from_raw_statements`
 does. A statement's rows are matched to existing ones by their own
-content-derived id (see `derive_id` above), not by position in the file
-or by upload order.
+content-addressed `natural_key`, not by position in the file or by upload
+order; a row already there keeps the `id` it was first given.
 
 **What happens if you import the same statement twice**: every
 transaction's id is a hash of the facts that describe it — account, date,

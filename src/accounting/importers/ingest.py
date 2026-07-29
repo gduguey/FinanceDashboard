@@ -33,7 +33,7 @@ from accounting.models import IMPORTABLE_ACCOUNT_KINDS
 from accounting.repositories.taxonomy import replace_categories
 from accounting.taxonomy import normalize_categories, seeded_accounts, seeded_categories
 from accounting.utils.statement_archive import StatementArchive
-from db.base import derive_id, natural_keys_by_id
+from db.base import ids_by_natural_key, natural_keys_by_id
 
 if TYPE_CHECKING:
     import uuid
@@ -251,46 +251,6 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     # each leg of a transaction the same date and description, "last leg
     # wins" is not a choice being made, it is the same value written once.
     transaction_facts = {row["transaction_id"]: (row["posted_at"], row["description"]) for row in rows}
-    transaction_ids: set[uuid.UUID] = set()
-    for natural_key, (posted_at, description) in transaction_facts.items():
-        transaction_id = derive_id(user_id, "transactions", natural_key)
-        transaction_ids.add(transaction_id)
-        session.merge(
-            adb.Transaction(
-                id=transaction_id,
-                user_id=user_id,
-                natural_key=natural_key,
-                posted_at=posted_at,
-                description=description,
-                origin="imported",
-            )
-        )
-    session.flush()
-
-    posting_ids: set[uuid.UUID] = set()
-    for row in rows:
-        posting_id = derive_id(user_id, "postings", row["posting_id"])
-        posting_ids.add(posting_id)
-        session.merge(
-            adb.Posting(
-                id=posting_id,
-                user_id=user_id,
-                natural_key=row["posting_id"],
-                transaction_id=derive_id(user_id, "transactions", row["transaction_id"]),
-                account_id=derive_id(user_id, "accounts", row["account_id"]),
-                amount=row["amount"],
-                currency=row["currency"],
-                category_id=derive_id(user_id, "categories", row["category_id"])
-                if row["category_id"] is not None
-                else None,
-                subcategory_id=derive_id(user_id, "categories", row["subcategory_id"])
-                if row["subcategory_id"] is not None
-                else None,
-                budget_id=derive_id(user_id, "budgets", row["budget_id"]) if row["budget_id"] is not None else None,
-                meta=row["meta"],
-            )
-        )
-    session.flush()
 
     # Every prune below is scoped to these. A `manual` transaction and its
     # postings are outside the set this function is the source of truth for,
@@ -303,26 +263,87 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
         adb.Posting.user_id == user_id, adb.Posting.transaction_id.in_(imported_transaction_ids)
     )
 
-    # Postings first, then transactions — a transaction that lost every one of
-    # its postings would otherwise still be referenced by the very rows this
-    # step is trying to delete first.
+    # One read of the imported half's `(natural_key, id)` pairs serves both
+    # jobs below: telling `merge()` which rows already exist (so it updates
+    # rather than duplicating on `UNIQUE (user_id, natural_key)`), and giving
+    # the prune the set of ids to diff against. Deliberately *not* an
+    # `ids_by_natural_key` call keyed on the frame's own natural keys: a
+    # rebuild carries tens of thousands of them, and one `IN` list that long
+    # is the 65,535-parameter cliff DB-audit D4 is about. Reading the user's
+    # imported rows wholesale binds two parameters regardless of size.
+    existing_transaction_ids = {
+        row.natural_key: row.id
+        for row in session.query(adb.Transaction.natural_key, adb.Transaction.id).filter_by(
+            user_id=user_id, origin="imported"
+        )
+    }
     existing_posting_ids = {
-        row.id
+        row.natural_key: row.id
         for row in session
-        .query(adb.Posting.id)
+        .query(adb.Posting.natural_key, adb.Posting.id)
         .filter_by(user_id=user_id)
         .filter(adb.Posting.transaction_id.in_(imported_transaction_ids))
     }
-    removed_posting_ids = existing_posting_ids - posting_ids
+
+    transaction_rows: dict[str, adb.Transaction] = {}
+    for natural_key, (posted_at, description) in transaction_facts.items():
+        transaction_rows[natural_key] = session.merge(
+            adb.Transaction(
+                id=existing_transaction_ids.get(natural_key),
+                user_id=user_id,
+                natural_key=natural_key,
+                posted_at=posted_at,
+                description=description,
+                origin="imported",
+            )
+        )
+    # Flushed before the postings below, because a posting's `transaction_id`
+    # is the id `uuid7()` mints for its transaction — read off the flushed
+    # instance rather than recomputed from the natural key.
+    session.flush()
+
+    # The reference tables a posting points at. These are small per user (a
+    # handful of accounts, dozens of categories and tags) and the frame names
+    # only a subset, so a keyed lookup is the right shape here — unlike the
+    # ledger's own two tables above.
+    account_ids = ids_by_natural_key(session, adb.Account, user_id, [row["account_id"] for row in rows])
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [row["category_id"] for row in rows] + [row["subcategory_id"] for row in rows],
+    )
+    budget_ids = ids_by_natural_key(session, adb.Budget, user_id, [row["budget_id"] for row in rows])
+
+    posting_rows: dict[str, adb.Posting] = {}
+    for row in rows:
+        posting_rows[row["posting_id"]] = session.merge(
+            adb.Posting(
+                id=existing_posting_ids.get(row["posting_id"]),
+                user_id=user_id,
+                natural_key=row["posting_id"],
+                transaction_id=transaction_rows[row["transaction_id"]].id,
+                account_id=account_ids[row["account_id"]],
+                amount=row["amount"],
+                currency=row["currency"],
+                category_id=category_ids[row["category_id"]] if row["category_id"] is not None else None,
+                subcategory_id=category_ids[row["subcategory_id"]] if row["subcategory_id"] is not None else None,
+                budget_id=budget_ids[row["budget_id"]] if row["budget_id"] is not None else None,
+                meta=row["meta"],
+            )
+        )
+    session.flush()
+
+    # Postings first, then transactions — a transaction that lost every one of
+    # its postings would otherwise still be referenced by the very rows this
+    # step is trying to delete first.
+    removed_posting_ids = set(existing_posting_ids.values()) - {row.id for row in posting_rows.values()}
     if removed_posting_ids:
         session.query(adb.Posting).filter_by(user_id=user_id).filter(adb.Posting.id.in_(removed_posting_ids)).delete(
             synchronize_session=False
         )
 
-    existing_transaction_ids = {
-        row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id, origin="imported")
-    }
-    removed_transaction_ids = existing_transaction_ids - transaction_ids
+    removed_transaction_ids = set(existing_transaction_ids.values()) - {row.id for row in transaction_rows.values()}
     if removed_transaction_ids:
         # A `TransferLink` has no FK of its own into `transactions` — only
         # its `TransferLinkedTransaction` children do — so cascading that
@@ -350,11 +371,12 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     session.query(adb.PostingTag).filter_by(user_id=user_id).filter(
         adb.PostingTag.posting_id.in_(imported_posting_ids)
     ).delete(synchronize_session=False)
+    tag_ids = ids_by_natural_key(session, adb.Tag, user_id, [tag_id for row in rows for tag_id in row["tag_ids"]])
     session.add_all(
         adb.PostingTag(
             user_id=user_id,
-            posting_id=derive_id(user_id, "postings", row["posting_id"]),
-            tag_id=derive_id(user_id, "tags", tag_id),
+            posting_id=posting_rows[row["posting_id"]].id,
+            tag_id=tag_ids[tag_id],
         )
         for row in rows
         for tag_id in row["tag_ids"]

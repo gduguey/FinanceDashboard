@@ -19,7 +19,7 @@ from accounting.models import (
     GoalAutomationMode,
     GoalContributionOrigin,
 )
-from db.base import MONEY, Base, Timestamped, check_in_sql
+from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 
 class Goal(Base, Timestamped):
@@ -33,7 +33,7 @@ class Goal(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
@@ -69,7 +69,7 @@ class GoalContribution(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))
@@ -183,7 +183,7 @@ class GoalAutomation(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     goal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.goals.id"))

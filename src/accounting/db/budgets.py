@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA, child_of_category_columns
 from accounting.models import CurrencyCode
-from db.base import MONEY, Base, Timestamped, check_in_sql
+from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 _NIL_SUBCATEGORY = "00000000-0000-0000-0000-000000000000"
 """Sentinel `coalesce`d in place of a `NULL` `subcategory_id` in the unique index below.
@@ -58,7 +58,7 @@ class Budget(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     month: Mapped[str | None] = mapped_column(default=None)

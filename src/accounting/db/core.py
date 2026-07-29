@@ -1,12 +1,17 @@
 """The core ledger: accounts, categories, tags, transactions, and their postings.
 
-Every table's primary key is a surrogate `id`, never `(user_id, ..._id)` —
-see `db.base.derive_id`'s docstring for why a deterministic hash of the old
-human-chosen string, not a random default, is what makes that safe for
-tables `accounting.repositories` rewrites wholesale. `natural_key`
-is that human-chosen string (what used to be `account_id`, `category_id`,
-...), kept as a plain column with a `UNIQUE(user_id, natural_key)`
-constraint instead of being the primary key itself.
+Every table's primary key is a surrogate `id`, never `(user_id, ..._id)`,
+and it is minted by the database from `db.base.UUID7_DEFAULT` — a
+time-ordered UUID, so a fresh row's key sorts after every key before it and
+inserts append to the B-tree instead of scattering through it (DB-audit D3).
+It carries no meaning: nothing derives it, guesses it, or recomputes it.
+
+`natural_key` is the human-chosen string that identity is actually *about*
+(what used to be `account_id`, `category_id`, ...), kept as a plain column
+with a `UNIQUE(user_id, natural_key)` constraint. That constraint, not the
+primary key, is what every write conflicts on and every caller addresses a
+row by — see `db.base.natural_keys_by_id`/`ids_by_natural_key`, the one
+place the two ever meet.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.models import AccountKind, CategoryClassification, CurrencyCode, TransactionOrigin
 from accounting.precedence import OverlayStage
-from db.base import MONEY, Base, Timestamped, check_in_sql
+from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 SCHEMA = "accounting"
 
@@ -194,7 +199,7 @@ class Account(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
@@ -303,7 +308,7 @@ class Category(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
@@ -336,7 +341,7 @@ class Tag(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]
@@ -390,7 +395,7 @@ class Transaction(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     posted_at: Mapped[datetime]
@@ -457,7 +462,7 @@ class Posting(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     transaction_id: Mapped[uuid.UUID] = mapped_column(
@@ -509,7 +514,7 @@ class OpeningBalance(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id", ondelete="CASCADE")
@@ -540,7 +545,7 @@ class OtherAsset(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]

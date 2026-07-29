@@ -6,12 +6,12 @@ identical for every user and stays exactly where it is today, under
 `data/trades/{prices,cpi,hysa_rates}/`.
 
 Every table's primary key is a surrogate `id` (never a composite
-`(user_id, ...)` key), derived deterministically from `db.base.derive_id`
-so it stays stable across a full delete-and-recreate rewrite and, for
-import-derived rows, makes re-importing the same source idempotent — see
-`derive_id`'s own docstring. `natural_key` is the human-meaningful string
-(a connection name, an import's own dedup key) that identity used to be
-keyed on directly.
+`(user_id, ...)` key), minted by the database from `db.base.UUID7_DEFAULT`
+— time-ordered, so inserts append to the B-tree rather than scattering
+through it (DB-audit D3). `natural_key` is the human-meaningful string (a
+connection name, an import's own dedup key) that identity is actually about,
+and its `UNIQUE(user_id, natural_key)` is what makes re-importing the same
+source idempotent: the write conflicts on that key, not on a recomputed id.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import MONEY, RATE, SHARES, Base, RateMap, Timestamped, check_in_sql
+from db.base import MONEY, RATE, SHARES, UUID7_DEFAULT, Base, RateMap, Timestamped, check_in_sql
 from trades.config import LedgerEventType, TaxRegime
 
 SCHEMA = "trades"
@@ -46,7 +46,7 @@ class BrokerConnection(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     broker: Mapped[str]
@@ -69,7 +69,7 @@ class LedgerEvent(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     connection_id: Mapped[uuid.UUID] = mapped_column(

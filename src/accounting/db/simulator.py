@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA
 from accounting.models import CompoundingFrequency, CurrencyCode
-from db.base import MONEY, RATE, Base, Timestamped, check_in_sql
+from db.base import MONEY, RATE, UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 
 class SimulatorScenario(Base, Timestamped):
@@ -29,7 +29,7 @@ class SimulatorScenario(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     name: Mapped[str]

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from accounting.db.core import SCHEMA, child_of_category_columns
 from accounting.models import RuleEffect
 from accounting.precedence import OverlayStage
-from db.base import Base, Timestamped, check_in_sql
+from db.base import UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 _STAGE_BY_EFFECT: dict[RuleEffect, OverlayStage] = {"transfer": "counterparty", "categorize": "override"}
 """Which resolution stage each effect is applied at — see `accounting.precedence`.
@@ -85,7 +85,7 @@ class CategorizationRule(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     """Prefixed per effect at the point it is derived (`rule:…` / `pattern:…`, see
@@ -133,8 +133,10 @@ class CategorizationRuleExclusion(Base, Timestamped):
 
     Mirrors `PostingMergeDuplicate`'s own shape (a join table with a real
     foreign key into `transactions`, not a JSON array of ids) for the same
-    reason: `transaction_id` values are deterministic (`db.base.derive_id`),
-    so a lasting reference into `transactions` survives a ledger rebuild.
+    reason: a real foreign key is what makes the reference survive a ledger
+    rebuild, because `importers.ingest._write_ledger` upserts a transaction
+    that is still produced rather than replacing it, so the row this points
+    at keeps both its identity and its id.
 
     A pure association table, so `(user_id, rule_id, transaction_id)` is
     its primary key — see `core.PostingTag` on why the surrogate `id` it

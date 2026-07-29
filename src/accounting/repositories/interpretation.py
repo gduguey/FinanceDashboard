@@ -24,11 +24,10 @@ on each table's own `stage` column, never inferred from call order.
 
 from __future__ import annotations
 
-import uuid
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 import accounting.db as adb
 from accounting.models import (
@@ -41,63 +40,30 @@ from accounting.models import (
     TransferLink,
     TransferRule,
 )
-from db.base import check_and_bump_row_version, derive_id, natural_keys_by_id
+from db.base import check_and_bump_row_version, ids_by_natural_key, merge_by_natural_key, natural_keys_by_id
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    import uuid
+    from collections.abc import Callable, Iterable, Mapping
     from datetime import datetime
 
     from sqlalchemy.orm import Session
 
 
-def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the account natural-keyed `account_id`.
+def _optional_id(ids: Mapping[str, uuid.UUID], natural_key: str | None) -> uuid.UUID | None:
+    """Resolve a *nullable* reference: `None` when there is no key, the key's id when there is.
 
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "accounts", account_id)
-
-
-def _category_id(user_id: uuid.UUID, category_id: str | None) -> uuid.UUID | None:
-    """Derive this user's stable internal id for `category_id`, or `None` if `category_id` is `None`.
+    The nullable-column counterpart to subscripting a lookup directly. The
+    distinction it preserves is the one `db.base.ids_by_natural_key`
+    documents: a `None` natural key means the caller has no reference to
+    store, whereas a natural key with no row is a bad reference and raises —
+    it must not quietly become a `NULL` that reads as "uncategorized".
 
     Returns
     -------
     uuid.UUID or None
     """
-    return derive_id(user_id, "categories", category_id) if category_id is not None else None
-
-
-def _tag_id(user_id: uuid.UUID, tag_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the tag natural-keyed `tag_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "tags", tag_id)
-
-
-def _transaction_id(user_id: uuid.UUID, transaction_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the transaction natural-keyed `transaction_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "transactions", transaction_id)
-
-
-def _posting_id(user_id: uuid.UUID, posting_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the posting natural-keyed `posting_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "postings", posting_id)
+    return ids[natural_key] if natural_key is not None else None
 
 
 def _pending_suggestion_key(posting_id: str) -> str:
@@ -128,29 +94,47 @@ def _pending_suggestion_rows(session: Session, user_id: uuid.UUID) -> list[adb.S
     return list(session.query(adb.Suggestion).filter_by(user_id=user_id, status="pending"))
 
 
-def _pending_suggestion_row(user_id: uuid.UUID, posting_id: str, override: ManualOverride) -> adb.Suggestion:
+def _pending_suggestion_row(
+    user_id: uuid.UUID,
+    posting_id: str,
+    override: ManualOverride,
+    posting_ids: Mapping[str, uuid.UUID],
+    category_ids: Mapping[str, uuid.UUID],
+) -> adb.Suggestion:
     """Build the `suggestions` row staging `override`'s not-yet-confirmed category on one posting.
 
     Only ever called for an override whose `pending_source` is set — that
     column is `NOT NULL` on the row (a pending suggestion that isn't
     actually pending isn't a row at all, not a row with `source=None`).
 
+    Parameters
+    ----------
+    user_id
+        Whose suggestion this is.
+    posting_id
+        The natural key of the posting the category is staged on.
+    override
+        The override carrying the pending state.
+    posting_ids
+        Posting natural key to row id, covering `posting_id`.
+    category_ids
+        Category natural key to row id, covering the override's two
+        `pending_previous_*` references.
+
     Returns
     -------
     accounting.db.Suggestion
     """
-    natural_key = _pending_suggestion_key(posting_id)
     return adb.Suggestion(
-        id=derive_id(user_id, _SUGGESTIONS_NAMESPACE, natural_key),
         user_id=user_id,
-        natural_key=natural_key,
+        natural_key=_pending_suggestion_key(posting_id),
         status="pending",
         kind="category",
         source=override.pending_source,
-        posting_id=_posting_id(user_id, posting_id),
+        posting_id=posting_ids[posting_id],
         selected=override.pending_selected,
-        previous_category_id=_category_id(user_id, override.pending_previous_category_id),
-        previous_subcategory_id=_category_id(user_id, override.pending_previous_subcategory_id),
+        previous_category_id=_optional_id(category_ids, override.pending_previous_category_id),
+        previous_subcategory_id=_optional_id(category_ids, override.pending_previous_subcategory_id),
     )
 
 
@@ -200,18 +184,9 @@ Passed to `db.base.check_and_bump_row_version`, which builds raw SQL from
 it — a fixed internal constant, never anything a caller supplies.
 """
 
-_RULES_NAMESPACE = "categorization_rules"
-"""The `db.base.derive_id` namespace both effects share.
 
-Safe to share because the two natural keys are prefixed apart at the point
-they are minted (`rule:` / `pattern:`, see
-`api.routers.store._transfer_rule_id`/`_category_pattern_id`), so no
-transfer rule and category pattern can ever derive the same row id.
-"""
-
-
-def _upsert_rule(session: Session, user_id: uuid.UUID, row_id: uuid.UUID, natural_key: str, **columns: object) -> None:
-    """Insert-or-update one `categorization_rules` row by id, leaving `version` untouched.
+def _upsert_rule(session: Session, user_id: uuid.UUID, natural_key: str, **columns: object) -> uuid.UUID:
+    """Insert-or-update one `categorization_rules` row by its natural key, leaving `version` untouched.
 
     Shared by `replace_transfer_rules` and `replace_category_patterns`,
     which differ only in which effect's columns they fill. A plain
@@ -219,10 +194,17 @@ def _upsert_rule(session: Session, user_id: uuid.UUID, row_id: uuid.UUID, natura
     row, including `version` (which a transient instance never sets, so it
     would silently reset to the column default) — exactly the bug the
     `PATCH` endpoints' per-row optimistic concurrency depends on not
-    happening. A raw `INSERT ... ON CONFLICT (id) DO UPDATE` whose `SET`
+    happening. A raw `INSERT ... ON CONFLICT DO UPDATE` whose `SET`
     clause simply omits `version` avoids that: an existing row keeps
     whatever version `db.base.check_and_bump_row_version` last left it at,
     no matter how many times an unrelated create round-trips through here.
+
+    The conflict target is `(user_id, natural_key)` —
+    `uq_categorization_rules_user_natural_key`, the table's real key. One
+    constraint covers both effects because the natural keys are prefixed
+    apart at the point they are minted (`rule:` / `pattern:`, see
+    `api.routers.store._transfer_rule_id`/`_category_pattern_id`), so a
+    transfer rule and a category pattern can never collide on it.
 
     Parameters
     ----------
@@ -230,26 +212,32 @@ def _upsert_rule(session: Session, user_id: uuid.UUID, row_id: uuid.UUID, natura
         An open database session; the caller flushes and commits.
     user_id
         Whose rule this is.
-    row_id
-        The row's already-derived id.
     natural_key
-        The rule's own `rule_id`/`pattern_id`.
+        The rule's own `rule_id`/`pattern_id` — what identifies the row.
     columns
         Every remaining column's value, `effect` and `stage` included —
         stringified UUIDs where the column is a foreign key.
+
+    Returns
+    -------
+    uuid.UUID
+        The row's id: freshly minted by `uuid7()` on an insert, or the
+        existing row's own on a conflict. `RETURNING` it here is what saves
+        the exclusion-syncing callers a second round trip to look it up.
     """
-    names = ["id", "user_id", "natural_key", *columns]
-    session.execute(
+    names = ["user_id", "natural_key", *columns]
+    return session.execute(
         text(
             f"""
             INSERT INTO {_CATEGORIZATION_RULES_TABLE} ({", ".join(names)}, version)
             VALUES ({", ".join(f":{name}" for name in names)}, 1)
-            ON CONFLICT (id) DO UPDATE SET
+            ON CONFLICT (user_id, natural_key) DO UPDATE SET
                 {", ".join(f"{name} = EXCLUDED.{name}" for name in columns)}
+            RETURNING id
             """  # noqa: S608 — every interpolated name is a literal from this module, never caller input
         ),
-        {"id": str(row_id), "user_id": str(user_id), "natural_key": natural_key, **columns},
-    )
+        {"user_id": str(user_id), "natural_key": natural_key, **columns},
+    ).scalar_one()
 
 
 def load_transfer_rules(session: Session, user_id: uuid.UUID) -> list[TransferRule]:
@@ -306,11 +294,19 @@ def replace_rule_exclusions(session: Session, user_id: uuid.UUID, rules: Iterabl
     rules
         The rules whose exclusion sets to write.
     """
+    rules = list(rules)
+    rule_ids = ids_by_natural_key(session, adb.CategorizationRule, user_id, [rule.rule_id for rule in rules])
+    transaction_ids = ids_by_natural_key(
+        session,
+        adb.Transaction,
+        user_id,
+        [transaction_id for rule in rules for transaction_id in rule.excluded_transaction_ids],
+    )
     session.add_all(
         adb.CategorizationRuleExclusion(
             user_id=user_id,
-            rule_id=derive_id(user_id, _RULES_NAMESPACE, rule.rule_id),
-            transaction_id=_transaction_id(user_id, transaction_id),
+            rule_id=rule_ids[rule.rule_id],
+            transaction_id=transaction_ids[transaction_id],
         )
         for rule in rules
         for transaction_id in rule.excluded_transaction_ids
@@ -334,7 +330,7 @@ def clear_rule_exclusions(session: Session, user_id: uuid.UUID) -> None:
 
 def replace_transfer_rules(
     session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule], *, prune: bool = True
-) -> None:
+) -> dict[str, uuid.UUID]:
     """Insert-or-update every one of `rules`, then delete this user's transfer rows not among them.
 
     Never touches `version` — see `_upsert_rule` for why the write is a raw
@@ -349,21 +345,32 @@ def replace_transfer_rules(
 
     `prune=False` makes this purely additive — the single-rule create path
     (`upsert_transfer_rule`), which must never remove a rule it wasn't given.
+
+    Returns
+    -------
+    dict[str, uuid.UUID]
+        Each written rule's natural key mapped to its row id, so
+        `upsert_transfer_rule` can sync that rule's exclusions without
+        looking the row back up.
     """
-    keep_ids: set[uuid.UUID] = set()
+    rules = list(rules)
+    account_ids = ids_by_natural_key(
+        session,
+        adb.Account,
+        user_id,
+        [rule.account_id for rule in rules] + [rule.counterparty_account_id for rule in rules],
+    )
+    written_ids: dict[str, uuid.UUID] = {}
     for rule in rules:
-        row_id = derive_id(user_id, _RULES_NAMESPACE, rule.rule_id)
-        keep_ids.add(row_id)
-        _upsert_rule(
+        written_ids[rule.rule_id] = _upsert_rule(
             session,
             user_id,
-            row_id,
             rule.rule_id,
             effect="transfer",
             stage="counterparty",
             description_contains=rule.description_contains,
-            account_id=str(_account_id(user_id, rule.account_id)) if rule.account_id is not None else None,
-            counterparty_account_id=str(_account_id(user_id, rule.counterparty_account_id))
+            account_id=str(account_ids[rule.account_id]) if rule.account_id is not None else None,
+            counterparty_account_id=str(account_ids[rule.counterparty_account_id])
             if rule.counterparty_account_id is not None
             else None,
             category_id=None,
@@ -373,15 +380,38 @@ def replace_transfer_rules(
             active=rule.active,
         )
     session.flush()
-    if not prune:
-        return
-    existing_ids = {
-        row.id for row in session.query(adb.CategorizationRule.id).filter_by(user_id=user_id, effect="transfer")
+    if prune:
+        _prune_rules(session, user_id, effect="transfer", keep_natural_keys=set(written_ids))
+    return written_ids
+
+
+def _prune_rules(session: Session, user_id: uuid.UUID, *, effect: str, keep_natural_keys: set[str]) -> None:
+    """Delete this user's `categorization_rules` rows of one effect whose natural key isn't in `keep_natural_keys`.
+
+    Scoped to one `effect` because the table holds both transfer rules and
+    category patterns, and a rewrite of one effect's rows must never delete
+    the other's. Diffs on `natural_key` — the caller's own vocabulary and the
+    table's real key — rather than on ids, which the caller no longer mints.
+
+    Parameters
+    ----------
+    session
+        An open database session; the caller flushes and commits.
+    user_id
+        Whose rules these are.
+    effect
+        Which effect's rows this prune is allowed to touch.
+    keep_natural_keys
+        Every natural key that should survive.
+    """
+    existing_natural_keys = {
+        row.natural_key
+        for row in session.query(adb.CategorizationRule.natural_key).filter_by(user_id=user_id, effect=effect)
     }
-    removed_ids = existing_ids - keep_ids
-    if removed_ids:
-        session.query(adb.CategorizationRule).filter_by(user_id=user_id, effect="transfer").filter(
-            adb.CategorizationRule.id.in_(removed_ids)
+    removed_natural_keys = existing_natural_keys - keep_natural_keys
+    if removed_natural_keys:
+        session.query(adb.CategorizationRule).filter_by(user_id=user_id, effect=effect).filter(
+            adb.CategorizationRule.natural_key.in_(removed_natural_keys)
         ).delete(synchronize_session=False)
 
 
@@ -408,7 +438,8 @@ def _sync_rule_exclusions(
         session.query(adb.CategorizationRuleExclusion).filter_by(user_id=user_id, rule_id=rule_row_id)
     )
     existing_transaction_ids = {exclusion.transaction_id for exclusion in existing_exclusions}
-    desired_transaction_ids = {_transaction_id(user_id, tid) for tid in transaction_ids}
+    resolved = ids_by_natural_key(session, adb.Transaction, user_id, transaction_ids)
+    desired_transaction_ids = {resolved[transaction_id] for transaction_id in transaction_ids}
     to_remove = existing_transaction_ids - desired_transaction_ids
     if to_remove:
         session.query(adb.CategorizationRuleExclusion).filter_by(user_id=user_id, rule_id=rule_row_id).filter(
@@ -443,10 +474,8 @@ def upsert_transfer_rule(rule: TransferRule, session: Session, user_id: uuid.UUI
     user_id
         Whose rule this is.
     """
-    replace_transfer_rules(session, user_id, [rule], prune=False)
-    _sync_rule_exclusions(
-        session, user_id, derive_id(user_id, _RULES_NAMESPACE, rule.rule_id), list(rule.excluded_transaction_ids)
-    )
+    written_ids = replace_transfer_rules(session, user_id, [rule], prune=False)
+    _sync_rule_exclusions(session, user_id, written_ids[rule.rule_id], list(rule.excluded_transaction_ids))
     session.commit()
 
 
@@ -465,6 +494,13 @@ def update_transfer_rule(
     running `ledger.transfers.reconcile_and_persist_rule_links` afterward,
     same as `POST /transfer-rules` already does.
 
+    `check_and_bump_row_version` addresses a row by `id`, so the natural key
+    is resolved to one first — and a key with no row short-circuits to `None`
+    here, which is exactly the answer that function returns for a row that
+    doesn't exist. The check-and-bump itself is still the single atomic
+    statement it always was: what precedes it reads only the id, never the
+    `version` it guards, so it opens no race the bump doesn't already close.
+
     Returns
     -------
     TransferRule | None
@@ -481,7 +517,9 @@ def update_transfer_rule(
         row exists inside this same transaction, so this is only a
         defensive invariant, never expected to actually happen.
     """
-    row_id = derive_id(user_id, _RULES_NAMESPACE, rule.rule_id)
+    row_id = ids_by_natural_key(session, adb.CategorizationRule, user_id, [rule.rule_id]).get(rule.rule_id)
+    if row_id is None:
+        return None
     new_version = check_and_bump_row_version(session, _CATEGORIZATION_RULES_TABLE, row_id, user_id, expected_version)
     if new_version is None:
         return None
@@ -489,11 +527,10 @@ def update_transfer_rule(
     if row is None:
         message = f"categorization_rules row {row_id} vanished between its version check and this read"
         raise RuntimeError(message)
+    account_ids = ids_by_natural_key(session, adb.Account, user_id, [rule.account_id, rule.counterparty_account_id])
     row.description_contains = rule.description_contains
-    row.account_id = _account_id(user_id, rule.account_id) if rule.account_id is not None else None
-    row.counterparty_account_id = (
-        _account_id(user_id, rule.counterparty_account_id) if rule.counterparty_account_id is not None else None
-    )
+    row.account_id = _optional_id(account_ids, rule.account_id)
+    row.counterparty_account_id = _optional_id(account_ids, rule.counterparty_account_id)
     row.priority = rule.priority
     row.description = rule.description
     row.active = rule.active
@@ -521,8 +558,12 @@ def delete_transfer_rule(session: Session, user_id: uuid.UUID, rule_id: str) -> 
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, _RULES_NAMESPACE, rule_id)
-    deleted = session.query(adb.CategorizationRule).filter_by(id=row_id, user_id=user_id, effect="transfer").delete()
+    deleted = (
+        session
+        .query(adb.CategorizationRule)
+        .filter_by(user_id=user_id, natural_key=rule_id, effect="transfer")
+        .delete()
+    )
     session.flush()
     return deleted > 0
 
@@ -609,39 +650,35 @@ def replace_category_patterns(
     `prune=False` makes this purely additive — the single-pattern create
     path, which must never remove a pattern it wasn't given.
     """
-    keep_ids: set[uuid.UUID] = set()
+    patterns = list(patterns)
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [pattern.category_id for pattern in patterns] + [pattern.subcategory_id for pattern in patterns],
+    )
+    keep_natural_keys: set[str] = set()
     for pattern in patterns:
-        row_id = derive_id(user_id, _RULES_NAMESPACE, pattern.pattern_id)
-        keep_ids.add(row_id)
+        keep_natural_keys.add(pattern.pattern_id)
+        subcategory_id = _optional_id(category_ids, pattern.subcategory_id)
         _upsert_rule(
             session,
             user_id,
-            row_id,
             pattern.pattern_id,
             effect="categorize",
             stage="override",
             description_contains=pattern.description_contains,
             account_id=None,
             counterparty_account_id=None,
-            category_id=str(derive_id(user_id, "categories", pattern.category_id)),
-            subcategory_id=str(subcategory)
-            if (subcategory := _category_id(user_id, pattern.subcategory_id)) is not None
-            else None,
+            category_id=str(category_ids[pattern.category_id]),
+            subcategory_id=str(subcategory_id) if subcategory_id is not None else None,
             priority=pattern.priority,
             description="",
             active=pattern.active,
         )
     session.flush()
-    if not prune:
-        return
-    existing_ids = {
-        row.id for row in session.query(adb.CategorizationRule.id).filter_by(user_id=user_id, effect="categorize")
-    }
-    removed_ids = existing_ids - keep_ids
-    if removed_ids:
-        session.query(adb.CategorizationRule).filter_by(user_id=user_id, effect="categorize").filter(
-            adb.CategorizationRule.id.in_(removed_ids)
-        ).delete(synchronize_session=False)
+    if prune:
+        _prune_rules(session, user_id, effect="categorize", keep_natural_keys=keep_natural_keys)
 
 
 def update_category_pattern(
@@ -666,7 +703,9 @@ def update_category_pattern(
         If the row vanishes between the version check and this function's own read of it — a
         defensive invariant, never expected to actually happen.
     """
-    row_id = derive_id(user_id, _RULES_NAMESPACE, pattern.pattern_id)
+    row_id = ids_by_natural_key(session, adb.CategorizationRule, user_id, [pattern.pattern_id]).get(pattern.pattern_id)
+    if row_id is None:
+        return None
     new_version = check_and_bump_row_version(session, _CATEGORIZATION_RULES_TABLE, row_id, user_id, expected_version)
     if new_version is None:
         return None
@@ -674,9 +713,10 @@ def update_category_pattern(
     if row is None:
         message = f"categorization_rules row {row_id} vanished between its version check and this read"
         raise RuntimeError(message)
+    category_ids = ids_by_natural_key(session, adb.Category, user_id, [pattern.category_id, pattern.subcategory_id])
     row.description_contains = pattern.description_contains
-    row.category_id = derive_id(user_id, "categories", pattern.category_id)
-    row.subcategory_id = _category_id(user_id, pattern.subcategory_id)
+    row.category_id = category_ids[pattern.category_id]
+    row.subcategory_id = _optional_id(category_ids, pattern.subcategory_id)
     row.priority = pattern.priority
     row.active = pattern.active
     session.flush()
@@ -693,8 +733,12 @@ def delete_category_pattern(session: Session, user_id: uuid.UUID, pattern_id: st
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, _RULES_NAMESPACE, pattern_id)
-    deleted = session.query(adb.CategorizationRule).filter_by(id=row_id, user_id=user_id, effect="categorize").delete()
+    deleted = (
+        session
+        .query(adb.CategorizationRule)
+        .filter_by(user_id=user_id, natural_key=pattern_id, effect="categorize")
+        .delete()
+    )
     session.flush()
     return deleted > 0
 
@@ -776,23 +820,32 @@ def replace_posting_splits(session: Session, user_id: uuid.UUID, splits: Iterabl
     session.query(adb.PostingSplit).filter_by(user_id=user_id).delete()
     session.flush()
     splits = list(splits)
-    session.add_all(
-        adb.PostingSplit(
-            id=derive_id(user_id, "posting_splits", split.posting_id),
-            user_id=user_id,
-            posting_id=_posting_id(user_id, split.posting_id),
-        )
-        for split in splits
+    posting_ids = ids_by_natural_key(session, adb.Posting, user_id, [split.posting_id for split in splits])
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [leg.category_id for split in splits for leg in split.legs]
+        + [leg.subcategory_id for split in splits for leg in split.legs],
     )
+    # The split rows are inserted and flushed before their legs, because a
+    # leg's `posting_split_id` is the id `uuid7()` mints for its parent — read
+    # off the flushed instance rather than recomputed, which is the whole of
+    # what a derived id used to save here.
+    split_rows = {
+        split.posting_id: adb.PostingSplit(user_id=user_id, posting_id=posting_ids[split.posting_id])
+        for split in splits
+    }
+    session.add_all(split_rows.values())
     session.flush()
     session.add_all(
         adb.PostingSplitLeg(
             user_id=user_id,
-            posting_split_id=derive_id(user_id, "posting_splits", split.posting_id),
+            posting_split_id=split_rows[split.posting_id].id,
             ordinal=ordinal,
             amount=leg.amount,
-            category_id=_category_id(user_id, leg.category_id),
-            subcategory_id=_category_id(user_id, leg.subcategory_id),
+            category_id=_optional_id(category_ids, leg.category_id),
+            subcategory_id=_optional_id(category_ids, leg.subcategory_id),
             description=leg.description,
         )
         for split in splits
@@ -821,22 +874,38 @@ def save_posting_split(split: PostingSplit, session: Session, user_id: uuid.UUID
     user_id
         Whose split this is.
     """
-    split_row_id = derive_id(user_id, "posting_splits", split.posting_id)
-    session.query(adb.PostingSplitLeg).filter_by(user_id=user_id, posting_split_id=split_row_id).delete(
-        synchronize_session=False
+    posting_id = ids_by_natural_key(session, adb.Posting, user_id, [split.posting_id])[split.posting_id]
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [leg.category_id for leg in split.legs] + [leg.subcategory_id for leg in split.legs],
     )
-    session.query(adb.PostingSplit).filter_by(id=split_row_id, user_id=user_id).delete(synchronize_session=False)
+    # `posting_splits` has no `natural_key`; `uq_posting_splits_user_posting`
+    # — `(user_id, posting_id)` — is its real key, which is the same statement
+    # "a split belongs to exactly one posting" this function is scoped by. So
+    # the prior split is addressed by its posting, not by an id.
+    session.query(adb.PostingSplitLeg).filter(
+        adb.PostingSplitLeg.user_id == user_id,
+        adb.PostingSplitLeg.posting_split_id.in_(
+            select(adb.PostingSplit.id).where(
+                adb.PostingSplit.user_id == user_id, adb.PostingSplit.posting_id == posting_id
+            )
+        ),
+    ).delete(synchronize_session=False)
+    session.query(adb.PostingSplit).filter_by(user_id=user_id, posting_id=posting_id).delete(synchronize_session=False)
     session.flush()
-    session.add(adb.PostingSplit(id=split_row_id, user_id=user_id, posting_id=_posting_id(user_id, split.posting_id)))
+    split_row = adb.PostingSplit(user_id=user_id, posting_id=posting_id)
+    session.add(split_row)
     session.flush()
     session.add_all(
         adb.PostingSplitLeg(
             user_id=user_id,
-            posting_split_id=split_row_id,
+            posting_split_id=split_row.id,
             ordinal=ordinal,
             amount=leg.amount,
-            category_id=_category_id(user_id, leg.category_id),
-            subcategory_id=_category_id(user_id, leg.subcategory_id),
+            category_id=_optional_id(category_ids, leg.category_id),
+            subcategory_id=_optional_id(category_ids, leg.subcategory_id),
             description=leg.description,
         )
         for ordinal, leg in enumerate(split.legs)
@@ -855,12 +924,23 @@ def delete_posting_split(session: Session, user_id: uuid.UUID, posting_id: str) 
     bool
         `True` if a split row was actually deleted, `False` if none existed.
     """
-    split_row_id = derive_id(user_id, "posting_splits", posting_id)
-    session.query(adb.PostingSplitLeg).filter_by(user_id=user_id, posting_split_id=split_row_id).delete(
-        synchronize_session=False
-    )
+    split_row_ids = [
+        row.id
+        for row in session
+        .query(adb.PostingSplit.id)
+        .join(adb.Posting, adb.Posting.id == adb.PostingSplit.posting_id)
+        .filter(adb.PostingSplit.user_id == user_id, adb.Posting.natural_key == posting_id)
+    ]
+    if not split_row_ids:
+        return False
+    session.query(adb.PostingSplitLeg).filter(
+        adb.PostingSplitLeg.user_id == user_id, adb.PostingSplitLeg.posting_split_id.in_(split_row_ids)
+    ).delete(synchronize_session=False)
     deleted = (
-        session.query(adb.PostingSplit).filter_by(id=split_row_id, user_id=user_id).delete(synchronize_session=False)
+        session
+        .query(adb.PostingSplit)
+        .filter(adb.PostingSplit.user_id == user_id, adb.PostingSplit.id.in_(split_row_ids))
+        .delete(synchronize_session=False)
     )
     session.flush()
     return deleted > 0
@@ -935,22 +1015,31 @@ def replace_posting_merges(session: Session, user_id: uuid.UUID, merges: Iterabl
     session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id).delete()
     session.query(adb.PostingMerge).filter_by(user_id=user_id).delete()
     session.flush()
-    session.add_all(
-        adb.PostingMerge(
-            id=derive_id(user_id, "posting_merges", merge.merge_id),
+    transaction_ids = ids_by_natural_key(
+        session,
+        adb.Transaction,
+        user_id,
+        [merge.kept_transaction_id for merge in merges]
+        + [duplicate_id for merge in merges for duplicate_id in merge.duplicate_transaction_ids],
+    )
+    # Parents flushed before their membership rows, so each duplicate's
+    # `merge_id` is the id `uuid7()` just minted for its own merge.
+    merge_rows = {
+        merge.merge_id: adb.PostingMerge(
             user_id=user_id,
             natural_key=merge.merge_id,
-            kept_transaction_id=_transaction_id(user_id, merge.kept_transaction_id),
+            kept_transaction_id=transaction_ids[merge.kept_transaction_id],
             description=merge.description,
         )
         for merge in merges
-    )
+    }
+    session.add_all(merge_rows.values())
     session.flush()
     session.add_all(
         adb.PostingMergeDuplicate(
             user_id=user_id,
-            merge_id=derive_id(user_id, "posting_merges", merge.merge_id),
-            duplicate_transaction_id=_transaction_id(user_id, duplicate_id),
+            merge_id=merge_rows[merge.merge_id].id,
+            duplicate_transaction_id=transaction_ids[duplicate_id],
         )
         for merge in merges
         for duplicate_id in merge.duplicate_transaction_ids
@@ -979,27 +1068,36 @@ def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UU
     user_id
         Whose merge this is.
     """
-    row_id = derive_id(user_id, "posting_merges", merge.merge_id)
+    transaction_ids = ids_by_natural_key(
+        session, adb.Transaction, user_id, [merge.kept_transaction_id, *merge.duplicate_transaction_ids]
+    )
     # The membership rows go first: they foreign-key into `posting_merges`,
-    # so the parent row can't be replaced while they still point at it.
-    session.query(adb.PostingMergeDuplicate).filter_by(user_id=user_id, merge_id=row_id).delete(
+    # so the parent row can't be replaced while they still point at it. Both
+    # deletes are addressed by the merge's natural key rather than an id —
+    # `uq_posting_merges_user_natural_key` is what "this merge" means.
+    session.query(adb.PostingMergeDuplicate).filter(
+        adb.PostingMergeDuplicate.user_id == user_id,
+        adb.PostingMergeDuplicate.merge_id.in_(
+            select(adb.PostingMerge.id).where(
+                adb.PostingMerge.user_id == user_id, adb.PostingMerge.natural_key == merge.merge_id
+            )
+        ),
+    ).delete(synchronize_session=False)
+    session.query(adb.PostingMerge).filter_by(user_id=user_id, natural_key=merge.merge_id).delete(
         synchronize_session=False
     )
-    session.query(adb.PostingMerge).filter_by(id=row_id, user_id=user_id).delete(synchronize_session=False)
     session.flush()
-    session.add(
-        adb.PostingMerge(
-            id=row_id,
-            user_id=user_id,
-            natural_key=merge.merge_id,
-            kept_transaction_id=_transaction_id(user_id, merge.kept_transaction_id),
-            description=merge.description,
-        )
+    merge_row = adb.PostingMerge(
+        user_id=user_id,
+        natural_key=merge.merge_id,
+        kept_transaction_id=transaction_ids[merge.kept_transaction_id],
+        description=merge.description,
     )
+    session.add(merge_row)
     session.flush()
     session.add_all(
         adb.PostingMergeDuplicate(
-            user_id=user_id, merge_id=row_id, duplicate_transaction_id=_transaction_id(user_id, duplicate_id)
+            user_id=user_id, merge_id=merge_row.id, duplicate_transaction_id=transaction_ids[duplicate_id]
         )
         for duplicate_id in merge.duplicate_transaction_ids
     )
@@ -1017,8 +1115,7 @@ def remove_posting_merge(session: Session, user_id: uuid.UUID, merge_id: str) ->
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "posting_merges", merge_id)
-    deleted = session.query(adb.PostingMerge).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.PostingMerge).filter_by(user_id=user_id, natural_key=merge_id).delete()
     session.flush()
     return deleted > 0
 
@@ -1122,22 +1219,35 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
         The links to add.
     """
     transfer_links = list(transfer_links)
-    session.add_all(
-        adb.TransferLink(
-            id=derive_id(user_id, "transfer_links", link.link_id),
+    rule_ids = ids_by_natural_key(session, adb.CategorizationRule, user_id, [link.rule_id for link in transfer_links])
+    transaction_ids = ids_by_natural_key(
+        session,
+        adb.Transaction,
+        user_id,
+        [
+            transaction_id
+            for link in transfer_links
+            for transaction_id in (link.transaction_id_a, link.transaction_id_b)
+        ],
+    )
+    # Parents flushed before their membership rows, so each member's `link_id`
+    # is the id `uuid7()` just minted for its own link.
+    link_rows = {
+        link.link_id: adb.TransferLink(
             user_id=user_id,
             natural_key=link.link_id,
             source=link.source,
-            rule_id=derive_id(user_id, _RULES_NAMESPACE, link.rule_id) if link.rule_id is not None else None,
+            rule_id=_optional_id(rule_ids, link.rule_id),
         )
         for link in transfer_links
-    )
+    }
+    session.add_all(link_rows.values())
     session.flush()
     session.add_all(
         adb.TransferLinkedTransaction(
             user_id=user_id,
-            link_id=derive_id(user_id, "transfer_links", link.link_id),
-            transaction_id=_transaction_id(user_id, transaction_id),
+            link_id=link_rows[link.link_id].id,
+            transaction_id=transaction_ids[transaction_id],
         )
         for link in transfer_links
         for transaction_id in (link.transaction_id_a, link.transaction_id_b)
@@ -1174,8 +1284,7 @@ def remove_transfer_link(session: Session, user_id: uuid.UUID, link_id: str) -> 
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "transfer_links", link_id)
-    deleted = session.query(adb.TransferLink).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.TransferLink).filter_by(user_id=user_id, natural_key=link_id).delete()
     session.flush()
     return deleted > 0
 
@@ -1210,12 +1319,10 @@ def remove_rule_transfer_links(session: Session, user_id: uuid.UUID, rule_id: st
     int
         How many links were deleted (0 if the rule created none).
     """
-    deleted = (
-        session
-        .query(adb.TransferLink)
-        .filter_by(user_id=user_id, source="rule", rule_id=derive_id(user_id, _RULES_NAMESPACE, rule_id))
-        .delete()
-    )
+    rule_row_id = ids_by_natural_key(session, adb.CategorizationRule, user_id, [rule_id]).get(rule_id)
+    if rule_row_id is None:
+        return 0
+    deleted = session.query(adb.TransferLink).filter_by(user_id=user_id, source="rule", rule_id=rule_row_id).delete()
     session.flush()
     return deleted
 
@@ -1270,7 +1377,7 @@ def load_overrides_for_postings(
     dict[str, ManualOverride]
         Keyed by `posting_id`, only ever containing keys from `posting_ids`.
     """
-    posting_row_ids = [_posting_id(user_id, posting_id) for posting_id in posting_ids]
+    posting_row_ids = list(ids_by_natural_key(session, adb.Posting, user_id, posting_ids).values())
     if not posting_row_ids:
         return {}
     override_rows = list(
@@ -1372,6 +1479,84 @@ def _overrides_from_rows(
     return overrides
 
 
+def _insert_overrides(overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID) -> None:
+    """Insert the `PostingOverride`/`PostingOverrideTag`/pending-`Suggestion` rows for `overrides`, then commit.
+
+    The whole insert half of `save_overrides` and
+    `save_overrides_for_postings`, which differ only in how much they delete
+    first — this was duplicated verbatim between them, and every natural key
+    it resolves would otherwise be looked up twice.
+
+    Writes a `PostingOverride` row only when at least one actual correction
+    field is set, and a pending `Suggestion` row only when `pending_source`
+    is set (see `_pending_suggestion_row`).
+
+    Parameters
+    ----------
+    overrides
+        The new override for each posting that should end up with one, keyed
+        by posting natural key.
+    session
+        An open database session; `session.commit()` is called on success.
+    user_id
+        Whose overrides these are.
+    """
+    posting_ids = ids_by_natural_key(session, adb.Posting, user_id, overrides)
+    account_ids = ids_by_natural_key(
+        session, adb.Account, user_id, [override.account_id for override in overrides.values()]
+    )
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [override.category_id for override in overrides.values()]
+        + [override.subcategory_id for override in overrides.values()]
+        + [override.pending_previous_category_id for override in overrides.values()]
+        + [override.pending_previous_subcategory_id for override in overrides.values()],
+    )
+    tag_ids = ids_by_natural_key(
+        session,
+        adb.Tag,
+        user_id,
+        [tag_id for override in overrides.values() for tag_id in override.tag_ids or ()],
+    )
+
+    override_rows: dict[str, adb.PostingOverride] = {}
+    for posting_id, override in overrides.items():
+        if (
+            override.account_id is None
+            and override.category_id is None
+            and override.subcategory_id is None
+            and override.tag_ids is None
+        ):
+            continue
+        override_rows[posting_id] = adb.PostingOverride(
+            user_id=user_id,
+            posting_id=posting_ids[posting_id],
+            account_id=_optional_id(account_ids, override.account_id),
+            category_id=_optional_id(category_ids, override.category_id),
+            subcategory_id=_optional_id(category_ids, override.subcategory_id),
+            tags_overridden=override.tag_ids is not None,
+        )
+    session.add_all(override_rows.values())
+    # The tag rows can only be built after this flush: `override_id` is the id
+    # `uuid7()` just minted for the override, where it used to be a `uuid4()`
+    # this function chose itself before either row existed.
+    session.flush()
+    session.add_all(
+        adb.PostingOverrideTag(user_id=user_id, override_id=override_rows[posting_id].id, tag_id=tag_ids[tag_id])
+        for posting_id, override in overrides.items()
+        if posting_id in override_rows and override.tag_ids is not None
+        for tag_id in dict.fromkeys(override.tag_ids)
+    )
+    session.add_all(
+        _pending_suggestion_row(user_id, posting_id, override, posting_ids, category_ids)
+        for posting_id, override in overrides.items()
+        if override.pending_source is not None
+    )
+    session.commit()
+
+
 def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_id: uuid.UUID) -> None:
     """Persist every manual per-posting override, overwriting whatever was saved before.
 
@@ -1394,42 +1579,7 @@ def save_overrides(overrides: dict[str, ManualOverride], session: Session, user_
     session.query(adb.PostingOverride).filter_by(user_id=user_id).delete()
     session.query(adb.Suggestion).filter_by(user_id=user_id, status="pending").delete()
 
-    override_rows: list[adb.PostingOverride] = []
-    override_tag_rows: list[adb.PostingOverrideTag] = []
-    for posting_id, override in overrides.items():
-        if (
-            override.account_id is None
-            and override.category_id is None
-            and override.subcategory_id is None
-            and override.tag_ids is None
-        ):
-            continue
-        override_row_id = uuid.uuid4()
-        override_rows.append(
-            adb.PostingOverride(
-                id=override_row_id,
-                user_id=user_id,
-                posting_id=_posting_id(user_id, posting_id),
-                account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
-                category_id=_category_id(user_id, override.category_id),
-                subcategory_id=_category_id(user_id, override.subcategory_id),
-                tags_overridden=override.tag_ids is not None,
-            )
-        )
-        if override.tag_ids is not None:
-            override_tag_rows.extend(
-                adb.PostingOverrideTag(user_id=user_id, override_id=override_row_id, tag_id=_tag_id(user_id, tag_id))
-                for tag_id in dict.fromkeys(override.tag_ids)
-            )
-    session.add_all(override_rows)
-    session.flush()
-    session.add_all(override_tag_rows)
-    session.add_all(
-        _pending_suggestion_row(user_id, posting_id, override)
-        for posting_id, override in overrides.items()
-        if override.pending_source is not None
-    )
-    session.commit()
+    _insert_overrides(overrides, session, user_id)
 
 
 def save_overrides_for_postings(
@@ -1463,9 +1613,14 @@ def save_overrides_for_postings(
     user_id
         Whose overrides these are.
     """
-    posting_row_ids = [_posting_id(user_id, posting_id) for posting_id in posting_ids]
-    if not posting_row_ids:
+    # The early return is on "was this call given any posting at all", not on
+    # how many of them resolved: a posting that doesn't exist simply matches
+    # nothing in the deletes below, exactly as its made-up derived id used to,
+    # and `_insert_overrides` still runs and commits.
+    posting_ids = list(posting_ids)
+    if not posting_ids:
         return
+    posting_row_ids = list(ids_by_natural_key(session, adb.Posting, user_id, posting_ids).values())
     session.query(adb.PostingOverride).filter(
         adb.PostingOverride.user_id == user_id, adb.PostingOverride.posting_id.in_(posting_row_ids)
     ).delete(synchronize_session=False)
@@ -1475,52 +1630,7 @@ def save_overrides_for_postings(
         adb.Suggestion.posting_id.in_(posting_row_ids),
     ).delete(synchronize_session=False)
 
-    override_rows: list[adb.PostingOverride] = []
-    override_tag_rows: list[adb.PostingOverrideTag] = []
-    for posting_id, override in overrides.items():
-        if (
-            override.account_id is None
-            and override.category_id is None
-            and override.subcategory_id is None
-            and override.tag_ids is None
-        ):
-            continue
-        override_row_id = uuid.uuid4()
-        override_rows.append(
-            adb.PostingOverride(
-                id=override_row_id,
-                user_id=user_id,
-                posting_id=_posting_id(user_id, posting_id),
-                account_id=_account_id(user_id, override.account_id) if override.account_id is not None else None,
-                category_id=_category_id(user_id, override.category_id),
-                subcategory_id=_category_id(user_id, override.subcategory_id),
-                tags_overridden=override.tag_ids is not None,
-            )
-        )
-        if override.tag_ids is not None:
-            override_tag_rows.extend(
-                adb.PostingOverrideTag(user_id=user_id, override_id=override_row_id, tag_id=_tag_id(user_id, tag_id))
-                for tag_id in dict.fromkeys(override.tag_ids)
-            )
-    session.add_all(override_rows)
-    session.flush()
-    session.add_all(override_tag_rows)
-    session.add_all(
-        _pending_suggestion_row(user_id, posting_id, override)
-        for posting_id, override in overrides.items()
-        if override.pending_source is not None
-    )
-    session.commit()
-
-
-_SUGGESTIONS_NAMESPACE = "suggestions"
-"""The `db.base.derive_id` namespace both suggestion lifecycles share.
-
-Safe to share because the natural keys are prefixed apart at the point they
-are minted — `pending:` (see `_pending_suggestion_key`) against
-`transfer:`/`duplicate:` (see `api._transfer_suggestion_id`/
-`_duplicate_suggestion_id`).
-"""
+    _insert_overrides(overrides, session, user_id)
 
 
 def _dismissed_at(row: adb.Suggestion) -> datetime:
@@ -1622,17 +1732,21 @@ def dismiss_suggestion(session: Session, user_id: uuid.UUID, entry: DismissedSug
     entry
         The suggestion to archive.
     """
-    session.merge(
-        adb.Suggestion(
-            id=derive_id(user_id, _SUGGESTIONS_NAMESPACE, entry.suggestion_id),
-            user_id=user_id,
-            natural_key=entry.suggestion_id,
-            status="dismissed",
-            kind=entry.kind,
-            source="detector",
-            description=entry.description,
-            dismissed_at=entry.dismissed_at,
-        )
+    merge_by_natural_key(
+        session,
+        adb.Suggestion,
+        user_id,
+        [
+            adb.Suggestion(
+                user_id=user_id,
+                natural_key=entry.suggestion_id,
+                status="dismissed",
+                kind=entry.kind,
+                source="detector",
+                description=entry.description,
+                dismissed_at=entry.dismissed_at,
+            )
+        ],
     )
     session.commit()
 

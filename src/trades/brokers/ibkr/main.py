@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 
 import trades.db as tdb
-from db.base import derive_id
+from db.base import merge_by_natural_key
 from db.money import to_analytics_float
 from trades.brokers.ibkr.api import fetch_flex_statement, parse_statement, save_raw_statement
 from trades.brokers.ibkr.preprocessing import statement_to_ledger
@@ -131,42 +131,43 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     user_id
         Whose ledger this is.
     """
-    connection_id = derive_id(user_id, "broker_connections", _DEFAULT_CONNECTION_ID)
-    session.merge(
-        tdb.BrokerConnection(id=connection_id, user_id=user_id, natural_key=_DEFAULT_CONNECTION_ID, broker="ibkr")
+    connection_ids = merge_by_natural_key(
+        session,
+        tdb.BrokerConnection,
+        user_id,
+        [tdb.BrokerConnection(user_id=user_id, natural_key=_DEFAULT_CONNECTION_ID, broker="ibkr")],
     )
-    session.flush()
+    connection_id = connection_ids[_DEFAULT_CONNECTION_ID]
 
     # ON DELETE CASCADE on ledger_event_trade_details.ledger_event_id means this alone
     # also removes every deleted event's trade details — no separate delete needed.
     session.query(tdb.LedgerEvent).filter_by(user_id=user_id).delete()
 
-    new_events: list[tdb.LedgerEvent] = []
-    new_trade_details: list[tdb.LedgerEventTradeDetails] = []
-    for row in ledger.to_dicts():
-        event_id = derive_id(user_id, "ledger_events", row["event_id"])
-        new_events.append(
-            tdb.LedgerEvent(
-                id=event_id,
-                user_id=user_id,
-                natural_key=row["event_id"],
-                connection_id=connection_id,
-                event_datetime=row["event_datetime"],
-                symbol=row["symbol"],
-                event_type=row["event_type"],
-                amount=row["amount"],
-                currency=row["currency"],
-                meta=row["meta"],
-            )
+    rows = ledger.to_dicts()
+    new_events = [
+        tdb.LedgerEvent(
+            user_id=user_id,
+            natural_key=row["event_id"],
+            connection_id=connection_id,
+            event_datetime=row["event_datetime"],
+            symbol=row["symbol"],
+            event_type=row["event_type"],
+            amount=row["amount"],
+            currency=row["currency"],
+            meta=row["meta"],
         )
-        if row["shares"] is not None:
-            new_trade_details.append(
-                tdb.LedgerEventTradeDetails(
-                    ledger_event_id=event_id, user_id=user_id, shares=row["shares"], price=row["price"]
-                )
-            )
+        for row in rows
+    ]
     session.add_all(new_events)
-    session.add_all(new_trade_details)
+    # Flushed before the trade details, whose `ledger_event_id` is both their
+    # own primary key and a foreign key into the event — so it is the id
+    # `uuid7()` just minted, read off the flushed instance.
+    session.flush()
+    session.add_all(
+        tdb.LedgerEventTradeDetails(ledger_event_id=event.id, user_id=user_id, shares=row["shares"], price=row["price"])
+        for event, row in zip(new_events, rows, strict=True)
+        if row["shares"] is not None
+    )
     session.commit()
 
 

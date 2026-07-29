@@ -34,11 +34,11 @@ from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import Account, ManualTransfer, OpeningBalance
-from db.base import derive_id, natural_keys_by_id, upsert_and_prune
+from db.base import ids_by_natural_key, merge_by_natural_key, natural_keys_by_id, upsert_and_prune
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from sqlalchemy.orm import Session
 
@@ -84,14 +84,20 @@ def broker_connection_exists(session: Session, user_id: uuid.UUID, connection_id
     return found is not None
 
 
-def _account_id(user_id: uuid.UUID, account_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the account natural-keyed `account_id`.
+def _account_row_by_natural_key(session: Session, user_id: uuid.UUID, account_id: str) -> adb.Account | None:
+    """Fetch one account by the natural key the API addresses it with.
+
+    Replaces `session.get(adb.Account, <derived id>)`: an id is minted by
+    the database now, so the only thing a caller holding an `account_id`
+    string can do is name it in the `WHERE` clause — which is one query
+    either way, not a lookup followed by a fetch.
 
     Returns
     -------
-    uuid.UUID
+    accounting.db.Account or None
+        `None` if this user has no account with that natural key.
     """
-    return derive_id(user_id, "accounts", account_id)
+    return session.query(adb.Account).filter_by(user_id=user_id, natural_key=account_id).one_or_none()
 
 
 def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUID, str]) -> Account:
@@ -117,15 +123,31 @@ def _account_from_row(row: adb.Account, account_natural_key_by_id: dict[uuid.UUI
     )
 
 
-def _account_row(user_id: uuid.UUID, account: Account) -> adb.Account:
-    """Build the ORM row for one account.
+def _account_row(user_id: uuid.UUID, account: Account, parent_ids: Mapping[str, uuid.UUID]) -> adb.Account:
+    """Build the ORM row for one account, resolving its parent reference through `parent_ids`.
+
+    No `id`: the column's own `uuid7()` default mints one on insert, and
+    `db.base.merge_by_natural_key` fills it in from `(user_id, natural_key)`
+    when this row is an update of one that already exists.
+
+    Parameters
+    ----------
+    user_id
+        Whose account this is.
+    account
+        The pydantic account to convert.
+    parent_ids
+        Account natural key to row id, covering at least this account's
+        `parent_account_id`. Subscripted rather than `.get`, so naming a
+        parent that doesn't exist raises here instead of silently storing a
+        `NULL` — which would turn a vault into a top-level account. See
+        `db.base.ids_by_natural_key`.
 
     Returns
     -------
     accounting.db.Account
     """
     return adb.Account(
-        id=_account_id(user_id, account.account_id),
         user_id=user_id,
         natural_key=account.account_id,
         name=account.name,
@@ -133,9 +155,7 @@ def _account_row(user_id: uuid.UUID, account: Account) -> adb.Account:
         institution=account.institution,
         currency=account.currency,
         last_four=account.last_four,
-        parent_account_id=_account_id(user_id, account.parent_account_id)
-        if account.parent_account_id is not None
-        else None,
+        parent_account_id=parent_ids[account.parent_account_id] if account.parent_account_id is not None else None,
         broker_connection_id=account.broker_connection_id,
         meta=account.meta,
         closed=account.closed,
@@ -164,11 +184,15 @@ def load_accounts(session: Session, user_id: uuid.UUID) -> dict[str, Account]:
 def replace_accounts(session: Session, user_id: uuid.UUID, accounts: Iterable[Account], *, prune: bool = True) -> None:
     """Insert-or-update every one of `accounts`, then delete this user's accounts not among them.
 
-    Two passes, parentless accounts first: `accounts.parent_account_id`
-    references this same table, so a child row inserted before its parent
-    exists would violate that foreign key. Both passes prune against the
-    *complete* desired set, so a child written in the second pass is never
-    swept up by the first pass's prune.
+    Two passes, parentless accounts first, and the ordering now carries a
+    second load: `accounts.parent_account_id` references this same table, so
+    a child row inserted before its parent exists would violate that foreign
+    key *and* — since a row's id is minted by the database rather than
+    derived from its natural key — there would be no id to point at yet. The
+    first pass's flush is what makes the parents' ids knowable, so the second
+    pass resolves them (`db.base.ids_by_natural_key`) and writes the children.
+    Both passes prune against the *complete* desired set, so a child written
+    in the second pass is never swept up by the first pass's prune.
 
     A caller that prunes must have already cleared or repointed everything
     referencing the accounts being dropped — `opening_balances` and the
@@ -192,17 +216,19 @@ def replace_accounts(session: Session, user_id: uuid.UUID, accounts: Iterable[Ac
     accounts = list(accounts)
     keep_natural_keys = {account.account_id for account in accounts}
     for has_parent in (False, True):
-        rows = [
-            _account_row(user_id, account)
-            for account in accounts
-            if (account.parent_account_id is not None) is has_parent
-        ]
+        batch = [account for account in accounts if (account.parent_account_id is not None) is has_parent]
+        # Only the second pass has parents to resolve, and by then the first
+        # pass has flushed them — including any it just inserted.
+        parent_ids = (
+            ids_by_natural_key(session, adb.Account, user_id, [account.parent_account_id for account in batch])
+            if has_parent
+            else {}
+        )
+        rows = [_account_row(user_id, account, parent_ids) for account in batch]
         if prune:
             upsert_and_prune(session, adb.Account, user_id, rows, keep_natural_keys)
         else:
-            for row in rows:
-                session.merge(row)
-            session.flush()
+            merge_by_natural_key(session, adb.Account, user_id, rows)
 
 
 def update_account_fields(session: Session, user_id: uuid.UUID, account: Account) -> bool:
@@ -221,8 +247,8 @@ def update_account_fields(session: Session, user_id: uuid.UUID, account: Account
     bool
         `True` if the account existed and was updated, `False` otherwise.
     """
-    row = session.get(adb.Account, _account_id(user_id, account.account_id))
-    if row is None or row.user_id != user_id:
+    row = _account_row_by_natural_key(session, user_id, account.account_id)
+    if row is None:
         return False
     row.name = account.name
     row.kind = account.kind
@@ -244,8 +270,8 @@ def set_account_closed(session: Session, user_id: uuid.UUID, account_id: str, *,
     bool
         `True` if the account existed, `False` otherwise.
     """
-    row = session.get(adb.Account, _account_id(user_id, account_id))
-    if row is None or row.user_id != user_id:
+    row = _account_row_by_natural_key(session, user_id, account_id)
+    if row is None:
         return False
     row.closed = closed
     session.flush()
@@ -264,7 +290,7 @@ def remove_account(session: Session, user_id: uuid.UUID, account_id: str) -> boo
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    deleted = session.query(adb.Account).filter_by(id=_account_id(user_id, account_id), user_id=user_id).delete()
+    deleted = session.query(adb.Account).filter_by(user_id=user_id, natural_key=account_id).delete()
     session.flush()
     return deleted > 0
 
@@ -296,11 +322,12 @@ def load_opening_balances(session: Session, user_id: uuid.UUID) -> dict[str, Ope
 def replace_opening_balances(session: Session, user_id: uuid.UUID, opening_balances: Iterable[OpeningBalance]) -> None:
     """Replace this user's whole set of opening balances, touching no other table.
 
-    Wipe-and-reinsert: nothing foreign-keys into `opening_balances`, and
-    every row's id is derived from its account's natural key, so a row that
-    survives the rewrite comes back with the id it already had. The
-    accounts these reference must already exist — call `replace_accounts`
-    first.
+    Wipe-and-reinsert: nothing foreign-keys into `opening_balances`, so each
+    surviving row coming back with a *fresh* id costs nothing — an opening
+    balance is only ever addressed through the account it belongs to (see
+    `upsert_opening_balance`/`remove_opening_balance`), never by an id
+    anything else holds. The accounts these reference must already exist —
+    call `replace_accounts` first.
 
     Parameters
     ----------
@@ -311,13 +338,16 @@ def replace_opening_balances(session: Session, user_id: uuid.UUID, opening_balan
     opening_balances
         The complete desired set.
     """
+    opening_balances = list(opening_balances)
     session.query(adb.OpeningBalance).filter_by(user_id=user_id).delete()
     session.flush()
+    account_ids = ids_by_natural_key(
+        session, adb.Account, user_id, [opening_balance.account_id for opening_balance in opening_balances]
+    )
     session.add_all(
         adb.OpeningBalance(
-            id=derive_id(user_id, "opening_balances", opening_balance.account_id),
             user_id=user_id,
-            account_id=_account_id(user_id, opening_balance.account_id),
+            account_id=account_ids[opening_balance.account_id],
             amount=opening_balance.amount,
             as_of_date=opening_balance.as_of_date,
         )
@@ -329,6 +359,13 @@ def replace_opening_balances(session: Session, user_id: uuid.UUID, opening_balan
 def upsert_opening_balance(opening_balance: OpeningBalance, session: Session, user_id: uuid.UUID) -> None:
     """Insert-or-update one account's opening balance, touching no other. Scoped like `planning.upsert_budget`.
 
+    `ON CONFLICT (user_id, account_id)` — `uq_opening_balances_user_account`,
+    this table's real key. `opening_balances` carries no `natural_key` of its
+    own because it has no identity of its own: an opening balance *is* a
+    property of one account (see this module's docstring), and that
+    constraint is the statement of it. Nothing supplies `id`, so a genuinely
+    new row gets one from the column's `uuid7()` default.
+
     Parameters
     ----------
     opening_balance
@@ -338,20 +375,20 @@ def upsert_opening_balance(opening_balance: OpeningBalance, session: Session, us
     user_id
         Whose opening balance this is.
     """
+    account_ids = ids_by_natural_key(session, adb.Account, user_id, [opening_balance.account_id])
     session.execute(
         text(
             """
-            INSERT INTO accounting.opening_balances (id, user_id, account_id, amount, as_of_date)
-            VALUES (:id, :user_id, :account_id, :amount, :as_of_date)
-            ON CONFLICT (id) DO UPDATE SET
+            INSERT INTO accounting.opening_balances (user_id, account_id, amount, as_of_date)
+            VALUES (:user_id, :account_id, :amount, :as_of_date)
+            ON CONFLICT (user_id, account_id) DO UPDATE SET
                 amount = EXCLUDED.amount,
                 as_of_date = EXCLUDED.as_of_date
             """
         ),
         {
-            "id": str(derive_id(user_id, "opening_balances", opening_balance.account_id)),
             "user_id": str(user_id),
-            "account_id": str(_account_id(user_id, opening_balance.account_id)),
+            "account_id": str(account_ids[opening_balance.account_id]),
             "amount": opening_balance.amount,
             "as_of_date": opening_balance.as_of_date,
         },
@@ -365,10 +402,13 @@ def remove_opening_balance(session: Session, user_id: uuid.UUID, account_id: str
     Returns
     -------
     bool
-        `True` if a row was actually deleted, `False` if none existed.
+        `True` if a row was actually deleted, `False` if none existed — an
+        account that doesn't exist at all included, since it cannot have one.
     """
-    row_id = derive_id(user_id, "opening_balances", account_id)
-    deleted = session.query(adb.OpeningBalance).filter_by(id=row_id, user_id=user_id).delete()
+    account_ids = ids_by_natural_key(session, adb.Account, user_id, [account_id])
+    if account_id not in account_ids:
+        return False
+    deleted = session.query(adb.OpeningBalance).filter_by(user_id=user_id, account_id=account_ids[account_id]).delete()
     session.flush()
     return deleted > 0
 
@@ -470,7 +510,8 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
     Scoped counterpart to routing these through the whole-store save, which
     blanket-deleted and reinserted every manual transfer from the caller's
     snapshot — so recording a transfer from a stale snapshot could drop a
-    concurrently-added one. Every row is keyed by its own derived id, so
+    concurrently-added one. Every row is keyed by its own natural key —
+    `(user_id, natural_key)`, each table's real unique constraint — so
     re-recording the same transfer is a harmless upsert rather than a
     duplicate.
 
@@ -493,63 +534,69 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
     transfers = list(transfers)
     if not transfers:
         return
-    currency_by_account_id = {
-        row.natural_key: row.currency
-        for row in session.query(adb.Account.natural_key, adb.Account.currency).filter_by(user_id=user_id)
+    accounts = {
+        row.natural_key: (row.id, row.currency)
+        for row in session.query(adb.Account.natural_key, adb.Account.id, adb.Account.currency).filter_by(
+            user_id=user_id
+        )
     }
     for transfer in transfers:
         transaction_natural_key = f"{_MANUAL_TRANSACTION_PREFIX}{transfer.transfer_id}"
-        transaction_id = derive_id(user_id, "transactions", transaction_natural_key)
         # The date and the description are written once, here, rather than
         # onto each leg below — a transfer happened on one day and says one
         # thing (see `db.core.Transaction`). `DO UPDATE` rather than the
         # `DO NOTHING` this used to be: re-recording the same transfer with
         # an edited date or description has to land, and until those columns
         # moved it landed on the postings' own upsert instead.
-        session.execute(
+        #
+        # `RETURNING id` is how the two legs below learn which transaction to
+        # point at: on an insert it is the id `uuid7()` just minted, on a
+        # conflict the id the existing row already had. Either way it is one
+        # statement, with no second round trip to look the row back up.
+        transaction_id = session.execute(
             text(
                 """
-                INSERT INTO accounting.transactions (id, user_id, natural_key, posted_at, description, origin)
-                VALUES (:id, :user_id, :natural_key, :posted_at, :description, 'manual')
-                ON CONFLICT (id) DO UPDATE SET
+                INSERT INTO accounting.transactions (user_id, natural_key, posted_at, description, origin)
+                VALUES (:user_id, :natural_key, :posted_at, :description, 'manual')
+                ON CONFLICT (user_id, natural_key) DO UPDATE SET
                     posted_at = EXCLUDED.posted_at,
                     description = EXCLUDED.description
+                RETURNING id
                 """
             ),
             {
-                "id": str(transaction_id),
                 "user_id": str(user_id),
                 "natural_key": transaction_natural_key,
                 "posted_at": transfer.date,
                 "description": transfer.description,
             },
-        )
+        ).scalar_one()
         legs = (
             (f"{transaction_natural_key}:from", transfer.from_account_id, -transfer.from_amount),
             (f"{transaction_natural_key}:to", transfer.to_account_id, transfer.to_amount),
         )
         for posting_natural_key, account_id, amount in legs:
+            leg_account_id, leg_currency = accounts[account_id]
             session.execute(
                 text(
                     """
                     INSERT INTO accounting.postings
-                        (id, user_id, natural_key, transaction_id, account_id, amount, currency, meta)
+                        (user_id, natural_key, transaction_id, account_id, amount, currency, meta)
                     VALUES
-                        (:id, :user_id, :natural_key, :transaction_id, :account_id, :amount, :currency, :meta)
-                    ON CONFLICT (id) DO UPDATE SET
+                        (:user_id, :natural_key, :transaction_id, :account_id, :amount, :currency, :meta)
+                    ON CONFLICT (user_id, natural_key) DO UPDATE SET
                         account_id = EXCLUDED.account_id,
                         amount = EXCLUDED.amount,
                         currency = EXCLUDED.currency
                     """
                 ),
                 {
-                    "id": str(derive_id(user_id, "postings", posting_natural_key)),
                     "user_id": str(user_id),
                     "natural_key": posting_natural_key,
                     "transaction_id": str(transaction_id),
-                    "account_id": str(_account_id(user_id, account_id)),
+                    "account_id": str(leg_account_id),
                     "amount": amount,
-                    "currency": currency_by_account_id[account_id],
+                    "currency": leg_currency,
                     "meta": json.dumps({"source": "manual_transfer"}),
                 },
             )

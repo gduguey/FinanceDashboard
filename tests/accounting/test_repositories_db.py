@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 import accounting.db as adb
 import db.models
-from db.base import derive_id
+from db.base import UnknownNaturalKeyError, ids_by_natural_key
 from accounting.models import (
     Account,
     Budget,
@@ -106,6 +106,22 @@ if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
 
+def _row_id(session: Session, user_id: uuid.UUID, model: type, natural_key: str) -> uuid.UUID:
+    """Look up one row's `id` by the natural key the API addresses it with.
+
+    What the retired content-hashed id used to give without asking. A test
+    that needs a row's opaque id — to write a foreign key by hand, or to
+    assert one — has to resolve it the same way production code does, through
+    `db.base.ids_by_natural_key`; there is no longer any way to know an id
+    without the row existing first, which is the point of the change.
+
+    Returns
+    -------
+    uuid.UUID
+    """
+    return ids_by_natural_key(session, model, user_id, [natural_key])[natural_key]
+
+
 def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, posting_id: str) -> None:
     """Insert the minimal Account/Transaction/Posting rows a PostingSplit/PostingMerge/GoalContribution can FK to.
 
@@ -125,23 +141,19 @@ def _seed_posting(session: Session, user_id: uuid.UUID, transaction_id: str, pos
             prune=False,
         )
         session.commit()
-    transaction_uuid = derive_id(user_id, "transactions", transaction_id)
-    session.add(
-        adb.Transaction(
-            id=transaction_uuid,
-            user_id=user_id,
-            natural_key=transaction_id,
-            posted_at=datetime(2026, 1, 1, tzinfo=UTC),
-        )
+    transaction_row = adb.Transaction(
+        user_id=user_id, natural_key=transaction_id, posted_at=datetime(2026, 1, 1, tzinfo=UTC)
     )
+    session.add(transaction_row)
+    # Flushed before the posting: `transaction_id` is the id `uuid7()` mints
+    # for the transaction, read off the instance rather than recomputed.
     session.flush()
     session.add(
         adb.Posting(
-            id=derive_id(user_id, "postings", posting_id),
             user_id=user_id,
             natural_key=posting_id,
-            transaction_id=transaction_uuid,
-            account_id=derive_id(user_id, "accounts", "checking:test"),
+            transaction_id=transaction_row.id,
+            account_id=_row_id(session, user_id, adb.Account, "checking:test"),
             amount=10,
             currency="USD",
         )
@@ -159,8 +171,8 @@ def _seed_posting_tag(session: Session, user_id: uuid.UUID, posting_id: str, tag
     session.add(
         adb.PostingTag(
             user_id=user_id,
-            posting_id=derive_id(user_id, "postings", posting_id),
-            tag_id=derive_id(user_id, "tags", tag_id),
+            posting_id=_row_id(session, user_id, adb.Posting, posting_id),
+            tag_id=_row_id(session, user_id, adb.Tag, tag_id),
         )
     )
     session.flush()
@@ -178,7 +190,7 @@ def test_remap_tag_ids_repoints_a_posting_tags_row(db_session: Session, test_use
     remap_tag_ids({"tag:trip": "tag:vacation"}, db_session, user_id=test_user_id)
 
     row = db_session.query(adb.PostingTag).filter_by(user_id=test_user_id).one()
-    assert row.tag_id == derive_id(test_user_id, "tags", "tag:vacation")
+    assert row.tag_id == _row_id(db_session, test_user_id, adb.Tag, "tag:vacation")
 
 
 def test_remap_tag_ids_deletes_the_old_row_when_the_posting_already_has_the_target_tag(
@@ -193,7 +205,7 @@ def test_remap_tag_ids_deletes_the_old_row_when_the_posting_already_has_the_targ
 
     rows = db_session.query(adb.PostingTag).filter_by(user_id=test_user_id).all()
     assert len(rows) == 1
-    assert rows[0].tag_id == derive_id(test_user_id, "tags", "tag:vacation")
+    assert rows[0].tag_id == _row_id(db_session, test_user_id, adb.Tag, "tag:vacation")
 
 
 def test_remap_tag_ids_repoints_a_tag_ids_override(db_session: Session, test_user_id: uuid.UUID) -> None:
@@ -224,7 +236,7 @@ def test_remap_tag_ids_deletes_the_old_override_row_when_the_posting_already_has
 
 def test_save_overrides_rejects_a_tag_id_that_does_not_exist(db_session: Session, test_user_id: uuid.UUID) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         save_overrides({"p1": ManualOverride(tag_ids=["tag:does-not-exist"])}, db_session, user_id=test_user_id)
 
 
@@ -235,7 +247,7 @@ def test_deleting_a_tag_row_cascades_and_clears_a_posting_override_tag(
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     save_overrides({"p1": ManualOverride(tag_ids=["tag:trip"])}, db_session, user_id=test_user_id)
 
-    db_session.query(adb.Tag).filter_by(user_id=test_user_id, id=derive_id(test_user_id, "tags", "tag:trip")).delete()
+    db_session.query(adb.Tag).filter_by(user_id=test_user_id, natural_key="tag:trip").delete()
     db_session.commit()
 
     assert db_session.query(adb.PostingOverrideTag).filter_by(user_id=test_user_id).count() == 0
@@ -622,7 +634,7 @@ def test_transfer_rule_round_trips_a_real_account_reference(db_session: Session,
 def test_transfer_rule_referencing_a_nonexistent_account_raises(db_session: Session, test_user_id: uuid.UUID) -> None:
     seed_new_user_defaults(db_session, test_user_id)
     rule = TransferRule(rule_id="r1", description_contains="payroll", counterparty_account_id="does-not-exist")
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         replace_transfer_rules(db_session, test_user_id, [rule])
 
 
@@ -641,7 +653,7 @@ def test_transfer_rule_excluded_transaction_referencing_a_nonexistent_transactio
     seed_new_user_defaults(db_session, test_user_id)
     rule = TransferRule(rule_id="r1", description_contains="payroll", excluded_transaction_ids=["does-not-exist"])
     replace_transfer_rules(db_session, test_user_id, [rule])
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         replace_rule_exclusions(db_session, test_user_id, [rule])
 
 
@@ -745,7 +757,7 @@ def test_transfer_link_cannot_name_a_rule_that_does_not_exist(db_session: Sessio
     """DB-audit D7: `rule_id` was a bare string, so a link could reference a rule nobody could look up."""
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     _seed_posting(db_session, test_user_id, transaction_id="t2", posting_id="p2")
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         insert_transfer_links(
             db_session,
             test_user_id,
@@ -873,7 +885,7 @@ def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Ses
     contribution = GoalContribution(
         contribution_id="gc1", goal_id="does-not-exist", date=datetime(2026, 1, 5), amount=100
     )
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         replace_goal_contributions(db_session, test_user_id, [contribution])
 
 
@@ -890,7 +902,7 @@ def test_contribution_automation_referencing_a_nonexistent_goal_raises(
         value=50,
         currency="USD",
     )
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         replace_goal_automations(db_session, test_user_id, [automation], "contribution")
 
 
@@ -898,7 +910,7 @@ def test_withdrawal_automation_referencing_a_nonexistent_goal_raises(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     automation = GoalAutomation(automation_id="w1", goal_id="does-not-exist", direction="withdrawal")
-    with pytest.raises(IntegrityError):
+    with pytest.raises(UnknownNaturalKeyError):
         replace_goal_automations(db_session, test_user_id, [automation], "withdrawal")
 
 
@@ -911,12 +923,13 @@ def test_posting_budget_id_round_trips_a_real_budget_reference(db_session: Sessi
     )
     db_session.commit()
 
+    budget_row_id = _row_id(db_session, test_user_id, adb.Budget, "b1")
     posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
-    posting_row.budget_id = derive_id(test_user_id, "budgets", "b1")
+    posting_row.budget_id = budget_row_id
     db_session.commit()
 
     reloaded_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
-    assert reloaded_row.budget_id == derive_id(test_user_id, "budgets", "b1")
+    assert reloaded_row.budget_id == budget_row_id
 
 
 def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
@@ -924,7 +937,7 @@ def test_posting_budget_id_referencing_a_nonexistent_budget_raises(
 ) -> None:
     _seed_posting(db_session, test_user_id, transaction_id="t1", posting_id="p1")
     posting_row = db_session.query(adb.Posting).filter_by(user_id=test_user_id, natural_key="p1").one()
-    posting_row.budget_id = derive_id(test_user_id, "budgets", "does-not-exist")
+    posting_row.budget_id = uuid.uuid4()
     with pytest.raises(IntegrityError):
         db_session.commit()
 
@@ -1115,13 +1128,12 @@ def test_a_transfer_rule_row_carrying_a_category_is_rejected(db_session: Session
     seed_new_user_defaults(db_session, test_user_id)
     db_session.add(
         adb.CategorizationRule(
-            id=uuid.uuid4(),
             user_id=test_user_id,
             natural_key="rule:mixed",
             effect="transfer",
             stage="counterparty",
             description_contains="uber",
-            category_id=derive_id(test_user_id, "categories", "expense:transport"),
+            category_id=_row_id(db_session, test_user_id, adb.Category, "expense:transport"),
         )
     )
     with pytest.raises(IntegrityError):
@@ -1208,7 +1220,7 @@ def test_one_posting_can_only_be_pending_once(db_session: Session, test_user_id:
             status="pending",
             kind="category",
             source="pattern",
-            posting_id=derive_id(test_user_id, "postings", "p1"),
+            posting_id=_row_id(db_session, test_user_id, adb.Posting, "p1"),
         )
     )
     with pytest.raises(IntegrityError):
@@ -1245,7 +1257,7 @@ def test_a_dismissed_suggestion_pointing_at_a_posting_is_rejected(db_session: Se
             kind="transfer",
             source="detector",
             description="a",
-            posting_id=derive_id(test_user_id, "postings", "p1"),
+            posting_id=_row_id(db_session, test_user_id, adb.Posting, "p1"),
             dismissed_at=datetime.now(UTC),
         )
     )
@@ -1264,7 +1276,7 @@ def test_a_pending_suggestion_from_the_detector_is_rejected(db_session: Session,
             status="pending",
             kind="category",
             source="detector",
-            posting_id=derive_id(test_user_id, "postings", "p1"),
+            posting_id=_row_id(db_session, test_user_id, adb.Posting, "p1"),
         )
     )
     with pytest.raises(IntegrityError):

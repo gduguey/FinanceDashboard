@@ -19,55 +19,29 @@ from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import Budget, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
-from db.base import check_and_bump_row_version, derive_id, natural_keys_by_id
+from db.base import check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from sqlalchemy.orm import Session
 
 _GOALS_TABLE = "accounting.goals"
 
 
-def _category_id(user_id: uuid.UUID, category_id: str | None) -> uuid.UUID | None:
-    """Derive this user's stable internal id for `category_id`, or `None` if `category_id` is `None`.
+def _optional_id(ids: Mapping[str, uuid.UUID], natural_key: str | None) -> uuid.UUID | None:
+    """Resolve a *nullable* reference: `None` when there is no key, the key's id when there is.
+
+    Same contract as `interpretation._optional_id` — see
+    `db.base.ids_by_natural_key` for why a natural key that names no row
+    raises here rather than resolving to `None`.
 
     Returns
     -------
     uuid.UUID or None
     """
-    return derive_id(user_id, "categories", category_id) if category_id is not None else None
-
-
-def _goal_id(user_id: uuid.UUID, goal_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the goal natural-keyed `goal_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "goals", goal_id)
-
-
-def _posting_id(user_id: uuid.UUID, posting_id: str) -> uuid.UUID:
-    """Derive this user's stable internal id for the posting natural-keyed `posting_id`.
-
-    Returns
-    -------
-    uuid.UUID
-    """
-    return derive_id(user_id, "postings", posting_id)
-
-
-def _account_id(user_id: uuid.UUID, account_id: str | None) -> uuid.UUID | None:
-    """Derive this user's stable internal id for `account_id`, or `None` if `account_id` is `None`.
-
-    Returns
-    -------
-    uuid.UUID or None
-    """
-    return derive_id(user_id, "accounts", account_id) if account_id is not None else None
+    return ids[natural_key] if natural_key is not None else None
 
 
 def budget_row_key(month: str | None, category_id: str, subcategory_id: str | None) -> str:
@@ -143,16 +117,22 @@ def replace_budgets(session: Session, user_id: uuid.UUID, budgets: Iterable[Budg
     budgets
         The complete desired set of budget cells, general ones (`month is None`) included.
     """
+    budgets = list(budgets)
     session.query(adb.Budget).filter_by(user_id=user_id).delete()
     session.flush()
+    category_ids = ids_by_natural_key(
+        session,
+        adb.Category,
+        user_id,
+        [budget.category_id for budget in budgets] + [budget.subcategory_id for budget in budgets],
+    )
     session.add_all(
         adb.Budget(
-            id=derive_id(user_id, "budgets", budget.budget_id),
             user_id=user_id,
             natural_key=budget.budget_id,
             month=budget.month,
-            category_id=_category_id(user_id, budget.category_id),
-            subcategory_id=_category_id(user_id, budget.subcategory_id),
+            category_id=category_ids[budget.category_id],
+            subcategory_id=_optional_id(category_ids, budget.subcategory_id),
             amount=budget.amount,
             currency=budget.currency,
         )
@@ -178,14 +158,16 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
     user_id
         Whose budget this is.
     """
+    category_ids = ids_by_natural_key(session, adb.Category, user_id, [budget.category_id, budget.subcategory_id])
+    subcategory_id = _optional_id(category_ids, budget.subcategory_id)
     session.execute(
         text(
             """
             INSERT INTO accounting.budgets
-                (id, user_id, natural_key, month, category_id, subcategory_id, amount, currency)
+                (user_id, natural_key, month, category_id, subcategory_id, amount, currency)
             VALUES
-                (:id, :user_id, :natural_key, :month, :category_id, :subcategory_id, :amount, :currency)
-            ON CONFLICT (id) DO UPDATE SET
+                (:user_id, :natural_key, :month, :category_id, :subcategory_id, :amount, :currency)
+            ON CONFLICT (user_id, natural_key) DO UPDATE SET
                 month = EXCLUDED.month,
                 category_id = EXCLUDED.category_id,
                 subcategory_id = EXCLUDED.subcategory_id,
@@ -194,12 +176,11 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
             """
         ),
         {
-            "id": str(derive_id(user_id, "budgets", budget.budget_id)),
             "user_id": str(user_id),
             "natural_key": budget.budget_id,
             "month": budget.month,
-            "category_id": str(derive_id(user_id, "categories", budget.category_id)),
-            "subcategory_id": str(sub) if (sub := _category_id(user_id, budget.subcategory_id)) is not None else None,
+            "category_id": str(category_ids[budget.category_id]),
+            "subcategory_id": str(subcategory_id) if subcategory_id is not None else None,
             "amount": budget.amount,
             "currency": budget.currency,
         },
@@ -215,8 +196,7 @@ def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "budgets", budget_id)
-    deleted = session.query(adb.Budget).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.Budget).filter_by(user_id=user_id, natural_key=budget_id).delete()
     session.flush()
     return deleted > 0
 
@@ -268,12 +248,12 @@ def _upsert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
         text(
             """
             INSERT INTO accounting.goals
-                (id, user_id, natural_key, name, target_amount, target_currency, target_date,
+                (user_id, natural_key, name, target_amount, target_currency, target_date,
                  color, created_at, version)
             VALUES
-                (:id, :user_id, :natural_key, :name, :target_amount, :target_currency, :target_date,
+                (:user_id, :natural_key, :name, :target_amount, :target_currency, :target_date,
                  :color, :created_at, 1)
-            ON CONFLICT (id) DO UPDATE SET
+            ON CONFLICT (user_id, natural_key) DO UPDATE SET
                 name = EXCLUDED.name,
                 target_amount = EXCLUDED.target_amount,
                 target_currency = EXCLUDED.target_currency,
@@ -282,7 +262,6 @@ def _upsert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
             """
         ),
         {
-            "id": str(_goal_id(user_id, goal.goal_id)),
             "user_id": str(user_id),
             "natural_key": goal.goal_id,
             "name": goal.name,
@@ -323,17 +302,17 @@ def replace_goals(session: Session, user_id: uuid.UUID, goals: Iterable[Goal]) -
     goals
         The complete desired set.
     """
-    keep_ids: set[uuid.UUID] = set()
+    keep_natural_keys: set[str] = set()
     for goal in goals:
-        keep_ids.add(_goal_id(user_id, goal.goal_id))
+        keep_natural_keys.add(goal.goal_id)
         _upsert_goal(session, user_id, goal)
     session.flush()
-    existing_ids = {row.id for row in session.query(adb.Goal.id).filter_by(user_id=user_id)}
-    removed_ids = existing_ids - keep_ids
-    if removed_ids:
-        session.query(adb.Goal).filter_by(user_id=user_id).filter(adb.Goal.id.in_(removed_ids)).delete(
-            synchronize_session=False
-        )
+    existing_natural_keys = {row.natural_key for row in session.query(adb.Goal.natural_key).filter_by(user_id=user_id)}
+    removed_natural_keys = existing_natural_keys - keep_natural_keys
+    if removed_natural_keys:
+        session.query(adb.Goal).filter_by(user_id=user_id).filter(
+            adb.Goal.natural_key.in_(removed_natural_keys)
+        ).delete(synchronize_session=False)
     session.flush()
 
 
@@ -362,7 +341,9 @@ def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_versi
         row exists inside this same transaction, so this is only a
         defensive invariant, never expected to actually happen.
     """
-    row_id = _goal_id(user_id, goal.goal_id)
+    row_id = ids_by_natural_key(session, adb.Goal, user_id, [goal.goal_id]).get(goal.goal_id)
+    if row_id is None:
+        return None
     new_version = check_and_bump_row_version(session, _GOALS_TABLE, row_id, user_id, expected_version)
     if new_version is None:
         return None
@@ -401,7 +382,7 @@ def delete_goal(session: Session, user_id: uuid.UUID, goal_id: str) -> bool:
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    deleted = session.query(adb.Goal).filter_by(id=_goal_id(user_id, goal_id), user_id=user_id).delete()
+    deleted = session.query(adb.Goal).filter_by(user_id=user_id, natural_key=goal_id).delete()
     session.flush()
     return deleted > 0
 
@@ -451,26 +432,59 @@ def load_goal_contributions(session: Session, user_id: uuid.UUID) -> dict[str, G
     }
 
 
-def _goal_contribution_row(user_id: uuid.UUID, contribution: GoalContribution) -> adb.GoalContribution:
-    """Build the ORM row for one contribution.
+def _contribution_references(
+    session: Session, user_id: uuid.UUID, contributions: list[GoalContribution]
+) -> tuple[Mapping[str, uuid.UUID], Mapping[str, uuid.UUID], Mapping[str, uuid.UUID]]:
+    """Resolve every goal, account, and posting a batch of contributions references, in three queries.
+
+    Returns
+    -------
+    tuple[Mapping[str, uuid.UUID], Mapping[str, uuid.UUID], Mapping[str, uuid.UUID]]
+        Goal ids, account ids, and posting ids, each keyed by natural key.
+    """
+    return (
+        ids_by_natural_key(session, adb.Goal, user_id, [row.goal_id for row in contributions]),
+        ids_by_natural_key(session, adb.Account, user_id, [row.account_id for row in contributions]),
+        ids_by_natural_key(session, adb.Posting, user_id, [row.source_posting_id for row in contributions]),
+    )
+
+
+def _goal_contribution_row(
+    user_id: uuid.UUID,
+    contribution: GoalContribution,
+    goal_ids: Mapping[str, uuid.UUID],
+    account_ids: Mapping[str, uuid.UUID],
+    posting_ids: Mapping[str, uuid.UUID],
+) -> adb.GoalContribution:
+    """Build the ORM row for one contribution, resolving its three references through the given maps.
+
+    Parameters
+    ----------
+    user_id
+        Whose contribution this is.
+    contribution
+        The pydantic contribution to convert.
+    goal_ids
+        Goal natural key to row id, covering `contribution.goal_id`.
+    account_ids
+        Account natural key to row id, covering `contribution.account_id`.
+    posting_ids
+        Posting natural key to row id, covering `contribution.source_posting_id`.
 
     Returns
     -------
     accounting.db.GoalContribution
     """
     return adb.GoalContribution(
-        id=derive_id(user_id, "goal_contributions", contribution.contribution_id),
         user_id=user_id,
         natural_key=contribution.contribution_id,
-        goal_id=_goal_id(user_id, contribution.goal_id),
+        goal_id=goal_ids[contribution.goal_id],
         date=contribution.date,
         amount=contribution.amount,
         currency=contribution.currency,
         note=contribution.note,
-        account_id=_account_id(user_id, contribution.account_id),
-        source_posting_id=_posting_id(user_id, contribution.source_posting_id)
-        if contribution.source_posting_id is not None
-        else None,
+        account_id=_optional_id(account_ids, contribution.account_id),
+        source_posting_id=_optional_id(posting_ids, contribution.source_posting_id),
         origin=contribution.origin,
         edited=contribution.edited,
     )
@@ -488,9 +502,11 @@ def replace_goal_contributions(session: Session, user_id: uuid.UUID, contributio
     contributions
         The complete desired set.
     """
+    contributions = list(contributions)
     session.query(adb.GoalContribution).filter_by(user_id=user_id).delete()
     session.flush()
-    session.add_all(_goal_contribution_row(user_id, contribution) for contribution in contributions)
+    references = _contribution_references(session, user_id, contributions)
+    session.add_all(_goal_contribution_row(user_id, contribution, *references) for contribution in contributions)
     session.flush()
 
 
@@ -510,7 +526,9 @@ def insert_goal_contributions(session: Session, user_id: uuid.UUID, contribution
     contributions
         The contributions to add.
     """
-    session.add_all(_goal_contribution_row(user_id, contribution) for contribution in contributions)
+    contributions = list(contributions)
+    references = _contribution_references(session, user_id, contributions)
+    session.add_all(_goal_contribution_row(user_id, contribution, *references) for contribution in contributions)
     session.commit()
 
 
@@ -530,16 +548,17 @@ def upsert_goal_contribution(contribution: GoalContribution, session: Session, u
     user_id
         Whose contribution this is.
     """
+    goal_ids, account_ids, posting_ids = _contribution_references(session, user_id, [contribution])
     session.execute(
         text(
             """
             INSERT INTO accounting.goal_contributions
-                (id, user_id, natural_key, goal_id, date, amount, currency, note, account_id, source_posting_id,
+                (user_id, natural_key, goal_id, date, amount, currency, note, account_id, source_posting_id,
                  origin, edited)
             VALUES
-                (:id, :user_id, :natural_key, :goal_id, :date, :amount, :currency, :note, :account_id,
+                (:user_id, :natural_key, :goal_id, :date, :amount, :currency, :note, :account_id,
                  :source_posting_id, :origin, :edited)
-            ON CONFLICT (id) DO UPDATE SET
+            ON CONFLICT (user_id, natural_key) DO UPDATE SET
                 goal_id = EXCLUDED.goal_id,
                 date = EXCLUDED.date,
                 amount = EXCLUDED.amount,
@@ -552,17 +571,18 @@ def upsert_goal_contribution(contribution: GoalContribution, session: Session, u
             """
         ),
         {
-            "id": str(derive_id(user_id, "goal_contributions", contribution.contribution_id)),
             "user_id": str(user_id),
             "natural_key": contribution.contribution_id,
-            "goal_id": str(_goal_id(user_id, contribution.goal_id)),
+            "goal_id": str(goal_ids[contribution.goal_id]),
             "date": contribution.date,
             "amount": contribution.amount,
             "currency": contribution.currency,
             "note": contribution.note,
-            "account_id": str(account) if (account := _account_id(user_id, contribution.account_id)) else None,
-            "source_posting_id": str(_posting_id(user_id, contribution.source_posting_id))
-            if contribution.source_posting_id is not None
+            "account_id": str(account_id)
+            if (account_id := _optional_id(account_ids, contribution.account_id))
+            else None,
+            "source_posting_id": str(posting_id)
+            if (posting_id := _optional_id(posting_ids, contribution.source_posting_id)) is not None
             else None,
             "origin": contribution.origin,
             "edited": contribution.edited,
@@ -578,8 +598,10 @@ def goal_contribution_exists(session: Session, user_id: uuid.UUID, contribution_
     -------
     bool
     """
-    row_id = derive_id(user_id, "goal_contributions", contribution_id)
-    return session.get(adb.GoalContribution, row_id) is not None
+    return (
+        session.query(adb.GoalContribution.id).filter_by(user_id=user_id, natural_key=contribution_id).first()
+        is not None
+    )
 
 
 def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_id: str) -> bool:
@@ -590,8 +612,7 @@ def remove_goal_contribution(session: Session, user_id: uuid.UUID, contribution_
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "goal_contributions", contribution_id)
-    deleted = session.query(adb.GoalContribution).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.GoalContribution).filter_by(user_id=user_id, natural_key=contribution_id).delete()
     session.flush()
     return deleted > 0
 
@@ -653,18 +674,28 @@ def load_goal_automations(session: Session, user_id: uuid.UUID) -> list[GoalAuto
     ]
 
 
-def _goal_automation_row(user_id: uuid.UUID, automation: GoalAutomation) -> adb.GoalAutomation:
-    """Build the ORM row for one automation.
+def _goal_automation_row(
+    user_id: uuid.UUID, automation: GoalAutomation, goal_ids: Mapping[str, uuid.UUID]
+) -> adb.GoalAutomation:
+    """Build the ORM row for one automation, resolving its goal reference through `goal_ids`.
+
+    Parameters
+    ----------
+    user_id
+        Whose automation this is.
+    automation
+        The pydantic automation to convert.
+    goal_ids
+        Goal natural key to row id, covering `automation.goal_id`.
 
     Returns
     -------
     accounting.db.GoalAutomation
     """
     return adb.GoalAutomation(
-        id=derive_id(user_id, "goal_automations", automation.automation_id),
         user_id=user_id,
         natural_key=automation.automation_id,
-        goal_id=_goal_id(user_id, automation.goal_id),
+        goal_id=goal_ids[automation.goal_id],
         direction=automation.direction,
         priority=automation.priority,
         start_date=automation.start_date,
@@ -710,7 +741,8 @@ def replace_goal_automations(
         raise ValueError(message)
     session.query(adb.GoalAutomation).filter_by(user_id=user_id, direction=direction).delete()
     session.flush()
-    session.add_all(_goal_automation_row(user_id, automation) for automation in rows)
+    goal_ids = ids_by_natural_key(session, adb.Goal, user_id, [row.goal_id for row in rows])
+    session.add_all(_goal_automation_row(user_id, automation, goal_ids) for automation in rows)
     session.flush()
 
 
@@ -730,16 +762,17 @@ def upsert_goal_automation(automation: GoalAutomation, session: Session, user_id
     user_id
         Whose automation this is.
     """
+    goal_ids = ids_by_natural_key(session, adb.Goal, user_id, [automation.goal_id])
     session.execute(
         text(
             """
             INSERT INTO accounting.goal_automations
-                (id, user_id, natural_key, goal_id, direction, priority, start_date, frequency, end_date,
+                (user_id, natural_key, goal_id, direction, priority, start_date, frequency, end_date,
                  mode, value, currency)
             VALUES
-                (:id, :user_id, :natural_key, :goal_id, :direction, :priority, :start_date, :frequency, :end_date,
+                (:user_id, :natural_key, :goal_id, :direction, :priority, :start_date, :frequency, :end_date,
                  :mode, :value, :currency)
-            ON CONFLICT (id) DO UPDATE SET
+            ON CONFLICT (user_id, natural_key) DO UPDATE SET
                 goal_id = EXCLUDED.goal_id,
                 direction = EXCLUDED.direction,
                 priority = EXCLUDED.priority,
@@ -752,10 +785,9 @@ def upsert_goal_automation(automation: GoalAutomation, session: Session, user_id
             """
         ),
         {
-            "id": str(derive_id(user_id, "goal_automations", automation.automation_id)),
             "user_id": str(user_id),
             "natural_key": automation.automation_id,
-            "goal_id": str(_goal_id(user_id, automation.goal_id)),
+            "goal_id": str(goal_ids[automation.goal_id]),
             "direction": automation.direction,
             "priority": automation.priority,
             "start_date": automation.start_date,
@@ -776,8 +808,9 @@ def goal_automation_exists(session: Session, user_id: uuid.UUID, automation_id: 
     -------
     bool
     """
-    row_id = derive_id(user_id, "goal_automations", automation_id)
-    return session.get(adb.GoalAutomation, row_id) is not None
+    return (
+        session.query(adb.GoalAutomation.id).filter_by(user_id=user_id, natural_key=automation_id).first() is not None
+    )
 
 
 def remove_goal_automation(session: Session, user_id: uuid.UUID, automation_id: str) -> bool:
@@ -788,7 +821,6 @@ def remove_goal_automation(session: Session, user_id: uuid.UUID, automation_id: 
     bool
         `True` if a row was actually deleted, `False` if none existed.
     """
-    row_id = derive_id(user_id, "goal_automations", automation_id)
-    deleted = session.query(adb.GoalAutomation).filter_by(id=row_id, user_id=user_id).delete()
+    deleted = session.query(adb.GoalAutomation).filter_by(user_id=user_id, natural_key=automation_id).delete()
     session.flush()
     return deleted > 0

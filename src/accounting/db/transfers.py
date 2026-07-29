@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from accounting.db.core import SCHEMA, stage_constraint
 from accounting.models import TransferLinkSource
-from db.base import Base, Timestamped, check_in_sql
+from db.base import UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 
 class TransferLink(Base, Timestamped):
@@ -34,7 +34,7 @@ class TransferLink(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     stage: Mapped[str] = mapped_column(default="link")

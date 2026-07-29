@@ -12,7 +12,7 @@ from sqlalchemy import ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from db.base import Base, Timestamped
+from db.base import UUID7_DEFAULT, Base, Timestamped
 from db.indexes import ensure_foreign_key_indexes
 
 
@@ -35,7 +35,7 @@ class User(Base, Timestamped):
 
     __tablename__ = "users"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     email: Mapped[str]
     is_active: Mapped[bool] = mapped_column(default=True)
 

@@ -25,7 +25,7 @@ from accounting.models import (
     SuggestionSource,
     SuggestionStatus,
 )
-from db.base import MONEY, Base, Timestamped, check_in_sql
+from db.base import MONEY, UUID7_DEFAULT, Base, Timestamped, check_in_sql
 
 
 class PostingOverride(Base, Timestamped):
@@ -60,7 +60,7 @@ class PostingOverride(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     stage: Mapped[str] = mapped_column(default="override")
     """Which resolution stage this overlay is applied at — see `accounting.precedence`."""
@@ -159,9 +159,9 @@ class Suggestion(Base, Timestamped):
     `natural_key` covers both lifecycles with one `UNIQUE(user_id,
     natural_key)`. A dismissed row's is derived from the suggestion's own
     content (see `api._transfer_suggestion_id`/`_duplicate_suggestion_id`),
-    so the same real-world pair or group always dismisses and restores
-    under the same `id` via `db.base.derive_id`, however many times the
-    detector recomputes it. A pending row's is derived from its posting
+    so the same real-world pair or group always dismisses and restores as the
+    same *row* — the upsert conflicts on that constraint, however many times
+    the detector recomputes it. A pending row's is derived from its posting
     (`pending:<posting natural key>`), which is what makes that unique
     constraint subsume the old `UNIQUE(user_id, posting_id)` — one posting
     can still only be pending once.
@@ -183,7 +183,7 @@ class Suggestion(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     status: Mapped[str]
@@ -211,7 +211,7 @@ class PostingSplit(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     stage: Mapped[str] = mapped_column(default="split")
     """Which resolution stage this overlay is applied at — see `accounting.precedence`."""
@@ -241,7 +241,7 @@ class PostingSplitLeg(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     posting_split_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.posting_splits.id", ondelete="CASCADE")
@@ -265,7 +265,7 @@ class PostingMerge(Base, Timestamped):
         {"schema": SCHEMA},
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     stage: Mapped[str] = mapped_column(default="merge")
