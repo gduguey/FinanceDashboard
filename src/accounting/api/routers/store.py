@@ -44,7 +44,7 @@ from accounting.api.api_models import (
 )
 from accounting.api.dependencies import _account_has_postings, _resolved_postings_and_store
 from accounting.importers.common import row_hash
-from accounting.importers.ingest import load_ledger, remap_ledger_category_ids, uncategorize_ledger_postings
+from accounting.importers.ingest import load_ledger
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
 from accounting.models import (
     SUPPORTED_CURRENCIES,
@@ -93,6 +93,7 @@ from accounting.repositories.taxonomy import (
     replace_other_assets,
     replace_simulator_scenarios,
     replace_tags,
+    retire_categories,
 )
 from accounting.store import (
     category_ids_to_delete,
@@ -366,13 +367,21 @@ def delete_category(
     """Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
 
     Every posting currently carrying `category_id` (or one of its
-    subcategories) as its own `category_id`/`subcategory_id` has that
-    field cleared rather than left dangling — the same "uncategorized"
-    state a posting that was never categorized at all is already in.
-    Anything else referencing the deleted id(s) is cleared where the
-    field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
-    entirely where it isn't (`Budget`, `CategoryPattern` both require a
-    `category_id`) — see `store.uncategorize_category_ids`.
+    subcategories) reads as uncategorized afterwards — the same state a
+    posting that was never categorized at all is already in — without a
+    single posting row being written. The category is *retired* rather
+    than deleted (see `accounting.db.core.Category` and
+    `repositories.taxonomy.retire_categories`): its row stays, so the raw
+    import provenance on those postings keeps a valid foreign key, and it
+    leaves the live tree with no successor, which is what
+    `repositories.taxonomy.load_category_redirects` resolves to "nothing".
+
+    Anything else referencing the deleted id(s) *is* rewritten, because
+    those references are the user's own decisions rather than raw
+    provenance: cleared where the field is optional (`TransferRule`,
+    `PostingSplitLeg`) or dropped entirely where it isn't (`Budget`,
+    `CategoryPattern` both require a `category_id`) — see
+    `store.uncategorize_category_ids`.
 
     Returns
     -------
@@ -403,12 +412,6 @@ def delete_category(
     replace_category_patterns(session, user_id, store.category_patterns.values())
     replace_posting_splits(session, user_id, store.posting_splits.values())
 
-    # Every reference to a deleted category must be cleared *before*
-    # `replace_categories` prunes that category row below — postings and manual
-    # overrides both foreign-key into `categories`, so the prune would otherwise
-    # fail with a constraint violation (same ordering `post_category_rename` needs).
-    uncategorize_ledger_postings(ids_to_delete, session, user_id)
-
     def clear(field_id: str | None) -> str | None:
         return None if field_id in ids_to_delete else field_id
 
@@ -425,11 +428,16 @@ def delete_category(
     }
     save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
-    # Last, and with a prune: this is the only write here that actually removes
-    # the category rows, and every reference to them was cleared above. The
-    # whole tree is passed because a delete genuinely is category-graph-wide —
-    # a top-level delete takes its subcategories with it, and the survivors'
-    # "Other" catch-alls were re-derived by `normalize_categories` above.
+    # This, not the prune below, is what takes the categories out of the live
+    # tree — with no successor, so every posting imported under one resolves to
+    # uncategorized. Retiring rather than deleting is what makes the stored
+    # postings' foreign keys safe without rewriting a single one of them.
+    retire_categories(session, user_id, dict.fromkeys(ids_to_delete))
+
+    # Last. The whole tree is passed because a delete genuinely is
+    # category-graph-wide — a top-level delete takes its subcategories with it,
+    # and the survivors' "Other" catch-alls were re-derived by
+    # `normalize_categories` above. Its prune never touches a retired row.
     replace_categories(session, user_id, store.categories.values())
     session.commit()
     return CategoryDeleteResponse(categories=store.categories, uncategorized_posting_count=posting_count)
@@ -520,10 +528,14 @@ def post_category_rename(
 ) -> CategoryRenameResponse:
     """Rename a category or subcategory, merging it into an existing same-named one if there is one.
 
-    A merge repoints every reference to the merged-away id — postings
-    already in the ledger cache, manual per-posting overrides, transfer
-    rules, category patterns, budgets, and posting splits — onto the
-    surviving id, then removes the merged-away category entirely. See
+    A merge repoints every reference to the merged-away id that is a user
+    decision — manual per-posting overrides, transfer rules, category
+    patterns, budgets, and posting splits — onto the surviving id, and
+    *retires* the merged-away category rather than deleting it (see
+    `accounting.db.core.Category`). Stored postings are not touched at all:
+    the category one was imported under is raw provenance, and the
+    retirement's own successor is what makes it resolve to the survivor
+    from now on (`repositories.taxonomy.load_category_redirects`). See
     `store.plan_category_rename` for the exact matching rules: a top-level
     category only merges into another top-level category of the same
     classification; a subcategory only merges into a sibling under the
@@ -559,11 +571,6 @@ def post_category_rename(
     replace_category_patterns(session, user_id, store.category_patterns.values())
     replace_posting_splits(session, user_id, store.posting_splits.values())
 
-    # Every reference to a merged-away category must be repointed *before*
-    # `replace_categories` prunes that category row below — postings and manual
-    # overrides both foreign-key into `categories`, so the prune would otherwise
-    # fail with a constraint violation.
-    remap_ledger_category_ids(id_remap, session, user_id)
     if id_remap:
 
         def remap(category_id: str | None) -> str | None:
@@ -587,8 +594,13 @@ def post_category_rename(
         }
         save_overrides_for_postings(list(changed_overrides.keys()), changed_overrides, session, user_id)
 
-    # With a prune: a merge removes the merged-away category rows, and every
-    # reference to them was repointed above.
+    # The merged-away categories leave the live tree here, each naming the one
+    # it folded into — which is the whole of how the postings imported under
+    # them start resolving to the survivor, with no posting rewritten.
+    retire_categories(session, user_id, dict(id_remap))
+
+    # With a prune: every *live* reference was repointed above, and a retired
+    # row is exempt from the prune (see `replace_categories`).
     replace_categories(session, user_id, store.categories.values())
     session.commit()
 

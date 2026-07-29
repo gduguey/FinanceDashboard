@@ -13,10 +13,11 @@ from accounting.importers.ingest import (
     ingest_canonical_csv,
     ingest_canonical_excel,
     load_ledger,
-    remap_ledger_category_ids,
 )
+from accounting.ledger.categorization import apply_category_redirects
 from accounting.models import Account, AccountKind
 from accounting.repositories.accounts import replace_accounts
+from accounting.repositories.taxonomy import load_category_redirects, retire_categories
 from accounting.store import load_store
 
 if TYPE_CHECKING:
@@ -75,34 +76,36 @@ def test_ingest_canonical_csv_persists_newly_created_categories(
     assert category.category_id in store.categories
 
 
-def test_remap_ledger_category_ids_repoints_a_postings_baked_in_category(
+def test_retiring_a_baked_in_category_resolves_it_without_rewriting_the_stored_posting(
     tmp_path, db_session: Session, test_user_id: uuid.UUID
 ) -> None:
+    """The D14 property: the imported category stays put, and only what it resolves to changes."""
     config = _config(tmp_path)
     _register_account(db_session, test_user_id)
     result = ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
     category = next(iter(result.new_categories.values()))
 
-    remap_ledger_category_ids({category.category_id: "expense:food-drink"}, db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {category.category_id: "expense:food-drink"})
+    db_session.commit()
 
-    ledger = load_ledger(db_session, user_id=test_user_id)
-    category_ids = set(ledger["category_id"].to_list())
-    assert category.category_id not in category_ids
-    assert "expense:food-drink" in category_ids
+    raw = load_ledger(db_session, user_id=test_user_id)
+    assert category.category_id in set(raw["category_id"].to_list())
+
+    resolved = apply_category_redirects(raw, load_category_redirects(db_session, test_user_id))
+    resolved_ids = set(resolved["category_id"].to_list())
+    assert category.category_id not in resolved_ids
+    assert "expense:food-drink" in resolved_ids
 
 
-def test_remap_ledger_category_ids_is_a_no_op_with_an_empty_remap(
-    tmp_path, db_session: Session, test_user_id: uuid.UUID
-) -> None:
+def test_nothing_retired_means_no_redirects_to_apply(tmp_path, db_session: Session, test_user_id: uuid.UUID) -> None:
     config = _config(tmp_path)
     _register_account(db_session, test_user_id)
     ingest_canonical_csv(CSV_TEXT, ACCOUNT_ID, config, db_session, user_id=test_user_id)
-    before = load_ledger(db_session, user_id=test_user_id).sort("posting_id")["category_id"].to_list()
+    raw = load_ledger(db_session, user_id=test_user_id).sort("posting_id")
 
-    remap_ledger_category_ids({}, db_session, user_id=test_user_id)
-
-    after = load_ledger(db_session, user_id=test_user_id).sort("posting_id")["category_id"].to_list()
-    assert before == after
+    assert load_category_redirects(db_session, test_user_id) == {}
+    resolved = apply_category_redirects(raw, load_category_redirects(db_session, test_user_id))
+    assert resolved["category_id"].to_list() == raw["category_id"].to_list()
 
 
 def test_ingest_canonical_csv_raises_when_the_account_isnt_registered(

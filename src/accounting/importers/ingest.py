@@ -14,6 +14,7 @@ from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING
 
 import polars as pl
+from sqlalchemy import select
 
 import accounting.db as adb
 from accounting.importers.canonical.csv import (
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
 
     from accounting.config import AccountingConfig
     from accounting.importers.canonical.csv import CanonicalImportResult, CategoryOverrides, DateOrder
-    from accounting.models import Account, Category
+    from accounting.models import Account, Category, TransactionOrigin
     from accounting.store import AccountingStore
 
 _Fingerprint = tuple[str, datetime, float, str]
@@ -91,9 +92,14 @@ class IngestResult:
 
 
 def load_ledger(
-    session: Session, user_id: uuid.UUID, *, since: date | None = None, until: date | None = None
+    session: Session,
+    user_id: uuid.UUID,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    origin: TransactionOrigin | None = None,
 ) -> pl.DataFrame:
-    """Load the posting ledger, optionally restricted to `[since, until]`.
+    """Load the posting ledger, optionally restricted to `[since, until]` or to one transaction origin.
 
     Parameters
     ----------
@@ -109,6 +115,18 @@ def load_ledger(
         result to a date range (dashboard aggregations) should pass it.
     until
         Last day to include, inclusive. Same defaulting reasoning as `since`.
+    origin
+        Restrict to postings of `imported` or `manual` transactions (see
+        `models.TransactionOrigin`). `None` (the default) is the whole
+        ledger, which is what every *read* wants: a manual transfer is a
+        real transaction and shows up in balances, net worth and the
+        transaction list exactly like any other. Only the import machinery
+        passes `"imported"`, and for two reasons — the merge it does is a
+        diff against what the archives produce, which manual rows are no
+        part of, and `ledger.replay.validate_balanced` (run over the merged
+        result) would flag a legitimate cross-currency manual transfer,
+        whose two legs are equal-and-opposite only after a conversion it
+        deliberately doesn't store.
 
     Returns
     -------
@@ -122,6 +140,10 @@ def load_ledger(
     # `posted_at` is a naive (timezone-unaware) column — the bounds below
     # must be naive too, or psycopg rejects the comparison outright.
     query = session.query(adb.Posting).filter_by(user_id=user_id)
+    if origin is not None:
+        query = query.join(adb.Transaction, adb.Posting.transaction_id == adb.Transaction.id).filter(
+            adb.Transaction.origin == origin
+        )
     if since is not None:
         query = query.filter(adb.Posting.posted_at >= datetime.combine(since, time.min))
     if until is not None:
@@ -171,7 +193,17 @@ def load_ledger(
 
 
 def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) -> None:
-    """Persist the full posting ledger, overwriting whatever was saved before.
+    """Persist the imported half of the posting ledger, overwriting whatever was saved before.
+
+    Only the imported half. Every row written here is `origin =
+    "imported"` (see `models.TransactionOrigin`), and the prune below is
+    scoped to imported transactions and their postings, so a rebuild that
+    replays every archived statement cannot delete a `manual` transaction
+    — a manual transfer is reproducible from nothing, so nothing this
+    function replays would ever put it back. That scoping *is* the
+    discriminator's reason for existing; without it, retiring the old
+    `manual_transfers` table into ordinary transactions would have made
+    `rebuild_from_raw_statements` silently destructive.
 
     `transactions`/`postings` are upserted and pruned rather than deleted
     wholesale and reinserted — `manual_overrides`, `posting_splits`,
@@ -191,7 +223,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     Parameters
     ----------
     ledger
-        The full ledger to persist, shaped like `LEDGER_FRAME_SCHEMA`.
+        The whole imported ledger to persist, shaped like `LEDGER_FRAME_SCHEMA`.
     session
         An open database session; `session.commit()` is called on success.
     user_id
@@ -203,7 +235,9 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     for row in rows:
         transaction_id = derive_id(user_id, "transactions", row["transaction_id"])
         transaction_ids.add(transaction_id)
-        session.merge(adb.Transaction(id=transaction_id, user_id=user_id, natural_key=row["transaction_id"]))
+        session.merge(
+            adb.Transaction(id=transaction_id, user_id=user_id, natural_key=row["transaction_id"], origin="imported")
+        )
     session.flush()
 
     posting_ids: set[uuid.UUID] = set()
@@ -233,17 +267,36 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
         )
     session.flush()
 
+    # Every prune below is scoped to these. A `manual` transaction and its
+    # postings are outside the set this function is the source of truth for,
+    # so a rebuild that no longer produces them must not read that as "the
+    # user deleted them" — see this function's own docstring.
+    imported_transaction_ids = select(adb.Transaction.id).where(
+        adb.Transaction.user_id == user_id, adb.Transaction.origin == "imported"
+    )
+    imported_posting_ids = select(adb.Posting.id).where(
+        adb.Posting.user_id == user_id, adb.Posting.transaction_id.in_(imported_transaction_ids)
+    )
+
     # Postings first, then transactions — a transaction that lost every one of
     # its postings would otherwise still be referenced by the very rows this
     # step is trying to delete first.
-    existing_posting_ids = {row.id for row in session.query(adb.Posting.id).filter_by(user_id=user_id)}
+    existing_posting_ids = {
+        row.id
+        for row in session
+        .query(adb.Posting.id)
+        .filter_by(user_id=user_id)
+        .filter(adb.Posting.transaction_id.in_(imported_transaction_ids))
+    }
     removed_posting_ids = existing_posting_ids - posting_ids
     if removed_posting_ids:
         session.query(adb.Posting).filter_by(user_id=user_id).filter(adb.Posting.id.in_(removed_posting_ids)).delete(
             synchronize_session=False
         )
 
-    existing_transaction_ids = {row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id)}
+    existing_transaction_ids = {
+        row.id for row in session.query(adb.Transaction.id).filter_by(user_id=user_id, origin="imported")
+    }
     removed_transaction_ids = existing_transaction_ids - transaction_ids
     if removed_transaction_ids:
         # A `TransferLink` has no FK of its own into `transactions` — only
@@ -269,7 +322,9 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
             adb.Transaction.id.in_(removed_transaction_ids)
         ).delete(synchronize_session=False)
 
-    session.query(adb.PostingTag).filter_by(user_id=user_id).delete()
+    session.query(adb.PostingTag).filter_by(user_id=user_id).filter(
+        adb.PostingTag.posting_id.in_(imported_posting_ids)
+    ).delete(synchronize_session=False)
     session.add_all(
         adb.PostingTag(
             user_id=user_id,
@@ -280,61 +335,6 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
         for tag_id in row["tag_ids"]
     )
     session.commit()
-
-
-def remap_ledger_category_ids(id_remap: dict[str, str], session: Session, user_id: uuid.UUID) -> None:
-    """Repoint every posting's `category_id`/`subcategory_id` after a category merge, in place.
-
-    A canonical import can bake a category straight onto a posting a
-    import time (from that file's own Category/Subcategory columns) rather
-    than only through a rule or a manual override — so merging two
-    categories (see `store.plan_category_rename`) needs to fix the ledger
-    cache itself, not just the store's own rules/patterns/budgets (see
-    `store.remap_category_ids`). `.replace(...)` leaves any id not in
-    `id_remap` (including `null`) unchanged.
-
-    Parameters
-    ----------
-    id_remap
-        `old_id -> new_id`, as returned by `store.plan_category_rename` —
-        a no-op when empty.
-    session
-        An open database session.
-    user_id
-        Whose ledger this is.
-    """
-    if not id_remap:
-        return
-    ledger = load_ledger(session, user_id=user_id)
-    ledger = ledger.with_columns(pl.col("category_id").replace(id_remap), pl.col("subcategory_id").replace(id_remap))
-    _write_ledger(ledger, session, user_id=user_id)
-
-
-def uncategorize_ledger_postings(category_ids: set[str], session: Session, user_id: uuid.UUID) -> None:
-    """Clear `category_id`/`subcategory_id` on every posting currently assigned to any of `category_ids`, in place.
-
-    The delete-side counterpart to `remap_ledger_category_ids`: a category
-    delete (see `store.category_ids_to_delete`) has no replacement id to
-    repoint postings at, so this nulls the field out instead — the same
-    "uncategorized" state a posting that was never categorized at all is
-    already in.
-
-    Parameters
-    ----------
-    category_ids
-        Every category id being deleted (see `store.category_ids_to_delete`)
-        — a no-op when empty.
-    session
-        An open database session.
-    user_id
-        Whose ledger this is.
-    """
-    if not category_ids:
-        return
-    ledger = load_ledger(session, user_id=user_id)
-    cleared = dict.fromkeys(category_ids)
-    ledger = ledger.with_columns(pl.col("category_id").replace(cleared), pl.col("subcategory_id").replace(cleared))
-    _write_ledger(ledger, session, user_id=user_id)
 
 
 def _fingerprint(row: dict[str, Any]) -> _Fingerprint:
@@ -608,7 +608,7 @@ def ingest_csv(
             )
             raise ValueError(message) from error
 
-    existing = load_ledger(session, user_id=user_id)
+    existing = load_ledger(session, user_id=user_id, origin="imported")
     merged = _merge_ledger(existing, new_postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
@@ -783,7 +783,7 @@ def _apply_canonical_outcome(
         replace_categories(session, user_id, merged_categories.values(), prune=False)
         session.commit()
 
-    existing = load_ledger(session, user_id=user_id)
+    existing = load_ledger(session, user_id=user_id, origin="imported")
     merged = _merge_ledger(existing, outcome.postings)
     validate_balanced(merged)
     _write_ledger(merged, session, user_id=user_id)
@@ -842,6 +842,12 @@ def rebuild_from_raw_statements(config: AccountingConfig, session: Session, user
     Only archived CSVs are replayed. PDF-based import was retired and its
     parser deleted, so any posting that was only ever derived from an old
     archived PDF is dropped by a rebuild rather than re-parsed.
+
+    Only the `imported` half of the ledger is discarded and recomputed.
+    A `manual` transaction (see `models.TransactionOrigin`) is not derived
+    from any archive — no replay could put one back — so `_write_ledger`'s
+    prune deliberately cannot see it, and a rebuild leaves every manual
+    transfer exactly where it was. That is what the discriminator is for.
 
     Parameters
     ----------

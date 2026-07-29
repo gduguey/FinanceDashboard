@@ -40,8 +40,8 @@ from accounting.models import (
     TransferRule,
 )
 from accounting.repositories.accounts import (
+    insert_manual_transfers,
     replace_accounts,
-    replace_manual_transfers,
     replace_opening_balances,
 )
 from accounting.repositories.planning import (
@@ -421,9 +421,7 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
         test_user_id,
         [OpeningBalance(account_id="checking:test", amount=100, as_of_date=datetime(2026, 1, 1))],
     )
-    replace_manual_transfers(
-        db_session,
-        test_user_id,
+    insert_manual_transfers(
         [
             ManualTransfer(
                 transfer_id="mt1",
@@ -434,6 +432,8 @@ def test_save_then_load_store_round_trips_every_entity_type(db_session: Session,
                 to_amount=50,
             )
         ],
+        db_session,
+        test_user_id,
     )
 
     # The taxonomy aggregate.

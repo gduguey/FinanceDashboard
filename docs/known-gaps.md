@@ -24,7 +24,7 @@ written. Optimistic concurrency is now per-row only; see
 `docs/app-stack/optimistic-concurrency-versioning.md`. What remains is narrower:
 each of these
 handlers still spans several repository writes that commit as they go
-(`replace_budgets`, `uncategorize_ledger_postings`, `save_overrides_for_postings`,
+(`replace_budgets`, `save_overrides_for_postings`, `retire_categories`,
 then `replace_categories`), so a *failure* partway through — an unexpected
 `IntegrityError`, a dropped connection — leaves the earlier ones committed.
 

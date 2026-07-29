@@ -121,12 +121,17 @@ with one exception. Closing an account (`Account.closed`) whose balance
 isn't zero needs somewhere to record where that remaining money went, and
 no future bank statement will ever describe that movement, since the
 account is closed. A `ManualTransfer` (`accounting.models`) is a
-user-entered transfer between two of their own accounts;
-`ledger.manual_transfers.postings_for_manual_transfers` turns each one into
-its two postings — one leaving the closed account, one arriving at
-wherever the user says it went — folded into the resolved ledger the same
-way rules and overrides are, never baked into the ledger cache. Closing
-and (optionally) recording where the balance went happen atomically via
+user-entered transfer between two of their own accounts, stored as
+exactly that: one `transactions` row with `origin = "manual"` and two
+balancing postings — one leaving the closed account, one arriving at
+wherever the user says it went. It used to be a `manual_transfers` table
+of its own whose rows a late resolution stage turned into postings on
+every read; the ledger expresses the same thing with the rows it already
+had, and `origin` is the one column that keeps the difference that
+matters — a rebuild from the raw archives owns the `imported` half and
+must never prune the `manual` half, since no replay could put it back
+(see `importers.ingest._write_ledger`). Closing and (optionally)
+recording where the balance went happen atomically via
 `POST /accounts/{id}/close`.
 
 ## Module map
@@ -167,7 +172,6 @@ src/accounting/
     currency.py             convert() between any two supported currencies
     transfers.py            unmatched-internal-transfer suggestions
     duplicates.py           likely-duplicate-transaction suggestions + certainty scoring
-    manual_transfers.py     turns a ManualTransfer into its two postings (see below)
     goal_automations.py     contribution- and withdrawal-automation math —
                             decides amounts only, never writes anything itself
 

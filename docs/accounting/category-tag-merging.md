@@ -58,13 +58,20 @@ subcategory only ever merges into a sibling under the same
    rename; now it just proceeds, since step 2's preview already gave the
    user a chance to see this coming and back out.
 
-4. **`accounting.importers.ingest.remap_ledger_category_ids`** (`:241`) —
-   the real transaction history, which lives entirely outside
-   `AccountingStore` (see `src/db/README.md`). Loads the whole ledger,
-   does a plain Polars find-and-replace of `category_id`/`subcategory_id`
-   (old id → new id), and writes it back through `_write_ledger`, which
-   **updates existing `postings` rows in place** (matched by each
-   posting's own stable `id`) — no row is deleted or reinserted here.
+4. **The real transaction history — nothing at all happens to it.**
+   This step used to be `accounting.importers.ingest.remap_ledger_category_ids`:
+   load the whole ledger, find-and-replace `category_id`/`subcategory_id`,
+   write every posting back. It is deleted. A posting's category is the
+   one the *file* named — raw import provenance — and rewriting it was
+   DB-audit finding D14: a derived, resolved value stored on the raw row,
+   which the next re-import could silently revert, at the cost of a
+   full-ledger read-modify-write on every rename. The merge reaches those
+   postings through step 6's retirement instead, resolved on read by
+   `repositories.taxonomy.load_category_redirects` +
+   `ledger.categorization.apply_category_redirects` (which run before the
+   first overlay stage — see `accounting.precedence`). `GET /ledger/export`
+   therefore still shows the merged-away id, and `GET /postings` shows the
+   survivor; that difference is the whole point.
 
 5. **Manual overrides**, inline in `post_category_rename` (`:408`, right
    after step 4) — `PostingOverride.category_id`/`subcategory_id` (a
@@ -74,23 +81,28 @@ subcategory only ever merges into a sibling under the same
    `posting_overrides` row for this user (same pattern as the 16
    wipe-and-reinsert tables in `src/db/README.md`).
 
-6. **The scoped repository writes, then `replace_categories`.** Everything
-   step 3 repointed *except* the categories dict itself is written by its
-   own aggregate's repository, and runs right after step 3 (before step 4,
-   not after step 5): `store.budgets` through
+6. **The scoped repository writes, then `retire_categories`, then
+   `replace_categories`.** Everything step 3 repointed *except* the
+   categories dict itself is written by its own aggregate's repository,
+   and runs right after step 3: `store.budgets` through
    `repositories.planning.replace_budgets`, and
    `store.category_patterns`/`posting_splits` through
    `repositories.interpretation.replace_category_patterns`/
-   `replace_posting_splits`. `repositories.taxonomy.replace_categories`
-   then persists the categories dict, with a prune — `categories` is one of
-   the three upsert-and-prune tables, and this is the point "Dining"'s row
-   is actually deleted. This has to happen *last*:
-   `postings.category_id`/`subcategory_id` and `posting_split_legs.
-   category_id`/`subcategory_id` are real foreign keys into `categories.id`
-   with no `ondelete` clause, so Postgres would reject deleting "Dining"
-   at step 6 if steps 3–5 hadn't already repointed everything referencing
-   it. See "What happens if you delete something still in use" in
-   `src/db/README.md`. The handler's single `session.commit()` follows.
+   `replace_posting_splits`. Then
+   `repositories.taxonomy.retire_categories` takes "Dining" out of the
+   live tree — `retired_at` set, `superseded_by_category_id` pointing at
+   "Food & Drink" — **without deleting its row**. That is what makes the
+   whole thing safe: `postings.category_id`/`subcategory_id` are real
+   foreign keys into `categories.id` with no `ondelete` clause, and a row
+   that is never deleted can never be deleted out from under them.
+   `replace_categories` finally persists the live tree with a prune (its
+   prune skips retired rows, since no caller-supplied tree contains one).
+   The handler's single `session.commit()` follows.
+
+   A merge is one hop, always: retiring a category that others already
+   point at repoints them at its own successor in the same pass, so a
+   tombstone never names another tombstone, and deleting a merge target
+   later degrades the earlier merge into a delete.
 
 ## Category delete
 
@@ -131,27 +143,29 @@ anything.
      that already holds that identity, the untouched one wins and the
      cleared one is dropped.
 
-4. **`accounting.importers.ingest.uncategorize_ledger_postings`**
-   (`:269`) — same shape as `remap_ledger_category_ids`, but replacing
-   every matching `category_id`/`subcategory_id` with `NULL` instead of a
-   new id. Updates `postings` rows in place, same as step 4 of the merge
-   case.
+4. **The real transaction history — again, nothing happens to it.** The
+   deleted counterpart here was `uncategorize_ledger_postings`, which
+   nulled out every matching `category_id`/`subcategory_id` in place; see
+   step 4 of the merge case for why both are gone. A category retired
+   with *no* successor is exactly "resolves to uncategorized", which is
+   the same state a posting that was never categorized is already in.
 
 5. **Manual overrides**, inline in `delete_category` (`:287`, right after
    step 4) — any `PostingOverride.category_id`/`subcategory_id` pointing
    at a deleted id is cleared the same way, via `load_overrides`/
    `save_overrides`.
 
-6. **The scoped repository writes, then `replace_categories`** — the same
-   split as step 6 of the merge case, in the same position:
-   `replace_budgets` and
+6. **The scoped repository writes, then `retire_categories`, then
+   `replace_categories`** — the same split as step 6 of the merge case, in
+   the same position: `replace_budgets` and
    `replace_category_patterns`/`replace_posting_splits` persist whatever
-   step 3 cleared or dropped (running right after step 3), then
-   `replace_categories` persists the categories dict with "Dining" (and any
-   subcategories) removed. Same ordering requirement as the merge case:
-   everything referencing "Dining" has to be cleared *before*
-   `replace_categories` prunes, or it would hit the same foreign-key
-   rejection.
+   step 3 cleared or dropped, then `retire_categories` retires "Dining"
+   (and every subcategory step 1 cascaded to) with **no** successor, then
+   `replace_categories` persists the tree without them. Everything
+   referencing "Dining" that is *live* — budgets, patterns, split legs,
+   overrides — still has to be cleared first, because those references
+   really are rewritten; the postings don't, because their reference is
+   never rewritten and its target is never deleted.
 
 ## Tag rename → merge
 
@@ -197,13 +211,17 @@ recreate, which orphaned every reference to the old id.
 
 | Table | Category merge | Category delete | Tag merge |
 |---|---|---|---|
-| `categories` / `tags` | old entry pruned | target + subcategories pruned | old entry pruned |
+| `categories` / `tags` | category **retired**, naming its successor; tag pruned | category + subcategories **retired**, no successor | old tag entry pruned |
 | `categorization_rules` (transfer effect), `posting_split_legs` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | — |
 | `categorization_rules` (categorize effect), `budgets` | repointed; merged-away collision dropped | row dropped if its own `category_id` is deleted, else `subcategory_id` cleared | — |
 | `posting_tags` | — | — | `tag_id` repointed; deleted if it'd duplicate an existing row |
-| `postings` (real ledger) | `category_id`/`subcategory_id` updated in place | cleared to `NULL` in place | no column of its own — join table only |
+| `postings` (real ledger) | **untouched** — resolves to the survivor on read | **untouched** — resolves to uncategorized on read | no column of its own — join table only |
 | `posting_overrides` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | `tag_ids_override` array entries replaced |
 
-No row in `postings` is ever deleted by any of these three operations —
-only a column value changes, and only on the rows that actually
-referenced what was renamed/deleted.
+No row in `postings` is written *at all* by any of these three
+operations — not deleted, not updated. That is the invariant the D14 fix
+bought: the stored ledger is what was imported, and everything else is
+resolved on top of it. Tag merging is the one that still writes a real
+join row (`posting_tags.tag_id` is repointed), because a tag applied to a
+posting is a user decision recorded in its own table, not a fact copied
+off a statement.

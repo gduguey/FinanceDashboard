@@ -13,7 +13,6 @@ from accounting.db.budgets import Budget
 from accounting.db.core import (
     Account,
     Category,
-    ManualTransfer,
     OpeningBalance,
     OtherAsset,
     Posting,
@@ -47,7 +46,6 @@ __all__ = [
     "GoalAutomation",
     "GoalContribution",
     "LLMUsage",
-    "ManualTransfer",
     "OpeningBalance",
     "OtherAsset",
     "Posting",

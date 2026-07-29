@@ -1,9 +1,20 @@
-"""`load_ledger`/`_write_ledger`/`remap_ledger_category_ids` against real Postgres.
+"""`load_ledger`/`_write_ledger` and category resolution against real Postgres.
 
 `LEDGER_FRAME_SCHEMA` is the contract every other ledger/dashboard module
 (`ledger.replay`, `dashboard.income_statement`, ...) already depends on —
 these tests exist to pin that the Postgres-backed boundary still returns
 exactly that shape, so none of those downstream modules need to change.
+
+The category tests here used to drive `remap_ledger_category_ids`/
+`uncategorize_ledger_postings`, which rewrote `postings.category_id` in
+place on every merge and delete (DB-audit D14). Both are gone. The same
+observable outcomes — a merged category's postings reading as the
+survivor, a deleted category's reading as uncategorized — are now
+retirement on the `categories` row plus
+`ledger.categorization.apply_category_redirects`, and what these assert on
+top of that is the property the rewrite could never have: the stored
+posting is byte-for-byte what was imported, whatever happened to the
+taxonomy since.
 """
 
 from __future__ import annotations
@@ -16,24 +27,35 @@ import polars as pl
 import pytest
 
 import db.models
-from accounting.importers.ingest import (
-    _write_ledger,
-    load_ledger,
-    remap_ledger_category_ids,
-    uncategorize_ledger_postings,
-)
+from accounting.importers.ingest import _write_ledger, load_ledger
+from accounting.ledger.categorization import apply_category_redirects
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.ledger.transfers import make_transfer_link
-from accounting.models import Account, Goal, GoalContribution, Posting, PostingMerge, Tag, TransferRule
+from accounting.models import (
+    Account,
+    Goal,
+    GoalContribution,
+    ManualTransfer,
+    Posting,
+    PostingMerge,
+    Tag,
+    TransferRule,
+)
 from accounting.repositories.interpretation import (
     insert_transfer_links,
     replace_posting_merges,
     replace_rule_exclusions,
     replace_transfer_rules,
 )
-from accounting.repositories.accounts import replace_accounts
+from accounting.repositories.accounts import insert_manual_transfers, load_manual_transfers, replace_accounts
 from accounting.repositories.planning import insert_goal, load_goal_contributions, upsert_goal_contribution
-from accounting.repositories.taxonomy import replace_tags
+from accounting.repositories.taxonomy import (
+    load_categories,
+    load_category_redirects,
+    replace_categories,
+    replace_tags,
+    retire_categories,
+)
 from accounting.store import load_store
 
 if TYPE_CHECKING:
@@ -145,48 +167,56 @@ def test_ledger_is_scoped_per_user(db_session: Session, test_user_id: uuid.UUID)
     assert load_ledger(db_session, user_id=other_user_id).is_empty()
 
 
-def test_remap_ledger_category_ids_is_a_noop_for_an_empty_remap(db_session: Session, test_user_id: uuid.UUID) -> None:
-    _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)  # seeds "expense:food-drink" for the posting to reference
-    _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
-    remap_ledger_category_ids({}, db_session, user_id=test_user_id)
-    assert load_ledger(db_session, user_id=test_user_id).row(0, named=True)["category_id"] == "expense:food-drink"
+def _resolved(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
+    """The raw ledger with the taxonomy's own redirects applied, exactly as `api.dependencies` does.
+
+    Returns
+    -------
+    polars.DataFrame
+    """
+    return apply_category_redirects(load_ledger(session, user_id=user_id), load_category_redirects(session, user_id))
 
 
-def test_remap_ledger_category_ids_updates_category_and_subcategory(
+def test_nothing_retired_leaves_every_category_resolving_to_itself(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     _register_account(db_session, test_user_id)
-    # Both already exist among the seeded defaults — a real merge (see
-    # `store.plan_category_rename`) always remaps onto another real category.
+    load_store(db_session, user_id=test_user_id)  # seeds "expense:food-drink" for the posting to reference
+    _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
+
+    assert load_category_redirects(db_session, test_user_id) == {}
+    assert _resolved(db_session, test_user_id).row(0, named=True)["category_id"] == "expense:food-drink"
+
+
+def test_a_merged_category_resolves_to_its_successor_without_the_posting_changing(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    _register_account(db_session, test_user_id)
+    # All four already exist among the seeded defaults — a real merge (see
+    # `store.plan_category_rename`) always retires onto another real category.
     load_store(db_session, user_id=test_user_id)
     _write_ledger(
         _frame(_posting("p1", "t1", category_id="expense:food-drink", subcategory_id="expense:food-drink:groceries")),
         db_session,
         user_id=test_user_id,
     )
-    remap_ledger_category_ids(
-        {"expense:food-drink": "expense:transport", "expense:food-drink:groceries": "expense:transport:gas"},
+    retire_categories(
         db_session,
-        user_id=test_user_id,
+        test_user_id,
+        {"expense:food-drink": "expense:transport", "expense:food-drink:groceries": "expense:transport:gas"},
     )
+    db_session.commit()
 
-    row = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
+    stored = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
+    assert stored["category_id"] == "expense:food-drink"
+    assert stored["subcategory_id"] == "expense:food-drink:groceries"
+
+    row = _resolved(db_session, test_user_id).row(0, named=True)
     assert row["category_id"] == "expense:transport"
     assert row["subcategory_id"] == "expense:transport:gas"
 
 
-def test_uncategorize_ledger_postings_is_a_noop_for_an_empty_set(db_session: Session, test_user_id: uuid.UUID) -> None:
-    _register_account(db_session, test_user_id)
-    load_store(db_session, user_id=test_user_id)
-    _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
-    uncategorize_ledger_postings(set(), db_session, user_id=test_user_id)
-    assert load_ledger(db_session, user_id=test_user_id).row(0, named=True)["category_id"] == "expense:food-drink"
-
-
-def test_uncategorize_ledger_postings_clears_category_and_subcategory(
-    db_session: Session, test_user_id: uuid.UUID
-) -> None:
+def test_a_deleted_category_resolves_to_uncategorized(db_session: Session, test_user_id: uuid.UUID) -> None:
     _register_account(db_session, test_user_id)
     load_store(db_session, user_id=test_user_id)
     _write_ledger(
@@ -196,17 +226,16 @@ def test_uncategorize_ledger_postings_clears_category_and_subcategory(
     )
     # A real caller passes the already-cascaded set from
     # `store.category_ids_to_delete` — deleting the parent includes its
-    # subcategories, this function just clears exact matches.
-    uncategorize_ledger_postings(
-        {"expense:food-drink", "expense:food-drink:groceries"}, db_session, user_id=test_user_id
-    )
+    # subcategories, and a delete retires with no successor at all.
+    retire_categories(db_session, test_user_id, dict.fromkeys(["expense:food-drink", "expense:food-drink:groceries"]))
+    db_session.commit()
 
-    row = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
+    row = _resolved(db_session, test_user_id).row(0, named=True)
     assert row["category_id"] is None
     assert row["subcategory_id"] is None
 
 
-def test_uncategorize_ledger_postings_only_clears_the_subcategory_when_thats_all_thats_deleted(
+def test_deleting_only_the_subcategory_leaves_the_parent_category_resolving(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     _register_account(db_session, test_user_id)
@@ -216,14 +245,15 @@ def test_uncategorize_ledger_postings_only_clears_the_subcategory_when_thats_all
         db_session,
         user_id=test_user_id,
     )
-    uncategorize_ledger_postings({"expense:food-drink:groceries"}, db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {"expense:food-drink:groceries": None})
+    db_session.commit()
 
-    row = load_ledger(db_session, user_id=test_user_id).row(0, named=True)
+    row = _resolved(db_session, test_user_id).row(0, named=True)
     assert row["category_id"] == "expense:food-drink"
     assert row["subcategory_id"] is None
 
 
-def test_uncategorize_ledger_postings_leaves_unrelated_postings_untouched(
+def test_retirement_leaves_postings_under_other_categories_untouched(
     db_session: Session, test_user_id: uuid.UUID
 ) -> None:
     _register_account(db_session, test_user_id)
@@ -236,11 +266,121 @@ def test_uncategorize_ledger_postings_leaves_unrelated_postings_untouched(
         db_session,
         user_id=test_user_id,
     )
-    uncategorize_ledger_postings({"expense:food-drink"}, db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {"expense:food-drink": None})
+    db_session.commit()
 
-    rows = {row["posting_id"]: row["category_id"] for row in load_ledger(db_session, user_id=test_user_id).to_dicts()}
+    rows = {row["posting_id"]: row["category_id"] for row in _resolved(db_session, test_user_id).to_dicts()}
     assert rows["p1"] is None
     assert rows["p2"] == "expense:transport"
+
+
+def test_a_retired_category_leaves_the_live_tree_but_keeps_its_row(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """What makes a delete structurally safe: the row a posting foreign-keys into never goes away."""
+    _register_account(db_session, test_user_id)
+    load_store(db_session, user_id=test_user_id)
+    _write_ledger(_frame(_posting("p1", "t1", category_id="expense:food-drink")), db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {"expense:food-drink": None})
+    db_session.commit()
+
+    assert "expense:food-drink" not in load_categories(db_session, test_user_id)
+    assert load_category_redirects(db_session, test_user_id)["expense:food-drink"] is None
+    # Still stored, still valid — the posting's own foreign key never dangled.
+    assert load_ledger(db_session, user_id=test_user_id).row(0, named=True)["category_id"] == "expense:food-drink"
+
+
+def test_retiring_a_successor_collapses_the_earlier_merge_onto_the_new_one(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """A tombstone never names another tombstone, so resolution stays one hop."""
+    load_store(db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {"expense:food-drink": "expense:transport"})
+    retire_categories(db_session, test_user_id, {"expense:transport": "expense:shopping"})
+    db_session.commit()
+
+    redirects = load_category_redirects(db_session, test_user_id)
+    assert redirects["expense:food-drink"] == "expense:shopping"
+    assert redirects["expense:transport"] == "expense:shopping"
+
+
+def test_deleting_a_categorys_successor_turns_the_earlier_merge_into_a_delete(
+    db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    load_store(db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {"expense:food-drink": "expense:transport"})
+    retire_categories(db_session, test_user_id, {"expense:transport": None})
+    db_session.commit()
+
+    assert load_category_redirects(db_session, test_user_id)["expense:food-drink"] is None
+
+
+def test_writing_a_retired_category_again_brings_it_back(db_session: Session, test_user_id: uuid.UUID) -> None:
+    store = load_store(db_session, user_id=test_user_id)
+    retire_categories(db_session, test_user_id, {"expense:food-drink": None})
+    db_session.commit()
+
+    replace_categories(db_session, test_user_id, [store.categories["expense:food-drink"]], prune=False)
+    db_session.commit()
+
+    assert "expense:food-drink" in load_categories(db_session, test_user_id)
+    assert load_category_redirects(db_session, test_user_id) == {}
+
+
+def test_write_ledger_never_prunes_a_manual_transaction(db_session: Session, test_user_id: uuid.UUID) -> None:
+    """The whole point of `transactions.origin`: a rebuild owns the imported half and only that half."""
+    _register_account(db_session, test_user_id)
+    _register_account(db_session, test_user_id, account_id="savings:test")
+    _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
+    insert_manual_transfers(
+        [
+            ManualTransfer(
+                transfer_id="closing",
+                date=datetime(2026, 2, 1, tzinfo=UTC),
+                from_account_id="checking:test",
+                to_account_id="savings:test",
+                from_amount=250,
+                to_amount=250,
+                description="Closing balance",
+            )
+        ],
+        db_session,
+        test_user_id,
+    )
+    db_session.commit()
+
+    # A rebuild replays the archives and produces only the imported half —
+    # here, nothing at all. The manual transfer must survive it untouched.
+    _write_ledger(_frame(), db_session, user_id=test_user_id)
+
+    assert [transfer.transfer_id for transfer in load_manual_transfers(db_session, test_user_id)] == ["closing"]
+    posting_ids = load_ledger(db_session, user_id=test_user_id)["posting_id"].to_list()
+    assert sorted(posting_ids) == ["manual-transfer:closing:from", "manual-transfer:closing:to"]
+
+
+def test_load_ledger_restricted_to_imported_hides_the_manual_half(db_session: Session, test_user_id: uuid.UUID) -> None:
+    _register_account(db_session, test_user_id)
+    _register_account(db_session, test_user_id, account_id="savings:test")
+    _write_ledger(_frame(_posting("p1", "t1")), db_session, user_id=test_user_id)
+    insert_manual_transfers(
+        [
+            ManualTransfer(
+                transfer_id="closing",
+                date=datetime(2026, 2, 1, tzinfo=UTC),
+                from_account_id="checking:test",
+                to_account_id="savings:test",
+                from_amount=250,
+                to_amount=250,
+            )
+        ],
+        db_session,
+        test_user_id,
+    )
+    db_session.commit()
+
+    assert len(load_ledger(db_session, user_id=test_user_id)) == 3
+    assert load_ledger(db_session, user_id=test_user_id, origin="imported")["posting_id"].to_list() == ["p1"]
+    assert len(load_ledger(db_session, user_id=test_user_id, origin="manual")) == 2
 
 
 def test_write_ledger_dropping_a_transaction_referenced_by_a_transfer_link_deletes_the_whole_link(

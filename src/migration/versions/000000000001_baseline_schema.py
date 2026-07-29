@@ -94,16 +94,21 @@ def _create_tables() -> None:
     sa.Column('classification', sa.String(), nullable=False),
     sa.Column('parent_category_id', sa.UUID(), nullable=True),
     sa.Column('color', sa.String(), nullable=False),
+    sa.Column('retired_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('superseded_by_category_id', sa.UUID(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.CheckConstraint("classification IN ('income', 'expense')", name=op.f('ck_categories_classification')),
+    sa.CheckConstraint('superseded_by_category_id IS NULL OR retired_at IS NOT NULL', name=op.f('ck_categories_successor_requires_retirement')),
     sa.ForeignKeyConstraint(['parent_category_id'], ['accounting.categories.id'], name=op.f('fk_categories_parent_category_id_categories')),
+    sa.ForeignKeyConstraint(['superseded_by_category_id'], ['accounting.categories.id'], name=op.f('fk_categories_superseded_by_category_id_categories'), ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_categories_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_categories')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_categories_user_natural_key'),
     schema='accounting'
     )
     op.create_index('ix_categories_parent_category_id_user_id', 'categories', ['parent_category_id', 'user_id'], unique=False, schema='accounting')
+    op.create_index('ix_categories_superseded_by_category_id_user_id', 'categories', ['superseded_by_category_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('goals',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -187,8 +192,10 @@ def _create_tables() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
     sa.Column('natural_key', sa.String(), nullable=False),
+    sa.Column('origin', sa.String(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint("origin IN ('imported', 'manual')", name=op.f('ck_transactions_origin')),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_transactions_user_id_users'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id', name=op.f('pk_transactions')),
     sa.UniqueConstraint('user_id', 'natural_key', name='uq_transactions_user_natural_key'),
@@ -347,29 +354,6 @@ def _create_tables() -> None:
     )
     op.create_index('ix_goal_automations_goal_id_user_id', 'goal_automations', ['goal_id', 'user_id'], unique=False, schema='accounting')
     op.create_index('uq_goal_automations_user_withdrawal_goal', 'goal_automations', ['user_id', 'goal_id'], unique=True, schema='accounting', postgresql_where=sa.text("direction = 'withdrawal'"))
-    op.create_table('manual_transfers',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('user_id', sa.UUID(), nullable=False),
-    sa.Column('natural_key', sa.String(), nullable=False),
-    sa.Column('stage', sa.String(), nullable=False),
-    sa.Column('date', sa.DateTime(), nullable=False),
-    sa.Column('from_account_id', sa.UUID(), nullable=False),
-    sa.Column('to_account_id', sa.UUID(), nullable=False),
-    sa.Column('from_amount', sa.Numeric(precision=18, scale=4), nullable=False),
-    sa.Column('to_amount', sa.Numeric(precision=18, scale=4), nullable=False),
-    sa.Column('description', sa.String(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.CheckConstraint("stage IN ('manual_transfer')", name=op.f('ck_manual_transfers_stage')),
-    sa.ForeignKeyConstraint(['from_account_id'], ['accounting.accounts.id'], name=op.f('fk_manual_transfers_from_account_id_accounts')),
-    sa.ForeignKeyConstraint(['to_account_id'], ['accounting.accounts.id'], name=op.f('fk_manual_transfers_to_account_id_accounts')),
-    sa.ForeignKeyConstraint(['user_id'], ['users.id'], name=op.f('fk_manual_transfers_user_id_users'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_manual_transfers')),
-    sa.UniqueConstraint('user_id', 'natural_key', name='uq_manual_transfers_user_natural_key'),
-    schema='accounting'
-    )
-    op.create_index('ix_manual_transfers_from_account_id_user_id', 'manual_transfers', ['from_account_id', 'user_id'], unique=False, schema='accounting')
-    op.create_index('ix_manual_transfers_to_account_id_user_id', 'manual_transfers', ['to_account_id', 'user_id'], unique=False, schema='accounting')
     op.create_table('opening_balances',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('user_id', sa.UUID(), nullable=False),
@@ -738,9 +722,6 @@ def _drop_tables() -> None:
     op.drop_table('posting_merges', schema='accounting')
     op.drop_index('ix_opening_balances_account_id_user_id', table_name='opening_balances', schema='accounting')
     op.drop_table('opening_balances', schema='accounting')
-    op.drop_index('ix_manual_transfers_to_account_id_user_id', table_name='manual_transfers', schema='accounting')
-    op.drop_index('ix_manual_transfers_from_account_id_user_id', table_name='manual_transfers', schema='accounting')
-    op.drop_table('manual_transfers', schema='accounting')
     op.drop_index('uq_goal_automations_user_withdrawal_goal', table_name='goal_automations', schema='accounting', postgresql_where=sa.text("direction = 'withdrawal'"))
     op.drop_index('ix_goal_automations_goal_id_user_id', table_name='goal_automations', schema='accounting')
     op.drop_table('goal_automations', schema='accounting')
@@ -765,6 +746,7 @@ def _drop_tables() -> None:
     op.drop_table('other_assets', schema='accounting')
     op.drop_table('llm_usage', schema='accounting')
     op.drop_table('goals', schema='accounting')
+    op.drop_index('ix_categories_superseded_by_category_id_user_id', table_name='categories', schema='accounting')
     op.drop_index('ix_categories_parent_category_id_user_id', table_name='categories', schema='accounting')
     op.drop_table('categories', schema='accounting')
     op.drop_index('ix_accounts_parent_account_id_user_id', table_name='accounts', schema='accounting')

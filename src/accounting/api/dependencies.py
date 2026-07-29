@@ -18,13 +18,13 @@ from sqlalchemy.orm import Session
 from accounting.config import AccountingConfig
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.categorization import (
+    apply_category_redirects,
     apply_manual_overrides,
     apply_posting_merges,
     apply_posting_splits,
     apply_rules,
 )
 from accounting.ledger.currency import DisplayCurrency
-from accounting.ledger.manual_transfers import postings_for_manual_transfers
 from accounting.ledger.transfers import apply_transfer_links
 from accounting.market_data import exchange_rates
 from accounting.models import CurrencyCode
@@ -32,6 +32,7 @@ from accounting.precedence import OVERLAY_PRECEDENCE
 from accounting.repositories.interpretation import (
     load_overrides,
 )
+from accounting.repositories.taxonomy import load_category_redirects
 from accounting.store import (
     AccountingStore,
     load_store,
@@ -59,9 +60,6 @@ def _overlay_appliers(
     session: Session,
     user_id: uuid.UUID,
     store: AccountingStore,
-    *,
-    since: date | None,
-    until: date | None,
 ) -> dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]]:
     """Bind one applier per declared overlay stage, so the caller only has to walk the declared order.
 
@@ -73,16 +71,18 @@ def _overlay_appliers(
     that makes precedence data rather than the line order of a function
     body.
 
+    Every stage here is per-posting, so none of them needs the caller's
+    date window: whatever `load_ledger` returned is already scoped. The
+    retired `manual_transfer` stage was the sole exception — it generated
+    postings that bypassed that filter and had to re-apply it by hand — and
+    it stopped being one when a manual transfer became a real transaction.
+
     Parameters
     ----------
     session, user_id
         See `_resolved_postings_and_store`.
     store
         The already-loaded store the overlay rows come from.
-    since, until
-        The caller's date window, applied to the manual-transfer stage's
-        generated postings — every other stage is per-posting and needs no
-        window of its own (see `_resolved_postings_and_store`).
 
     Returns
     -------
@@ -95,23 +95,11 @@ def _overlay_appliers(
         If a declared stage has no applier registered here — an overlay
         that would otherwise silently never be applied.
     """
-
-    def apply_manual_transfers(postings: pl.DataFrame) -> pl.DataFrame:
-        if not store.manual_transfers:
-            return postings
-        manual = postings_for_manual_transfers(store.manual_transfers, store.accounts)
-        if since is not None:
-            manual = manual.filter(pl.col("posted_at").dt.date() >= since)
-        if until is not None:
-            manual = manual.filter(pl.col("posted_at").dt.date() <= until)
-        return pl.concat([postings, manual], how="vertical")
-
     appliers: dict[OverlayStage, Callable[[pl.DataFrame], pl.DataFrame]] = {
         "counterparty": lambda postings: apply_rules(postings, store.rules, store.accounts),
         "split": lambda postings: apply_posting_splits(postings, store.posting_splits),
         "override": lambda postings: apply_manual_overrides(postings, load_overrides(session, user_id)),
         "merge": lambda postings: apply_posting_merges(postings, store.posting_merges),
-        "manual_transfer": apply_manual_transfers,
         "link": lambda postings: apply_transfer_links(postings, store.transfer_links),
     }
     missing = [stage for stage in OVERLAY_PRECEDENCE if stage not in appliers]
@@ -135,6 +123,16 @@ def _resolved_postings_and_store(
     rationale behind the order. This function walks it; it does not define
     it, and adding a stage does not mean finding the right line here to
     insert a call at.
+
+    One step runs before the walk and is deliberately not a stage:
+    `ledger.categorization.apply_category_redirects` resolves the category
+    a posting was *imported* under into the one it means today. Postings
+    are raw and never rewritten (DB-audit D14), so a category rename,
+    merge, or delete retires a `categories` row instead of touching them
+    (see `accounting.db.core.Category`) — and this is where that retirement
+    is read back. It is a dimension lookup rather than an overlay, and it
+    necessarily precedes all five stages because each of them reads or
+    writes a category.
 
     A rule only ever repoints a posting at an account that already exists
     in the store, never creates one — so unlike importing a statement
@@ -165,10 +163,10 @@ def _resolved_postings_and_store(
         duplicate purely by transaction id, from `store.posting_merges`
         (loaded in full, independently of `since`/`until`), never by
         checking whether the transaction it was merged into is also
-        present in this same date-limited frame. `store.manual_transfers`
-        (added by the `manual_transfer` stage, also independent of
-        `load_ledger`'s own filter) is the one thing still filtered again
-        afterward, so a transfer dated outside the window doesn't leak in.
+        present in this same date-limited frame. Manual transfers used to
+        be the one exception, generated outside `load_ledger` and so
+        needing the window re-applied by hand; they are real postings now
+        and the SQL filter covers them like everything else.
     until
         Last day to include, inclusive. Same reasoning as `since`.
 
@@ -179,8 +177,8 @@ def _resolved_postings_and_store(
     """
     raw = load_ledger(session, user_id, since=since, until=until)
     store = load_store(session, user_id)
-    appliers = _overlay_appliers(session, user_id, store, since=since, until=until)
-    resolved = raw
+    appliers = _overlay_appliers(session, user_id, store)
+    resolved = apply_category_redirects(raw, load_category_redirects(session, user_id))
     for stage in OVERLAY_PRECEDENCE:
         resolved = appliers[stage](resolved)
     return resolved, store

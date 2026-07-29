@@ -1,10 +1,19 @@
 """The accounts aggregate: the accounts money sits in, their opening balances, and the manual transfers between them.
 
-Three tables, one root. `opening_balances` and `manual_transfers` both
-foreign-key straight into `accounts` and have no independent existence —
-an opening balance is a property of one account, a manual transfer is a
-pair of them — so they belong to the same aggregate rather than to
-repositories of their own.
+Two tables and one projection. `opening_balances` foreign-keys straight
+into `accounts` and has no independent existence — an opening balance is a
+property of one account — so it belongs to this aggregate rather than to a
+repository of its own.
+
+Manual transfers used to be a third table, `manual_transfers`, holding a
+date, two accounts, two amounts and a description: everything a
+`transactions` row plus two `postings` already expressed, expressed a
+second and incompatible way. They are ordinary ledger rows now — one
+`manual`-origin transaction with two balancing legs — and
+`load_manual_transfers`/`insert_manual_transfers` stay here, as the
+projection between that storage and the pair-shaped `models.ManualTransfer`
+the API speaks, because closing an account is the only thing that creates
+one and `close_account` is an accounts-aggregate operation.
 
 `accounts` itself is upsert-and-pruned rather than wiped and reinserted
 (see `db.base.upsert_and_prune`): the ledger's `postings.account_id` is a
@@ -17,6 +26,8 @@ parent exists.
 
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
@@ -119,10 +130,10 @@ def replace_accounts(session: Session, user_id: uuid.UUID, accounts: Iterable[Ac
     swept up by the first pass's prune.
 
     A caller that prunes must have already cleared or repointed everything
-    referencing the accounts being dropped — `opening_balances`,
-    `manual_transfers`, and the ledger's own `postings` all foreign-key
-    into `accounts`, and a still-referenced delete fails loudly here rather
-    than silently orphaning history.
+    referencing the accounts being dropped — `opening_balances` and the
+    ledger's own `postings` (a manual transfer's two legs included) both
+    foreign-key into `accounts`, and a still-referenced delete fails loudly
+    here rather than silently orphaning history.
 
     Parameters
     ----------
@@ -321,8 +332,56 @@ def remove_opening_balance(session: Session, user_id: uuid.UUID, account_id: str
     return deleted > 0
 
 
+_MANUAL_TRANSACTION_PREFIX = "manual-transfer:"
+"""What a manual transfer's `transactions.natural_key` is built from its `transfer_id`.
+
+Unchanged from when `ledger.manual_transfers` synthesized these postings
+on every read, so every posting id a manual transfer has ever had
+(`manual-transfer:<transfer_id>:from` / `:to`) is the id it still has now
+that the rows are real — nothing that referenced one had to be migrated.
+"""
+
+_LEG_COUNT = 2
+"""A manual transfer is exactly two postings; anything else isn't one."""
+
+
+def _manual_transfer_from_legs(
+    natural_key: str, legs: list[adb.Posting], account_natural_key_by_id: dict[uuid.UUID, str]
+) -> ManualTransfer:
+    """Rebuild the `ManualTransfer` shape from the two postings that store it.
+
+    The signed pair `insert_manual_transfers` wrote is read back the way it
+    was written: the more-negative leg is the *from* side, the other the
+    *to* side, and each magnitude is that side's own amount in its own
+    account's currency. Sorting rather than testing each leg's sign is what
+    makes that total — the two legs of a real transfer always straddle
+    zero, but nothing here has to fall over if one somehow doesn't.
+
+    Returns
+    -------
+    ManualTransfer
+    """
+    outgoing, incoming = sorted(legs, key=lambda leg: leg.amount)
+    return ManualTransfer(
+        transfer_id=natural_key.removeprefix(_MANUAL_TRANSACTION_PREFIX),
+        date=outgoing.posted_at,
+        from_account_id=account_natural_key_by_id[outgoing.account_id],
+        to_account_id=account_natural_key_by_id[incoming.account_id],
+        from_amount=-outgoing.amount,
+        to_amount=incoming.amount,
+        description=outgoing.description,
+    )
+
+
 def load_manual_transfers(session: Session, user_id: uuid.UUID) -> list[ManualTransfer]:
-    """Read every hand-recorded transfer between two accounts.
+    """Read every hand-recorded transfer back out of the ledger it now lives in.
+
+    There is no `manual_transfers` table any more: a manual transfer is a
+    `transactions` row with `origin = "manual"` and its two balancing
+    postings (see `models.ManualTransfer`), so this is a read *of the
+    ledger*, projected back into the pair-shaped model the API still speaks.
+    A transaction whose legs have somehow stopped being a pair is skipped
+    rather than guessed at.
 
     Parameters
     ----------
@@ -334,68 +393,49 @@ def load_manual_transfers(session: Session, user_id: uuid.UUID) -> list[ManualTr
     Returns
     -------
     list[ManualTransfer]
+        Ordered by `transfer_id`, so the store this feeds is the same list
+        every time rather than whatever order the rows happened to come
+        back in.
     """
-    rows = list(session.query(adb.ManualTransfer).filter_by(user_id=user_id))
+    transactions = list(session.query(adb.Transaction).filter_by(user_id=user_id, origin="manual"))
+    if not transactions:
+        return []
+    natural_key_by_transaction_id = {row.id: row.natural_key for row in transactions}
+    legs_by_transaction_id: dict[uuid.UUID, list[adb.Posting]] = defaultdict(list)
+    for posting in (
+        session
+        .query(adb.Posting)
+        .filter_by(user_id=user_id)
+        .filter(adb.Posting.transaction_id.in_(natural_key_by_transaction_id))
+    ):
+        legs_by_transaction_id[posting.transaction_id].append(posting)
     account_natural_key_by_id = natural_keys_by_id(
-        session, adb.Account, user_id, [row.from_account_id for row in rows] + [row.to_account_id for row in rows]
+        session, adb.Account, user_id, [leg.account_id for legs in legs_by_transaction_id.values() for leg in legs]
     )
-    return [
-        ManualTransfer(
-            transfer_id=row.natural_key,
-            date=row.date,
-            from_account_id=account_natural_key_by_id[row.from_account_id],
-            to_account_id=account_natural_key_by_id[row.to_account_id],
-            from_amount=row.from_amount,
-            to_amount=row.to_amount,
-            description=row.description,
-        )
-        for row in rows
+    transfers = [
+        _manual_transfer_from_legs(natural_key, legs_by_transaction_id[transaction_id], account_natural_key_by_id)
+        for transaction_id, natural_key in natural_key_by_transaction_id.items()
+        if len(legs_by_transaction_id[transaction_id]) == _LEG_COUNT
     ]
-
-
-def replace_manual_transfers(session: Session, user_id: uuid.UUID, transfers: Iterable[ManualTransfer]) -> None:
-    """Replace this user's whole manual-transfer list, touching no other table.
-
-    Wipe-and-reinsert, same reasoning as `replace_opening_balances`; the
-    accounts on both ends must already exist.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose transfers these are.
-    transfers
-        The complete desired set.
-    """
-    session.query(adb.ManualTransfer).filter_by(user_id=user_id).delete()
-    session.flush()
-    session.add_all(
-        adb.ManualTransfer(
-            id=derive_id(user_id, "manual_transfers", transfer.transfer_id),
-            user_id=user_id,
-            natural_key=transfer.transfer_id,
-            date=transfer.date,
-            from_account_id=_account_id(user_id, transfer.from_account_id),
-            to_account_id=_account_id(user_id, transfer.to_account_id),
-            from_amount=transfer.from_amount,
-            to_amount=transfer.to_amount,
-            description=transfer.description,
-        )
-        for transfer in transfers
-    )
-    session.flush()
+    return sorted(transfers, key=lambda transfer: transfer.transfer_id)
 
 
 def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Session, user_id: uuid.UUID) -> None:
-    """Insert manual-transfer rows additively, touching no existing transfer.
+    """Record each transfer as one `manual`-origin transaction with two balancing postings, additively.
 
     Scoped counterpart to routing these through the whole-store save, which
     blanket-deleted and reinserted every manual transfer from the caller's
     snapshot — so recording a transfer from a stale snapshot could drop a
-    concurrently-added one. Each row is keyed by its own derived id, so
+    concurrently-added one. Every row is keyed by its own derived id, so
     re-recording the same transfer is a harmless upsert rather than a
     duplicate.
+
+    The two legs are the signed pair `models.ManualTransfer`'s positivity
+    constraints exist to protect: `-from_amount` leaves one account,
+    `+to_amount` arrives at the other, each in its *own* account's
+    currency, never the other side's — which is why a cross-currency
+    transfer is stored as the two magnitudes the user actually entered
+    rather than one amount and a rate.
 
     Parameters
     ----------
@@ -406,35 +446,59 @@ def insert_manual_transfers(transfers: Iterable[ManualTransfer], session: Sessio
     user_id
         Whose transfers these are.
     """
+    transfers = list(transfers)
+    if not transfers:
+        return
+    currency_by_account_id = {
+        row.natural_key: row.currency
+        for row in session.query(adb.Account.natural_key, adb.Account.currency).filter_by(user_id=user_id)
+    }
     for transfer in transfers:
+        transaction_natural_key = f"{_MANUAL_TRANSACTION_PREFIX}{transfer.transfer_id}"
+        transaction_id = derive_id(user_id, "transactions", transaction_natural_key)
         session.execute(
             text(
                 """
-                INSERT INTO accounting.manual_transfers
-                    (id, user_id, natural_key, stage, date, from_account_id, to_account_id,
-                     from_amount, to_amount, description)
-                VALUES
-                    (:id, :user_id, :natural_key, 'manual_transfer', :date, :from_account_id,
-                     :to_account_id, :from_amount, :to_amount, :description)
-                ON CONFLICT (id) DO UPDATE SET
-                    date = EXCLUDED.date,
-                    from_account_id = EXCLUDED.from_account_id,
-                    to_account_id = EXCLUDED.to_account_id,
-                    from_amount = EXCLUDED.from_amount,
-                    to_amount = EXCLUDED.to_amount,
-                    description = EXCLUDED.description
+                INSERT INTO accounting.transactions (id, user_id, natural_key, origin)
+                VALUES (:id, :user_id, :natural_key, 'manual')
+                ON CONFLICT (id) DO NOTHING
                 """
             ),
-            {
-                "id": str(derive_id(user_id, "manual_transfers", transfer.transfer_id)),
-                "user_id": str(user_id),
-                "natural_key": transfer.transfer_id,
-                "date": transfer.date,
-                "from_account_id": str(_account_id(user_id, transfer.from_account_id)),
-                "to_account_id": str(_account_id(user_id, transfer.to_account_id)),
-                "from_amount": transfer.from_amount,
-                "to_amount": transfer.to_amount,
-                "description": transfer.description,
-            },
+            {"id": str(transaction_id), "user_id": str(user_id), "natural_key": transaction_natural_key},
         )
+        legs = (
+            (f"{transaction_natural_key}:from", transfer.from_account_id, -transfer.from_amount),
+            (f"{transaction_natural_key}:to", transfer.to_account_id, transfer.to_amount),
+        )
+        for posting_natural_key, account_id, amount in legs:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO accounting.postings
+                        (id, user_id, natural_key, transaction_id, account_id, posted_at,
+                         amount, currency, description, meta)
+                    VALUES
+                        (:id, :user_id, :natural_key, :transaction_id, :account_id, :posted_at,
+                         :amount, :currency, :description, :meta)
+                    ON CONFLICT (id) DO UPDATE SET
+                        account_id = EXCLUDED.account_id,
+                        posted_at = EXCLUDED.posted_at,
+                        amount = EXCLUDED.amount,
+                        currency = EXCLUDED.currency,
+                        description = EXCLUDED.description
+                    """
+                ),
+                {
+                    "id": str(derive_id(user_id, "postings", posting_natural_key)),
+                    "user_id": str(user_id),
+                    "natural_key": posting_natural_key,
+                    "transaction_id": str(transaction_id),
+                    "account_id": str(_account_id(user_id, account_id)),
+                    "posted_at": transfer.date,
+                    "amount": amount,
+                    "currency": currency_by_account_id[account_id],
+                    "description": transfer.description,
+                    "meta": json.dumps({"source": "manual_transfer"}),
+                },
+            )
     session.flush()

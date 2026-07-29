@@ -2219,6 +2219,51 @@ def test_category_rename_merges_into_an_existing_category_and_repoints_postings(
     assert grocery_leg["category_id"] == "expense:food"
 
 
+def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_category(client) -> None:
+    """DB-audit D14: the merge is resolved on read, never written back onto the posting.
+
+    `GET /ledger/export` is the raw ledger, so it still names the category
+    the file itself did; `GET /postings` — the same rows with the taxonomy's
+    redirects applied — names the survivor.
+    """
+    account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
+    csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
+    client.post(
+        "/api/accounting/import/canonical",
+        files={"file": ("generic.csv", csv_text, "text/csv")},
+        data={
+            "institution": "Generic Bank",
+            "account_kind": "checking",
+            "account_id": account["account_id"],
+            "account_name": "Generic Checking",
+        },
+    )
+    store = client.get("/api/accounting/store").json()
+    nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
+    client.put(
+        "/api/accounting/categories",
+        json={
+            **store["categories"],
+            "expense:food": {
+                "category_id": "expense:food",
+                "name": "Food",
+                "classification": "expense",
+                "color": "#111111",
+            },
+        },
+    )
+
+    client.post(f"/api/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
+
+    raw = client.get("/api/accounting/ledger/export").json()
+    raw_leg = next(p for p in raw if p["account_id"] == account["account_id"])
+    assert raw_leg["category_id"] == nourriture["category_id"]
+
+    postings = client.get("/api/accounting/postings").json()
+    resolved_leg = next(p for p in postings if p["account_id"] == account["account_id"])
+    assert resolved_leg["category_id"] == "expense:food"
+
+
 def test_category_rename_merge_repoints_a_manual_override(client) -> None:
     account = _create_account(client, name="Generic Checking", kind="checking", institution="Generic Bank")
     csv_text = "Date,Description,Amount,Category\n2026-06-30,Store,-42.50,Nourriture\n"
@@ -3219,6 +3264,41 @@ def test_close_account_records_a_transfer_that_shows_up_as_real_postings(client)
     balances = {row["account_id"]: row["balance"] for row in net_worth["accounts"]}
     assert balances[checking["account_id"]] == pytest.approx(-100.0)
     assert balances[savings["account_id"]] == pytest.approx(100.0)
+
+
+def test_close_account_records_the_transfer_as_a_manual_origin_transaction_in_the_raw_ledger(client) -> None:
+    """A manual transfer is a real transaction now, not a mini-ledger replayed over one.
+
+    `GET /ledger/export` is the raw ledger, before any overlay stage runs
+    — the two legs showing up there is what proves they are stored rows
+    rather than something the resolution pipeline synthesized.
+    """
+    checking = _create_account(client, name="BNP Checking", kind="checking", institution="BNP", currency="USD")
+    savings = _create_account(client, name="BNP Savings", kind="savings", institution="BNP", currency="USD")
+    client.post(
+        f"/api/accounting/accounts/{checking['account_id']}/close",
+        json={
+            "transfers": [
+                {
+                    "transfer_id": "close-bnp-checking-0001",
+                    "date": "2026-06-30T00:00:00",
+                    "from_account_id": checking["account_id"],
+                    "to_account_id": savings["account_id"],
+                    "from_amount": 100.0,
+                    "to_amount": 100.0,
+                    "description": "Closing out BNP checking",
+                }
+            ]
+        },
+    )
+
+    raw = client.get("/api/accounting/ledger/export").json()
+    legs = {posting["posting_id"]: posting for posting in raw}
+    assert legs["manual-transfer:close-bnp-checking-0001:from"]["amount"] == pytest.approx(-100.0)
+    assert legs["manual-transfer:close-bnp-checking-0001:to"]["amount"] == pytest.approx(100.0)
+    assert legs["manual-transfer:close-bnp-checking-0001:from"]["transaction_id"] == (
+        "manual-transfer:close-bnp-checking-0001"
+    )
 
 
 def test_close_account_rejects_a_transfer_whose_from_account_doesnt_match(client) -> None:

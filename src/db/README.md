@@ -91,7 +91,7 @@ that get fully rewritten on every save, or re-imported from an external
 source (so "insert, or recognize this already exists" has to work without
 a lookup). This is the majority of user-owned tables:
 `accounting.accounts`, `categories`, `tags`, `transactions`, `postings`,
-`manual_transfers`, `other_assets`, `posting_merges`, `suggestions`,
+`other_assets`, `posting_merges`, `suggestions`,
 `goals`, `goal_contributions`, `goal_automations`,
 `categorization_rules`, `budgets`, `simulator_scenarios`;
 `trades.broker_connections`, `ledger_events`.
@@ -145,8 +145,9 @@ table is now owned by one per-aggregate repository under
 `accounting.repositories`, each writing only the rows a request actually
 names:
 
-- `accounting.repositories.accounts` owns `accounts`,
-  `opening_balances`, `manual_transfers`;
+- `accounting.repositories.accounts` owns `accounts` and
+  `opening_balances` (and projects manual transfers on and off the
+  ledger's own `transactions`/`postings` — see below);
 - `accounting.repositories.taxonomy` owns `categories`, `tags`, and — for
   want of a better home so far — `other_assets`, `simulator_scenarios`;
 - `accounting.repositories.planning` owns `budgets`, `goals`,
@@ -191,7 +192,7 @@ derived: a row deleted and reinserted with the same `natural_key` comes
 back with the *exact same* `id` it had before, so nothing that
 (hypothetically) referenced it would ever see it as "gone," even
 mid-rewrite.
-This is the technique for 16 tables — several of which *are* foreign-keyed
+This is the technique for 15 tables — several of which *are* foreign-keyed
 against by others in the same wipe-and-reinsert set (e.g. `posting_split_legs`
 → `posting_splits`, `goal_contributions`/`goal_automations` → `goals`),
 which is exactly why the derived id must stay stable: a reinserted parent
@@ -201,8 +202,7 @@ Every one of them is now behind a `replace_*` function that runs only
 when a request genuinely submits that whole list:
 
 - `repositories.accounts` (`PUT /accounts/{id}/opening-balance`'s
-  whole-list sibling, and the store round-trip): `opening_balances`,
-  `manual_transfers`.
+  whole-list sibling, and the store round-trip): `opening_balances`.
 - `repositories.taxonomy` (`PUT /other-assets`, `PUT /simulator/scenarios`):
   `other_assets`, `simulator_scenarios`.
 - `repositories.planning` (`PUT /budgets`, `PUT /goals`, ...):
@@ -237,7 +237,7 @@ this — `accounts` and `categories` (`repositories.accounts`/`taxonomy`'s
 `replace_accounts`/`replace_categories`) and `tags` (`replace_tags`) —
 because `postings.account_id`/`category_id`/`subcategory_id` and
 `posting_tags.tag_id` are real foreign keys into them. Wiping these the
-same way as the 16 above would mean, for one instant mid-transaction, a
+same way as the 15 above would mean, for one instant mid-transaction, a
 category your real transaction history still points at doesn't exist —
 Postgres would reject that outright (see "What happens if you delete
 something still in use" below), turning every single write into a hard
@@ -256,7 +256,7 @@ moment a real reference existed. This is exactly the same "does anything
 foreign-key against this?" question the primary-key section above asks,
 applied one layer up: at the *write path* instead of the *id* itself.
 
-**Why the 16 wipe-and-reinsert tables stay small**: every one of them
+**Why the 15 wipe-and-reinsert tables stay small**: every one of them
 holds *settings you configured by hand* — a budget you typed a number
 into, a savings goal you created, a transfer rule you wrote — never
 anything an import can add on its own. A heavy user might have dozens of
@@ -323,6 +323,22 @@ category, subcategory, or account any posting still points to fails the
 whole transaction with a foreign-key-violation error, before anything is
 written. Nothing is silently orphaned, and no posting is ever
 auto-deleted as a side effect of deleting something it references.
+
+For `categories`, that rejection is not something the delete/merge paths
+have to dance around any more, because **a category in use is never
+deleted at all — it is retired**. `accounting.db.core.Category` carries
+`retired_at` plus a `superseded_by_category_id` self-reference, and
+`repositories.taxonomy.retire_categories` sets them instead of issuing a
+`DELETE`: the row leaves the live tree (`load_categories` returns only
+live rows, so nothing in the app sees it) while every posting's foreign
+key into it stays valid forever. That is what lets a posting's imported
+`category_id` be raw provenance that is never rewritten (DB-audit D14):
+what a merged-away category *resolves to* is read back at query time from
+its successor (`load_category_redirects`), never written down onto the
+rows that point at it. `replace_categories`' prune deliberately skips
+retired rows, since no caller-supplied tree could ever contain one; and
+writing a category again clears its retirement, which is how re-creating
+one by name resurrects the same row rather than colliding with it.
 
 `posting_tags` (linking a posting to a tag) is the one deliberate
 exception — it's declared with `ondelete="CASCADE"` on both

@@ -20,12 +20,17 @@ from db.base import Base
 
 _STAGE_CHECK_VALUE = re.compile(r"'([^']+)'")
 
-_EXPECTED_ORDER = ("counterparty", "split", "override", "merge", "manual_transfer", "link")
+_EXPECTED_ORDER = ("counterparty", "split", "override", "merge", "link")
 """The order the pipeline used to hard-code, written out once here.
 
 Deliberately a literal rather than derived from `OVERLAY_PRECEDENCE`:
 reordering the declaration is exactly the change that silently alters every
 resolved ledger, so it has to break a test that spells the old order out.
+
+`manual_transfer` used to sit between `merge` and `link`, generating
+postings out of a table of its own. It is gone, not reordered: a manual
+transfer is a real `manual`-origin transaction now, so its postings arrive
+with the raw ledger and there is nothing left for a stage to contribute.
 """
 
 
@@ -59,9 +64,7 @@ def test_the_precedence_tuple_is_the_vocabulary_itself() -> None:
 
 def test_every_declared_stage_has_an_applier(db_session, test_user_id) -> None:
     """A stage with no applier is an overlay that silently never runs."""
-    appliers = _overlay_appliers(
-        db_session, test_user_id, load_store(db_session, user_id=test_user_id), since=None, until=None
-    )
+    appliers = _overlay_appliers(db_session, test_user_id, load_store(db_session, user_id=test_user_id))
     assert set(appliers) == set(OVERLAY_PRECEDENCE)
 
 
@@ -73,12 +76,25 @@ def test_every_stage_carrying_table_pins_itself_to_a_declared_stage() -> None:
 
 
 def test_every_overlay_table_the_resolver_reads_declares_its_stage() -> None:
-    """The tables behind the six stages, each pinned to the one (or two) it is applied at."""
+    """The tables behind the five stages, each pinned to the one (or two) it is applied at."""
     assert _stage_checks() == {
         "categorization_rules": {"counterparty", "override"},
         "posting_splits": {"split"},
         "posting_overrides": {"override"},
         "posting_merges": {"merge"},
-        "manual_transfers": {"manual_transfer"},
         "transfer_links": {"link"},
     }
+
+
+def test_category_resolution_is_not_an_overlay_and_declares_no_stage() -> None:
+    """`categories` is a dimension the overlays point *into*, not a layer over the ledger.
+
+    Resolving a posting's imported category through the taxonomy's own
+    retirements runs before the first stage (see
+    `api.dependencies._resolved_postings_and_store`), and deliberately
+    carries no `stage` column: giving it one would declare a precedence
+    relative to the overlays that it does not have, since every overlay's
+    own `category_id` is a foreign key into the same table.
+    """
+    assert "categories" not in _stage_checks()
+    assert "taxonomy" not in OVERLAY_PRECEDENCE

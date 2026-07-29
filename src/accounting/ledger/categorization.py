@@ -250,6 +250,43 @@ def resolved_transfer_rule_ids_by_transaction(
     return dict(zip(matches["transaction_id"].to_list(), matches["rule_id"].to_list(), strict=True))
 
 
+def apply_category_redirects(postings: pl.DataFrame, redirects: dict[str, str | None]) -> pl.DataFrame:
+    """Resolve the category a posting was *imported* under into the one it means today.
+
+    A posting stores the category its statement named and is never
+    rewritten afterwards (see `accounting.db.core.Posting`), so renaming a
+    category into an existing one, or deleting it outright, changes nothing
+    in `postings` at all — it retires the `categories` row instead
+    (`accounting.db.core.Category`), and this is where that retirement
+    becomes visible. A merged-away category's postings pick up its
+    successor; a deleted category's postings go back to uncategorized,
+    the same state a posting that was never categorized is already in.
+
+    Runs before the first overlay stage rather than as one of them — see
+    `accounting.precedence` for why a dimension lookup isn't an overlay.
+    Anything an overlay sets afterwards (a split leg's category, an
+    override's) is already a live category, since those are real foreign
+    keys the merge/delete endpoints repoint directly.
+
+    Parameters
+    ----------
+    postings
+        The raw posting ledger, as `accounting.importers.ingest.load_ledger` returns it.
+    redirects
+        Retired category natural key to its successor's, or `None` for one
+        deleted outright — `accounting.repositories.taxonomy.load_category_redirects`.
+        A no-op when empty, which is the usual case.
+
+    Returns
+    -------
+    polars.DataFrame
+        The same postings, with `category_id`/`subcategory_id` resolved.
+    """
+    if not redirects or postings.is_empty():
+        return postings
+    return postings.with_columns(pl.col("category_id").replace(redirects), pl.col("subcategory_id").replace(redirects))
+
+
 def apply_posting_splits(postings: pl.DataFrame, splits: dict[str, PostingSplit]) -> pl.DataFrame:
     """Replace each split posting with its legs — the one place a `Transaction` grows past two `Posting`s.
 

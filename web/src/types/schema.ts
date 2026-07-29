@@ -184,13 +184,21 @@ export interface paths {
      * @description Delete a category (and, for a top-level one, every subcategory with it), uncategorizing its postings.
      *
      *     Every posting currently carrying `category_id` (or one of its
-     *     subcategories) as its own `category_id`/`subcategory_id` has that
-     *     field cleared rather than left dangling — the same "uncategorized"
-     *     state a posting that was never categorized at all is already in.
-     *     Anything else referencing the deleted id(s) is cleared where the
-     *     field is optional (`TransferRule`, `PostingSplitLeg`) or dropped
-     *     entirely where it isn't (`Budget`, `CategoryPattern` both require a
-     *     `category_id`) — see `store.uncategorize_category_ids`.
+     *     subcategories) reads as uncategorized afterwards — the same state a
+     *     posting that was never categorized at all is already in — without a
+     *     single posting row being written. The category is *retired* rather
+     *     than deleted (see `accounting.db.core.Category` and
+     *     `repositories.taxonomy.retire_categories`): its row stays, so the raw
+     *     import provenance on those postings keeps a valid foreign key, and it
+     *     leaves the live tree with no successor, which is what
+     *     `repositories.taxonomy.load_category_redirects` resolves to "nothing".
+     *
+     *     Anything else referencing the deleted id(s) *is* rewritten, because
+     *     those references are the user's own decisions rather than raw
+     *     provenance: cleared where the field is optional (`TransferRule`,
+     *     `PostingSplitLeg`) or dropped entirely where it isn't (`Budget`,
+     *     `CategoryPattern` both require a `category_id`) — see
+     *     `store.uncategorize_category_ids`.
      *
      *     Returns
      *     -------
@@ -263,10 +271,14 @@ export interface paths {
      * Post Category Rename
      * @description Rename a category or subcategory, merging it into an existing same-named one if there is one.
      *
-     *     A merge repoints every reference to the merged-away id — postings
-     *     already in the ledger cache, manual per-posting overrides, transfer
-     *     rules, category patterns, budgets, and posting splits — onto the
-     *     surviving id, then removes the merged-away category entirely. See
+     *     A merge repoints every reference to the merged-away id that is a user
+     *     decision — manual per-posting overrides, transfer rules, category
+     *     patterns, budgets, and posting splits — onto the surviving id, and
+     *     *retires* the merged-away category rather than deleting it (see
+     *     `accounting.db.core.Category`). Stored postings are not touched at all:
+     *     the category one was imported under is raw provenance, and the
+     *     retirement's own successor is what makes it resolve to the survivor
+     *     from now on (`repositories.taxonomy.load_category_redirects`). See
      *     `store.plan_category_rename` for the exact matching rules: a top-level
      *     category only merges into another top-level category of the same
      *     classification; a subcategory only merges into a sibling under the
@@ -5765,6 +5777,28 @@ export interface components {
      *     stored exchange rate, so a transfer between two different currencies
      *     is exactly what the user says left one side and arrived on the other,
      *     not a computed conversion.
+     *
+     *     **This is a shape, not a table.** It used to be both: `manual_transfers`
+     *     was a parallel mini-ledger holding a date, two accounts, two amounts and
+     *     a description — everything `transactions` plus two `postings` already
+     *     express, expressed a second, incompatible way, which is why its rows had
+     *     to be turned into postings by a resolution stage of their own before any
+     *     balance could count them. A manual transfer is now stored as exactly
+     *     what it is: one `Transaction` with `origin = "manual"` and its two
+     *     balancing legs (see `repositories.accounts.insert_manual_transfers`,
+     *     which writes them, and `load_manual_transfers`, which reads this shape
+     *     back out of them). This model survives as the API's vocabulary for the
+     *     pair — "money left here, money arrived there" — and as the one place
+     *     the pair's own invariant lives.
+     *
+     *     That invariant is the positivity of both legs. `Posting.amount` is
+     *     signed by design (a debit is negative, a credit positive) and must stay
+     *     unconstrained, so the constraint cannot live on the storage the legs now
+     *     share with every imported posting; it lives here, on the only thing that
+     *     still expresses "the *from* amount" and "the *to* amount" as distinct,
+     *     directional quantities. `insert_manual_transfers` is what turns them
+     *     into the signed pair (`-from_amount`, `+to_amount`), so a negative
+     *     `from_amount` sneaking through would silently invert the transfer.
      */
     ManualTransfer: {
       /** Transfer Id */

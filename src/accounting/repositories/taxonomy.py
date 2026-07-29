@@ -23,6 +23,7 @@ reads and writes live here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import accounting.db as adb
@@ -31,7 +32,7 @@ from db.base import derive_id, upsert_and_prune
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from sqlalchemy.orm import Session
 
@@ -75,7 +76,14 @@ def _category_from_row(row: adb.Category, category_natural_key_by_id: dict[uuid.
 
 
 def _category_row(user_id: uuid.UUID, category: Category) -> adb.Category:
-    """Build the ORM row for one category.
+    """Build the ORM row for one live category.
+
+    Every row this builds is explicitly un-retired
+    (`retired_at`/`superseded_by_category_id` both `NULL`), which is what
+    makes writing a category the way back from retirement: re-creating
+    "Dining" by name, or an import minting it again, resurrects the row
+    that `UNIQUE(user_id, natural_key)` would otherwise refuse a second
+    copy of. Retirement is only ever *entered* through `retire_categories`.
 
     Returns
     -------
@@ -91,11 +99,18 @@ def _category_row(user_id: uuid.UUID, category: Category) -> adb.Category:
         if category.parent_category_id is not None
         else None,
         color=category.color,
+        retired_at=None,
+        superseded_by_category_id=None,
     )
 
 
 def load_categories(session: Session, user_id: uuid.UUID) -> dict[str, Category]:
-    """Read the whole category tree, keyed by natural key.
+    """Read the live category tree, keyed by natural key.
+
+    Retired categories (see `accounting.db.core.Category`) are excluded:
+    they are tombstones kept only so the postings imported under them keep
+    a valid foreign key, and nothing outside `load_category_redirects`
+    should ever see one.
 
     Parameters
     ----------
@@ -108,9 +123,123 @@ def load_categories(session: Session, user_id: uuid.UUID) -> dict[str, Category]
     -------
     dict[str, Category]
     """
-    rows = list(session.query(adb.Category).filter_by(user_id=user_id))
+    rows = list(session.query(adb.Category).filter_by(user_id=user_id, retired_at=None))
     category_natural_key_by_id = {row.id: row.natural_key for row in rows}
     return {row.natural_key: _category_from_row(row, category_natural_key_by_id) for row in rows}
+
+
+def _retired_natural_keys(session: Session, user_id: uuid.UUID) -> set[str]:
+    """Every natural key this user has a retired category row for.
+
+    Returns
+    -------
+    set[str]
+    """
+    return {
+        row.natural_key
+        for row in session.query(adb.Category.natural_key).filter(
+            adb.Category.user_id == user_id, adb.Category.retired_at.is_not(None)
+        )
+    }
+
+
+def load_category_redirects(session: Session, user_id: uuid.UUID) -> dict[str, str | None]:
+    """Map every retired category's natural key to what it resolves to today.
+
+    The read half of retirement, and the whole of how a category merge or
+    delete reaches the ledger: a posting stores the category it was
+    *imported* under and is never rewritten (DB-audit D14), so "Dining is
+    now Food & Drink" has to be answered here, at resolution time, rather
+    than baked onto the rows that used to point at it. See
+    `ledger.categorization.apply_category_redirects` for the frame-side
+    application, and `retire_categories` for the write.
+
+    Only one hop is ever needed. `retire_categories` collapses chains as it
+    writes them, so a category merged into one that is itself merged away
+    later points straight at the survivor rather than at a tombstone.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose taxonomy to read.
+
+    Returns
+    -------
+    dict[str, str | None]
+        Retired natural key to its successor's natural key, or `None` where
+        the category was deleted rather than merged (postings imported
+        under it resolve to uncategorized). Empty when nothing is retired,
+        which is the overwhelmingly common case.
+    """
+    rows = list(
+        session.query(adb.Category).filter(adb.Category.user_id == user_id, adb.Category.retired_at.is_not(None))
+    )
+    if not rows:
+        return {}
+    natural_key_by_id = {
+        row.id: row.natural_key
+        for row in session.query(adb.Category.id, adb.Category.natural_key).filter_by(user_id=user_id)
+    }
+    return {
+        row.natural_key: natural_key_by_id.get(row.superseded_by_category_id)
+        if row.superseded_by_category_id is not None
+        else None
+        for row in rows
+    }
+
+
+def retire_categories(session: Session, user_id: uuid.UUID, successors: Mapping[str, str | None]) -> None:
+    """Take categories out of the live tree, recording what (if anything) each folded into.
+
+    The write half of retirement — the *only* way a category leaves the
+    live tree once a posting could be pointing at it, and the reason
+    neither a merge nor a delete touches a single stored posting any more.
+    A row is marked retired in place rather than deleted, so
+    `postings.category_id`/`subcategory_id` (real foreign keys holding raw
+    import provenance) stay valid by construction instead of by the caller
+    remembering to clear them first.
+
+    Chains are collapsed as they are written: any tombstone already
+    pointing at one of `successors`' keys is repointed at that key's own
+    successor in the same pass, so `load_category_redirects` never has to
+    walk more than one hop and a tombstone can never name another
+    tombstone. That also degrades a merge into a delete correctly — merging
+    A into B and later deleting B leaves A resolving to nothing, which is
+    what deleting B means.
+
+    Scoped to exactly the named categories, so a concurrent rename or
+    delete of an unrelated category can't be reverted by this write the
+    way routing it through a whole-tree rewrite would (the race
+    `taxonomy.replace_categories`' own prune still runs, and the reason
+    this is not simply "write the tree without them").
+
+    Parameters
+    ----------
+    session
+        An open database session; the caller commits.
+    user_id
+        Whose categories these are.
+    successors
+        Natural key to retire, mapped to the natural key it merged into, or
+        `None` when it is being deleted outright. A no-op when empty.
+    """
+    if not successors:
+        return
+    retired_at = datetime.now(tz=UTC)
+    for natural_key, successor in successors.items():
+        retiring_id = _category_id(user_id, natural_key)
+        successor_id = _category_id(user_id, successor) if successor is not None else None
+        # Whatever already resolved *to* this category now resolves to
+        # whatever this category itself resolves to — one hop, always.
+        session.query(adb.Category).filter(
+            adb.Category.user_id == user_id, adb.Category.superseded_by_category_id == retiring_id
+        ).update({"superseded_by_category_id": successor_id}, synchronize_session=False)
+        session.query(adb.Category).filter(adb.Category.user_id == user_id, adb.Category.id == retiring_id).update(
+            {"retired_at": retired_at, "superseded_by_category_id": successor_id}, synchronize_session=False
+        )
+    session.flush()
 
 
 def replace_categories(
@@ -124,13 +253,21 @@ def replace_categories(
     the *complete* desired set, so a subcategory written in the second pass
     is never swept up by the first pass's prune.
 
+    Retired categories are never pruned, whatever the caller passes. They
+    are deliberately absent from every tree a caller can build (see
+    `load_categories`), so a prune driven by "what the live tree should be"
+    would otherwise delete exactly the tombstones that exist to keep the
+    postings imported under them foreign-key-valid — see
+    `accounting.db.core.Category` and `retire_categories`.
+
     A caller that prunes must have already cleared or repointed everything
-    referencing the categories being dropped — budgets, general budgets,
-    category patterns, split legs, manual overrides, and the ledger's own
-    postings all foreign-key into `categories` (see
-    `store.uncategorize_category_ids` and `store.remap_category_ids` for
-    what the delete and merge paths clear first). A still-referenced delete
-    fails loudly here rather than silently orphaning history.
+    referencing the *live* categories being dropped — budgets, category
+    patterns, split legs, and manual overrides all foreign-key into
+    `categories` (see `store.uncategorize_category_ids` and
+    `store.remap_category_ids` for what the delete and merge paths clear
+    first). Stored postings need no such pass: they point at raw import
+    provenance which is retired rather than removed. A still-referenced
+    delete fails loudly here rather than silently orphaning history.
 
     Parameters
     ----------
@@ -139,8 +276,9 @@ def replace_categories(
     user_id
         Whose categories these are.
     categories
-        The complete desired tree when `prune` is true; just the rows to
-        add or update when it isn't.
+        The complete desired *live* tree when `prune` is true; just the
+        rows to add or update when it isn't. Anything named here is also
+        un-retired (see `_category_row`).
     prune
         `False` makes this purely additive — the create paths
         (`POST /categories`, `POST /categories/{id}/subcategories`, an
@@ -149,6 +287,8 @@ def replace_categories(
     """
     categories = list(categories)
     keep_natural_keys = {category.category_id for category in categories}
+    if prune:
+        keep_natural_keys |= _retired_natural_keys(session, user_id)
     for has_parent in (False, True):
         rows = [
             _category_row(user_id, category)

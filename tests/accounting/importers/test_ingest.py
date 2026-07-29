@@ -17,8 +17,8 @@ from accounting.importers.ingest import (
     rebuild_from_raw_statements,
 )
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
-from accounting.models import Account, Posting
-from accounting.repositories.accounts import replace_accounts
+from accounting.models import Account, ManualTransfer, Posting
+from accounting.repositories.accounts import insert_manual_transfers, load_manual_transfers, replace_accounts
 from accounting.store import load_store
 
 if TYPE_CHECKING:
@@ -322,6 +322,44 @@ def test_rebuild_from_raw_statements_reconstructs_the_same_ledger(
 
     assert rebuilt.sort("posting_id")["amount"].to_list() == pytest.approx(before["amount"].to_list())
     assert after["posting_id"].to_list() == before["posting_id"].to_list()
+
+
+def test_rebuild_from_raw_statements_keeps_manual_origin_transactions(
+    tmp_path, db_session: Session, test_user_id: uuid.UUID
+) -> None:
+    """The reason `transactions.origin` exists: a replay owns the imported half and only that half.
+
+    No archive describes a manual transfer, so a rebuild produces nothing
+    that would put one back — and must therefore not read its absence from
+    the replayed frame as a deletion.
+    """
+    config = _config(tmp_path)
+    _register_account(db_session, test_user_id, "chase:checking:1234", "Chase")
+    _register_account(db_session, test_user_id, "sofi:savings:9999", "SoFi", kind="savings")
+    ingest_csv(CHASE_CHECKING_CSV, "Chase", "checking", "chase:checking:1234", config, db_session, user_id=test_user_id)
+    insert_manual_transfers(
+        [
+            ManualTransfer(
+                transfer_id="closing",
+                date=datetime(2026, 7, 1, tzinfo=UTC),
+                from_account_id="chase:checking:1234",
+                to_account_id="sofi:savings:9999",
+                from_amount=430,
+                to_amount=430,
+                description="Closing balance out",
+            )
+        ],
+        db_session,
+        test_user_id,
+    )
+    db_session.commit()
+
+    rebuild_from_raw_statements(config, db_session, user_id=test_user_id)
+
+    assert [transfer.transfer_id for transfer in load_manual_transfers(db_session, test_user_id)] == ["closing"]
+    posting_ids = load_ledger(db_session, user_id=test_user_id)["posting_id"].to_list()
+    assert "manual-transfer:closing:from" in posting_ids
+    assert "manual-transfer:closing:to" in posting_ids
 
 
 def test_rebuild_from_raw_statements_with_no_archives_raises(

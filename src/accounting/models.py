@@ -95,6 +95,18 @@ posting whose amount is positive vs. negative.
 CurrencyCode = Literal["USD", "EUR"]
 """Every currency this app knows how to hold money in or convert between."""
 
+TransactionOrigin = Literal["imported", "manual"]
+"""Where a transaction came from: a bank statement, or a person typing it in.
+
+The one discriminator on `db.core.Transaction`, and the reason manual
+transfers need no ledger of their own. An `imported` transaction is
+reproducible — replaying its archived statement recreates it, so a rebuild
+owns it and may prune it. A `manual` one is not reproducible from anything:
+no statement will ever describe it (see `ManualTransfer`), so a rebuild
+must leave it alone. Everything else about the two is identical, which is
+exactly why one column is enough and a second table was not.
+"""
+
 
 class Currency(BaseModel):
     """One supported currency's display metadata — never a value on its own, only ever attached to one."""
@@ -368,6 +380,28 @@ class ManualTransfer(BaseModel):
     stored exchange rate, so a transfer between two different currencies
     is exactly what the user says left one side and arrived on the other,
     not a computed conversion.
+
+    **This is a shape, not a table.** It used to be both: `manual_transfers`
+    was a parallel mini-ledger holding a date, two accounts, two amounts and
+    a description — everything `transactions` plus two `postings` already
+    express, expressed a second, incompatible way, which is why its rows had
+    to be turned into postings by a resolution stage of their own before any
+    balance could count them. A manual transfer is now stored as exactly
+    what it is: one `Transaction` with `origin = "manual"` and its two
+    balancing legs (see `repositories.accounts.insert_manual_transfers`,
+    which writes them, and `load_manual_transfers`, which reads this shape
+    back out of them). This model survives as the API's vocabulary for the
+    pair — "money left here, money arrived there" — and as the one place
+    the pair's own invariant lives.
+
+    That invariant is the positivity of both legs. `Posting.amount` is
+    signed by design (a debit is negative, a credit positive) and must stay
+    unconstrained, so the constraint cannot live on the storage the legs now
+    share with every imported posting; it lives here, on the only thing that
+    still expresses "the *from* amount" and "the *to* amount" as distinct,
+    directional quantities. `insert_manual_transfers` is what turns them
+    into the signed pair (`-from_amount`, `+to_amount`), so a negative
+    `from_amount` sneaking through would silently invert the transfer.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -377,7 +411,9 @@ class ManualTransfer(BaseModel):
     from_account_id: str = Field(min_length=1)
     to_account_id: str = Field(min_length=1)
     from_amount: Money = Field(gt=0)
+    """Strictly positive — the magnitude leaving `from_account_id`; see the class docstring."""
     to_amount: Money = Field(gt=0)
+    """Strictly positive — the magnitude arriving at `to_account_id`; see the class docstring."""
     description: str = ""
 
 

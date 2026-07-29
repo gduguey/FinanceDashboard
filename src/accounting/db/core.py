@@ -16,11 +16,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from accounting.models import AccountKind, CategoryClassification, CurrencyCode
+from accounting.models import AccountKind, CategoryClassification, CurrencyCode, TransactionOrigin
 from accounting.precedence import OverlayStage
 from db.base import MONEY, Base, Timestamped, check_in_sql
 
@@ -78,11 +78,43 @@ class Account(Base, Timestamped):
 
 
 class Category(Base, Timestamped):
-    """One node in the two-level category tree: a top-level category, or a subcategory of one."""
+    """One node in the two-level category tree: a top-level category, or a subcategory of one.
+
+    A category is **retired, never deleted**, once anything has been filed
+    under it. `postings.category_id`/`subcategory_id` are real foreign keys
+    holding the category a statement was *imported* with — raw provenance,
+    written once and never rewritten (DB-audit D14) — so a `DELETE` of the
+    row they point at is not something application code can arrange by
+    clearing those columns first; it has to be impossible. Retirement is
+    what makes it impossible: `retired_at` takes the category out of the
+    live tree (`repositories.taxonomy.load_categories` returns only live
+    rows) while the row itself stays put, so every posting's foreign key
+    stays valid forever and no posting is touched.
+
+    The two retirement shapes are what a merge and a delete each leave
+    behind, and `superseded_by_category_id` is the difference:
+
+    - **merged** — `retired_at` set, `superseded_by_category_id` naming the
+      category it folded into. Every posting imported under this one
+      resolves to that successor
+      (`repositories.taxonomy.load_category_redirects`).
+    - **deleted** — `retired_at` set, no successor. Postings imported under
+      it resolve to uncategorized, exactly as if they had never carried a
+      category at all.
+
+    Writing a category again clears its retirement (see
+    `repositories.taxonomy._category_row`): re-creating "Dining" by name,
+    or importing a file that mints it again, brings the same row back to
+    life rather than minting a second row its `UNIQUE(user_id,
+    natural_key)` would reject.
+    """
 
     __tablename__ = "categories"
     __table_args__ = (
         CheckConstraint(check_in_sql("classification", get_args(CategoryClassification)), name="classification"),
+        CheckConstraint(
+            "superseded_by_category_id IS NULL OR retired_at IS NOT NULL", name="successor_requires_retirement"
+        ),
         UniqueConstraint("user_id", "natural_key", name="uq_categories_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -96,6 +128,17 @@ class Category(Base, Timestamped):
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id"), default=None
     )
     color: Mapped[str]
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    """When this category left the live tree, or `NULL` while it is still in it."""
+    superseded_by_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.categories.id", ondelete="SET NULL"), default=None
+    )
+    """The category this one merged into, or `NULL` — never set on a live row (see the class docstring).
+
+    `ON DELETE SET NULL` rather than the schema's usual restrict: if the
+    successor is itself hard-deleted later, a tombstone pointing at nothing
+    is exactly the "deleted" shape, so the engine can degrade a merge into a
+    delete without anyone having to remember to."""
 
 
 class Tag(Base, Timestamped):
@@ -123,6 +166,7 @@ class Transaction(Base, Timestamped):
 
     __tablename__ = "transactions"
     __table_args__ = (
+        CheckConstraint(check_in_sql("origin", get_args(TransactionOrigin)), name="origin"),
         UniqueConstraint("user_id", "natural_key", name="uq_transactions_user_natural_key"),
         {"schema": SCHEMA},
     )
@@ -130,10 +174,41 @@ class Transaction(Base, Timestamped):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
+    origin: Mapped[str] = mapped_column(default="imported")
+    """Where this transaction came from — `imported` from a statement, or `manual`, entered by hand.
+
+    The discriminator that lets one `postings` table hold both without a
+    parallel mini-ledger beside it (`manual_transfers`, retired). It is
+    what `importers.ingest._write_ledger` reads to know which rows a
+    rebuild owns: replaying every archived statement recomputes the whole
+    `imported` half and prunes whatever it no longer produces, and must
+    leave the `manual` half — postings no statement will ever describe
+    (see `models.ManualTransfer`) — untouched.
+
+    An `imported` transaction's provenance reference is its archived
+    statement, addressed by
+    `utils.statement_archive.StatementArchive` under
+    `statements/{user_id}/{institution}/{account_id}/{timestamp}` — the
+    archive is the source of truth `rebuild_from_raw_statements` and
+    `last_import_at` already read, so there is no metadata table
+    shadowing it. A `manual` transaction has no provenance reference at
+    all, which is the whole of what this column has to distinguish."""
 
 
 class Posting(Base, Timestamped):
     """One leg of one economic event — one row, like `trades.db.LedgerEvent`.
+
+    Every column here is raw: what the statement said, or what the user
+    typed into a manual transfer. Nothing derived or resolved is written
+    back onto a posting, which is why re-importing a statement can never
+    silently revert an interpretation. `category_id`/`subcategory_id` are
+    part of that raw record rather than an exception to it — they are the
+    category the *file itself* named (only the canonical importer sets
+    them; see `importers.canonical.csv`), written once at import and never
+    rewritten. What a posting currently resolves to is a different
+    question, answered by the taxonomy's own redirects
+    (`repositories.taxonomy.load_category_redirects`) layered over these,
+    so a category rename, merge, or delete rewrites no posting at all.
 
     `budget_id` is a real foreign key into `budgets`, like `category_id`/
     `subcategory_id` — a posting can only ever be attributed to a budget
@@ -209,35 +284,6 @@ class OpeningBalance(Base, Timestamped):
     )
     amount: Mapped[Decimal] = mapped_column(MONEY)
     as_of_date: Mapped[datetime]
-
-
-class ManualTransfer(Base, Timestamped):
-    """A user-recorded transfer between two of their own accounts, never derived from an import."""
-
-    __tablename__ = "manual_transfers"
-    __table_args__ = (
-        stage_constraint("manual_transfer"),
-        UniqueConstraint("user_id", "natural_key", name="uq_manual_transfers_user_natural_key"),
-        {"schema": SCHEMA},
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
-    natural_key: Mapped[str]
-    stage: Mapped[str] = mapped_column(default="manual_transfer")
-    """Which resolution stage these postings enter the frame at — see `accounting.precedence`.
-
-    Alone among the stage-carrying tables this one is generative rather
-    than an overlay: its rows are turned into postings and concatenated in,
-    not layered over postings that already exist. It still declares a
-    stage, because the resolver walks one declared order and this is one of
-    the steps in it."""
-    date: Mapped[datetime]
-    from_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
-    to_account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.accounts.id"))
-    from_amount: Mapped[Decimal] = mapped_column(MONEY)
-    to_amount: Mapped[Decimal] = mapped_column(MONEY)
-    description: Mapped[str] = mapped_column(default="")
 
 
 class OtherAsset(Base, Timestamped):
