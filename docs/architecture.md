@@ -3,7 +3,10 @@
 This repo is two independent backend packages, one FastAPI process, and
 one React frontend. This page is the short version of how those pieces
 fit together; each package's own `docs/trades/architecture.md` /
-`docs/accounting/architecture.md` covers its internals in depth.
+`docs/accounting/architecture.md` covers its internals in depth, and
+`docs/http-api-contract.md` covers what the HTTP surface both packages serve
+promises — which method, which status code, which body, and why each case was
+decided the way it was.
 
 ## Two modules, one shared idea
 

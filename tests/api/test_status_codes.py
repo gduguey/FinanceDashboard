@@ -24,6 +24,46 @@ _DELETES_RETURNING_A_BODY = {
     "/api/v1/trades/settings/ibkr",  # clears fields on a row that still exists
 }
 
+# Every route that brings a resource into existence, and therefore owes a
+# `Location`. Listed rather than derived so that adding a create is a
+# deliberate act with a status-code decision attached, and so that a route
+# quietly *losing* its 201 fails a test. See
+# `docs/http-api-contract.md` for the rule that placed each one.
+_CREATES = {
+    ("post", "/api/v1/accounting/accounts"),
+    ("post", "/api/v1/accounting/budgets"),
+    ("post", "/api/v1/accounting/categories"),
+    ("post", "/api/v1/accounting/categories/{parent_id}/subcategories"),
+    ("post", "/api/v1/accounting/category-patterns"),
+    ("put", "/api/v1/accounting/dismissed-suggestions/{suggestion_id}"),
+    ("post", "/api/v1/accounting/goal-automations/contributions"),
+    ("post", "/api/v1/accounting/goal-automations/withdrawals"),
+    ("post", "/api/v1/accounting/goal-contributions"),
+    ("post", "/api/v1/accounting/goals"),
+    ("post", "/api/v1/accounting/other-assets"),
+    ("post", "/api/v1/accounting/posting-merges"),
+    ("post", "/api/v1/accounting/simulator/scenarios"),
+    ("post", "/api/v1/accounting/tags"),
+    ("post", "/api/v1/accounting/transfer-links"),
+    ("post", "/api/v1/accounting/transfer-rules"),
+}
+
+# The subset of `_CREATES` that can also answer 200, because the id comes from
+# the request's own content and the write is an upsert (or, for transfer links,
+# a no-op re-confirm). Each declares both statuses through
+# `accounting.api.locations.created_or_replaced`; a blanket 201 on these would
+# report a replace as a creation and attach a `Location` for a resource the
+# request did not create.
+_CREATE_OR_REPLACE = {
+    ("post", "/api/v1/accounting/budgets"),
+    ("post", "/api/v1/accounting/category-patterns"),
+    ("put", "/api/v1/accounting/dismissed-suggestions/{suggestion_id}"),
+    ("post", "/api/v1/accounting/goal-automations/withdrawals"),
+    ("post", "/api/v1/accounting/posting-merges"),
+    ("post", "/api/v1/accounting/transfer-links"),
+    ("post", "/api/v1/accounting/transfer-rules"),
+}
+
 
 @pytest.fixture(scope="module")
 def paths() -> dict[str, dict[str, Any]]:
@@ -86,3 +126,39 @@ def test_the_deletes_that_keep_a_body_are_exactly_the_listed_exceptions(paths) -
         if "delete" in operations and "200" in operations["delete"]["responses"]
     }
     assert keeping_a_body == _DELETES_RETURNING_A_BODY
+
+
+def test_the_routes_answering_201_are_exactly_the_listed_creates(paths) -> None:
+    """Guards the create inventory in both directions.
+
+    A new route that answers 201 without being listed fails here, which
+    forces the `POST`-versus-`PUT` and `201`-versus-`200` decision to be
+    made explicitly rather than copied from whichever handler was nearest.
+    A create that silently drops back to 200 fails here too — that is the
+    regression the whole contract is about.
+    """
+    answering_201 = {
+        (method, path)
+        for path, operations in paths.items()
+        for method, operation in operations.items()
+        if "201" in operation.get("responses", {})
+    }
+    assert answering_201 == _CREATES
+
+
+def test_every_content_derived_id_upsert_declares_its_200_as_well(paths) -> None:
+    """An upsert's `200` has to be in the schema, not only in the handler.
+
+    FastAPI generates a response entry only for the status on the decorator,
+    so the `200` these routes drop to on a replace is a status the generated
+    TypeScript client would otherwise believe cannot happen. The inverse
+    matters too: a create listed here that stops being able to replace
+    should stop declaring the 200.
+    """
+    declaring_both = {
+        (method, path)
+        for path, operations in paths.items()
+        for method, operation in operations.items()
+        if {"200", "201"} <= set(operation.get("responses", {}))
+    }
+    assert declaring_both == _CREATE_OR_REPLACE
