@@ -109,11 +109,14 @@ def post_transfer_rule(
         if ref is not None and ref not in accounts:
             raise HTTPException(status_code=404, detail=f"Account {ref!r} referenced by {label} does not exist")
     rule_id = _transfer_rule_id(request.description_contains, request.account_id, request.counterparty_account_id)
-    # A create body can't express `active`/`excluded_transaction_ids`, so when
-    # this natural key already exists, carry those forward from the rule being
-    # replaced — otherwise re-posting would silently re-enable a disabled rule
-    # and drop every exclusion the user built up. Only priority/description
-    # come from the request.
+    # A create body can't express `active`/`excluded_transaction_ids`/`version`,
+    # so when this natural key already exists, carry those forward from the rule
+    # being replaced — otherwise re-posting would silently re-enable a disabled
+    # rule, drop every exclusion the user built up, and answer 200 with
+    # `version: 1` for a row `_upsert_rule` deliberately leaves at whatever
+    # `check_and_bump_row_version` last set, so the client's next `PATCH` would
+    # 409 on a version it was told to use. Only priority/description come from
+    # the request.
     existing = next((r for r in load_transfer_rules(session, user_id) if r.rule_id == rule_id), None)
     rule = DomainTransferRule(
         rule_id=rule_id,
@@ -124,6 +127,7 @@ def post_transfer_rule(
         description=request.description,
         active=existing.active if existing else True,
         excluded_transaction_ids=list(existing.excluded_transaction_ids) if existing else [],
+        version=existing.version if existing else 1,
     )
     raw_ledger = load_ledger(session, user_id)
     upsert_transfer_rule(rule, session, user_id)

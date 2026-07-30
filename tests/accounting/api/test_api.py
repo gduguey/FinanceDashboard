@@ -1000,6 +1000,85 @@ def test_post_category_pattern_twice_with_the_same_criteria_replaces_rather_than
     assert patterns[first["pattern_id"]]["priority"] == 5
 
 
+def test_re_posting_a_category_pattern_keeps_the_state_a_create_body_cannot_express(client) -> None:
+    """A create body carries no `active` and no `version`, so a replace must not reset either.
+
+    Resetting `active` would silently re-enable a pattern the user had switched
+    off, and answering the 200 with `version: 1` would hand the client a
+    version `_upsert_rule` never wrote, so its next `PATCH` would 409.
+    """
+    created = client.post(
+        "/api/v1/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
+    ).json()
+    disabled = client.patch(
+        f"/api/v1/accounting/category-patterns/{created['pattern_id']}",
+        json={
+            "description_contains": "NETFLIX",
+            "category_id": "expense:subscriptions",
+            "priority": 100,
+            "active": False,
+            "expected_version": 1,
+        },
+    ).json()
+    assert disabled["active"] is False
+    assert disabled["version"] == 2
+
+    replaced = client.post(
+        "/api/v1/accounting/category-patterns",
+        json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions", "priority": 5},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["priority"] == 5
+    assert replaced.json()["active"] is False
+    assert replaced.json()["version"] == 2
+
+    persisted = client.get("/api/v1/accounting/store").json()["category_patterns"][created["pattern_id"]]
+    assert persisted["active"] is False
+    assert persisted["version"] == 2
+
+
+def test_re_posting_a_transfer_rule_reports_the_version_a_later_patch_must_send(client) -> None:
+    """The 200 on a replace used to say `version: 1` however many times the rule had been patched."""
+    payee = _create_account(client, name="Venmo", kind="expense_payee", institution="internal")
+    created = client.post(
+        "/api/v1/accounting/transfer-rules",
+        json={"description_contains": "VENMO", "counterparty_account_id": payee["account_id"]},
+    ).json()
+    patched = client.patch(
+        f"/api/v1/accounting/transfer-rules/{created['rule_id']}",
+        json={
+            "description_contains": "VENMO",
+            "counterparty_account_id": payee["account_id"],
+            "priority": 50,
+            "active": True,
+            "excluded_transaction_ids": [],
+            "expected_version": 1,
+        },
+    ).json()
+    assert patched["version"] == 2
+
+    replaced = client.post(
+        "/api/v1/accounting/transfer-rules",
+        json={"description_contains": "VENMO", "counterparty_account_id": payee["account_id"], "priority": 7},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["version"] == 2
+
+    accepted = client.patch(
+        f"/api/v1/accounting/transfer-rules/{created['rule_id']}",
+        json={
+            "description_contains": "VENMO",
+            "counterparty_account_id": payee["account_id"],
+            "priority": 9,
+            "active": True,
+            "excluded_transaction_ids": [],
+            "expected_version": replaced.json()["version"],
+        },
+    )
+    assert accepted.status_code == 200
+
+
 def test_patch_category_pattern_updates_fields_and_increments_version(client) -> None:
     pattern = client.post(
         "/api/v1/accounting/category-patterns",

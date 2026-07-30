@@ -479,26 +479,6 @@ def _goal_contribution_row(
     )
 
 
-def replace_goal_contributions(session: Session, user_id: uuid.UUID, contributions: Iterable[GoalContribution]) -> None:
-    """Replace this user's whole contribution ledger, touching no other table.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose contributions these are.
-    contributions
-        The complete desired set.
-    """
-    contributions = list(contributions)
-    session.query(adb.GoalContribution).filter_by(user_id=user_id).delete()
-    session.flush()
-    references = _contribution_references(session, user_id, contributions)
-    session.add_all(_goal_contribution_row(user_id, contribution, *references) for contribution in contributions)
-    session.flush()
-
-
 def insert_goal_contributions(session: Session, user_id: uuid.UUID, contributions: Iterable[GoalContribution]) -> None:
     """Add contributions additively, touching none already recorded.
 

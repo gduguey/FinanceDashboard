@@ -1,18 +1,30 @@
-"""Status-code contract, asserted against the app's own OpenAPI schema rather than route by route.
+"""Status-code and route-ordering contract, asserted against the app itself rather than route by route.
 
 One test per rule, walking every registered path — so a route added later
 either follows the rule or fails here, instead of the rule being a convention
 nobody re-checks. The exceptions are listed explicitly, with the reason each
 one is an exception, so adding to the list is a deliberate act.
+
+Most of these read the app's own OpenAPI schema, which is what a client sees.
+The last one reads the routers' registration order instead, because that is
+where the fact it checks lives and the schema cannot express it: a literal
+segment and an item route can both be perfectly declared and still resolve to
+the wrong handler.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import operator
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from fastapi.routing import APIRoute
 
+from accounting.api.routers import budgets, goals
 from trades.api.api import app
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 # Deletes that answer 200 with a body instead of 204. Each clears or cascades
 # rather than removing the one row the client named, so it has a
@@ -162,3 +174,39 @@ def test_every_content_derived_id_upsert_declares_its_200_as_well(paths) -> None
         if {"200", "201"} <= set(operation.get("responses", {}))
     }
     assert declaring_both == _CREATE_OR_REPLACE
+
+
+# Every literal-segment read that shares an address space with an item route:
+# the module both live in, the literal path, and the item path that would
+# shadow it. Starlette matches in registration order, so each of these becomes
+# "read the resource whose id is `comparison`" — a 404 or a 422 nobody would
+# attribute to route ordering — the moment it is registered second. Both routes
+# of each pair are deliberately in one module so the constraint is visible
+# where it applies rather than in `api.py`'s include order; see
+# `docs/http-api-contract.md`.
+_LITERAL_READS_SHADOWED_BY_AN_ITEM_ROUTE = {
+    (budgets, "/budgets/comparison", "/budgets/{budget_id}"),
+    (budgets, "/budgets/suggested-amount", "/budgets/{budget_id}"),
+    (goals, "/goals/summary", "/goals/{goal_id}"),
+}
+
+
+@pytest.mark.parametrize(
+    ("module", "literal_path", "item_path"),
+    sorted(_LITERAL_READS_SHADOWED_BY_AN_ITEM_ROUTE, key=operator.itemgetter(1)),
+    ids=lambda value: value if isinstance(value, str) else value.__name__.rsplit(".", 1)[-1],
+)
+def test_a_literal_read_is_registered_before_the_item_route_that_would_shadow_it(
+    module: ModuleType, literal_path: str, item_path: str
+) -> None:
+    """Asserted against the router's own list, so moving either route re-runs the check.
+
+    A route absent from this module fails here too, which is the other half of
+    the constraint: `/budgets/comparison` and `/budgets/suggested-amount` were
+    moved out of `routers.dashboard` precisely so that "registered first" is a
+    fact about one file.
+    """
+    order = [route.path for route in module.router.routes if isinstance(route, APIRoute) and "GET" in route.methods]
+    assert literal_path in order, f"GET {literal_path} is not registered in {module.__name__}"
+    assert item_path in order, f"GET {item_path} is not registered in {module.__name__}"
+    assert order.index(literal_path) < order.index(item_path)

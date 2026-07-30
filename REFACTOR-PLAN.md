@@ -249,7 +249,7 @@ check; the Standard-5 items are fixed with tooltips/labels corrected; VISION-AUD
 
 ### 3a. Kickoff (paste when starting any PR)
 
-```
+```text
 We're executing REFACTOR-PLAN.md, PR <N> (`gduguey/<short-name>`). Follow CLAUDE.md /
 the standing brief exactly: greenfield mindset (no backward compat, no data-preserving
 migrations, staging is wipeable — design as if starting blank, built by the best
@@ -269,7 +269,7 @@ is green. Then open the PR to main and stop — do not merge yet.
 
 ### 3b. Resume after CI + CodeRabbit (paste once the PR is open and review has run)
 
-```
+```text
 The PR is open and CI + CodeRabbit have run. Now:
 1. Go through every CodeRabbit comment. Implement the ones that are correct and in-scope;
    push the fixes. For each one you don't act on, reply on the thread with a one-line
@@ -283,7 +283,7 @@ Then summarize what landed and stop. Do not start the next PR until I tell you t
 
 ### 3c. Concrete start message for PR 1
 
-```
+```text
 Start with REFACTOR-PLAN.md PR 1 (`gduguey/schema-rewrite`) — the keystone data-model
 + persistence rewrite. This is the greenfield cutover: redraw to the DB-audit "target
 shape" (~28 tables), Decimal money end-to-end, structural RLS with a coverage test,
