@@ -41,17 +41,29 @@ import {
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { safeDirectRepointOptions } from '@/lib/counterpartyAccounts'
-import { FILTER_ALL as ALL, matchesFilter, matchesMultiFilter } from '@/lib/filters'
+import { FILTER_ALL as ALL } from '@/lib/filters'
 import { formatCurrency, formatDate, formatMonthLong } from '@/lib/format'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { availableMonths } from '@/lib/months'
+import { type PickHint, pickHintByPostingId } from '@/lib/pickHints'
 import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import {
-  realLegByTransactionId as buildRealLegByTransactionId,
-  siblingLegByPostingId as buildSiblingLegByPostingId,
-  TRANSFER_UNLINK_WARNING_PAIR,
-  type TransferRowInfo,
-} from '@/lib/transferRowInfo'
+  ALL_MONTHS,
+  activeFilterCount as countActiveFilters,
+  DATE_MODE_MONTH,
+  DATE_MODE_RANGE,
+  defaultFilterState,
+  type FilterState,
+  filterPostings,
+  NO_SUBCATEGORY,
+  normalizeFilterState,
+  PENDING_OPTIONS,
+  PLACEHOLDER_ACCOUNT_IDS,
+  TRANSFER_FLAG_OPTIONS,
+  UNCATEGORIZED,
+} from '@/lib/transactionFilters'
+import { transferBadgeByPostingId as buildTransferBadges, type TransferBadgeInfo } from '@/lib/transferBadges'
+import { TRANSFER_UNLINK_WARNING_PAIR } from '@/lib/transferRowInfo'
 import { addedExcludedTransactionIds, ruleUpdateFromRule } from '@/lib/transferRules'
 import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
 
@@ -60,159 +72,11 @@ import type { Account, Category, ManualOverride, Posting, Tag, TransferLink, Tra
 const ESTIMATED_ROW_HEIGHT = 45
 const TABLE_COLUMN_COUNT = 9
 
-const UNCATEGORIZED = '__uncategorized__'
-const NO_SUBCATEGORY = '__no_subcategory__'
-const CONFIRMED = '__confirmed__'
-const PENDING_OPTIONS = [
-  { id: 'ai', name: 'AI pending' },
-  { id: 'pattern', name: 'Pattern pending' },
-  { id: CONFIRMED, name: 'Confirmed' },
-]
-// The four ways a transaction's transfer status can currently read, spanning
-// every mechanism this file's own badges/columns already show — never
-// mutually exclusive with each other except pairwise (a posting is either
-// mid-transfer via a rule/manually, or a plain non-transfer; "excluded" is
-// a separate historical fact that can be true alongside either).
-const TRANSFER_FLAG_OPTIONS = [
-  { id: 'rule', name: 'Transfer flagged by rule' },
-  { id: 'excluded', name: 'Excluded from transfer rule' },
-  { id: 'manual', name: 'Transfer manually added' },
-  { id: 'none', name: 'Non transfer' },
-]
-
-// Every `TRANSFER_FLAG_OPTIONS` id that applies to this posting right now —
-// a plain array rather than one classification, since "excluded from a
-// rule" is a historical fact that can be true alongside either "non
-// transfer" (nothing else currently flags it) or another rule flagging it.
-function transferFlagsForPosting(posting: Posting, excludedTransactionIds: Set<string>): string[] {
-  const flags: string[] = []
-  if (
-    posting.resolved_by_transfer_rule_id != null ||
-    (posting.is_linked_transfer && posting.transfer_link_source === 'rule')
-  ) {
-    flags.push('rule')
-  }
-  if (
-    posting.manual_transfer_override_posting_id != null ||
-    (posting.is_linked_transfer && posting.transfer_link_source === 'manual')
-  ) {
-    flags.push('manual')
-  }
-  // `excluded` is a historical fact, not a transfer classification, so decide
-  // "is this a transfer" before adding it — otherwise an excluded-but-otherwise
-  // -untransferred posting would be denied its `none` flag and drop out of the
-  // "Non transfer" filter (see this function's own doc comment).
-  const isTransfer = flags.length > 0
-  if (excludedTransactionIds.has(posting.transaction_id)) flags.push('excluded')
-  if (!isTransfer) flags.push('none')
-  return flags
-}
-
 const INCOME_EXPENSE_ITEMS: Record<string, string> = { [ALL]: 'All', income: 'Income', expense: 'Expense' }
 const CATEGORIZED_ITEMS: Record<string, string> = {
   [ALL]: 'All',
   categorized: 'Categorized',
   uncategorized: 'Uncategorized',
-}
-const DATE_MODE_MONTH = 'month'
-const DATE_MODE_RANGE = 'range'
-const ALL_MONTHS = '__all_months__'
-
-const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
-
-// The manual "flag as transfer" flow never auto-matches a counterparty —
-// that's what `TransferSuggestionsPanel`'s own heuristic is for. Picking a
-// target transaction here is instead an explicit, table-wide mode: clicking
-// "Link to another transaction…" on one row turns every other row into a
-// pick target, scored against that one row's own criteria (see
-// `pickHintByPostingId` in `TransactionsTable`).
-type PickEligibility = 'source' | 'eligible' | 'already-linked' | 'already-split' | 'amount-mismatch'
-
-interface PickHint {
-  eligibility: PickEligibility
-  tooltip?: string
-}
-
-// Everything the category-column "Transfer …" badge and its detail popup
-// need — computed once per posting in `TransactionsTable` (see
-// `transferBadgeByPostingId`), covering all three mechanisms that move
-// there: a `TransferLink` (manual or rule-found), a manual "point at an
-// account" `ManualOverride.account_id`, and `apply_rules`'s own direct
-// repoint onto a safe (non-importable) *real* account — never onto a
-// virtual `income_source`/`expense_payee` counterparty, since that's plain
-// income/expense categorization, not a transfer, and keeps its own
-// "via rule" tag in the account column instead (see `isRealIncomeExpense`
-// at each call site).
-interface TransferBadgeInfo {
-  label: string
-  popup:
-    | {
-        kind: 'link'
-        source: 'manual' | 'rule'
-        ruleId: string | null
-        linkId: string
-        from: TransferRowInfo
-        to: TransferRowInfo
-      }
-    | { kind: 'override'; postingId: string; otherAccountName: string }
-    | { kind: 'direct-rule'; ruleId: string; transactionId: string; from: TransferRowInfo; to: TransferRowInfo }
-}
-
-// How close two amounts have to be to count as "the same transfer, opposite
-// sides" — a cent of float/rounding slack, never a real discrepancy (an
-// actually mismatched-fee pair should show as a mismatch, not silently link).
-const AMOUNT_TOLERANCE = 0.01
-
-interface FilterState {
-  search: string
-  accountFilter: string
-  accountExclude: boolean
-  // Multi-select, unlike accountFilter/incomeExpenseFilter/categorizedFilter
-  // (each still single-value, an "all-or-one" choice that doesn't benefit
-  // from picking several) — an empty array means "no restriction", the
-  // same meaning `ALL` carries for those.
-  categoryFilter: string[]
-  categoryExclude: boolean
-  subcategoryFilter: string[]
-  subcategoryExclude: boolean
-  tagFilter: string[]
-  tagExclude: boolean
-  dateMode: typeof DATE_MODE_MONTH | typeof DATE_MODE_RANGE
-  month: string
-  startDate: string
-  endDate: string
-  pendingFilter: string[]
-  pendingExclude: boolean
-  transferFlagFilter: string[]
-  transferFlagExclude: boolean
-  incomeExpenseFilter: string
-  categorizedFilter: string
-}
-
-function defaultFilterState(): FilterState {
-  return {
-    search: '',
-    accountFilter: ALL,
-    accountExclude: false,
-    categoryFilter: [],
-    categoryExclude: false,
-    subcategoryFilter: [],
-    subcategoryExclude: false,
-    tagFilter: [],
-    tagExclude: false,
-    // Unscoped by default, same as the old plain from/to range — the month
-    // picker is there for when narrowing down is useful, not a forced default.
-    dateMode: DATE_MODE_MONTH,
-    month: ALL_MONTHS,
-    startDate: '',
-    endDate: '',
-    pendingFilter: [],
-    pendingExclude: false,
-    transferFlagFilter: [],
-    transferFlagExclude: false,
-    incomeExpenseFilter: ALL,
-    categorizedFilter: ALL,
-  }
 }
 
 // Row background for a not-yet-confirmed suggestion — green for an AI
@@ -690,22 +554,11 @@ function TransactionsTable({
   transferLinks: TransferLink[]
   onlyUncategorized: boolean
 }) {
-  const [filters, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
-  // A filter bar persisted before categoryFilter became multi-select left a
-  // plain string in localStorage under this same key — coerce it back to
-  // "no restriction" rather than let a stale string silently break `.includes`
-  // (a string has `.includes` too, just substring-checking, not membership).
-  // subcategoryFilter/tagFilter/pendingFilter carry the exact same risk,
-  // having gone from single-select to multi-select the same way.
-  const categoryFilter = Array.isArray(filters.categoryFilter) ? filters.categoryFilter : []
-  const subcategoryFilter = Array.isArray(filters.subcategoryFilter) ? filters.subcategoryFilter : []
-  const tagFilter = Array.isArray(filters.tagFilter) ? filters.tagFilter : []
-  const pendingFilter = Array.isArray(filters.pendingFilter) ? filters.pendingFilter : []
-  // Coerces both a pre-existing installation's stale single-value
-  // `ruleFlaggedFilter` string and a missing key (an older persisted state
-  // has neither) back to "no restriction", the same guard the other
-  // once-single-select filters above already needed when they went multi.
-  const transferFlagFilter = Array.isArray(filters.transferFlagFilter) ? filters.transferFlagFilter : []
+  const [stored, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
+  // Whatever vintage of filter state `localStorage` holds is coerced into a
+  // usable one in one place — see `normalizeFilterState` for what a stale
+  // single-select value used to do to a `.includes` check.
+  const filters = useMemo(() => normalizeFilterState(stored), [stored])
   const [splitting, setSplitting] = useState<Posting | null>(null)
   const [suggestMessages, setSuggestMessages] = useState<Record<string, string>>({})
   const [bulkSuggesting, setBulkSuggesting] = useState(false)
@@ -746,112 +599,16 @@ function TransactionsTable({
     }
     return lookup
   }, [postings])
-  // Each transaction's own real leg, in full — used both to label a
-  // "linked" badge's counterpart by something a person recognizes rather
-  // than a raw transaction id, and to render its row in the transfer-detail
-  // popup.
-  const realLegByTransactionId = useMemo(() => buildRealLegByTransactionId(postings, accounts), [postings, accounts])
-  const linkByTransactionId = useMemo(() => {
-    const lookup = new Map<string, TransferLink>()
-    for (const link of transferLinks) {
-      lookup.set(link.transaction_id_a, link)
-      lookup.set(link.transaction_id_b, link)
-    }
-    return lookup
-  }, [transferLinks])
-  // Whatever account a manually-overridden placeholder currently sits on —
-  // looked up by the posting_id `manual_transfer_override_posting_id` names,
-  // so the "manual" badge can name the account by something a person
-  // recognizes instead of a raw posting id.
-  const accountNameByPostingId = useMemo(() => {
-    const lookup = new Map<string, string>()
-    for (const posting of postings) {
-      lookup.set(posting.posting_id, accounts[posting.account_id]?.name ?? posting.account_id)
-    }
-    return lookup
-  }, [postings, accounts])
   // Computed from the full, unscoped `postings` prop (not `filtered`/`sorted`)
   // — an account filter could otherwise split a transfer pair apart and make
   // sibling-detection wrong. See `postingClassification.ts`.
   const realIds = useMemo(() => realIncomeExpensePostingIds(postings, accounts), [postings, accounts])
-  // Only needed for `apply_rules`'s direct-repoint mechanism below — see
-  // that function's own comment for why `realLegByTransactionId` can't
-  // answer "what's the other side of *this* posting" once neither leg is a
-  // placeholder anymore.
-  const siblingLegByPostingId = useMemo(() => buildSiblingLegByPostingId(postings, accounts), [postings, accounts])
   // Everything the category-column badge and its detail popup need for a
-  // linked, manually-overridden, or rule-direct-repointed transaction —
-  // keyed by posting id (the real-leg row that's actually rendered;
-  // placeholders never are). "to" when this posting's own amount is
-  // negative (money leaving), "from" when positive (money arriving) — one
-  // rule, all three mechanisms.
-  const transferBadgeByPostingId = useMemo(() => {
-    const lookup = new Map<string, TransferBadgeInfo>()
-    for (const posting of postings) {
-      if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
-      const direction = posting.amount < 0 ? 'to' : 'from'
-      if (posting.is_linked_transfer && posting.linked_transaction_id) {
-        const link = linkByTransactionId.get(posting.transaction_id)
-        const other = realLegByTransactionId.get(posting.linked_transaction_id)
-        const mine = realLegByTransactionId.get(posting.transaction_id)
-        if (!link || !other || !mine) continue
-        const [from, to] = posting.amount < 0 ? [mine, other] : [other, mine]
-        lookup.set(posting.posting_id, {
-          label: `Transfer ${direction} ${other.accountName}`,
-          popup: {
-            kind: 'link',
-            source: posting.transfer_link_source === 'rule' ? 'rule' : 'manual',
-            ruleId: link.rule_id ?? null,
-            linkId: link.link_id,
-            from,
-            to,
-          },
-        })
-      } else if (posting.manual_transfer_override_posting_id) {
-        const otherAccountName =
-          accountNameByPostingId.get(posting.manual_transfer_override_posting_id) ?? 'another account'
-        lookup.set(posting.posting_id, {
-          label: `Transfer ${direction} ${otherAccountName}`,
-          popup: { kind: 'override', postingId: posting.manual_transfer_override_posting_id, otherAccountName },
-        })
-      } else if (posting.resolved_by_transfer_rule_id && !realIds.has(posting.posting_id)) {
-        // Only when this posting ISN'T real income/expense — a rule whose
-        // counterparty is virtual (income_source/expense_payee) is plain
-        // categorization, not a transfer, and keeps its own "via rule" tag
-        // in the account column instead (see `resolvedByRuleLabel` below).
-        const sibling = siblingLegByPostingId.get(posting.posting_id)
-        if (!sibling) continue
-        const mine: TransferRowInfo = {
-          transactionId: posting.transaction_id,
-          accountName: accounts[posting.account_id]?.name ?? posting.account_id,
-          description: posting.description,
-          postedAt: posting.posted_at,
-          amount: posting.amount,
-          currency: posting.currency,
-        }
-        const [from, to] = posting.amount < 0 ? [mine, sibling] : [sibling, mine]
-        lookup.set(posting.posting_id, {
-          label: `Transfer ${direction} ${sibling.accountName}`,
-          popup: {
-            kind: 'direct-rule',
-            ruleId: posting.resolved_by_transfer_rule_id,
-            transactionId: posting.transaction_id,
-            from,
-            to,
-          },
-        })
-      }
-    }
-    return lookup
-  }, [
-    postings,
-    accounts,
-    linkByTransactionId,
-    realLegByTransactionId,
-    accountNameByPostingId,
-    siblingLegByPostingId,
-    realIds,
-  ])
+  // linked, manually-overridden, or rule-direct-repointed transaction.
+  const transferBadgeByPostingId = useMemo(
+    () => buildTransferBadges(postings, accounts, transferLinks, realIds),
+    [postings, accounts, transferLinks, realIds],
+  )
   // The posting whose transfer-detail popup is open, or `null` — looked up
   // against `transferBadgeByPostingId` at render time rather than storing
   // the resolved info itself, so the popup always reflects the latest data.
@@ -1078,113 +835,19 @@ function TransactionsTable({
     [rules],
   )
 
-  const filtered = useMemo(() => {
-    return postings
-      .filter((posting) => !PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id))
-      .filter(
-        (posting) =>
-          !onlyUncategorized || needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id)),
-      )
-      .filter((posting) => posting.description.toLowerCase().includes(filters.search.toLowerCase()))
-      .filter((posting) =>
-        matchesFilter(posting.account_id === filters.accountFilter, filters.accountFilter, filters.accountExclude),
-      )
-      .filter((posting) => {
-        const actual = categoryFilter.includes(posting.category_id ?? UNCATEGORIZED)
-        return matchesMultiFilter(actual, categoryFilter.length, filters.categoryExclude)
-      })
-      .filter((posting) => {
-        const actual = subcategoryFilter.includes(posting.subcategory_id ?? NO_SUBCATEGORY)
-        return matchesMultiFilter(actual, subcategoryFilter.length, filters.subcategoryExclude)
-      })
-      .filter((posting) => {
-        const actual = tagFilter.some((tagId) => (posting.tag_ids ?? []).includes(tagId))
-        return matchesMultiFilter(actual, tagFilter.length, filters.tagExclude)
-      })
-      .filter((posting) => {
-        if (filters.dateMode === DATE_MODE_MONTH) {
-          return filters.month === ALL_MONTHS || posting.posted_at.slice(0, 7) === filters.month
-        }
-        if (filters.startDate && posting.posted_at.slice(0, 10) < filters.startDate) return false
-        if (filters.endDate && posting.posted_at.slice(0, 10) > filters.endDate) return false
-        return true
-      })
-      .filter((posting) => {
-        const actual = pendingFilter.includes(posting.pending_source ?? CONFIRMED)
-        return matchesMultiFilter(actual, pendingFilter.length, filters.pendingExclude)
-      })
-      .filter((posting) => {
-        const flags = transferFlagsForPosting(posting, excludedTransactionIds)
-        const actual = transferFlagFilter.some((flag) => flags.includes(flag))
-        return matchesMultiFilter(actual, transferFlagFilter.length, filters.transferFlagExclude)
-      })
-      .filter((posting) => {
-        if (filters.incomeExpenseFilter === ALL) return true
-        if (!realIds.has(posting.posting_id)) return false
-        return filters.incomeExpenseFilter === 'income' ? posting.amount >= 0 : posting.amount < 0
-      })
-      .filter((posting) => {
-        if (filters.categorizedFilter === 'categorized') return posting.category_id != null
-        if (filters.categorizedFilter === 'uncategorized') return posting.category_id == null
-        return true
-      })
-  }, [
-    postings,
-    filters,
-    categoryFilter,
-    subcategoryFilter,
-    tagFilter,
-    pendingFilter,
-    transferFlagFilter,
-    excludedTransactionIds,
-    onlyUncategorized,
-    withSubcategories,
-    realIds,
-  ])
+  const filtered = useMemo(
+    () =>
+      filterPostings(postings, filters, {
+        onlyUncategorized,
+        withSubcategories,
+        realIncomeExpensePostingIds: realIds,
+        excludedTransactionIds,
+      }),
+    [postings, filters, onlyUncategorized, withSubcategories, realIds, excludedTransactionIds],
+  )
 
   const { sorted, sort, toggleSort } = useSortableRows(filtered, 'posted_at')
-  // Scores every currently-visible row against `pickingSource`'s own amount
-  // while a table-wide pick is in progress — `null` entirely when it isn't,
-  // so `TransactionRow` can tell "not picking" apart from "picking, but this
-  // row didn't get scored" (it never should, since every row in `sorted`
-  // gets an entry here). Scoped to `sorted` rather than the full `postings`
-  // list — a transfer's counterpart is almost always on a different account,
-  // so an active account filter can hide it; "Reset filters" is the way out
-  // of that, same as it would be for finding any other hidden transaction.
-  const pickHintByPostingId = useMemo(() => {
-    if (!pickingSource) return null
-    const neededAmount = -pickingSource.amount
-    const lookup = new Map<string, PickHint>()
-    for (const posting of sorted) {
-      if (posting.transaction_id === pickingSource.transaction_id) {
-        lookup.set(posting.posting_id, { eligibility: 'source' })
-        continue
-      }
-      if (posting.is_linked_transfer) {
-        lookup.set(posting.posting_id, {
-          eligibility: 'already-linked',
-          tooltip: 'Already linked to another transaction',
-        })
-        continue
-      }
-      if (splitOriginalId(posting.posting_id) !== null) {
-        lookup.set(posting.posting_id, {
-          eligibility: 'already-split',
-          tooltip: "Already split into categorized legs — can't be linked",
-        })
-        continue
-      }
-      const matches =
-        posting.currency === pickingSource.currency && Math.abs(posting.amount - neededAmount) < AMOUNT_TOLERANCE
-      lookup.set(posting.posting_id, {
-        eligibility: matches ? 'eligible' : 'amount-mismatch',
-        tooltip: matches
-          ? undefined
-          : `Amounts don't match — needs ${formatCurrency(neededAmount, pickingSource.currency)}`,
-      })
-    }
-    return lookup
-  }, [pickingSource, sorted])
+  const pickHints = useMemo(() => pickHintByPostingId(sorted, pickingSource), [sorted, pickingSource])
   const bulkTargets = useMemo(
     () => filtered.filter((posting) => needsCategorizing(posting, withSubcategories, realIds.has(posting.posting_id))),
     [filtered, withSubcategories, realIds],
@@ -1228,22 +891,7 @@ function TransactionsTable({
     if (selectAllRef.current) selectAllRef.current.indeterminate = somePendingSelected && !allPendingSelected
   }, [somePendingSelected, allPendingSelected])
 
-  const activeFilterCount = useMemo(() => {
-    let count = 0
-    if (filters.accountFilter !== ALL) count++
-    count +=
-      categoryFilter.length +
-      subcategoryFilter.length +
-      tagFilter.length +
-      pendingFilter.length +
-      transferFlagFilter.length
-    if (filters.dateMode === DATE_MODE_MONTH ? filters.month !== ALL_MONTHS : filters.startDate || filters.endDate) {
-      count++
-    }
-    if (filters.incomeExpenseFilter !== ALL) count++
-    if (filters.categorizedFilter !== ALL) count++
-    return count
-  }, [filters, categoryFilter, subcategoryFilter, tagFilter, pendingFilter, transferFlagFilter])
+  const activeFilterCount = useMemo(() => countActiveFilters(filters), [filters])
 
   return (
     <Card>
@@ -1361,7 +1009,7 @@ function TransactionsTable({
               <MultiSelectFilter
                 label="Category"
                 options={categoryOptions}
-                selected={categoryFilter}
+                selected={filters.categoryFilter}
                 exclude={filters.categoryExclude}
                 onSelectedChange={(next) => setFilters({ ...filters, categoryFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, categoryExclude: exclude })}
@@ -1371,7 +1019,7 @@ function TransactionsTable({
               <MultiSelectFilter
                 label="Subcategory"
                 options={subcategoryOptions}
-                selected={subcategoryFilter}
+                selected={filters.subcategoryFilter}
                 exclude={filters.subcategoryExclude}
                 onSelectedChange={(next) => setFilters({ ...filters, subcategoryFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, subcategoryExclude: exclude })}
@@ -1381,7 +1029,7 @@ function TransactionsTable({
               <MultiSelectFilter
                 label="Tag"
                 options={tagFilterOptions}
-                selected={tagFilter}
+                selected={filters.tagFilter}
                 exclude={filters.tagExclude}
                 onSelectedChange={(next) => setFilters({ ...filters, tagFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, tagExclude: exclude })}
@@ -1391,7 +1039,7 @@ function TransactionsTable({
               <MultiSelectFilter
                 label="Status"
                 options={PENDING_OPTIONS}
-                selected={pendingFilter}
+                selected={filters.pendingFilter}
                 exclude={filters.pendingExclude ?? false}
                 onSelectedChange={(next) => setFilters({ ...filters, pendingFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, pendingExclude: exclude })}
@@ -1401,7 +1049,7 @@ function TransactionsTable({
               <MultiSelectFilter
                 label="Filter transfers"
                 options={TRANSFER_FLAG_OPTIONS}
-                selected={transferFlagFilter}
+                selected={filters.transferFlagFilter}
                 exclude={filters.transferFlagExclude}
                 onSelectedChange={(next) => setFilters({ ...filters, transferFlagFilter: next })}
                 onExcludeChange={(exclude) => setFilters({ ...filters, transferFlagExclude: exclude })}
@@ -1564,7 +1212,7 @@ function TransactionsTable({
                       }
                       aiAvailable={aiAvailable}
                       safeCounterpartyAccounts={safeCounterpartyAccounts}
-                      pickHint={pickHintByPostingId?.get(posting.posting_id) ?? null}
+                      pickHint={pickHints?.get(posting.posting_id) ?? null}
                       transferBadge={transferBadgeByPostingId.get(posting.posting_id) ?? null}
                       onOverride={handleOverride}
                       onAiSuggest={runAiSuggest}
