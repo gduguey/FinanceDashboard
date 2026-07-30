@@ -104,3 +104,61 @@ the auth path.
 **Why deferred:** it adds a live external call to the most security-sensitive code
 path (every request's auth check), so it deserves careful, isolated implementation
 and tests — not a quick bolt-on.
+
+## 4. Two read-modify-write paths can lose a concurrent write
+
+**Where:** `_reorder_automations` in `src/accounting/api/routers/goals.py`
+(behind `PUT /goal-automations/{contributions,withdrawals}/order`);
+`patch_target_allocation` in `src/trades/api/routers/settings.py`.
+
+**What:** both read a whole collection, compute the new state in Python, and
+write the whole thing back, with nothing detecting that the state changed in
+between.
+
+1. `_reorder_automations` reads the direction's automations, then
+   `replace_goal_automations` deletes every row for that direction and
+   reinserts the ones built from that snapshot. A `POST
+   /goal-automations/{direction}` or `PATCH /goal-automations/{automation_id}`
+   committing between the read and the delete is deleted and replaced by the
+   stale version — a lost create or lost update, with no 409 and no error to
+   either caller. Unlike goals (`expected_version`) and budgets (an atomic
+   `ON CONFLICT ... RETURNING`), automations carry no per-row version at all.
+2. `patch_target_allocation` merges the request's `symbol -> percentage` patch
+   into the map it just read and calls `save_settings`, which rewrites the
+   whole row. Two patches naming *different* symbols therefore do not compose:
+   the later commit drops the earlier one, which contradicts the
+   non-clobbering merge-patch semantics the endpoint's own media type
+   promises.
+
+**Fix direction:** for (1), either `UPDATE ... SET priority = :priority WHERE
+natural_key = :id` per already-validated row — no delete, nothing to lose — or
+`SELECT ... FOR UPDATE` on the direction's rows before the delete so a
+concurrent write is detected rather than overwritten. For (2), a row lock or a
+database-side JSON merge, so the read and the write are one statement.
+
+**Why deferred out of the API-contract PR:** both are behavioural rather than
+contractual — the methods, statuses and bodies are right and stay right after
+the fix — and both need failure-injection tests that interleave two requests,
+which is not a shape this suite has yet. (1) also wants a decision on whether
+automations should carry a `version` like every other editable row, which is a
+schema change with a migration. They belong with gap 1, whose fix is the same
+subject: making one request one transaction.
+
+## 5. Drag-to-reorder fires one request per hover
+
+**Where:** `useRowDrag` in `web/src/components/goals/GoalAutomationsPanel.tsx`,
+used by both `RecurringAdditionsList` and `WithdrawalPrioritiesList`.
+
+**What:** `onDragOver` recomputes the order and calls the reorder mutation on
+every hover event, so dragging a row down a list of ten sends up to nine
+requests whose responses can resolve out of order and leave an intermediate
+order persisted. It also breaks the rule that no two accounting-store mutations
+may be in flight at once.
+
+**Fix direction:** hold the dragged order in local component state, render from
+that, and send the ids once from `onDragEnd`.
+
+**Why deferred:** the pattern predates this PR — it is unchanged on `main`,
+which called the whole-list `PUT` from the same place — and the fix is local
+component state plus an optimistic render, which is PR 4's subject (frontend
+performance and optimistic updates). Nothing about the endpoint changes.
