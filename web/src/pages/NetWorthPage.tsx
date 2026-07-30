@@ -9,6 +9,7 @@ import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -240,47 +241,54 @@ function AddOtherAssetForm() {
       </CardHeader>
       <CardContent>
         <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Name
-            <Input
-              className="w-40"
-              value={draft.name}
-              onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="e.g. Car"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Value
-            <Input
-              className="w-28"
-              type="number"
-              value={draft.value}
-              onChange={(event) => setDraft((prev) => ({ ...prev, value: event.target.value }))}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Currency
-            <Select
-              value={draft.currency}
-              onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}
-            >
-              <SelectTrigger size="sm" className="w-20">
-                <SelectValue items={{ USD: 'USD', EUR: 'EUR' }} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="USD">USD</SelectItem>
-                <SelectItem value="EUR">EUR</SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Note
-            <Input
-              className="w-48"
-              value={draft.note}
-              onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
-            />
-          </label>
+          <Field label="Name">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-40"
+                value={draft.name}
+                onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+                placeholder="e.g. Car"
+              />
+            )}
+          </Field>
+          <Field label="Value">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-28"
+                type="number"
+                value={draft.value}
+                onChange={(event) => setDraft((prev) => ({ ...prev, value: event.target.value }))}
+              />
+            )}
+          </Field>
+          <Field label="Currency">
+            {(id) => (
+              <Select
+                value={draft.currency}
+                onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}
+              >
+                <SelectTrigger id={id} size="sm" className="w-20">
+                  <SelectValue items={{ USD: 'USD', EUR: 'EUR' }} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="USD">USD</SelectItem>
+                  <SelectItem value="EUR">EUR</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </Field>
+          <Field label="Note">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-48"
+                value={draft.note}
+                onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
+              />
+            )}
+          </Field>
           <Button size="sm" onClick={addAsset} disabled={createOtherAsset.isPending}>
             Add
           </Button>

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -188,15 +189,17 @@ function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomatio
                   ))}
                 </SelectContent>
               </Select>
-              <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                Starting
-                <Input
-                  type="date"
-                  className="w-36"
-                  value={addition.start_date ?? ''}
-                  onChange={(event) => update(addition.automation_id, { start_date: event.target.value })}
-                />
-              </label>
+              <Field label="Starting" className="flex-row items-center gap-1">
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="date"
+                    className="w-36"
+                    value={addition.start_date ?? ''}
+                    onChange={(event) => update(addition.automation_id, { start_date: event.target.value })}
+                  />
+                )}
+              </Field>
               <Select
                 value={addition.frequency ?? 'monthly'}
                 onValueChange={(value) =>
@@ -216,14 +219,16 @@ function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomatio
                   )}
                 </SelectContent>
               </Select>
-              <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                Until (optional)
-                <OptionalDateInput
-                  value={addition.end_date ?? ''}
-                  onChange={(value) => update(addition.automation_id, { end_date: value || null })}
-                  placeholder="No end date"
-                />
-              </label>
+              <Field label="Until (optional)" className="flex-row items-center gap-1">
+                {(id) => (
+                  <OptionalDateInput
+                    id={id}
+                    value={addition.end_date ?? ''}
+                    onChange={(value) => update(addition.automation_id, { end_date: value || null })}
+                    placeholder="No end date"
+                  />
+                )}
+              </Field>
               <Select
                 value={addition.mode ?? 'fixed_amount'}
                 onValueChange={(value) => update(addition.automation_id, { mode: value as GoalAutomationMode })}

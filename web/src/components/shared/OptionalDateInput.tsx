@@ -12,11 +12,14 @@ import { Input } from '@/components/ui/input'
 // (`text-transparent`) in favor of this component's own unambiguous
 // placeholder text, and a value only ever shows an explicit clear (×).
 export function OptionalDateInput({
+  id,
   value,
   onChange,
   placeholder = 'Any date',
   className = 'w-36',
 }: {
+  /** Lands on the inner `<input>`, so a `<label htmlFor>` outside this component reaches the control. */
+  id?: string
   value: string
   onChange: (value: string) => void
   placeholder?: string
@@ -26,6 +29,7 @@ export function OptionalDateInput({
     <div className={`flex items-center gap-1 ${className}`}>
       <div className="relative flex-1">
         <Input
+          id={id}
           type="date"
           className={value ? 'w-full' : 'w-full text-transparent'}
           value={value}

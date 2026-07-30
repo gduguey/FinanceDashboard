@@ -6,6 +6,7 @@ import { ConnectionStatus } from '@/components/shared/ConnectionStatus'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -117,26 +118,30 @@ function IbkrConnectionCard() {
         ) : (
           <>
             <ConnectionStatus state={connection.state} error={connection.error} />
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Flex Web Service token
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder={data.token_set ? 'Already set — enter a new value to replace it' : 'Not set'}
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Query ID
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder={data.query_id_set ? 'Already set — enter a new value to replace it' : 'Not set'}
-                value={queryId}
-                onChange={(event) => setQueryId(event.target.value)}
-              />
-            </label>
+            <Field label="Flex Web Service token">
+              {(id) => (
+                <Input
+                  id={id}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={data.token_set ? 'Already set — enter a new value to replace it' : 'Not set'}
+                  value={token}
+                  onChange={(event) => setToken(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Query ID">
+              {(id) => (
+                <Input
+                  id={id}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={data.query_id_set ? 'Already set — enter a new value to replace it' : 'Not set'}
+                  value={queryId}
+                  onChange={(event) => setQueryId(event.target.value)}
+                />
+              )}
+            </Field>
             {saveError && <p className="text-xs text-destructive">{saveError}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={(!token && !queryId) || setSettings.isPending}>
@@ -220,26 +225,30 @@ function LlmCategorizationCard() {
               <ProviderStatus label="Gemini" state={geminiConnection.state} error={geminiConnection.error} />
               <ProviderStatus label="Mistral" state={mistralConnection.state} error={mistralConnection.error} />
             </div>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Gemini API key
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder={data.gemini_key_set ? 'Already set — enter a new value to replace it' : 'Not set'}
-                value={geminiKey}
-                onChange={(event) => setGeminiKey(event.target.value)}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Mistral API key
-              <Input
-                type="password"
-                autoComplete="off"
-                placeholder={data.mistral_key_set ? 'Already set — enter a new value to replace it' : 'Not set'}
-                value={mistralKey}
-                onChange={(event) => setMistralKey(event.target.value)}
-              />
-            </label>
+            <Field label="Gemini API key">
+              {(id) => (
+                <Input
+                  id={id}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={data.gemini_key_set ? 'Already set — enter a new value to replace it' : 'Not set'}
+                  value={geminiKey}
+                  onChange={(event) => setGeminiKey(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Mistral API key">
+              {(id) => (
+                <Input
+                  id={id}
+                  type="password"
+                  autoComplete="off"
+                  placeholder={data.mistral_key_set ? 'Already set — enter a new value to replace it' : 'Not set'}
+                  value={mistralKey}
+                  onChange={(event) => setMistralKey(event.target.value)}
+                />
+              )}
+            </Field>
             {saveError && <p className="text-xs text-destructive">{saveError}</p>}
             <div className="flex gap-2">
               <Button size="sm" onClick={handleSave} disabled={(!geminiKey && !mistralKey) || setSettings.isPending}>

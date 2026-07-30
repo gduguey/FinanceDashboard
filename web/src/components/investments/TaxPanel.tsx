@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { TermCard } from '@/components/shared/TermCard'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -100,10 +101,24 @@ function RateField({
   onCommit: (pct: number | null) => void
 }) {
   return (
-    <label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-      {label}
-      <NumberInput className="w-16" value={override} placeholder={resolvedPct.toFixed(0)} onCommit={onCommit} />%
-    </label>
+    <Field
+      label={label}
+      className="flex-row items-center gap-1.5 text-sm text-muted-foreground"
+      labelClassName="text-sm"
+    >
+      {(id) => (
+        <>
+          <NumberInput
+            id={id}
+            className="w-16"
+            value={override}
+            placeholder={resolvedPct.toFixed(0)}
+            onCommit={onCommit}
+          />
+          %
+        </>
+      )}
+    </Field>
   )
 }
 
@@ -144,11 +159,22 @@ export function TaxEnabledToggle() {
 
   return (
     <div className="flex items-center gap-2">
-      <label className="flex items-center gap-2 text-sm font-medium">
-        Apply taxes
-        <Switch checked={settings.tax_enabled} onCheckedChange={(checked) => update({ tax_enabled: checked })} />
-        <InfoTooltip term="taxToggle" />
-      </label>
+      <Field
+        label="Apply taxes"
+        className="flex-row items-center gap-2"
+        labelClassName="text-sm font-medium text-foreground"
+      >
+        {(id) => (
+          <>
+            <Switch
+              id={id}
+              checked={settings.tax_enabled}
+              onCheckedChange={(checked) => update({ tax_enabled: checked })}
+            />
+            <InfoTooltip term="taxToggle" />
+          </>
+        )}
+      </Field>
       {settings.tax_enabled && (
         <span className="text-xs text-muted-foreground">
           Applying the {REGIME_LABELS[regime]} tax regime set up in{' '}
@@ -204,13 +230,15 @@ export function TaxRegimeSelector() {
       />
       {isNra && (
         <>
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            W-8BEN treaty benefits
-            <Switch
-              checked={settings.w8ben_claimed}
-              onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
-            />
-          </label>
+          <Field label="W-8BEN treaty benefits" className="flex-row items-center gap-2" labelClassName="text-sm">
+            {(id) => (
+              <Switch
+                id={id}
+                checked={settings.w8ben_claimed}
+                onCheckedChange={(checked) => update({ w8ben_claimed: checked })}
+              />
+            )}
+          </Field>
           {settings.w8ben_claimed && (
             <RateField
               label="Treaty rate"

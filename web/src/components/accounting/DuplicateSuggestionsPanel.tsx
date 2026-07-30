@@ -9,6 +9,7 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useCreatePostingMerge, useDismissSuggestion, useDuplicateSuggestions } from '@/hooks/useAccountingData'
@@ -397,18 +398,24 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
       <CardHeader className="flex flex-row flex-wrap items-end justify-between gap-3">
         <div className="flex items-center gap-3">
           <CardTitle>Possible duplicate transactions</CardTitle>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            Search within
-            <Input
-              type="number"
-              min={1}
-              className="w-16"
-              value={windowDaysDraft}
-              onChange={(event) => handleWindowDaysChange(event.target.value)}
-              onBlur={handleWindowDaysBlur}
-            />
-            days
-          </label>
+          {/* `text-xs text-muted-foreground` sits on the wrapper, not just the
+              label, because the trailing "days" is outside the caption. */}
+          <Field label="Search within" className="flex-row items-center gap-2 text-xs text-muted-foreground">
+            {(id) => (
+              <>
+                <Input
+                  id={id}
+                  type="number"
+                  min={1}
+                  className="w-16"
+                  value={windowDaysDraft}
+                  onChange={(event) => handleWindowDaysChange(event.target.value)}
+                  onBlur={handleWindowDaysBlur}
+                />
+                days
+              </>
+            )}
+          </Field>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <FilterSelect

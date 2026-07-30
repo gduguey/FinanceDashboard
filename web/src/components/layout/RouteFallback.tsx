@@ -10,7 +10,10 @@ import { Skeleton } from '@/components/ui/skeleton'
  */
 export function RouteFallback() {
   return (
-    <div className="flex-1 overflow-y-auto" aria-busy="true" aria-label="Loading page">
+    // `role="status"` rather than a bare `<div>`: `aria-label` and `aria-busy`
+    // say nothing on a generic role, so a screen reader announced neither the
+    // name nor the fact that anything was loading.
+    <div className="flex-1 overflow-y-auto" role="status" aria-busy="true" aria-label="Loading page">
       <div className="border-b px-8 py-6">
         <Skeleton className="h-7 w-48" />
       </div>

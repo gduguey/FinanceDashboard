@@ -2,6 +2,7 @@ import { Plus, Trash2 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -127,10 +128,11 @@ export function CloseAccountDialog({
           <DialogTitle>Close {account.name}</DialogTitle>
         </DialogHeader>
 
-        <label className="flex w-40 flex-col gap-1 text-xs text-muted-foreground">
-          Closing date
-          <Input type="date" value={closingDate} onChange={(event) => setClosingDate(event.target.value)} />
-        </label>
+        <Field label="Closing date" className="w-40">
+          {(id) => (
+            <Input id={id} type="date" value={closingDate} onChange={(event) => setClosingDate(event.target.value)} />
+          )}
+        </Field>
 
         {!hasBalance ? (
           <p className="text-sm text-muted-foreground">
@@ -151,53 +153,58 @@ export function CloseAccountDialog({
                 const crossCurrency = other && other.currency !== account.currency
                 return (
                   <div key={row.key} className="flex flex-wrap items-end gap-2">
-                    <label className="flex min-w-48 flex-1 flex-col gap-1 text-xs text-muted-foreground">
-                      {movingOut ? 'To account' : 'From account'}
-                      <Select
-                        value={row.otherAccountId}
-                        onValueChange={(value) => value && updateRow(row.key, { otherAccountId: value })}
-                      >
-                        <SelectTrigger size="sm" className="w-full">
-                          <SelectValue placeholder="Choose an account…" items={accountItems} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {otherAccounts.map((candidate) => (
-                            <SelectItem key={candidate.account_id} value={candidate.account_id}>
-                              {candidate.name} ({candidate.currency})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </label>
-                    <label className="flex w-32 flex-col gap-1 text-xs text-muted-foreground">
-                      Amount ({account.currency})
-                      <Input
-                        type="number"
-                        inputMode="decimal"
-                        className="text-right"
-                        value={row.ownAmount}
-                        onChange={(event) => updateRow(row.key, { ownAmount: event.target.value })}
-                      />
-                    </label>
-                    {crossCurrency && (
-                      <label className="flex w-32 flex-col gap-1 text-xs text-muted-foreground">
-                        Received ({other.currency})
+                    <Field label={movingOut ? 'To account' : 'From account'} className="min-w-48 flex-1">
+                      {(id) => (
+                        <Select
+                          value={row.otherAccountId}
+                          onValueChange={(value) => value && updateRow(row.key, { otherAccountId: value })}
+                        >
+                          <SelectTrigger id={id} size="sm" className="w-full">
+                            <SelectValue placeholder="Choose an account…" items={accountItems} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {otherAccounts.map((candidate) => (
+                              <SelectItem key={candidate.account_id} value={candidate.account_id}>
+                                {candidate.name} ({candidate.currency})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </Field>
+                    <Field label={<>Amount ({account.currency})</>} className="w-32">
+                      {(id) => (
                         <Input
+                          id={id}
                           type="number"
                           inputMode="decimal"
                           className="text-right"
-                          value={row.otherAmount}
-                          onChange={(event) =>
-                            setRows((prev) =>
-                              prev.map((candidate) =>
-                                candidate.key === row.key
-                                  ? { ...candidate, otherAmount: event.target.value }
-                                  : candidate,
-                              ),
-                            )
-                          }
+                          value={row.ownAmount}
+                          onChange={(event) => updateRow(row.key, { ownAmount: event.target.value })}
                         />
-                      </label>
+                      )}
+                    </Field>
+                    {crossCurrency && (
+                      <Field label={<>Received ({other.currency})</>} className="w-32">
+                        {(id) => (
+                          <Input
+                            id={id}
+                            type="number"
+                            inputMode="decimal"
+                            className="text-right"
+                            value={row.otherAmount}
+                            onChange={(event) =>
+                              setRows((prev) =>
+                                prev.map((candidate) =>
+                                  candidate.key === row.key
+                                    ? { ...candidate, otherAmount: event.target.value }
+                                    : candidate,
+                                ),
+                              )
+                            }
+                          />
+                        )}
+                      </Field>
                     )}
                     <Button variant="ghost" size="icon" onClick={() => removeRow(row.key)} title="Remove this split">
                       <Trash2 className="size-3.5 text-muted-foreground" />
@@ -214,10 +221,13 @@ export function CloseAccountDialog({
                 ? 'Fully allocated.'
                 : `Remaining to allocate: ${formatCurrency(remaining, account.currency)}`}
             </p>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Switch size="sm" checked={skipTransfer} onCheckedChange={setSkipTransfer} />
-              Close without recording a transfer
-            </label>
+            {/* Row-reversed because `Field` renders its caption first, and here the switch sits ahead of the text. */}
+            <Field
+              label="Close without recording a transfer"
+              className="flex-row-reverse items-center justify-end gap-2"
+            >
+              {(id) => <Switch id={id} size="sm" checked={skipTransfer} onCheckedChange={setSkipTransfer} />}
+            </Field>
           </div>
         )}
 

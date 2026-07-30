@@ -6,10 +6,13 @@ import { Input } from '@/components/ui/input'
 // list as a plain absolutely-positioned panel under the input rather than
 // pulling in a new Popover dependency for one field.
 export function InstitutionCombobox({
+  id,
   value,
   onChange,
   knownInstitutions,
 }: {
+  /** Lands on the text input, so a `<label htmlFor>` outside this component reaches the control. */
+  id?: string
   value: string
   onChange: (value: string) => void
   knownInstitutions: string[]
@@ -20,6 +23,7 @@ export function InstitutionCombobox({
   return (
     <div className="relative">
       <Input
+        id={id}
         className="w-40 text-foreground"
         value={value}
         onChange={(event) => onChange(event.target.value)}

@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 // like `RateField`, it does not fight an in-progress edit if the caller's
 // own value changes underneath it while you're still typing.
 export function NumberInput({
+  id,
   value,
   onCommit,
   onChange,
@@ -29,6 +30,8 @@ export function NumberInput({
   max,
   step,
 }: {
+  /** Lands on the inner `<input>`, so a `<label htmlFor>` outside this component reaches the control. */
+  id?: string
   value: number | null
   onCommit: (value: number | null) => void
   /** Fires on every keystroke with the raw, not-yet-committed text — for a caller that needs to react live (a chart preview, a running total) without waiting for blur. */
@@ -54,6 +57,7 @@ export function NumberInput({
 
   return (
     <Input
+      id={id}
       type="number"
       inputMode="decimal"
       className={cn(className)}

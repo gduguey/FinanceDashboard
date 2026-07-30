@@ -6,6 +6,7 @@ import { SuggestionArchive } from '@/components/accounting/SuggestionArchive'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
 import {
@@ -347,18 +348,24 @@ export function TransferSuggestionsPanel({
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
         <CardTitle>Possible transfers not yet caught by a rule</CardTitle>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          Search within
-          <Input
-            type="number"
-            min={1}
-            className="w-16"
-            value={windowDaysDraft}
-            onChange={(event) => handleWindowDaysChange(event.target.value)}
-            onBlur={handleWindowDaysBlur}
-          />
-          days
-        </label>
+        {/* `text-xs text-muted-foreground` sits on the wrapper, not just the
+            label, because the trailing "days" is outside the caption. */}
+        <Field label="Search within" className="flex-row items-center gap-2 text-xs text-muted-foreground">
+          {(id) => (
+            <>
+              <Input
+                id={id}
+                type="number"
+                min={1}
+                className="w-16"
+                value={windowDaysDraft}
+                onChange={(event) => handleWindowDaysChange(event.target.value)}
+                onBlur={handleWindowDaysBlur}
+              />
+              days
+            </>
+          )}
+        </Field>
       </CardHeader>
       <CardContent>
         {sorted.length === 0 ? (

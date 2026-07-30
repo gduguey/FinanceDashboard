@@ -4,11 +4,14 @@ import type { Account } from '@/types/accounting'
 const NO_COUNTERPARTY = '__none__'
 
 export function CounterpartySelect({
+  id,
   accounts,
   value,
   onChange,
   disabled,
 }: {
+  /** Lands on the inner `SelectTrigger`, so a `<label htmlFor>` outside this component reaches the control. */
+  id?: string
   accounts: Account[]
   value: string | null
   onChange: (accountId: string | null) => void
@@ -24,7 +27,7 @@ export function CounterpartySelect({
       onValueChange={(next) => onChange(next === NO_COUNTERPARTY ? null : (next ?? null))}
       disabled={disabled}
     >
-      <SelectTrigger size="sm" className="w-48">
+      <SelectTrigger id={id} size="sm" className="w-48">
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>

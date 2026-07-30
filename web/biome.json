@@ -23,8 +23,15 @@
       "style": {
         "useComponentExportOnlyModules": {
           "level": "warn",
-          "options": { "allowConstantExport": true }
+          "options": {
+            "allowConstantExport": true
+          }
         }
+      },
+      "a11y": {
+        "noLabelWithoutControl": "error",
+        "useSemanticElements": "error",
+        "useAriaPropsSupportedByRole": "error"
       }
     }
   },

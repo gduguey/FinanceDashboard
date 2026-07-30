@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -535,91 +536,94 @@ export function ImportPage() {
                 </button>
                 <div className="min-w-0 flex-1 basis-full text-sm font-medium text-foreground">{entry.file.name}</div>
 
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Institution
-                  <Select
-                    value={entry.institution}
-                    onValueChange={(institution) =>
-                      institution &&
-                      updateEntry(entry.key, {
-                        institution,
-                        accountId: '',
-                        accountKind: '',
-                        candidateAccountIds: [],
-                      })
-                    }
-                  >
-                    <SelectTrigger size="sm" className="w-36">
-                      <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {institutions.map((institution) => (
-                        <SelectItem key={institution} value={institution}>
-                          {institution}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Account name
-                  <Select
-                    value={entry.accountId}
-                    onValueChange={(accountId) => {
-                      const account = accountId ? store?.accounts[accountId] : undefined
-                      if (account) {
+                <Field label="Institution">
+                  {(id) => (
+                    <Select
+                      value={entry.institution}
+                      onValueChange={(institution) =>
+                        institution &&
                         updateEntry(entry.key, {
-                          accountId: account.account_id,
-                          accountKind: account.kind,
-                          currency: account.currency,
+                          institution,
+                          accountId: '',
+                          accountKind: '',
                           candidateAccountIds: [],
                         })
                       }
-                    }}
-                    disabled={!entry.institution}
-                  >
-                    <SelectTrigger size="sm" className="w-52">
-                      <SelectValue
-                        placeholder="Choose an account…"
-                        items={Object.fromEntries(
-                          accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name]),
-                        )}
-                      />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accountsForInstitution(entry.institution).map((account) => (
-                        <SelectItem key={account.account_id} value={account.account_id}>
-                          {account.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
+                    >
+                      <SelectTrigger id={id} size="sm" className="w-36">
+                        <SelectValue items={Object.fromEntries(institutions.map((i) => [i, i]))} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {institutions.map((institution) => (
+                          <SelectItem key={institution} value={institution}>
+                            {institution}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </Field>
+
+                <Field label="Account name">
+                  {(id) => (
+                    <Select
+                      value={entry.accountId}
+                      onValueChange={(accountId) => {
+                        const account = accountId ? store?.accounts[accountId] : undefined
+                        if (account) {
+                          updateEntry(entry.key, {
+                            accountId: account.account_id,
+                            accountKind: account.kind,
+                            currency: account.currency,
+                            candidateAccountIds: [],
+                          })
+                        }
+                      }}
+                      disabled={!entry.institution}
+                    >
+                      <SelectTrigger id={id} size="sm" className="w-52">
+                        <SelectValue
+                          placeholder="Choose an account…"
+                          items={Object.fromEntries(
+                            accountsForInstitution(entry.institution).map((a) => [a.account_id, a.name]),
+                          )}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {accountsForInstitution(entry.institution).map((account) => (
+                          <SelectItem key={account.account_id} value={account.account_id}>
+                            {account.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </Field>
 
                 {entry.institution &&
                   entry.accountKind &&
                   !supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
-                    <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                      Date order
-                      <Select
-                        value={entry.dateOrder ?? ''}
-                        onValueChange={(value) =>
-                          updateEntry(entry.key, { dateOrder: (value || undefined) as 'MDY' | 'DMY' | undefined })
-                        }
-                      >
-                        <SelectTrigger size="sm" className="w-40">
-                          <SelectValue placeholder="Auto (unambiguous)" items={DATE_ORDER_TRIGGER_LABELS} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {Object.entries(DATE_ORDER_ITEMS).map(([value, label]) => (
-                            <SelectItem key={value} value={value}>
-                              {label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </label>
+                    <Field label="Date order">
+                      {(id) => (
+                        <Select
+                          value={entry.dateOrder ?? ''}
+                          onValueChange={(value) =>
+                            updateEntry(entry.key, { dateOrder: (value || undefined) as 'MDY' | 'DMY' | undefined })
+                          }
+                        >
+                          <SelectTrigger id={id} size="sm" className="w-40">
+                            <SelectValue placeholder="Auto (unambiguous)" items={DATE_ORDER_TRIGGER_LABELS} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Object.entries(DATE_ORDER_ITEMS).map(([value, label]) => (
+                              <SelectItem key={value} value={value}>
+                                {label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </Field>
                   )}
 
                 <Button
@@ -684,24 +688,25 @@ export function ImportPage() {
                     </span>
                     {!supportedKinds.has(`${entry.institution}:${entry.accountKind}`) && (
                       <div className="flex items-end gap-2">
-                        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                          Separator
-                          <Select
-                            value={entry.separator ?? ''}
-                            onValueChange={(value) => updateEntry(entry.key, { separator: value || undefined })}
-                          >
-                            <SelectTrigger size="sm" className="w-28">
-                              <SelectValue placeholder="Auto-detect" items={SEPARATOR_ITEMS} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {Object.entries(SEPARATOR_ITEMS).map(([value, label]) => (
-                                <SelectItem key={value} value={value}>
-                                  {label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </label>
+                        <Field label="Separator">
+                          {(id) => (
+                            <Select
+                              value={entry.separator ?? ''}
+                              onValueChange={(value) => updateEntry(entry.key, { separator: value || undefined })}
+                            >
+                              <SelectTrigger id={id} size="sm" className="w-28">
+                                <SelectValue placeholder="Auto-detect" items={SEPARATOR_ITEMS} />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {Object.entries(SEPARATOR_ITEMS).map(([value, label]) => (
+                                  <SelectItem key={value} value={value}>
+                                    {label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </Field>
                         <Button size="sm" variant="outline" onClick={() => confirmCsvImport(entry)}>
                           Retry
                         </Button>
