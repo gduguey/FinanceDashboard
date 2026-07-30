@@ -165,13 +165,35 @@ function ReconciliationResultView({ result }: { result: PaystubReconciliationRes
       </p>
       <ul className="space-y-1 text-sm">
         {/* A `DepositMatch` carries no id — it is a line lifted off the
-            statement, not a stored row. Its natural key is the deposit it
-            describes: the label the payroll provider printed, the account it
-            landed in, and the amount. A statement can genuinely repeat a
-            label ("Direct Deposit" into two different accounts), so all three
-            are needed to tell two of its lines apart. */}
-        {result.matches.map((match) => (
-          <li key={`${match.label}|${match.account_last4 ?? ''}|${match.amount}`} className="flex items-center gap-2">
+            statement, not a stored row. (`posting_id` is not one either: it is
+            null for every deposit that failed to match, so several rows can
+            share it.) Its natural key is the deposit it describes: the label
+            the payroll provider printed, the account it landed in, and the
+            amount. A statement can genuinely repeat a label ("Direct Deposit"
+            into two different accounts), so all three are needed to tell two
+            of its lines apart.
+
+            Even all three can collide, though: one paystub paying two truly
+            identical deposits (same label, same account, same amount) is
+            possible, and any of the fields could itself contain the `|` we
+            join on, so distinct triples can flatten to the same string. The
+            index breaks that tie. Appending it — rather than using it alone —
+            keeps the natural key doing the work whenever it is unique.
+
+            An index in a key is only safe if the list can't be reordered
+            underneath it, and this one can't. `matches` is derived read-only
+            from a reconciliation result: the server returns it in the
+            statement's own deposit order, it is stored once on the upload
+            entry when the import resolves, and nothing here sorts, filters,
+            splices, or edits it. A re-upload replaces the whole result object
+            wholesale rather than rearranging this array, so a given position
+            always holds the same deposit for as long as the list is mounted. */}
+        {result.matches.map((match, index) => (
+          <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: tiebreaker only, appended after a natural key — see above, this list is read-only and never reordered
+            key={`${match.label}|${match.account_last4 ?? ''}|${match.amount}|${index}`}
+            className="flex items-center gap-2"
+          >
             {match.posting_id ? (
               <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
             ) : (
