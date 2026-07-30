@@ -144,21 +144,28 @@ automations should carry a `version` like every other editable row, which is a
 schema change with a migration. They belong with gap 1, whose fix is the same
 subject: making one request one transaction.
 
-## 5. Drag-to-reorder fires one request per hover
+## 5. Drag-to-reorder fires one request per hover — FIXED
 
 **Where:** `useRowDrag` in `web/src/components/goals/GoalAutomationsPanel.tsx`,
 used by both `RecurringAdditionsList` and `WithdrawalPrioritiesList`.
 
-**What:** `onDragOver` recomputes the order and calls the reorder mutation on
-every hover event, so dragging a row down a list of ten sends up to nine
-requests whose responses can resolve out of order and leave an intermediate
-order persisted. It also breaks the rule that no two accounting-store mutations
-may be in flight at once.
+**What it was:** `onDragOver` recomputed the order and called the reorder
+mutation on every hover event, so dragging a row down a list of ten sent up to
+nine requests whose responses could resolve out of order and leave an
+intermediate order persisted.
 
-**Fix direction:** hold the dragged order in local component state, render from
-that, and send the ids once from `onDragEnd`.
+**Fixed in PR 4.** The dragged order is held in local component state, rendered
+from there, and sent once from `onDragEnd`. The local copy is kept — not
+cleared at drop — until the server's own order agrees with it, so the rows do
+not snap back and forth while the request is in flight. The ordering itself is
+`moveItem`/`sameOrder` in `web/src/lib/reorder.ts`, unit-tested. Nothing about
+the endpoint changed.
 
-**Why deferred:** the pattern predates this PR — it is unchanged on `main`,
-which called the whole-list `PUT` from the same place — and the fix is local
-component state plus an optimistic render, which is PR 4's subject (frontend
-performance and optimistic updates). Nothing about the endpoint changes.
+Note the original entry also said this "breaks the rule that no two
+accounting-store mutations may be in flight at once". **There is no such rule
+any more.** PR 1 deleted the shared `X-Expected-Store-Version` header and moved
+to per-row versioning, so concurrent mutations no longer race on shared state —
+see `docs/app-stack/optimistic-concurrency-versioning.md`. PR 4 audited all
+eleven components that await a mutation and found every remaining case to be a
+genuine data dependency (create-then-set-opening-balance) or a deliberate
+rate limit (the LLM categorization loop), not a workaround for that rule.

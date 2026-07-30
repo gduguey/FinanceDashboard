@@ -1,5 +1,5 @@
 import { GripVertical, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { OptionalDateInput } from '@/components/shared/OptionalDateInput'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,6 +14,7 @@ import {
   useReorderContributionAutomations,
   useReorderWithdrawalAutomations,
 } from '@/hooks/useAccountingData'
+import { moveItem, sameOrder } from '@/lib/reorder'
 import type { Goal, GoalAutomation, GoalAutomationFrequency, GoalAutomationMode } from '@/types/accounting'
 
 const MODE_LABELS: Record<GoalAutomationMode, string> = {
@@ -33,26 +34,53 @@ function today(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+const keyOfAutomation = (automation: GoalAutomation) => automation.automation_id
+
 // Native HTML5 drag-and-drop for row reordering — no extra dependency
 // needed for a plain vertical-list reorder. `priority` is never sent from
 // here at all: the reorder endpoints read it off the position of each id in
 // the submitted list, so "drag to reorder" and "priority" have no way to
 // drift apart from each other.
-function useRowDrag<T>(items: T[], onReorder: (items: T[]) => void) {
+//
+// The drag is painted from local state and sent once, on drop. It used to call
+// the reorder mutation from `onDragOver`, i.e. on every hover event, so
+// dragging a row down a list of ten sent up to nine requests whose responses
+// could resolve out of order and leave an intermediate order persisted
+// (docs/known-gaps.md gap 5).
+function useRowDrag<T>(items: T[], keyOf: (item: T) => string, onReorder: (items: T[]) => void) {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
+  // The order being dragged, held locally so hovering repaints without asking
+  // the server. `null` means "nothing in flight, render what the server says".
+  const [pending, setPending] = useState<T[] | null>(null)
+  const rows = pending ?? items
+
+  // Drop the local copy once the server's own order agrees with it. Clearing
+  // it at drop time instead would snap the rows back to the pre-drag order for
+  // as long as the request took, then forward again when it landed.
+  useEffect(() => {
+    if (pending !== null && sameOrder(pending, items, keyOf)) setPending(null)
+  }, [pending, items, keyOf])
+
   return {
+    rows,
     draggedIndex,
-    onDragStart: (index: number) => () => setDraggedIndex(index),
+    onDragStart: (index: number) => () => {
+      setDraggedIndex(index)
+      setPending(rows)
+    },
     onDragOver: (index: number) => (event: React.DragEvent) => {
       event.preventDefault()
       if (draggedIndex === null || draggedIndex === index) return
-      const next = [...items]
-      const [moved] = next.splice(draggedIndex, 1)
-      next.splice(index, 0, moved)
+      // Local only. This fires on every hover event — dragging a row down a
+      // list of ten produced up to nine requests, whose responses could resolve
+      // out of order and leave an intermediate order persisted.
+      setPending(moveItem(rows, draggedIndex, index))
       setDraggedIndex(index)
-      onReorder(next)
     },
-    onDragEnd: () => setDraggedIndex(null),
+    onDragEnd: () => {
+      if (pending !== null && !sameOrder(pending, items, keyOf)) onReorder(pending)
+      setDraggedIndex(null)
+    },
   }
 }
 
@@ -70,7 +98,9 @@ function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomatio
   // Drag-to-reorder is the one operation spanning the whole list — it renumbers
   // every rule's priority at once, which is why it is a single request and not
   // one PATCH per moved row.
-  const drag = useRowDrag(ordered, (next) => reorderAdditions.mutate(next.map((addition) => addition.automation_id)))
+  const drag = useRowDrag(ordered, keyOfAutomation, (next) =>
+    reorderAdditions.mutate(next.map((addition) => addition.automation_id)),
+  )
 
   // A single-rule field edit is scoped to its own id (last-write-wins), so it can't revert a
   // concurrent edit to a different rule the way the old whole-list PUT could.
@@ -124,7 +154,7 @@ function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomatio
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        {ordered.map((addition, index) => {
+        {drag.rows.map((addition, index) => {
           const isLast = index === ordered.length - 1
           return (
             <div
@@ -235,7 +265,9 @@ function WithdrawalPrioritiesList({
   const deletePriority = useDeleteGoalAutomation()
   const ordered = [...priorities].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
-  const drag = useRowDrag(ordered, (next) => reorderPriorities.mutate(next.map((entry) => entry.automation_id)))
+  const drag = useRowDrag(ordered, keyOfAutomation, (next) =>
+    reorderPriorities.mutate(next.map((entry) => entry.automation_id)),
+  )
   const unranked = goalList.filter((goal) => !ordered.some((entry) => entry.goal_id === goal.goal_id))
 
   // Joining and leaving the drawdown order are their own requests — the reorder
@@ -260,7 +292,7 @@ function WithdrawalPrioritiesList({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
-        {ordered.map((entry, index) => (
+        {drag.rows.map((entry, index) => (
           <div
             key={entry.goal_id}
             draggable
