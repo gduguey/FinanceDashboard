@@ -1,4 +1,4 @@
-import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
+import { useAccountingStore, usePostingCount } from '@/hooks/useAccountingData'
 import { useIbkrConnectionStatus } from '@/hooks/usePortfolioData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 
@@ -8,13 +8,18 @@ import { hasAnyRealAccount } from '@/lib/postingClassification'
 // Deliberately a stricter, two-part condition than the welcome *popup*
 // uses (account only) — this is "done", the popup is just "you've taken
 // the first step".
+//
+// Counts rather than lists. The sidebar renders on every route, so reading
+// `hasData` off the full posting list made every page in the app download the
+// whole ledger — 34 sequential pages on a 170k-transaction account, about a
+// minute — to answer one boolean.
 export function useOnboardingProgress() {
   const { data: store } = useAccountingStore()
-  const { data: postings } = usePostings()
+  const { data: postingCount } = usePostingCount()
   const ibkr = useIbkrConnectionStatus()
 
   const hasAccount = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
-  const hasData = Boolean(postings && postings.length > 0)
+  const hasData = (postingCount ?? 0) > 0
   const ibkrConnected = ibkr.state === 'connected'
 
   return { hasAccount, hasData, ibkrConnected, isComplete: hasAccount && hasData }

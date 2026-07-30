@@ -1,14 +1,20 @@
 import { useSearchParams } from 'react-router-dom'
-import { AllocationView } from '@/components/investments/AllocationView'
-import { CashOverTimeChart } from '@/components/investments/CashOverTimeChart'
 import { DataQualityPanel } from '@/components/investments/DataQualityPanel'
 import { InvestmentsEmptyState } from '@/components/investments/InvestmentsEmptyState'
 import { LotsTable } from '@/components/investments/LotsTable'
 import { SyncButton } from '@/components/investments/SyncButton'
 import { TaxEnabledToggle } from '@/components/investments/TaxPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useOverview } from '@/hooks/usePortfolioData'
+
+// Charts are the heaviest code the app ships. `lazyChart` keeps them off this
+// page's critical path and streams them in behind a skeleton.
+const AllocationView = lazyChart(() => import('@/components/investments/AllocationView').then((m) => m.AllocationView))
+const CashOverTimeChart = lazyChart(() =>
+  import('@/components/investments/CashOverTimeChart').then((m) => m.CashOverTimeChart),
+)
 
 // Was the "Allocation" tab on the old combined Investments dashboard,
 // promoted to its own page. Keeps the tax toggle in its header (unlike

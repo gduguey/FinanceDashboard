@@ -1,7 +1,9 @@
 import { ApiError, parseBody, RowVersionConflictError } from '@/lib/api'
 import type {
   Account,
+  AccountCreate,
   AccountingStore,
+  AccountUpdate,
   Budget,
   BudgetComparisonRow,
   BudgetUpsert,
@@ -11,10 +13,12 @@ import type {
   CategorizeFromFileApplyResult,
   CategorizeFromFilePreview,
   Category,
-  CategoryClassification,
+  CategoryCreate,
+  CategoryDeletePreview,
   CategoryPattern,
   CategoryPatternCreate,
   CategoryPatternUpdate,
+  CategoryRenamePreview,
   CategoryTotalRow,
   Currency,
   CurrencyCode,
@@ -60,8 +64,11 @@ import type {
   SimulatorScenario,
   SimulatorScenarioCreate,
   SpendCurvePoint,
+  SubcategoryCreate,
   SyncStatus,
   Tag,
+  TagCreate,
+  TagRenamePreview,
   TransferLink,
   TransferLinkCreate,
   TransferRule,
@@ -102,63 +109,6 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 })
-
-export interface AccountCreate {
-  name: string
-  kind: string
-  institution: string
-  currency: string
-  last_four?: string | null
-  parent_account_id?: string | null
-  broker_connection_id?: string | null
-  meta: Record<string, string>
-}
-
-export interface AccountUpdate {
-  name: string
-  institution: string
-  kind: string
-  currency: string
-  last_four?: string | null
-  broker_connection_id?: string | null
-  meta: Record<string, string>
-}
-
-export interface CategoryCreate {
-  name: string
-  classification: CategoryClassification
-  color: string
-}
-
-export interface SubcategoryCreate {
-  name: string
-  color: string
-}
-
-export interface BudgetToDeletePreview {
-  month: string | null
-  amount: number
-  currency: string
-}
-
-export interface CategoryRenamePreview {
-  will_merge: boolean
-  target_name: string | null
-  budgets_to_delete: BudgetToDeletePreview[]
-}
-
-export interface CategoryDeletePreview {
-  posting_count: number
-}
-
-export interface TagCreate {
-  name: string
-}
-
-export interface TagRenamePreview {
-  will_merge: boolean
-  target_name: string | null
-}
 
 const POSTINGS_PAGE_LIMIT = 5000
 /** The server's own hard cap (`api_models.PAGE_LIMIT_MAX`) — the fewest round trips it will allow. */
@@ -351,6 +301,16 @@ export const accountingApi = {
   // server's cap — mid-deploy, say — advancing by the request would step past
   // records the server never sent and truncate the ledger silently, which is
   // the exact failure paging exists to avoid.
+  // Answers "does this user have any transaction at all", which is all the
+  // sidebar's onboarding check ever needed. It used to read that off the
+  // fully-paged `postings()` below — on every route, because the sidebar is on
+  // every route — so a 170k-transaction ledger downloaded its entire history
+  // to compute a boolean. Asking for a single transaction returns the same
+  // `total` in 67 ms rather than 34 sequential pages.
+  postingCount: async () => {
+    const page = await request<PostingPage>(`/postings${queryString({ limit: 1, offset: 0 })}`)
+    return page.total
+  },
   postings: async () => {
     const limit = POSTINGS_PAGE_LIMIT
     const items: Posting[] = []

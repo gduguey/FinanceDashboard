@@ -14,6 +14,7 @@ from __future__ import annotations
 import importlib
 import pkgutil
 import typing
+from decimal import Decimal
 
 import pytest
 from fastapi import APIRouter
@@ -186,3 +187,81 @@ def test_every_response_model_is_declared_in_an_api_module(route: APIRoute) -> N
         f"{_route_id(route)} is made of {sorted(f'{model.__module__}.{model.__name__}' for model in misplaced)}, "
         f"declared outside {sorted(_WIRE_MODULES)}."
     )
+
+
+_ANALYTICS_RESPONSES = frozenset({
+    "BudgetComparisonRow",
+    "CategoryTotalRow",
+    "GoalsSummary",
+    "InterestAccountRow",
+    "MonthlyIncomeExpenseRow",
+    "NetWorthAccountRow",
+    "NetWorthHistoryByAccountPoint",
+    "NetWorthHistoryPoint",
+    "NetWorthOtherAssetRow",
+    "NetWorthSummary",
+    "ProjectionPoint",
+    "SpendCurvePoint",
+    "SuggestedBudgetAmount",
+})
+"""The response models whose every money figure is an aggregate, not a stored value.
+
+Each one reports a sum, a balance, or a projection, computed over the resolved
+ledger in floats through the boundary `ledger.frame` declares (T1) and usually
+converted at a display currency's rate on top. None of those figures is exact
+and none of them can be, so all of them are `float` — and an exact `Money`
+appearing anywhere inside one is the defect this list exists to catch, not an
+improvement.
+
+Two of these used to carry one. `NetWorthSummary` embedded the stored
+`OtherAsset` — exact `value` — as a summand of its own float total, and
+`BudgetComparisonRow` put an exact `budgeted` next to an approximate `actual`
+and invited the subtraction. See `docs/http-api-contract.md` for where the
+exact value of each of those lives instead.
+"""
+
+
+def _exact_money_fields(model: type[BaseModel]) -> list[str]:
+    """Name every field of `model` that is, or contains, an exact `Decimal`.
+
+    Parameters
+    ----------
+    model
+        A wire model.
+
+    Returns
+    -------
+    list[str]
+        The field names, empty when the model carries no exact money.
+    """
+    found = []
+    for name, field in model.model_fields.items():
+        annotations = [field.annotation, *typing.get_args(field.annotation)]
+        if any(annotation is Decimal for annotation in annotations):
+            found.append(name)
+    return found
+
+
+@pytest.mark.parametrize("route", _routes(), ids=_route_id)
+def test_an_analytics_response_carries_no_exact_money(route: APIRoute) -> None:
+    """A response that reports aggregates reports only aggregates, at every depth.
+
+    Checked transitively, because the way this goes wrong is by embedding: the
+    outermost model's own fields were already floats in both cases the rule was
+    written for, and the exact value arrived inside a nested row.
+    """
+    reachable = _models_reachable_from(route.response_model)
+    if not any(model.__name__ in _ANALYTICS_RESPONSES for model in reachable):
+        return
+    offenders = {f"{model.__name__}.{field}" for model in reachable for field in _exact_money_fields(model)}
+    assert not offenders, (
+        f"{_route_id(route)} reports aggregates but embeds exact money in {sorted(offenders)}. "
+        f"Convert it at the boundary (`db.money.to_analytics_float`) or return the entity from its own route."
+    )
+
+
+def test_every_named_analytics_response_exists() -> None:
+    """Guard `_ANALYTICS_RESPONSES` against a rename that silently empties an entry."""
+    declared = {model.__name__ for route in _routes() for model in _models_reachable_from(route.response_model)}
+
+    assert declared >= _ANALYTICS_RESPONSES

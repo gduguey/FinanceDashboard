@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { colorForIndex } from '@/lib/colors'
 import { convertCurrency } from '@/lib/currency'
 import { formatCurrency } from '@/lib/format'
-import type { CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
+import type { CurrencyCode, NetWorthAccountRow, NetWorthOtherAssetRow } from '@/types/accounting'
 
 const LIABILITY_KINDS = new Set(['credit_card', 'loan'])
 
@@ -15,7 +15,7 @@ export function NetWorthAllocationPie({
   ratesToBase,
 }: {
   accounts: NetWorthAccountRow[]
-  otherAssets: OtherAsset[]
+  otherAssets: NetWorthOtherAssetRow[]
   displayCurrency: CurrencyCode
   ratesToBase: Record<string, number>
 }) {

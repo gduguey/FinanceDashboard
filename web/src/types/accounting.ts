@@ -9,6 +9,15 @@ import type { components } from './schema'
 
 export type Account = components['schemas']['Account']
 export type AccountKind = Account['kind']
+export type AccountCreate = components['schemas']['AccountCreate']
+export type AccountUpdate = components['schemas']['AccountUpdate']
+export type CategoryCreate = components['schemas']['CategoryCreate']
+export type SubcategoryCreate = components['schemas']['SubcategoryCreate']
+export type TagCreate = components['schemas']['TagCreate']
+export type CategoryRenamePreview = components['schemas']['CategoryRenamePreviewResponse']
+export type CategoryDeletePreview = components['schemas']['CategoryDeletePreviewResponse']
+export type TagRenamePreview = components['schemas']['TagRenamePreviewResponse']
+export type BudgetToDeletePreview = components['schemas']['BudgetToDeletePreview']
 export type Category = components['schemas']['Category']
 export type CategoryClassification = Category['classification']
 export type OtherAssetCreate = components['schemas']['OtherAssetCreate']
@@ -100,6 +109,11 @@ export type CategorizeFromFilePreview = components['schemas']['CategorizeFromFil
 export type CategorizeFromFileApplyResult = components['schemas']['CategorizeFromFileApplyResult']
 export type NetWorthAccountRow = components['schemas']['NetWorthAccountRow']
 export type NetWorthSummary = components['schemas']['NetWorthSummary']
+// The analytics view of an other asset, as `NetWorthSummary` embeds it — its
+// `value` is a converted float, not the exact `OtherAsset.value` the store
+// holds. Structurally assignable from `OtherAsset`, which is exactly why a
+// component that charts one should name this type rather than that one.
+export type NetWorthOtherAssetRow = components['schemas']['NetWorthOtherAssetRow']
 export type NetWorthHistoryPoint = components['schemas']['NetWorthHistoryPoint']
 export type NetWorthHistoryByAccountPoint = components['schemas']['NetWorthHistoryByAccountPoint']
 export type TransferSuggestion = components['schemas']['TransferSuggestion']

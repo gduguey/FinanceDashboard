@@ -19,6 +19,21 @@ The per-resource collection GETs are the right thing to *add* — a client that
 wants one collection should not have to read all twelve — and they are what an
 item-level `Location` header needs to point at. Adding them does not require
 deleting this route.
+
+Re-examined in PR 4, which owned the boot path, and kept. What the audit was
+actually seeing was cache shape: every mutation invalidated the whole
+`['accounting']` query prefix, so one composite response going stale on every
+write looked like a monolith problem. It was an invalidation problem, and
+scoping each write to the families it can move (see
+`web/src/hooks/accounting/keys.ts`) fixed it without touching this route — the
+Transactions page no longer refetches the store when a category is picked.
+
+The road not taken stays open and is worth naming, because the shape below is
+what makes it cheap: this function is a fan-out over twelve independent
+`load_*` calls with no aggregate behind it, so splitting it into twelve
+per-collection slices — or into two or three slices grouped by what a page
+needs — is a mechanical change to one function. It is available and
+deliberately unused. See `docs/http-api-contract.md`, "Deliberate non-goals".
 """
 
 from __future__ import annotations

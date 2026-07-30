@@ -1,14 +1,28 @@
 import { useMemo } from 'react'
-import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
-import { CategoryDrilldownPie } from '@/components/accounting/CategoryDrilldownPie'
-import { IncomeExpenseChart } from '@/components/accounting/IncomeExpenseChart'
+import type { GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { PeriodFilterBar } from '@/components/accounting/PeriodFilter'
-import { SpendCurveChart } from '@/components/accounting/SpendCurveChart'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
 import { usePeriodFilter } from '@/hooks/usePeriodFilter'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Account, CurrencyCode, Goal, GoalContribution, Posting, Tag } from '@/types/accounting'
+
+// Charts are the heaviest code the app ships. `lazyChart` keeps them off this
+// page's critical path and streams them in behind a skeleton.
+const CashflowSankeyChart = lazyChart(
+  () => import('@/components/accounting/CashflowSankeyChart').then((m) => m.CashflowSankeyChart),
+  'h-80 w-full',
+)
+const CategoryDrilldownPie = lazyChart(() =>
+  import('@/components/accounting/CategoryDrilldownPie').then((m) => m.CategoryDrilldownPie),
+)
+const IncomeExpenseChart = lazyChart(() =>
+  import('@/components/accounting/IncomeExpenseChart').then((m) => m.IncomeExpenseChart),
+)
+const SpendCurveChart = lazyChart(() =>
+  import('@/components/accounting/SpendCurveChart').then((m) => m.SpendCurveChart),
+)
 
 export function DashboardTab({
   postings,

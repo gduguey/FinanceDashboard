@@ -1,15 +1,25 @@
 import { BenchmarkPicker } from '@/components/investments/BenchmarkPicker'
 import { CashSittingCard } from '@/components/investments/CashSittingCard'
-import { DollarChart } from '@/components/investments/DollarChart'
-import { GrowthOf100Chart } from '@/components/investments/GrowthOf100Chart'
-import { HysaSettingsPanel } from '@/components/investments/HysaSettingsPanel'
 import { InvestmentsEmptyState } from '@/components/investments/InvestmentsEmptyState'
-import { MonthlyPnlChart } from '@/components/investments/MonthlyPnlChart'
 import { OverviewCards } from '@/components/investments/OverviewCards'
 import { SyncButton } from '@/components/investments/SyncButton'
 import { TaxEnabledToggle } from '@/components/investments/TaxPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { useOverview } from '@/hooks/usePortfolioData'
+
+// Charts are the heaviest code the app ships. `lazyChart` keeps them off this
+// page's critical path and streams them in behind a skeleton.
+const DollarChart = lazyChart(() => import('@/components/investments/DollarChart').then((m) => m.DollarChart))
+const GrowthOf100Chart = lazyChart(() =>
+  import('@/components/investments/GrowthOf100Chart').then((m) => m.GrowthOf100Chart),
+)
+const HysaSettingsPanel = lazyChart(() =>
+  import('@/components/investments/HysaSettingsPanel').then((m) => m.HysaSettingsPanel),
+)
+const MonthlyPnlChart = lazyChart(() =>
+  import('@/components/investments/MonthlyPnlChart').then((m) => m.MonthlyPnlChart),
+)
 
 // Was the "Dashboard" tab's Overview + Performance sections; Allocation
 // moved to its own page (`AllocationPage`), and once it did there was no
