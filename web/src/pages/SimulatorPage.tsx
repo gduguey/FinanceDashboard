@@ -127,14 +127,7 @@ export function SimulatorPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Simulator"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-      />
+      <PageHeader title="Simulator" actions={<DisplayCurrencyToggle />} />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
         <Card>

@@ -1,4 +1,4 @@
-import { type Ref } from 'react'
+import type { Ref } from 'react'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { Posting } from '@/types/accounting'

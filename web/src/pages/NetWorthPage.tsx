@@ -189,25 +189,36 @@ function AccountsTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {displayRows.map(({ row, depth }) => (
-          <TableRow key={row.key}>
-            <TableCell style={{ paddingLeft: `${depth * 20 + 16}px` }} className="font-medium">
-              {row.name}
-            </TableCell>
-            <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[row.kind]}</TableCell>
-            <TableCell className="text-muted-foreground">{row.currency}</TableCell>
-            <TableCell className={`text-right tabular-nums ${signColor(row.balance)}`}>
-              {formatCurrency(row.balance, row.currency)}
-            </TableCell>
-            <TableCell>
-              {row.otherAssetId && (
-                <Button variant="ghost" size="icon" onClick={() => onRemoveOtherAsset(row.otherAssetId!)}>
-                  <Trash2 className="size-3.5 text-muted-foreground" />
-                </Button>
-              )}
-            </TableCell>
-          </TableRow>
-        ))}
+        {displayRows.map(({ row, depth }) => {
+          // Pulled into a local so the `otherAssetId &&` guard below narrows
+          // for the click handler too. TypeScript drops a narrowing on a
+          // property access as soon as a closure captures it — `row` is
+          // mutable, so nothing rules out `row.otherAssetId` having been
+          // cleared between the render and the click. A `const` cannot be
+          // reassigned, so the narrowing survives into the handler, and a
+          // row that somehow lost its id would fail to typecheck here rather
+          // than send `undefined` to the delete mutation.
+          const { otherAssetId } = row
+          return (
+            <TableRow key={row.key}>
+              <TableCell style={{ paddingLeft: `${depth * 20 + 16}px` }} className="font-medium">
+                {row.name}
+              </TableCell>
+              <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[row.kind]}</TableCell>
+              <TableCell className="text-muted-foreground">{row.currency}</TableCell>
+              <TableCell className={`text-right tabular-nums ${signColor(row.balance)}`}>
+                {formatCurrency(row.balance, row.currency)}
+              </TableCell>
+              <TableCell>
+                {otherAssetId && (
+                  <Button variant="ghost" size="icon" onClick={() => onRemoveOtherAsset(otherAssetId)}>
+                    <Trash2 className="size-3.5 text-muted-foreground" />
+                  </Button>
+                )}
+              </TableCell>
+            </TableRow>
+          )
+        })}
       </TableBody>
     </Table>
   )
@@ -337,15 +348,7 @@ export function NetWorthPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Net Worth"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-        sections={hasData ? SECTIONS : undefined}
-      />
+      <PageHeader title="Net Worth" actions={<DisplayCurrencyToggle />} sections={hasData ? SECTIONS : undefined} />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
         {isLoading || !data ? (

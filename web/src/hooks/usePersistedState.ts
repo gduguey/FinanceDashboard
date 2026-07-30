@@ -27,10 +27,19 @@ export function usePersistedState<T>(key: string, initial: T) {
 
   useEffect(() => {
     const listener = () => setValue(read(key, initial))
-    if (!listeners.has(key)) listeners.set(key, new Set())
-    listeners.get(key)!.add(listener)
+    // The set is held in a local rather than fetched back out of the map on
+    // each use. `Map.get` is typed `T | undefined` however confidently a
+    // `has` on the line above says otherwise — TypeScript has no way to tie
+    // the two calls together — so reading it back always needs something to
+    // discharge the `undefined`. Keeping the reference means there is no
+    // `undefined` to discharge in the first place, and the cleanup below
+    // removes the listener from the very set it was added to rather than
+    // from whatever the map happens to hold by then.
+    const keyListeners = listeners.get(key) ?? new Set<() => void>()
+    listeners.set(key, keyListeners)
+    keyListeners.add(listener)
     return () => {
-      listeners.get(key)!.delete(listener)
+      keyListeners.delete(listener)
     }
     // `initial` is only ever used for the very first read — re-subscribing
     // whenever a caller passes a fresh literal/object would tear down and

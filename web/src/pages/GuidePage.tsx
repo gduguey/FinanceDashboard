@@ -1,6 +1,6 @@
 import {
   ArrowRightLeft,
-  BookOpen,
+  type BookOpen,
   Compass,
   CopyCheck,
   FolderTree,

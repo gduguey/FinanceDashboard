@@ -17,10 +17,15 @@
     "enabled": true,
     "rules": {
       "preset": "none",
+      "complexity": {
+        "noUselessFragments": "error"
+      },
       "correctness": {
         "useHookAtTopLevel": "error"
       },
       "style": {
+        "noNonNullAssertion": "error",
+        "useImportType": "error",
         "useComponentExportOnlyModules": {
           "level": "warn",
           "options": {

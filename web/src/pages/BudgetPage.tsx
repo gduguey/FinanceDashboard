@@ -350,14 +350,7 @@ export function BudgetPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Budget"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-      />
+      <PageHeader title="Budget" actions={<DisplayCurrencyToggle />} />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
         {!storeLoading && store && !hasAnyRealAccount(Object.values(store.accounts)) && <NoAccountsYetBanner />}
