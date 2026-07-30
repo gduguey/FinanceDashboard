@@ -1,4 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keys, useInvalidateAccounting } from '@/hooks/accounting/keys'
 import {
   type AccountCreate,
   type AccountUpdate,
@@ -36,104 +37,11 @@ import type {
   TransferRuleUpdate,
 } from '@/types/accounting'
 
-const keys = {
-  store: ['accounting', 'store'],
-  currencies: ['accounting', 'currencies'],
-  llmUsage: ['accounting', 'llm-usage'],
-  llmSettings: ['accounting', 'settings', 'llm'],
-  llmVerify: (provider: 'gemini' | 'mistral') => ['accounting', 'settings', 'llm', 'verify', provider],
-  supportedImportKinds: ['accounting', 'supported-import-kinds'],
-  syncStatus: ['accounting', 'sync-status'],
-  currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
-  exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
-  postings: ['accounting', 'postings'],
-  postingCount: ['accounting', 'postings', 'count'],
-  transferSuggestions: ['accounting', 'transfer-suggestions'],
-  duplicateSuggestions: ['accounting', 'duplicate-suggestions'],
-  dismissedSuggestions: ['accounting', 'dismissed-suggestions'],
-  netWorth: (asOf?: string, displayCurrency?: string) => ['accounting', 'net-worth', asOf ?? {}, displayCurrency ?? {}],
-  netWorthHistory: (start: string, end: string, intervalDays?: number, displayCurrency?: string) => [
-    'accounting',
-    'net-worth-history',
-    start,
-    end,
-    intervalDays ?? {},
-    displayCurrency ?? {},
-  ],
-  netWorthHistoryByAccount: (start: string, end: string, intervalDays?: number, displayCurrency?: string) => [
-    'accounting',
-    'net-worth-history-by-account',
-    start,
-    end,
-    intervalDays ?? {},
-    displayCurrency ?? {},
-  ],
-  categoryTotals: (start: string, end: string, accountIds?: string[], tagId?: string, displayCurrency?: string) => [
-    'accounting',
-    'category-totals',
-    start,
-    end,
-    accountIds ?? [],
-    tagId ?? {},
-    displayCurrency ?? {},
-  ],
-  monthlyIncomeExpense: (start: string, end: string, displayCurrency?: string) => [
-    'accounting',
-    'monthly-income-expense',
-    start,
-    end,
-    displayCurrency ?? {},
-  ],
-  spendCurve: (month: string, lookbackMonths?: number, displayCurrency?: string) => [
-    'accounting',
-    'spend-curve',
-    month,
-    lookbackMonths ?? {},
-    displayCurrency ?? {},
-  ],
-  budgetComparison: (month: string, displayCurrency?: string) => [
-    'accounting',
-    'budget-comparison',
-    month,
-    displayCurrency ?? {},
-  ],
-  suggestedBudgetAmount: (
-    categoryId: string,
-    month: string,
-    lookbackMonths?: number,
-    subcategoryId?: string,
-    displayCurrency?: string,
-  ) => [
-    'accounting',
-    'suggested-budget-amount',
-    categoryId,
-    month,
-    lookbackMonths ?? {},
-    subcategoryId ?? {},
-    displayCurrency ?? {},
-  ],
-  interestSummary: (asOf?: string) => ['accounting', 'interest-summary', asOf ?? {}],
-  simulatorProject: (
-    initialCapital: number,
-    monthlyContribution: number,
-    horizonYears: number,
-    annualRatePct: number,
-    compoundingFrequency: string,
-  ) => [
-    'accounting',
-    'simulator-project',
-    initialCapital,
-    monthlyContribution,
-    horizonYears,
-    annualRatePct,
-    compoundingFrequency,
-  ],
-}
-
-function useInvalidateAccounting() {
-  const queryClient = useQueryClient()
-  return () => queryClient.invalidateQueries({ queryKey: ['accounting'] })
-}
+// Re-exported so a consumer importing hooks from here can name a cache key
+// without a second import path. The definitions live in `accounting/keys.ts`
+// because the invalidation vocabulary every mutation below declares against
+// is worth reading on its own.
+export { keys, useInvalidateAccounting }
 
 export const useAccountingStore = () => useQuery({ queryKey: keys.store, queryFn: accountingApi.store })
 
@@ -143,26 +51,23 @@ export const useLlmUsage = () => useQuery({ queryKey: keys.llmUsage, queryFn: ac
 
 export const useLlmSettings = () => useQuery({ queryKey: keys.llmSettings, queryFn: accountingApi.llmSettings })
 
+// `configured` (used to decide whether to re-verify a saved key) lives in
+// llm-usage's response rather than llm-settings', which is why the `llm`
+// family covers both — saving a brand-new key has to flip `configured` to
+// true without waiting for an unrelated refetch to touch that query.
 export function useSetLlmSettings() {
-  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (update: LlmSettingsUpdate) => accountingApi.setLlmSettings(update),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: keys.llmSettings })
-      // `configured` (used to decide whether to re-verify a saved key)
-      // lives in llm-usage's response, not llm-settings' — without this,
-      // saving a brand-new key wouldn't flip `configured` to true until
-      // some unrelated refetch happened to touch this query.
-      queryClient.invalidateQueries({ queryKey: keys.llmUsage })
-    },
+    onSuccess: () => invalidate('llm'),
   })
 }
 
 export function useClearLlmSettings() {
-  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: () => accountingApi.clearLlmSettings(),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.llmSettings }),
+    onSuccess: () => invalidate('llm'),
   })
 }
 
@@ -264,7 +169,7 @@ export function useDismissSuggestion() {
   return useMutation({
     mutationFn: ({ suggestionId, ...body }: DismissSuggestionRequest & { suggestionId: string }) =>
       accountingApi.dismissSuggestion(suggestionId, body),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('suggestions'),
   })
 }
 
@@ -272,7 +177,7 @@ export function useRestoreSuggestion() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (suggestionId: string) => accountingApi.restoreSuggestion(suggestionId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('suggestions'),
   })
 }
 
@@ -280,7 +185,7 @@ export function useCreatePostingMerge() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (merge: PostingMergeUpsert) => accountingApi.createPostingMerge(merge),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -288,7 +193,7 @@ export function useRemovePostingMerge() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (mergeId: string) => accountingApi.removePostingMerge(mergeId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -296,7 +201,7 @@ export function useCreateTransferLink() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (link: TransferLinkCreate) => accountingApi.createTransferLink(link),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -309,7 +214,7 @@ export function useRemoveTransferLink() {
     // transfer"/"exclude this transfer" fires, instead of waiting on the
     // round trip — the badge disappears immediately and just reconciles
     // quietly once the real response (and `onSuccess`'s refetch) lands.
-    // Rolled back on failure; `onSuccess: invalidate` still refetches
+    // Rolled back on failure; the `onSuccess` invalidation still refetches
     // regardless, to reconcile with whatever the server actually persisted
     // — this optimistic patch only changes how fast the UI *looks* like it
     // responded, never what actually gets written.
@@ -331,7 +236,7 @@ export function useRemoveTransferLink() {
     onError: (_error, _linkId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -450,7 +355,7 @@ export function useDeleteSimulatorScenario() {
     onError: (_error, _scenarioId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -458,7 +363,7 @@ export function useCreateSimulatorScenario() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (scenario: SimulatorScenarioCreate) => accountingApi.createSimulatorScenario(scenario),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -469,7 +374,7 @@ export function useCreateCategory() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (category: CategoryCreate) => accountingApi.createCategory(category),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -478,7 +383,7 @@ export function useCreateSubcategory() {
   return useMutation({
     mutationFn: ({ parentId, subcategory }: { parentId: string; subcategory: SubcategoryCreate }) =>
       accountingApi.createSubcategory(parentId, subcategory),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -500,7 +405,7 @@ export function useRenameCategory() {
   return useMutation({
     mutationFn: ({ categoryId, name }: { categoryId: string; name: string }) =>
       accountingApi.renameCategory(categoryId, name),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -520,7 +425,7 @@ export function useDeleteCategory() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (categoryId: string) => accountingApi.deleteCategory(categoryId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -542,7 +447,7 @@ export function useDeleteTag() {
     onError: (_error, _tagId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -553,7 +458,7 @@ export function useCreateTag() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (tag: TagCreate) => accountingApi.createTag(tag),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -572,7 +477,7 @@ export function useRenameTag() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: ({ tagId, name }: { tagId: string; name: string }) => accountingApi.renameTag(tagId, name),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -589,7 +494,7 @@ export function usePatchTransferRule() {
     // `update.expected_version`, so firing several of these back-to-back
     // (e.g. rapid clicks) can never silently clobber a sibling rule's edit
     // or conflict with an unrelated save elsewhere. Rolled back on failure;
-    // `onSuccess: invalidate` still refetches regardless, to reconcile
+    // the `onSuccess` invalidation still refetches regardless, to reconcile
     // with whatever the server actually persisted (including the bumped
     // `version` for this rule's next edit). Like `useRemoveTransferLink`,
     // the updater is a function of the current cache rather than a spread of
@@ -613,7 +518,7 @@ export function usePatchTransferRule() {
     onError: (_error, _variables, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -636,7 +541,7 @@ export function useDeleteTransferRule() {
     onError: (_error, _ruleId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -644,7 +549,7 @@ export function useCreateTransferRule() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (rule: TransferRuleCreate) => accountingApi.createTransferRule(rule),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -667,7 +572,7 @@ export function useDeleteOtherAsset() {
     onError: (_error, _assetId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'netWorth'),
   })
 }
 
@@ -675,7 +580,7 @@ export function useCreateOtherAsset() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (asset: OtherAssetCreate) => accountingApi.createOtherAsset(asset),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'netWorth'),
   })
 }
 
@@ -687,7 +592,7 @@ export function useSetBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (budget: BudgetUpsert) => accountingApi.setBudget(budget),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'budgets'),
   })
 }
 
@@ -695,7 +600,7 @@ export function useRemoveBudget() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (budgetId: string) => accountingApi.removeBudget(budgetId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'budgets'),
   })
 }
 
@@ -703,7 +608,7 @@ export function useCreateAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (account: AccountCreate) => accountingApi.postAccount(account),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -712,7 +617,7 @@ export function useUpdateAccount() {
   return useMutation({
     mutationFn: ({ accountId, update }: { accountId: string; update: AccountUpdate }) =>
       accountingApi.putAccount(accountId, update),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -720,7 +625,7 @@ export function useDeleteAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (accountId: string) => accountingApi.deleteAccount(accountId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -729,7 +634,7 @@ export function useSetOpeningBalance() {
   return useMutation({
     mutationFn: ({ accountId, openingBalance }: { accountId: string; openingBalance: OpeningBalance }) =>
       accountingApi.putOpeningBalance(accountId, openingBalance),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('netWorth'),
   })
 }
 
@@ -738,7 +643,7 @@ export function useCloseAccount() {
   return useMutation({
     mutationFn: ({ accountId, transfers }: { accountId: string; transfers: ManualTransfer[] }) =>
       accountingApi.closeAccount(accountId, transfers),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -746,7 +651,7 @@ export function useReopenAccount() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (accountId: string) => accountingApi.reopenAccount(accountId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -754,7 +659,7 @@ export function useImportCsv() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: ({ file, accountId }: { file: File; accountId: string }) => accountingApi.importCsv(file, accountId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger', 'sync'),
   })
 }
 
@@ -774,7 +679,7 @@ export function useImportCanonicalCsv() {
       dateOrder?: string
       categoryOverrides?: CanonicalCategoryOverrides
     }) => accountingApi.importCanonicalCsv(file, accountId, separator, dateOrder, categoryOverrides),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger', 'sync'),
   })
 }
 
@@ -819,7 +724,7 @@ export function useApplyCategorizeFromFile() {
       separator?: string
       dateOrder?: string
     }) => accountingApi.applyCategorizeFromFile(file, confirmedRowNumbers, separator, dateOrder),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'ledger'),
   })
 }
 
@@ -830,7 +735,7 @@ export function useImportPaystub() {
 
 export function useRebuildLedger() {
   const invalidate = useInvalidateAccounting()
-  return useMutation({ mutationFn: accountingApi.rebuild, onSuccess: invalidate })
+  return useMutation({ mutationFn: accountingApi.rebuild, onSuccess: () => invalidate('store', 'ledger', 'sync') })
 }
 
 export function useSetPostingOverride() {
@@ -838,7 +743,7 @@ export function useSetPostingOverride() {
   return useMutation({
     mutationFn: ({ postingId, override }: { postingId: string; override: Partial<ManualOverride> }) =>
       accountingApi.putPostingOverride(postingId, override),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -847,7 +752,7 @@ export function useSetPostingSplit() {
   return useMutation({
     mutationFn: ({ postingId, legs }: { postingId: string; legs: PostingSplitLeg[] }) =>
       accountingApi.putPostingSplit(postingId, legs),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -855,7 +760,7 @@ export function useDeletePostingSplit() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (postingId: string) => accountingApi.deletePostingSplit(postingId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -864,7 +769,7 @@ export function useAiSuggestCategory() {
   return useMutation({
     mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
       accountingApi.aiSuggestCategory(postingId, lockCategoryId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger', 'llm'),
   })
 }
 
@@ -873,7 +778,7 @@ export function usePatternSuggestCategory() {
   return useMutation({
     mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
       accountingApi.patternSuggestCategory(postingId, lockCategoryId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -881,7 +786,7 @@ export function usePatternSuggestCategoryBulk() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (postingIds: string[]) => accountingApi.patternSuggestCategoryBulk(postingIds),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -889,7 +794,7 @@ export function useValidatePending() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (postingIds: string[]) => accountingApi.validatePending(postingIds),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('ledger'),
   })
 }
 
@@ -918,7 +823,7 @@ export function usePatchCategoryPattern() {
     onError: (_error, _variables, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -940,7 +845,7 @@ export function useDeleteCategoryPattern() {
     onError: (_error, _patternId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -948,7 +853,7 @@ export function useCreateCategoryPattern() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (pattern: CategoryPatternCreate) => accountingApi.createCategoryPattern(pattern),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store'),
   })
 }
 
@@ -975,7 +880,7 @@ export function usePatchGoal() {
     onError: (_error, _variables, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -997,7 +902,7 @@ export function useDeleteGoal() {
     onError: (_error, _goalId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1005,7 +910,7 @@ export function useCreateGoal() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (goal: GoalCreate) => accountingApi.createGoal(goal),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1013,7 +918,7 @@ export function useCreateGoalContribution() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (contribution: GoalContributionCreate) => accountingApi.createGoalContribution(contribution),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1022,7 +927,7 @@ export function useUpdateGoalContribution() {
   return useMutation({
     mutationFn: ({ contributionId, contribution }: { contributionId: string; contribution: GoalContributionUpdate }) =>
       accountingApi.updateGoalContribution(contributionId, contribution),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1030,7 +935,7 @@ export function useRemoveGoalContribution() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (contributionId: string) => accountingApi.removeGoalContribution(contributionId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1041,7 +946,7 @@ export function useReorderContributionAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (automationIds: string[]) => accountingApi.reorderContributionAutomations(automationIds),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1070,7 +975,7 @@ export function usePatchGoalAutomation() {
     onError: (_error, _variables, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1093,7 +998,7 @@ export function useDeleteGoalAutomation() {
     onError: (_error, _automationId, context) => {
       if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1101,7 +1006,7 @@ export function useCreateContributionAutomation() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (automation: GoalAutomationCreate) => accountingApi.createContributionAutomation(automation),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1109,7 +1014,7 @@ export function useCreateWithdrawalAutomation() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (goalId: string) => accountingApi.createWithdrawalAutomation(goalId),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1119,13 +1024,13 @@ export function useReorderWithdrawalAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (automationIds: string[]) => accountingApi.reorderWithdrawalAutomations(automationIds),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
 export const useGoalsSummary = (asOf?: string, displayCurrency?: string) =>
   useQuery({
-    queryKey: ['accounting', 'goals-summary', asOf ?? {}, displayCurrency ?? {}],
+    queryKey: keys.goalsSummary(asOf, displayCurrency),
     queryFn: () => accountingApi.goalsSummary(asOf, displayCurrency),
   })
 
@@ -1133,7 +1038,7 @@ export function useRunRecurringAdditions() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (asOf?: string) => accountingApi.runRecurringAdditions(asOf),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
@@ -1141,7 +1046,7 @@ export function useRunWithdrawalAutomation() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
     mutationFn: (asOf?: string) => accountingApi.runWithdrawalAutomation(asOf),
-    onSuccess: invalidate,
+    onSuccess: () => invalidate('store', 'goals'),
   })
 }
 
