@@ -351,6 +351,16 @@ export const accountingApi = {
   // server's cap — mid-deploy, say — advancing by the request would step past
   // records the server never sent and truncate the ledger silently, which is
   // the exact failure paging exists to avoid.
+  // Answers "does this user have any transaction at all", which is all the
+  // sidebar's onboarding check ever needed. It used to read that off the
+  // fully-paged `postings()` below — on every route, because the sidebar is on
+  // every route — so a 170k-transaction ledger downloaded its entire history
+  // to compute a boolean. Asking for a single transaction returns the same
+  // `total` in 67 ms rather than 34 sequential pages.
+  postingCount: async () => {
+    const page = await request<PostingPage>(`/postings${queryString({ limit: 1, offset: 0 })}`)
+    return page.total
+  },
   postings: async () => {
     const limit = POSTINGS_PAGE_LIMIT
     const items: Posting[] = []

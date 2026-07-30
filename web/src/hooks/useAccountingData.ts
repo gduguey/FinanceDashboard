@@ -47,6 +47,7 @@ const keys = {
   currentExchangeRate: (currency: string) => ['accounting', 'exchange-rate', 'current', currency],
   exchangeRateHistory: (currency: string) => ['accounting', 'exchange-rate', 'history', currency],
   postings: ['accounting', 'postings'],
+  postingCount: ['accounting', 'postings', 'count'],
   transferSuggestions: ['accounting', 'transfer-suggestions'],
   duplicateSuggestions: ['accounting', 'duplicate-suggestions'],
   dismissedSuggestions: ['accounting', 'dismissed-suggestions'],
@@ -234,6 +235,14 @@ export function useRatesToBase(nonBaseCurrencies: CurrencyCode[]) {
 }
 
 export const usePostings = () => useQuery({ queryKey: keys.postings, queryFn: accountingApi.postings })
+
+/**
+ * How many transactions the user has, without fetching any of them.
+ *
+ * For callers that only need to know whether the ledger is empty. Reading that
+ * off `usePostings` costs the whole history; this costs one page of one.
+ */
+export const usePostingCount = () => useQuery({ queryKey: keys.postingCount, queryFn: accountingApi.postingCount })
 
 export const useTransferSuggestions = (windowDays?: number) =>
   useQuery({
