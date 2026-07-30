@@ -49,7 +49,7 @@ class Goal(Base, Timestamped):
     """Bumped by `db.base.check_and_bump_row_version` on every `PATCH /goals/{goal_id}` — see that
     function's own docstring. Never touched by this table's own upsert path (see
     `accounting.repositories.planning._upsert_goal`, whose `ON CONFLICT ... DO UPDATE` deliberately
-    omits this column), so an unrelated create or reorder never invalidates a version a client
+    omits this column), so an unrelated create never invalidates a version a client
     already has in hand."""
 
 
@@ -58,10 +58,11 @@ class GoalContribution(Base, Timestamped):
 
     `goal_id` is a real foreign key into `goals` — a contribution can only
     ever be recorded against a goal that already exists; create the goal
-    first (see `Goal`), then record contributions against it. `PUT
-    /goal-contributions` still replaces the whole list wholesale (see
-    `api.put_goal_contributions`), but every entry in that list must now
-    name a goal that's actually there.
+    first (see `Goal`), then record contributions against it. Nothing
+    validates that at the API edge, so a `POST /goal-contributions`
+    naming a goal that isn't there surfaces as an `IntegrityError`
+    reaching the client as a 500, like every other foreign-key violation
+    in this app.
     """
 
     __tablename__ = "goal_contributions"
@@ -138,10 +139,10 @@ class GoalAutomation(Base, Timestamped):
     row carries none of it.
 
     `goal_id` is a real foreign key into `goals` — see `GoalContribution`'s
-    own docstring; both `PUT /goal-automations/contributions` and
-    `PUT /goal-automations/withdrawals` are the same "replace the whole
-    list, every entry must name a goal that already exists" shape, each
-    scoped to its own `direction`.
+    own docstring; every write path in either direction names a goal that
+    has to already exist, whether it creates one rule
+    (`POST /goal-automations/{contributions,withdrawals}`) or renumbers a
+    whole direction's rules (`PUT /goal-automations/.../order`).
 
     The partial unique index is what `withdrawal_priority_entries`'
     `UNIQUE (user_id, goal_id)` becomes: a goal appears at most once in

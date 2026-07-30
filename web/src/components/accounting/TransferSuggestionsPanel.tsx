@@ -234,7 +234,7 @@ export function TransferSuggestionsPanel({
 
   function dismiss(suggestion: TransferSuggestion) {
     dismissSuggestion.mutate({
-      suggestion_id: suggestion.suggestion_id,
+      suggestionId: suggestion.suggestion_id,
       kind: 'transfer',
       description: `${suggestion.description} <-> ${suggestion.other_description}`,
     })

@@ -153,7 +153,7 @@ def test_resolving_postings_survives_more_overlay_rows_than_the_parameter_ceilin
     ).scalar_one()
     assert seeded > 65_535, "the seed must actually cross the ceiling or this test proves nothing"
 
-    response = client.get("/api/accounting/postings")
+    response = client.get("/api/v1/accounting/postings")
 
     assert response.status_code == 200
     # One transaction, so the default page (200 *transactions*) covers every leg of it.

@@ -71,7 +71,7 @@ Two things, and only two:
   write into a `currency` field.
 - `accounting.models.SUPPORTED_CURRENCIES` — a `dict[CurrencyCode, Currency]`
   registry holding each currency's display symbol and decimal places.
-  `GET /api/accounting/currencies` returns this dict directly, and every
+  `GET /api/v1/accounting/currencies` returns this dict directly, and every
   currency dropdown in the frontend (an account's currency, a goal's
   target currency, the page-header display-currency toggle) is built from
   that endpoint's response — none of them hardcode "USD" or "EUR" as a

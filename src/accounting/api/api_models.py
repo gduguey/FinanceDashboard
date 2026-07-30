@@ -4,6 +4,12 @@ Every `BaseModel` subclass used by the routers in `accounting.api.routers`
 lives here — request bodies and response models alike — so a model's
 shape is defined exactly once, importable by whichever router needs it,
 without any router needing to know about another router's models.
+
+The one exception is the entities themselves. An endpoint that returns *an
+account* or *a category* returns the mirror in `accounting.api.entities`,
+not `accounting.models`' own class — see that module for why. The models
+here compose those mirrors (`AccountCloseResponse.account`), so nothing in
+this file names a domain entity type directly.
 """
 
 from __future__ import annotations
@@ -14,32 +20,34 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from accounting.models import (
+from accounting.api.entities import (
     Account,
-    AccountKind,
     Budget,
     Category,
-    CategoryClassification,
     CategoryPattern,
-    CompoundingFrequency,
-    CurrencyCode,
     EarningsStatement,
     Goal,
     GoalAutomation,
-    GoalAutomationFrequency,
-    GoalAutomationMode,
     GoalContribution,
-    GoalContributionOrigin,
     ManualTransfer,
     OtherAsset,
-    PendingSuggestionSource,
     Posting,
     PostingSplitLeg,
     SimulatorScenario,
     Tag,
     TransferLink,
-    TransferLinkSource,
     TransferRule,
+)
+from accounting.models import (
+    AccountKind,
+    CategoryClassification,
+    CompoundingFrequency,
+    CurrencyCode,
+    GoalAutomationFrequency,
+    GoalAutomationMode,
+    GoalContributionOrigin,
+    PendingSuggestionSource,
+    TransferLinkSource,
 )
 from db.money import ZERO, Money, Rate
 
@@ -48,7 +56,7 @@ class AccountingStoreResponse(BaseModel):
     """Every persisted accounting entity: accounts, categories, tags, rules, other assets.
 
     One field per repository `load_*`, recomposed at the router (see
-    `api.routers.store.get_store`) — this response model is the only
+    `api.routers.bootstrap.get_store`) — this response model is the only
     place the whole set is named together; nothing server-side passes it
     around. `transfer_rules` is `repositories.interpretation`'s
     `load_transfer_rules`, under the name every other endpoint and the
@@ -134,7 +142,7 @@ class BudgetToDeletePreview(BaseModel):
 
 
 class BudgetUpsert(BaseModel):
-    """Request body for `POST /api/accounting/budgets` — sets one target for one category.
+    """Request body for `POST /api/v1/accounting/budgets` — sets one target for one category.
 
     `month` is what picks which kind of target this is: `"YYYY-MM"` sets
     that one month's, and omitting it (`null`) sets the general,
@@ -158,7 +166,7 @@ class BudgetUpsert(BaseModel):
 
 
 class TransferRuleCreate(BaseModel):
-    """Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+    """Request body for `POST /api/v1/accounting/transfer-rules` — creates one new rule.
 
     `rule_id` is never taken from the client — derived server-side from
     `(description_contains, account_id, counterparty_account_id)`, the
@@ -176,7 +184,7 @@ class TransferRuleCreate(BaseModel):
 
 
 class TransferRuleUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+    """Request body for `PATCH /api/v1/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
 
     Unlike `TransferRuleCreate`, this never changes which rule is being
     edited — the rule stays identified by the `rule_id` path param even if
@@ -202,7 +210,7 @@ class TransferRuleUpdate(BaseModel):
 
 
 class CategoryPatternCreate(BaseModel):
-    """Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+    """Request body for `POST /api/v1/accounting/category-patterns` — creates one new pattern.
 
     `pattern_id` is derived server-side the same way `TransferRuleCreate`
     derives `rule_id` — from `(description_contains, category_id,
@@ -216,7 +224,7 @@ class CategoryPatternCreate(BaseModel):
 
 
 class CategoryPatternUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+    """Request body for `PATCH /api/v1/accounting/category-patterns/{pattern_id}` — updates one in place.
 
     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
@@ -234,7 +242,7 @@ class CategoryPatternUpdate(BaseModel):
 
 
 class GoalCreate(BaseModel):
-    """Request body for `POST /api/accounting/goals` — creates one new goal.
+    """Request body for `POST /api/v1/accounting/goals` — creates one new goal.
 
     `goal_id`, `color`, and `created_at` are never taken from the client —
     a goal is an arbitrary user record with no natural key two "the same"
@@ -252,7 +260,7 @@ class GoalCreate(BaseModel):
 
 
 class GoalUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+    """Request body for `PATCH /api/v1/accounting/goals/{goal_id}` — updates one existing goal in place.
 
     Unlike `GoalCreate`, this never mints a new id or color — the goal
     stays identified by the `goal_id` path param, and `color` is an
@@ -272,7 +280,7 @@ class GoalUpdate(BaseModel):
 
 
 class SimulatorScenarioCreate(BaseModel):
-    """Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+    """Request body for `POST /api/v1/accounting/simulator/scenarios` — creates one new saved scenario.
 
     `scenario_id` is never taken from the client — two scenarios can
     validly share every input field (a user comparing "what if I ran this
@@ -290,19 +298,17 @@ class SimulatorScenarioCreate(BaseModel):
 
 
 class GoalAutomationCreate(BaseModel):
-    """Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
+    """Request body for `POST /api/v1/accounting/goal-automations/contributions` — one new scheduled contribution.
 
-    Only the `contribution` direction is creatable one at a time: a
-    withdrawal automation has no fields of its own beyond its goal and its
-    place in the drawdown order, so the Goals page only ever submits that
-    ordering wholesale (`PUT /goal-automations/withdrawals`).
+    Contribution-shaped: a withdrawal automation carries none of these
+    fields, so it has its own, much smaller `WithdrawalAutomationCreate`.
 
     `automation_id` is server-minted, same reasoning as `GoalCreate`.
     `priority` is never taken from the client either — a newly created
     rule always goes last (one past the current lowest-priority row),
     matching the Goals page's own "append at the end of the ordered list"
-    behavior; drag-and-drop reordering still goes through the existing
-    `PUT /goal-automations/contributions`, unaffected by this.
+    behavior; drag-and-drop reordering goes through
+    `PUT /goal-automations/contributions/order`, unaffected by this.
     """
 
     goal_id: str = Field(min_length=1)
@@ -315,14 +321,15 @@ class GoalAutomationCreate(BaseModel):
 
 
 class GoalAutomationUpdate(BaseModel):
-    """Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
+    """Request body for `PATCH /api/v1/accounting/goal-automations/{automation_id}` — edits one rule in place.
 
     A single-rule field edit (amount, dates, frequency, mode, goal),
     scoped to its own `automation_id` so it never blanket-reinserts every
     rule. Carries `priority` unchanged (the row keeps its place);
-    re-ordering the whole list is still
-    `PUT /goal-automations/contributions`. No `expected_version`: like a
-    budget cell, an edit of one rule is last-write-wins on that rule (see
+    re-ordering the list is `PUT /goal-automations/contributions/order`,
+    which is the only route that assigns priorities. No
+    `expected_version`: like a budget cell, an edit of one rule is
+    last-write-wins on that rule (see
     `docs/app-stack/optimistic-concurrency-versioning.md`).
 
     Contribution-shaped for the same reason `GoalAutomationCreate` is —
@@ -339,8 +346,42 @@ class GoalAutomationUpdate(BaseModel):
     priority: int
 
 
+class WithdrawalAutomationCreate(BaseModel):
+    """Request body for `POST /api/v1/accounting/goal-automations/withdrawals` — puts one goal in the drawdown order.
+
+    A withdrawal automation is nothing but its goal and its place in that
+    order, so `goal_id` is the entire body — no schedule, no amount, no
+    currency (see `models.GoalAutomation`'s own field notes).
+
+    `automation_id` is *derived* rather than minted, unlike
+    `GoalAutomationCreate`: a goal appears at most once in the drawdown
+    order, so `repositories.planning.withdrawal_automation_id` is the
+    natural key. `priority` appends, exactly as it does for a contribution.
+    """
+
+    goal_id: str = Field(min_length=1)
+
+
+class AutomationOrder(BaseModel):
+    """Request body for `PUT /api/v1/accounting/goal-automations/{contributions,withdrawals}/order`.
+
+    Every automation id currently persisted for that direction, in the
+    order they should run in — and nothing else. The narrowness is the
+    whole point: the whole-list `PUT` this replaced took full automation
+    rows, so a drag-to-reorder could smuggle a field edit, an insertion or
+    a deletion past the per-automation routes that exist for those. Ids
+    alone, checked against the set already stored, can express a
+    reordering and nothing more.
+
+    No `priority` field: the server reads it off list position, so a
+    submitted order and the stored priorities cannot disagree.
+    """
+
+    automation_ids: list[str]
+
+
 class OtherAssetCreate(BaseModel):
-    """Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+    """Request body for `POST /api/v1/accounting/other-assets` — creates one new manually-entered asset.
 
     `asset_id` is server-minted, same reasoning as `GoalCreate` — two
     assets can validly share a name (e.g. two rental properties).
@@ -350,48 +391,6 @@ class OtherAssetCreate(BaseModel):
     value: Money
     currency: CurrencyCode = "USD"
     note: str = ""
-
-
-class BudgetIdResponse(BaseModel):
-    """Response body naming one budget, for endpoints whose only real effect is removing something."""
-
-    budget_id: str
-
-
-class TransferRuleIdResponse(BaseModel):
-    """Response body naming one transfer rule, for endpoints whose only real effect is removing something."""
-
-    rule_id: str
-
-
-class GoalIdResponse(BaseModel):
-    """Response body naming one goal, for endpoints whose only real effect is removing something."""
-
-    goal_id: str
-
-
-class CategoryPatternIdResponse(BaseModel):
-    """Response body naming one category pattern, for endpoints whose only real effect is removing something."""
-
-    pattern_id: str
-
-
-class TagIdResponse(BaseModel):
-    """Response body naming one tag, for endpoints whose only real effect is removing something."""
-
-    tag_id: str
-
-
-class OtherAssetIdResponse(BaseModel):
-    """Response body naming one manually-entered asset, for endpoints whose only real effect is removing something."""
-
-    asset_id: str
-
-
-class SimulatorScenarioIdResponse(BaseModel):
-    """Response body naming one simulator scenario, for endpoints whose only real effect is removing something."""
-
-    scenario_id: str
 
 
 class CategoryRenamePreviewResponse(BaseModel):
@@ -470,7 +469,7 @@ class ProjectionPoint(BaseModel):
 
 
 class AccountCreate(BaseModel):
-    """Request body for `POST /api/accounting/accounts` — everything but the server-generated `account_id`."""
+    """Request body for `POST /api/v1/accounting/accounts` — everything but the server-generated `account_id`."""
 
     name: str = Field(min_length=1)
     kind: AccountKind
@@ -483,7 +482,7 @@ class AccountCreate(BaseModel):
 
 
 class AccountUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/accounts/{account_id}`.
+    """Request body for `PUT /api/v1/accounting/accounts/{account_id}`.
 
     `institution`, `kind`, and `currency` may only differ from the
     account's current values while it has no postings yet — enforced in
@@ -507,27 +506,21 @@ class AccountUpdate(BaseModel):
     meta: dict[str, str] = Field(default_factory=dict)
 
 
-class AccountIdResponse(BaseModel):
-    """Response body naming one account, for endpoints whose only real effect is removing something."""
-
-    account_id: str
-
-
 class AccountCloseRequest(BaseModel):
-    """Request body for `POST /api/accounting/accounts/{account_id}/close`."""
+    """Request body for `POST /api/v1/accounting/accounts/{account_id}/close`."""
 
     transfers: list[ManualTransfer] = Field(default_factory=list)
 
 
 class AccountCloseResponse(BaseModel):
-    """Response body for `POST /api/accounting/accounts/{account_id}/close`."""
+    """Response body for `POST /api/v1/accounting/accounts/{account_id}/close`."""
 
     account: Account
     manual_transfers: list[ManualTransfer]
 
 
 class DetectRequest(BaseModel):
-    """Request body for `POST /api/accounting/detect`."""
+    """Request body for `POST /api/v1/accounting/detect`."""
 
     header: list[str]
     filename: str
@@ -716,56 +709,62 @@ class PostingRow(Posting):
     transfer_link_source: TransferLinkSource | None = None
 
 
-class PostingPage(BaseModel):
-    """One page of resolved postings, with what a client needs to ask for the next one.
+class Page[ItemT, WindowUnitT: str](BaseModel):
+    """One page of a collection, plus what a client needs to ask for the next one.
 
-    Pages are cut by *transaction*, so `items` holds every leg of every
-    transaction on the page and its length is not `limit` — `limit` counts
-    transactions, `items` counts postings, and a split transaction
+    `total`, `limit` and `offset` all count **`window_unit`s**, which is not
+    always the unit `items` is in: `GET /postings` cuts its window by
+    transaction and answers with every leg of every transaction in it, so
+    `len(items)` there is normally larger than `limit`. The two paged reads
+    used to be two hand-written envelopes with the same four field names
+    meaning different things in each, and nothing but a docstring saying so —
+    which is exactly the mistake a client makes by reading one endpoint and
+    reusing the shape. `window_unit` is a required field, not a default, so
+    every page states its own unit on the wire and the schema pins it to one
+    `const` per endpoint.
+
+    Paging is therefore always the same arithmetic regardless of endpoint:
+    advance `offset` by the `limit` the *server* echoed back (never the one
+    you asked for, which is clamped to `PAGE_LIMIT_MAX`) until it reaches
+    `total`. `len(items)` is never the stride.
+    """
+
+    items: list[ItemT]
+    window_unit: WindowUnitT
+    """What `total`, `limit` and `offset` count — never necessarily an `items` entry."""
+    total: int
+    """How many `window_unit`s match, ignoring this page's window."""
+    limit: int
+    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
+    offset: int
+    """How many `window_unit`s were skipped."""
+
+
+class PostingPage(Page[PostingRow, Literal["transaction"]]):
+    """One page of resolved postings, cut by transaction.
+
+    `items` holds every leg of every transaction on the page, ordered by
+    `posted_at` descending then posting id — the same order the window is cut
+    in, so concatenating consecutive pages yields one correctly sorted list
+    rather than ascending runs in descending order. A split transaction
     contributes more rows than legs it was imported with. See
-    `repositories.ledger.visible_transaction_page` for why the cut is there.
+    `repositories.ledger.visible_transaction_page` for why the cut is by
+    transaction rather than by posting.
     """
 
-    items: list[PostingRow]
-    """The page's postings, every leg of every transaction it covers, newest first.
 
-    Ordered by `posted_at` descending then posting id, the same order the
-    page window is cut in — so concatenating consecutive pages yields one
-    correctly sorted list rather than ascending runs in descending order."""
-    total: int
-    """How many transactions match, ignoring this page's window — not how many `items` there are."""
-    limit: int
-    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
-    offset: int
-    """How many transactions were skipped."""
+class LedgerExportPage(Page[Posting, Literal["posting"]]):
+    """One page of the raw ledger, as exported, cut by posting.
 
-
-class LedgerExportPage(BaseModel):
-    """One page of the raw ledger, as exported.
-
-    Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
-    export applies no overlay, so nothing here needs a transaction's legs
-    kept together. See `repositories.ledger.load_ledger_page`.
+    `items` is oldest first, exactly as imported. The raw export applies no
+    overlay, so nothing here needs a transaction's legs kept together — which
+    is the whole reason its window unit differs from `PostingPage`'s. See
+    `repositories.ledger.load_ledger_page`.
     """
-
-    items: list[Posting]
-    """The page's postings, oldest first, exactly as imported."""
-    total: int
-    """How many postings the user has in total."""
-    limit: int
-    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
-    offset: int
-    """How many postings were skipped."""
-
-
-class PostingIdResponse(BaseModel):
-    """Response body naming one posting, for endpoints whose only real effect is removing something."""
-
-    posting_id: str
 
 
 class PostingMergeUpsert(BaseModel):
-    """Request body for `POST /api/accounting/posting-merges` — records one duplicate-resolution decision.
+    """Request body for `POST /api/v1/accounting/posting-merges` — records one duplicate-resolution decision.
 
     `merge_id` is never taken from the client — derived server-side from
     `kept_transaction_id`, since a transaction can only ever be the kept
@@ -778,14 +777,10 @@ class PostingMergeUpsert(BaseModel):
     description: str | None = None
 
 
-class PostingMergeIdResponse(BaseModel):
-    """Response body naming one posting merge, for endpoints whose only real effect is removing something."""
-
-    merge_id: str
-
-
 class TransferLinkCreate(BaseModel):
-    """Request body for `POST /api/accounting/transfer-links` — confirms two transactions as one transfer's two sides.
+    """Request body for `POST /api/v1/accounting/transfer-links`.
+
+    Confirms two transactions as one transfer's two sides.
 
     `link_id`/ordering are never taken from the client — derived
     server-side from the two ids sorted once (see
@@ -797,14 +792,8 @@ class TransferLinkCreate(BaseModel):
     transaction_id_b: str = Field(min_length=1)
 
 
-class TransferLinkIdResponse(BaseModel):
-    """Response body naming one transfer link, for endpoints whose only real effect is removing something."""
-
-    link_id: str
-
-
 class GoalContributionCreate(BaseModel):
-    """Request body for `POST /api/accounting/goal-contributions` — records one new dated allocation.
+    """Request body for `POST /api/v1/accounting/goal-contributions` — records one new dated allocation.
 
     `contribution_id` is never taken from the client — unlike a budget's
     `(month, category_id)`, a contribution is an arbitrary event with no
@@ -827,7 +816,7 @@ class GoalContributionCreate(BaseModel):
 
 
 class GoalContributionUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
+    """Request body for `PUT /api/v1/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
 
     Every field is required, mirroring `PUT /accounts/{account_id}` — the
     caller already merges its patch into the existing row client-side
@@ -843,18 +832,6 @@ class GoalContributionUpdate(BaseModel):
     source_posting_id: str | None = None
     origin: GoalContributionOrigin = "manual"
     edited: bool = False
-
-
-class GoalContributionIdResponse(BaseModel):
-    """Response body naming one goal contribution, for endpoints whose only real effect is removing something."""
-
-    contribution_id: str
-
-
-class GoalAutomationIdResponse(BaseModel):
-    """Response body naming one goal automation, for endpoints whose only real effect is removing something."""
-
-    automation_id: str
 
 
 class LlmProviderUsage(BaseModel):
@@ -875,7 +852,7 @@ class VerifyResult(BaseModel):
 
 
 class LLMSettingsUpdate(BaseModel):
-    """Request body for `PUT /api/accounting/settings/llm`.
+    """Request body for `PUT /api/v1/accounting/settings/llm`.
 
     Either field left `None` leaves that one exactly as it was — entering
     a Gemini key doesn't clear an existing Mistral one.
@@ -964,17 +941,15 @@ class DuplicateGroup(BaseModel):
 
 
 class DismissSuggestionRequest(BaseModel):
-    """Request body for `POST /api/accounting/dismissed-suggestions`."""
+    """Request body for `PUT /api/v1/accounting/dismissed-suggestions/{suggestion_id}`.
 
-    suggestion_id: str
+    No `suggestion_id`: the path carries it. Keeping a copy in the body
+    would give one request two places to name the same thing, and the
+    handler would have to decide which wins when they disagree.
+    """
+
     kind: Literal["transfer", "duplicate"]
     description: str
-
-
-class SuggestionIdResponse(BaseModel):
-    """Response body naming one dismissed suggestion, for endpoints whose only real effect is removing something."""
-
-    suggestion_id: str
 
 
 class InterestAccountRow(BaseModel):

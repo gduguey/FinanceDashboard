@@ -137,14 +137,14 @@ Live ticker search against Yahoo Finance's search endpoint. **Not cached**
 — it's an on-demand lookup for the web dashboard's benchmark picker.
 
 Returns `{symbol, name, exchange}` dicts in Yahoo's relevance order. Only
-used by `GET /api/symbols/search` in `api/routers/market_data.py`.
+used by `GET /api/v1/trades/symbols/search` in `api/routers/market_data.py`.
 
 ---
 
 ## Syncing market data
 
 There is no longer a single "Sync everything" action. The web dashboard's
-**Sync** button (`POST /api/sync` in `trades/api/routers/sync.py`) now only
+**Sync** button (`POST /api/v1/trades/sync` in `trades/api/routers/sync.py`) now only
 pulls that signed-in user's latest IBKR Flex Query statement into their own
 Postgres-backed ledger — it's a manual, on-demand, per-user action because
 that's the one leg worth watching a progress bar for.
@@ -180,7 +180,7 @@ is wired up as `crontab` entries on the deploy VM, outside of anything
 `docker compose up` schedules on its own.
 
 Individual symbol pricing can also be refreshed on demand via
-`POST /api/symbols/{symbol}/ensure-priced` (e.g. after picking a new
+`POST /api/v1/trades/symbols/{symbol}/ensure-priced` (e.g. after picking a new
 benchmark).
 
 GET endpoints never fetch from the network — they read whatever is already

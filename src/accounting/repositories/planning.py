@@ -6,9 +6,9 @@ page's drag-and-drop), but it only ever touches its own table — never the
 fifteen others the old whole-store save swept up with it.
 
 `Goal` carries a `version` column that `PATCH /goals/{goal_id}` bumps
-through `db.base.check_and_bump_row_version`, so `replace_goals` upserts
-without ever writing that column: a reorder must not invalidate a version
-a client already has in hand for a row it isn't touching.
+through `db.base.check_and_bump_row_version`, so every other write to a
+goal row (see `_upsert_goal`) leaves that column alone: creating one goal
+must not invalidate a version a client already has in hand for another.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import Budget, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
-from db.base import any_text, check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
+from db.base import check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
 
 if TYPE_CHECKING:
     import uuid
@@ -141,7 +141,7 @@ def replace_budgets(session: Session, user_id: uuid.UUID, budgets: Iterable[Budg
     session.flush()
 
 
-def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
+def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> bool:
     """Insert-or-update one budget cell — per-month or general — touching no other.
 
     Keyed by `budget.budget_id` (derived from month+category+subcategory,
@@ -157,10 +157,23 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
         An open database session; `session.commit()` is called on success.
     user_id
         Whose budget this is.
+
+    Returns
+    -------
+    bool
+        `True` if this call brought the row into existence, `False` if it
+        replaced one already there. `POST /budgets` needs the difference to
+        answer `201` versus `200` honestly, and it has to come from the
+        write itself: a separate `SELECT` first would be a second round
+        trip whose answer a concurrent writer could invalidate before the
+        `INSERT` below ran. `xmax = 0` is Postgres' own record of which
+        branch of `ON CONFLICT` this row took — zero on a fresh insert, the
+        updating transaction's id on a conflict — so it is read out of the
+        same statement that decided it.
     """
     category_ids = ids_by_natural_key(session, adb.Category, user_id, [budget.category_id, budget.subcategory_id])
     subcategory_id = _optional_id(category_ids, budget.subcategory_id)
-    session.execute(
+    created = session.execute(
         text(
             """
             INSERT INTO accounting.budgets
@@ -173,6 +186,7 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
                 subcategory_id = EXCLUDED.subcategory_id,
                 amount = EXCLUDED.amount,
                 currency = EXCLUDED.currency
+            RETURNING xmax = 0 AS created
             """
         ),
         {
@@ -184,8 +198,9 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
             "amount": budget.amount,
             "currency": budget.currency,
         },
-    )
+    ).scalar_one()
     session.commit()
+    return bool(created)
 
 
 def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:
@@ -242,7 +257,7 @@ def _upsert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
     omits `version` is what keeps `PATCH /goals/{goal_id}`'s per-row
     optimistic concurrency intact: an existing row keeps whatever version
     `check_and_bump_row_version` last left it at, no matter how many times
-    an unrelated create or reorder round-trips through here.
+    an unrelated create round-trips through here.
     """
     session.execute(
         text(
@@ -288,32 +303,6 @@ def insert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
     """
     _upsert_goal(session, user_id, goal)
     session.commit()
-
-
-def replace_goals(session: Session, user_id: uuid.UUID, goals: Iterable[Goal]) -> None:
-    """Upsert every one of `goals` and delete this user's goals not among them — never touching `version`.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose goals these are.
-    goals
-        The complete desired set.
-    """
-    keep_natural_keys: set[str] = set()
-    for goal in goals:
-        keep_natural_keys.add(goal.goal_id)
-        _upsert_goal(session, user_id, goal)
-    session.flush()
-    existing_natural_keys = {row.natural_key for row in session.query(adb.Goal.natural_key).filter_by(user_id=user_id)}
-    removed_natural_keys = existing_natural_keys - keep_natural_keys
-    if removed_natural_keys:
-        session.query(adb.Goal).filter_by(user_id=user_id).filter(
-            any_text(adb.Goal.natural_key, removed_natural_keys)
-        ).delete(synchronize_session=False)
-    session.flush()
 
 
 def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_version: int | None) -> Goal | None:
@@ -488,26 +477,6 @@ def _goal_contribution_row(
         origin=contribution.origin,
         edited=contribution.edited,
     )
-
-
-def replace_goal_contributions(session: Session, user_id: uuid.UUID, contributions: Iterable[GoalContribution]) -> None:
-    """Replace this user's whole contribution ledger, touching no other table.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose contributions these are.
-    contributions
-        The complete desired set.
-    """
-    contributions = list(contributions)
-    session.query(adb.GoalContribution).filter_by(user_id=user_id).delete()
-    session.flush()
-    references = _contribution_references(session, user_id, contributions)
-    session.add_all(_goal_contribution_row(user_id, contribution, *references) for contribution in contributions)
-    session.flush()
 
 
 def insert_goal_contributions(session: Session, user_id: uuid.UUID, contributions: Iterable[GoalContribution]) -> None:
@@ -716,6 +685,11 @@ def replace_goal_automations(
     independent bits of UI (the recurring-additions list and the
     withdrawal ordering): replacing one must never wipe the other, even
     though they now share a table.
+
+    Its one caller is `api.routers.goals._reorder_automations`, which has
+    already checked that `automations` is exactly the persisted set for
+    `direction` — so the delete-and-reinsert below only ever changes
+    `priority`. Nothing else in the API replaces a list wholesale.
 
     Parameters
     ----------

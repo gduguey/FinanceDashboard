@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import polars as pl
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,25 +20,16 @@ from accounting.api.api_models import (
     DismissSuggestionRequest,
     DuplicateGroup,
     LedgerExportPage,
-    PostingIdResponse,
-    PostingMergeIdResponse,
     PostingMergeUpsert,
     PostingPage,
     PostingRow,
-    SuggestionIdResponse,
     TransferLinkCreate,
-    TransferLinkIdResponse,
     TransferSuggestion,
     ValidatePendingRequest,
     ValidatePendingResult,
 )
 from accounting.api.dependencies import _resolve_postings, _resolved_postings, state
-from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
-from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
-from accounting.ledger.duplicates import find_duplicate_candidates
-from accounting.ledger.pending import resolve_pending_suggestion
-from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
-from accounting.models import (
+from accounting.api.entities import (
     DismissedSuggestion,
     ManualOverride,
     Posting,
@@ -47,6 +38,14 @@ from accounting.models import (
     PostingSplitLeg,
     TransferLink,
 )
+from accounting.api.locations import created_or_replaced, location_of
+from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
+from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
+from accounting.ledger.duplicates import find_duplicate_candidates
+from accounting.ledger.pending import resolve_pending_suggestion
+from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
+from accounting.models import DismissedSuggestion as DomainDismissedSuggestion
+from accounting.models import PostingMerge as DomainPostingMerge
 from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
@@ -54,11 +53,11 @@ from accounting.repositories.interpretation import (
     insert_transfer_links,
     list_dismissed_suggestions,
     load_overrides_for_postings,
+    load_posting_merges,
     load_posting_splits,
     load_transfer_links,
     remove_posting_merge,
     remove_transfer_link,
-    replace_posting_merges,
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
@@ -166,7 +165,13 @@ def get_postings(
         row["resolved_by_transfer_rule_id"] = (
             None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
         )
-    return PostingPage(items=[PostingRow(**row) for row in rows], total=resolution.total, limit=limit, offset=offset)
+    return PostingPage(
+        items=[PostingRow(**row) for row in rows],
+        window_unit="transaction",
+        total=resolution.total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/ledger/export")
@@ -209,6 +214,7 @@ def get_ledger_export(
     page = load_ledger_page(session, user_id, limit=limit, offset=offset)
     return LedgerExportPage(
         items=[Posting(**row) for row in page.to_dicts()],
+        window_unit="posting",
         total=ledger_posting_count(session, user_id),
         limit=limit,
         offset=offset,
@@ -266,7 +272,7 @@ def put_posting_override(
         merged = existing.model_dump()
         merged.update(override.model_dump(include=override.model_fields_set))
         override = ManualOverride(**merged)
-    save_overrides_for_postings([posting_id], {posting_id: override}, session, user_id)
+    save_overrides_for_postings([posting_id], {posting_id: override.to_domain()}, session, user_id)
     return override
 
 
@@ -324,43 +330,19 @@ def put_posting_split(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )
     split = PostingSplit(posting_id=posting_id, legs=legs)
-    save_posting_split(split, session, user_id)
+    save_posting_split(split.to_domain(), session, user_id)
     return split
 
 
-@router.delete("/postings/{posting_id}/split")
+@router.delete("/postings/{posting_id}/split", status_code=204)
 def delete_posting_split_route(
     posting_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> PostingIdResponse:
-    """Undo a posting split, restoring the single original posting.
-
-    Returns
-    -------
-    PostingIdResponse
-    """
+) -> None:
+    """Undo a posting split, restoring the single original posting."""
     delete_posting_split(session, user_id, posting_id)
     session.commit()
-    return PostingIdResponse(posting_id=posting_id)
-
-
-@router.put("/posting-merges")
-def put_posting_merges(
-    merges: dict[str, PostingMerge],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, PostingMerge]:
-    """Replace the whole posting-merge map, keyed by `merge_id`.
-
-    Returns
-    -------
-    dict[str, PostingMerge]
-        The merges just persisted.
-    """
-    replace_posting_merges(session, user_id, merges.values())
-    session.commit()
-    return merges
 
 
 def _merge_id(kept_transaction_id: str) -> str:
@@ -373,40 +355,75 @@ def _merge_id(kept_transaction_id: str) -> str:
     return f"merge:{kept_transaction_id}"
 
 
-@router.post("/posting-merges")
+@router.get("/posting-merges/{merge_id}")
+def get_posting_merge(
+    merge_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> PostingMerge:
+    """Return one duplicate-resolution decision by id — the address `post_posting_merge` advertises.
+
+    Returns
+    -------
+    PostingMerge
+
+    Raises
+    ------
+    HTTPException
+        404 if no merge has this id.
+    """
+    merge = load_posting_merges(session, user_id).get(merge_id)
+    if merge is None:
+        raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
+    return PostingMerge.from_domain(merge)
+
+
+@router.post("/posting-merges", status_code=201, responses=created_or_replaced(PostingMerge))
 def post_posting_merge(
     request: PostingMergeUpsert,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> PostingMerge:
     """Upsert one duplicate-resolution decision, without touching any other merge already recorded.
+
+    A real upsert keyed on the kept transaction, so the status says which
+    of the two things happened: `201` with a `Location` when this recorded
+    a new decision, `200` when it replaced the decision already recorded
+    for that transaction.
+
+    Stays a `POST` on the collection rather than becoming
+    `PUT /posting-merges/{merge_id}`. The id is `merge:{kept_transaction_id}`
+    — derivable in principle, but `_merge_id`'s prefix is this module's
+    private key format, and making every client build it would export that
+    format as part of the contract.
 
     Returns
     -------
     PostingMerge
         The merge just persisted.
     """
-    merge = PostingMerge(
+    merge = DomainPostingMerge(
         merge_id=_merge_id(request.kept_transaction_id),
         kept_transaction_id=request.kept_transaction_id,
         duplicate_transaction_ids=request.duplicate_transaction_ids,
         description=request.description,
     )
-    upsert_posting_merge(merge, session, user_id)
-    return merge
+    if upsert_posting_merge(merge, session, user_id):
+        location_of(http_request, response, "get_posting_merge", merge_id=merge.merge_id)
+    else:
+        response.status_code = 200
+    return PostingMerge.from_domain(merge)
 
 
-@router.delete("/posting-merges/{merge_id}")
+@router.delete("/posting-merges/{merge_id}", status_code=204)
 def delete_posting_merge(
     merge_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> PostingMergeIdResponse:
+) -> None:
     """Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
-
-    Returns
-    -------
-    PostingMergeIdResponse
 
     Raises
     ------
@@ -416,12 +433,36 @@ def delete_posting_merge(
     if not remove_posting_merge(session, user_id, merge_id):
         raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
     session.commit()
-    return PostingMergeIdResponse(merge_id=merge_id)
 
 
-@router.post("/transfer-links")
+@router.get("/transfer-links/{link_id}")
+def get_transfer_link(
+    link_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferLink:
+    """Return one confirmed transfer link by id — the address `post_transfer_link` advertises.
+
+    Returns
+    -------
+    TransferLink
+
+    Raises
+    ------
+    HTTPException
+        404 if no link has this id.
+    """
+    link = next((existing for existing in load_transfer_links(session, user_id) if existing.link_id == link_id), None)
+    if link is None:
+        raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
+    return TransferLink.from_domain(link)
+
+
+@router.post("/transfer-links", status_code=201, responses=created_or_replaced(TransferLink))
 def post_transfer_link(
     request: TransferLinkCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> TransferLink:
@@ -431,6 +472,12 @@ def post_transfer_link(
     `ledger.transfers.apply_transfer_links` for how this changes
     classification instead. Re-confirming the exact same pair (from
     either side) is a no-op, returning the existing link.
+
+    That no-op is why the status is conditional: `201` with a `Location`
+    when this call confirmed the pair, `200` when the identical link was
+    already there. Not strictly an upsert — nothing is overwritten on the
+    second call — but the same distinction, read from the `already_this_link`
+    lookup below, in the transaction that writes.
 
     Returns
     -------
@@ -459,7 +506,8 @@ def post_transfer_link(
 
     already_this_link = next((existing for existing in transfer_links if existing.link_id == link.link_id), None)
     if already_this_link is not None:
-        return already_this_link
+        response.status_code = 200
+        return TransferLink.from_domain(already_this_link)
 
     linked_transaction_ids = {
         transaction_id
@@ -504,20 +552,17 @@ def post_transfer_link(
             raise
         detail = f"One of {link.transaction_id_a!r}, {link.transaction_id_b!r} is already part of another transfer link"
         raise HTTPException(status_code=409, detail=detail) from error
-    return link
+    location_of(http_request, response, "get_transfer_link", link_id=link.link_id)
+    return TransferLink.from_domain(link)
 
 
-@router.delete("/transfer-links/{link_id}")
+@router.delete("/transfer-links/{link_id}", status_code=204)
 def delete_transfer_link(
     link_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> TransferLinkIdResponse:
+) -> None:
     """Undo a confirmed transfer link, restoring both transactions to their prior classification.
-
-    Returns
-    -------
-    TransferLinkIdResponse
 
     Raises
     ------
@@ -527,7 +572,6 @@ def delete_transfer_link(
     if not remove_transfer_link(session, user_id, link_id):
         raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
     session.commit()
-    return TransferLinkIdResponse(link_id=link_id)
 
 
 @router.post("/postings/validate-pending")
@@ -673,44 +717,88 @@ def get_dismissed_suggestions(
     -------
     list[DismissedSuggestion]
     """
-    return list_dismissed_suggestions(session, user_id)
+    return [DismissedSuggestion.from_domain(entry) for entry in list_dismissed_suggestions(session, user_id)]
 
 
-@router.post("/dismissed-suggestions")
-def post_dismissed_suggestion(
+@router.get("/dismissed-suggestions/{suggestion_id}")
+def get_dismissed_suggestion(
+    suggestion_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> DismissedSuggestion:
+    """Return one archived suggestion by id — the address `put_dismissed_suggestion` advertises.
+
+    Returns
+    -------
+    DismissedSuggestion
+
+    Raises
+    ------
+    HTTPException
+        404 if no archived entry has this id.
+    """
+    entry = next(
+        (
+            archived
+            for archived in list_dismissed_suggestions(session, user_id)
+            if archived.suggestion_id == suggestion_id
+        ),
+        None,
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
+    return DismissedSuggestion.from_domain(entry)
+
+
+@router.put(
+    "/dismissed-suggestions/{suggestion_id}", status_code=201, responses=created_or_replaced(DismissedSuggestion)
+)
+def put_dismissed_suggestion(
+    suggestion_id: str,
     request: DismissSuggestionRequest,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> DismissedSuggestion:
     """Archive a suggestion so it stops being proposed, without discarding it.
+
+    A `PUT` at the id, not a `POST` to the collection, and the only upsert
+    in this API that could honestly become one: the archive entry's id is
+    the suggestion's own id, which the client already holds — it is reading
+    it off `GET /transfer-suggestions` or `GET /duplicate-suggestions` and
+    used to send it in the request body. Nothing is derived server-side, so
+    the caller can name the address, which is what makes this an idempotent
+    replace at a known URL rather than a submission to a collection.
+
+    `201` with a `Location` when this created the archive entry, `200` when
+    it replaced one already there — RFC 9110's own answer for `PUT`.
 
     Returns
     -------
     DismissedSuggestion
         The archived entry just persisted.
     """
-    entry = DismissedSuggestion(
-        suggestion_id=request.suggestion_id,
+    entry = DomainDismissedSuggestion(
+        suggestion_id=suggestion_id,
         kind=request.kind,
         description=request.description,
         dismissed_at=datetime.now(tz=UTC),
     )
-    dismiss_suggestion(session, user_id, entry)
-    return entry
+    if dismiss_suggestion(session, user_id, entry):
+        location_of(http_request, response, "get_dismissed_suggestion", suggestion_id=suggestion_id)
+    else:
+        response.status_code = 200
+    return DismissedSuggestion.from_domain(entry)
 
 
-@router.delete("/dismissed-suggestions/{suggestion_id}")
+@router.delete("/dismissed-suggestions/{suggestion_id}", status_code=204)
 def delete_dismissed_suggestion(
     suggestion_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> SuggestionIdResponse:
+) -> None:
     """Restore a dismissed suggestion so it can be proposed again.
-
-    Returns
-    -------
-    SuggestionIdResponse
-        The entry just restored.
 
     Raises
     ------
@@ -719,4 +807,3 @@ def delete_dismissed_suggestion(
     """
     if not undismiss_suggestion(session, user_id, suggestion_id):
         raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
-    return SuggestionIdResponse(suggestion_id=suggestion_id)

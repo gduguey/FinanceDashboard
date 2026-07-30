@@ -1,14 +1,19 @@
-"""Settings endpoints — mirrors `trades.config`/`trades.brokers.ibkr.credentials`: allocation, HYSA, tax, IBKR."""
+"""Settings endpoints — mirrors `trades.config`/`trades.brokers.ibkr.credentials`: allocation, HYSA, tax, IBKR.
+
+Every route here is a user preference under `/settings/...`, so the file's
+contents and its URL prefix say the same thing. `GET /broker-connections`
+used to live here and did not — it is a collection of rows a sync creates,
+not something a user sets, and now has its own `broker_connections.py`.
+"""
 
 from __future__ import annotations
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from sqlalchemy.orm import Session
 
-import trades.db as tdb
 from db.current_user import get_current_user_id
 from db.money import Rate, quantize_rate
 from db.session import get_db
@@ -16,7 +21,6 @@ from trades import dashboard
 from trades.api.api_models import (
     BenchmarkSetting,
     BenchmarkSettingUpdate,
-    BrokerConnection,
     HysaSettings,
     HysaSettingsUpdate,
     IbkrCredentialsUpdate,
@@ -42,7 +46,7 @@ from trades.config import AppConfig
 router = APIRouter()
 
 
-@router.get("/api/settings/target-allocation")
+@router.get("/settings/target-allocation")
 def get_target_allocation(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -57,35 +61,49 @@ def get_target_allocation(
     return dashboard.load_settings(session, user_id).target_allocation_pct
 
 
-@router.put("/api/settings/target-allocation")
-def put_target_allocation(
+@router.patch("/settings/target-allocation")
+def patch_target_allocation(
     # `Rate`, not `float`: `model_copy(update=...)` below skips validation, so a
     # `float` here would leave the frozen `DashboardSettings` holding a double in
     # a field that promises `Decimal`. `Rate` pins its own OpenAPI type to
     # `number`, so the wire contract is unchanged.
-    target_allocation_pct: dict[str, Rate],
+    patch: Annotated[dict[str, Rate | None], Body(media_type="application/merge-patch+json")],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> dict[str, Rate]:
-    """Persist a new target allocation, set from the frontend.
+    """Apply an RFC 7386 merge patch to the target allocation, one symbol at a time.
 
-    Merges into the existing settings — a settings row is one record, so
-    writing this field naively from a fresh `DashboardSettings()` would
-    silently wipe out the HYSA/benchmark settings saved separately.
+    The resource is a `symbol -> target percentage` map, which is exactly
+    the shape merge-patch is defined over, so the body says only what
+    changed: a symbol with a number sets or replaces that symbol's target,
+    a symbol with `null` drops it from the allocation, and a symbol the
+    body never mentions is left alone. A caller editing one target no
+    longer has to resend every other one and risk clobbering an edit made
+    elsewhere in between.
+
+    Merges into the existing settings for a second, unrelated reason — a
+    settings row is one record, so writing this field naively from a fresh
+    `DashboardSettings()` would silently wipe out the HYSA/benchmark
+    settings saved separately.
 
     Returns
     -------
     dict[str, Rate]
-        The persisted target allocation.
+        The whole resulting allocation, not just the patched entries.
     """
-    updated = dashboard.load_settings(session, user_id).model_copy(
-        update={"target_allocation_pct": target_allocation_pct}
-    )
+    settings = dashboard.load_settings(session, user_id)
+    allocation = dict(settings.target_allocation_pct)
+    for symbol, target in patch.items():
+        if target is None:
+            allocation.pop(symbol, None)
+        else:
+            allocation[symbol] = target
+    updated = settings.model_copy(update={"target_allocation_pct": allocation})
     dashboard.save_settings(updated, session, user_id)
     return updated.target_allocation_pct
 
 
-@router.get("/api/settings/hysa")
+@router.get("/settings/hysa")
 def get_hysa_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -104,7 +122,7 @@ def get_hysa_settings(
     )
 
 
-@router.put("/api/settings/hysa")
+@router.put("/settings/hysa")
 def put_hysa_settings(
     update: HysaSettingsUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -127,7 +145,7 @@ def put_hysa_settings(
     )
 
 
-@router.get("/api/settings/benchmark")
+@router.get("/settings/benchmark")
 def get_benchmark_setting(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -148,7 +166,7 @@ def get_benchmark_setting(
     )
 
 
-@router.put("/api/settings/benchmark")
+@router.put("/settings/benchmark")
 def put_benchmark_setting(
     update: BenchmarkSettingUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -172,7 +190,7 @@ def put_benchmark_setting(
     )
 
 
-@router.get("/api/settings/timezone")
+@router.get("/settings/timezone")
 def get_timezone_setting(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -193,7 +211,7 @@ def get_timezone_setting(
     )
 
 
-@router.put("/api/settings/timezone")
+@router.put("/settings/timezone")
 def put_timezone_setting(
     update: TimezoneSettingUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -208,7 +226,7 @@ def put_timezone_setting(
     Returns
     -------
     TimezoneSetting
-        Same shape as `GET /api/settings/timezone`, reflecting what was
+        Same shape as `GET /api/v1/trades/settings/timezone`, reflecting what was
         just persisted.
     """
     updated = dashboard.load_settings(session, user_id).model_copy(update={"local_zone": update.local_zone})
@@ -242,7 +260,7 @@ def _tax_settings_response(config: AppConfig, settings: dashboard.DashboardSetti
     )
 
 
-@router.get("/api/settings/tax")
+@router.get("/settings/tax")
 def get_tax_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -264,7 +282,7 @@ def get_tax_settings(
     return _tax_settings_response(_config(), settings)
 
 
-@router.put("/api/settings/tax")
+@router.put("/settings/tax")
 def put_tax_settings(
     update: TaxSettingsUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -275,7 +293,7 @@ def put_tax_settings(
     Returns
     -------
     TaxSettings
-        Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
+        Same shape as `GET /api/v1/trades/settings/tax`, reflecting what was just persisted.
     """
     config = _config()
     updated = dashboard.load_settings(session, user_id).model_copy(
@@ -293,25 +311,7 @@ def put_tax_settings(
     return _tax_settings_response(config, updated)
 
 
-@router.get("/api/broker-connections")
-def get_broker_connections(
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[BrokerConnection]:
-    """List this user's broker connections — the only things an account may pull its value from.
-
-    Returns
-    -------
-    list[BrokerConnection]
-        Ordered by broker then id, so the frontend's list is stable across
-        requests. Empty until a sync has actually created a connection.
-    """
-    rows = session.query(tdb.BrokerConnection).filter_by(user_id=user_id).all()
-    connections = [BrokerConnection(connection_id=row.id, broker=row.broker) for row in rows]
-    return sorted(connections, key=lambda connection: (connection.broker, str(connection.connection_id)))
-
-
-@router.get("/api/settings/ibkr")
+@router.get("/settings/ibkr")
 def get_ibkr_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
@@ -333,7 +333,7 @@ def get_ibkr_settings(
     )
 
 
-@router.put("/api/settings/ibkr")
+@router.put("/settings/ibkr")
 def put_ibkr_settings(
     update: IbkrCredentialsUpdate,
     session: Annotated[Session, Depends(get_db)],
@@ -344,7 +344,7 @@ def put_ibkr_settings(
     Returns
     -------
     IbkrSettings
-        Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
+        Same shape as `GET /api/v1/trades/settings/ibkr`, reflecting what was just persisted.
     """
     save_ibkr_credentials(session, user_id, token=update.token, query_id=update.query_id)
     fields = ibkr_credential_fields(session, user_id)
@@ -355,23 +355,28 @@ def put_ibkr_settings(
     )
 
 
-@router.delete("/api/settings/ibkr")
+@router.delete("/settings/ibkr")
 def delete_ibkr_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> IbkrSettings:
     """Clear this user's saved IBKR credentials entirely.
 
+    Answers 200 with a body rather than 204 for the same reason
+    `DELETE /api/v1/accounting/settings/llm` does: this clears fields on a
+    settings row that still exists afterwards, so there is a representation
+    to return.
+
     Returns
     -------
     IbkrSettings
-        Same shape as `GET /api/settings/ibkr`.
+        Same shape as `GET /api/v1/trades/settings/ibkr`.
     """
     clear_ibkr_credentials(session, user_id)
     return IbkrSettings(configured=False, token_set=False, query_id_set=False)
 
 
-@router.post("/api/settings/ibkr/verify")
+@router.post("/settings/ibkr/verify")
 def verify_ibkr_settings(
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],

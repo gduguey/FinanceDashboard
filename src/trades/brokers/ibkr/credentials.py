@@ -40,7 +40,7 @@ def save_ibkr_credentials(
     """Merge `token`/`query_id` into whatever's already saved for this user's IBKR connection.
 
     Either argument left `None` leaves that field exactly as it was — the
-    same partial-merge convention `PUT /api/settings/ibkr` already exposes
+    same partial-merge convention `PUT /api/v1/trades/settings/ibkr` already exposes
     to the frontend.
 
     Parameters

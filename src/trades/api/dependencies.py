@@ -62,7 +62,7 @@ def _config() -> AppConfig:
 
 
 def _report_sync_progress(user_id: uuid.UUID, step: str, percent: float) -> None:
-    """Record `user_id`'s current sync step and progress, readable via `GET /api/sync/progress`."""
+    """Record `user_id`'s current sync step and progress, readable via `GET /api/v1/trades/sync/progress`."""
     cast("dict[uuid.UUID, SyncProgress]", app.state.sync_progress)[user_id] = SyncProgress(
         step=step, percent=percent, done=False
     )

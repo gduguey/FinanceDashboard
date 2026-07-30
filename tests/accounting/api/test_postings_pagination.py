@@ -50,7 +50,7 @@ def client():
 
 def _page(client, **params) -> dict:
     """One whole `PostingPage` envelope from `GET /postings`, window fields included."""
-    response = client.get("/api/accounting/postings", params=params)
+    response = client.get("/api/v1/accounting/postings", params=params)
     assert response.status_code == 200
     return response.json()
 
@@ -80,14 +80,14 @@ def _seed_transactions(client, count: int) -> str:
     and `len(items)` (postings) genuinely different numbers.
     """
     account = client.post(
-        "/api/accounting/accounts",
+        "/api/v1/accounting/accounts",
         json={"name": "Generic Checking", "kind": "checking", "institution": "Generic Bank", "currency": "USD"},
     ).json()
     rows = "".join(
         f"{date(2026, 1, 1) + timedelta(days=index)},Purchase {index},-{index + 1}.00\n" for index in range(count)
     )
     response = client.post(
-        "/api/accounting/import/canonical",
+        "/api/v1/accounting/import/canonical",
         files={"file": ("generic.csv", f"Date,Description,Amount\n{rows}", "text/csv")},
         data={
             "institution": "Generic Bank",
@@ -128,14 +128,14 @@ def test_a_limit_above_the_cap_is_clamped_rather_than_rejected(client) -> None:
 def test_a_limit_below_one_is_rejected(client) -> None:
     _seed_transactions(client, 3)
 
-    assert client.get("/api/accounting/postings", params={"limit": 0}).status_code == 422
-    assert client.get("/api/accounting/postings", params={"limit": -1}).status_code == 422
+    assert client.get("/api/v1/accounting/postings", params={"limit": 0}).status_code == 422
+    assert client.get("/api/v1/accounting/postings", params={"limit": -1}).status_code == 422
 
 
 def test_a_negative_offset_is_rejected(client) -> None:
     _seed_transactions(client, 3)
 
-    assert client.get("/api/accounting/postings", params={"offset": -1}).status_code == 422
+    assert client.get("/api/v1/accounting/postings", params={"offset": -1}).status_code == 422
     assert _page(client, offset=0)["offset"] == 0
 
 
@@ -165,10 +165,10 @@ def test_a_page_still_holds_the_transactions_asked_for_after_a_merge(client) -> 
     kept, duplicate = newest_first[0], newest_first[1]
 
     response = client.post(
-        "/api/accounting/posting-merges",
+        "/api/v1/accounting/posting-merges",
         json={"kept_transaction_id": kept, "duplicate_transaction_ids": [duplicate]},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
 
     page = _page(client, limit=3)
     assert page["total"] == 11
@@ -202,7 +202,7 @@ def test_every_leg_of_a_transaction_lands_on_the_same_page(client) -> None:
         posting for posting in _page(client, limit=PAGE_LIMIT_MAX)["items"] if posting["account_id"] == account_id
     )
     split_response = client.put(
-        f"/api/accounting/postings/{real_leg['posting_id']}/split",
+        f"/api/v1/accounting/postings/{real_leg['posting_id']}/split",
         json=[{"amount": real_leg["amount"] + 1.0}, {"amount": -1.0}],
     )
     assert split_response.status_code == 200
@@ -216,3 +216,49 @@ def test_every_leg_of_a_transaction_lands_on_the_same_page(client) -> None:
         transaction_ids = {posting["transaction_id"] for posting in items}
         assert len(transaction_ids) == 1
         assert len(items) == legs_per_transaction[transaction_ids.pop()]
+
+
+def test_both_paged_reads_share_one_envelope_and_each_names_its_own_window_unit() -> None:
+    """The two pages carried the same four field names meaning different things in each.
+
+    `total`/`limit`/`offset` counted transactions on `PostingPage` and
+    postings on `LedgerExportPage`, with nothing in the schema saying so — a
+    client that learned the shape from one endpoint and reused it on the other
+    computed the wrong number of pages. They are one generic `Page` now, and
+    the unit is a required field pinned to a `const` per endpoint, so it is
+    part of the contract rather than a docstring.
+    """
+    schemas = trades_api.app.openapi()["components"]["schemas"]
+    postings_page, export_page = schemas["PostingPage"], schemas["LedgerExportPage"]
+
+    window_fields = {"window_unit", "total", "limit", "offset"}
+    assert window_fields <= set(postings_page["properties"])
+    assert set(postings_page["properties"]) == set(export_page["properties"])
+    assert window_fields <= set(postings_page["required"])
+    assert window_fields <= set(export_page["required"])
+
+    assert postings_page["properties"]["window_unit"]["const"] == "transaction"
+    assert export_page["properties"]["window_unit"]["const"] == "posting"
+
+
+def test_a_posting_page_reports_the_transaction_window_it_was_cut_by(client) -> None:
+    """The unit is on every response, not only in the schema — `items` is longer than `limit` here."""
+    _seed_transactions(client, 4)
+
+    page = _page(client, limit=2)
+    assert page["window_unit"] == "transaction"
+    assert page["limit"] == 2
+    assert len(page["items"]) == 4  # two legs per transaction: `items` is in postings, `limit` is not
+
+
+def test_a_ledger_export_page_reports_the_posting_window_it_was_cut_by(client) -> None:
+    """The export's window is postings, so there `len(items)` and `limit` do line up."""
+    _seed_transactions(client, 4)
+
+    response = client.get("/api/v1/accounting/ledger/export", params={"limit": 3})
+    assert response.status_code == 200
+    page = response.json()
+    assert page["window_unit"] == "posting"
+    assert page["total"] == 8  # two legs per transaction
+    assert page["limit"] == 3
+    assert len(page["items"]) == 3

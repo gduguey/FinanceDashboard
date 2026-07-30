@@ -6,14 +6,14 @@ aggregation happens in the API layer itself, matching the split
 documented in docs/trades/architecture.md.
 
 GET endpoints only ever read what's already cached on disk — they never
-make a network call, with one exception: `GET /api/symbols/search` is a
+make a network call, with one exception: `GET /api/v1/trades/symbols/search` is a
 live Yahoo Finance lookup for the benchmark picker's search box, which by
 its nature needs a live answer rather than a cached one. `POST /sync` is
 the endpoint that touches the network for the app's own data as a whole
 (an IBKR pull plus a price/CPI/HYSA-rate cache refresh); that's what makes
 the frontend's "Sync" button a real, explicit action instead of something
 that silently happens on every page load. `POST
-/api/symbols/{symbol}/ensure-priced` is the narrow exception to that: it
+/api/v1/trades/symbols/{symbol}/ensure-priced` is the narrow exception to that: it
 refreshes a single symbol's price cache on the spot, so picking a new
 benchmark takes effect without waiting for a full sync.
 
@@ -25,49 +25,58 @@ module) and serves the built frontend — it holds no endpoints itself.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from fastapi import Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from accounting.api import install_error_handlers as install_accounting_error_handlers
 from accounting.api import router as accounting_router
-from db.base import VersionConflictError
 from db.current_user import get_current_user_id
 from trades.api.auth import require_clerk_session, resolve_current_user_id
 from trades.api.dependencies import app
-from trades.api.routers import dashboard, market_data, settings, sync
+from trades.api.routers import broker_connections, dashboard, market_data, settings, sync
 from trades.api.webhooks import router as webhooks_router
-
-if TYPE_CHECKING:
-    from starlette.responses import Response
 
 # Every `/api/...` route across both modules requires a valid Clerk session
 # (see trades.api.auth) — applied here, at the one place that wires routers
 # onto `app`, rather than on each router individually, so a new router can
 # never be mounted unprotected by omission.
 _authenticated = [Depends(require_clerk_session)]
+
+# The URL prefix this module's own routes live under is declared once, here,
+# rather than repeated in every `@router.get(...)` path across
+# `trades.api.routers.*` — the same shape `accounting.api.api` uses for its
+# own routers. A router file therefore spells only the part of the path that
+# is about the resource it serves, and moving the whole module's routes is
+# this one string.
+#
+# `/api/v1/trades` mirrors `/api/v1/accounting` — see that prefix's own note
+# in `accounting.api.api` for why the version sits under `/api` and why the
+# namespace is per-module rather than resource-first. `/health`, `/docs`,
+# `/redoc` and `/openapi.json` below stay unversioned: none of them is part of
+# the API contract a client codes against.
+_trades_router = APIRouter(prefix="/api/v1/trades")
+_trades_router.include_router(dashboard.router)
+_trades_router.include_router(settings.router)
+_trades_router.include_router(broker_connections.router)
+_trades_router.include_router(market_data.router)
+_trades_router.include_router(sync.router)
+
 app.include_router(accounting_router, dependencies=_authenticated)
-app.include_router(dashboard.router, dependencies=_authenticated)
-app.include_router(settings.router, dependencies=_authenticated)
-app.include_router(market_data.router, dependencies=_authenticated)
-app.include_router(sync.router, dependencies=_authenticated)
+app.include_router(_trades_router, dependencies=_authenticated)
+
+# Accounting's routes promise a 409 on a stale optimistic-concurrency write,
+# and FastAPI hangs exception handlers off the application rather than off an
+# `APIRouter` — so mounting the router is only half of mounting the module.
+# The handler itself is defined in `accounting.api.api`, beside the routes
+# whose contract it is, not here.
+install_accounting_error_handlers(app)
 
 # Deliberately unauthenticated — see trades.api.webhooks' own docstring for
 # why (Clerk's own servers call this, never a signed-in browser).
 app.include_router(webhooks_router)
-
-
-# One handler, not one per write path — every row-versioned accounting update
-# (`PATCH /goals/{id}`, `PATCH /transfer-rules/{id}`, `PATCH
-# /category-patterns/{id}`, via `db.base.check_and_bump_row_version`) raises
-# this from deep inside a plain persistence function (no FastAPI import in any
-# of them, deliberately), so translating it into an HTTP 409 happens once,
-# here, rather than each of those call sites needing its own try/except.
-@app.exception_handler(VersionConflictError)
-def _handle_version_conflict(_request: Request, exc: VersionConflictError) -> Response:
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/health", include_in_schema=False)

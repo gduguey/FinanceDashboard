@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-  '/api/accounting/store': {
+  '/api/v1/accounting/store': {
     parameters: {
       query?: never
       header?: never
@@ -29,7 +29,7 @@ export interface paths {
      *         and posting merges are deliberately absent — see
      *         `AccountingStoreResponse` for why.
      */
-    get: operations['get_store_api_accounting_store_get']
+    get: operations['get_store_api_v1_accounting_store_get']
     put?: never
     post?: never
     delete?: never
@@ -38,7 +38,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/currencies': {
+  '/api/v1/accounting/currencies': {
     parameters: {
       query?: never
       header?: never
@@ -54,7 +54,7 @@ export interface paths {
      *     list[Currency]
      *         One entry per supported currency.
      */
-    get: operations['get_currencies_api_accounting_currencies_get']
+    get: operations['get_currencies_api_v1_accounting_currencies_get']
     put?: never
     post?: never
     delete?: never
@@ -63,125 +63,38 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories': {
+  '/api/v1/accounting/categories/{category_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
     /**
-     * Put Categories
-     * @description Replace the whole category tree, enforcing the "Other" catch-all subcategory invariant.
+     * Get Category
+     * @description Return one category — top-level or sub — by id.
      *
-     *     Returns
-     *     -------
-     *     dict[str, Category]
-     *         The categories just persisted, keyed by `category_id` — may
-     *         include an "Other" subcategory the caller didn't submit, or omit
-     *         one it did (see `taxonomy.normalize_categories`).
-     */
-    put: operations['put_categories_api_accounting_categories_put']
-    /**
-     * Post Category
-     * @description Create a new top-level category, refusing a same-classification, same-name duplicate.
+     *     Serves both, because a subcategory is a `Category` with a
+     *     `parent_category_id` living in the same flat, `category_id`-keyed map
+     *     (see `models.Category`): there is one address space, so one route
+     *     covers it, and `POST /categories/{parent_id}/subcategories` can point
+     *     its `Location` here too.
      *
-     *     Unlike `put_categories` (a whole-tree replace, where a client-computed
-     *     id that happens to collide with an existing one silently overwrites
-     *     it), this only ever adds a category — a name collision is rejected
-     *     outright rather than clobbering the existing entry.
+     *     This is the address the two creates below advertise. It exists so that
+     *     `Location` names something a client can actually fetch — until PR 3
+     *     there was no way to read a single created row back at all, only the
+     *     whole collection or `GET /store`.
      *
      *     Returns
      *     -------
      *     Category
-     *         The category just persisted, including its computed `category_id`.
      *
      *     Raises
      *     ------
      *     HTTPException
-     *         409 if a top-level category of the same classification already
-     *         has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
+     *         404 if no category has this id.
      */
-    post: operations['post_category_api_accounting_categories_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/categories/{parent_id}/subcategories': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Post Subcategory
-     * @description Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
-     *
-     *     Returns
-     *     -------
-     *     Category
-     *         The subcategory just persisted, including its computed `category_id`.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
-     *         already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
-     */
-    post: operations['post_subcategory_api_accounting_categories__parent_id__subcategories_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/categories/{category_id}/delete-preview': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Category Delete Preview
-     * @description Report how many postings deleting `category_id` would uncategorize, before actually deleting it.
-     *
-     *     A caller can show a confirmation dialog with this count first, and
-     *     only actually call `DELETE /categories/{category_id}` once the user
-     *     accepts.
-     *
-     *     Returns
-     *     -------
-     *     CategoryDeletePreviewResponse
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if `category_id` doesn't exist.
-     */
-    get: operations['get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/categories/{category_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
+    get: operations['get_category_api_v1_accounting_categories__category_id__get']
     put?: never
     post?: never
     /**
@@ -205,22 +118,144 @@ export interface paths {
      *     (`Budget`, `CategoryPattern` both require a `category_id`) — see
      *     `taxonomy.uncategorize_category_ids`.
      *
+     *     Answers 200 with a body rather than the 204 the other row deletes answer:
+     *     this delete has effects beyond the row it names — it cascades to
+     *     subcategories, re-derives the survivors' "Other" catch-alls, and
+     *     uncategorizes an arbitrary number of postings — so the resulting tree and
+     *     the count of affected postings are not derivable from the request. A 204
+     *     here would mean the caller could not tell the user what just happened.
+     *
      *     Returns
      *     -------
      *     CategoryDeleteResponse
+     *         The category tree that survives, and how many postings now read as
+     *         uncategorized.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    delete: operations['delete_category_api_accounting_categories__category_id__delete']
+    delete: operations['delete_category_api_v1_accounting_categories__category_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{category_id}/rename-preview': {
+  '/api/v1/accounting/categories': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Category
+     * @description Create a new top-level category, refusing a same-classification, same-name duplicate.
+     *
+     *     Only ever adds a category, which is the whole reason the retired
+     *     whole-tree `PUT /categories` is not missed: there, a client-computed
+     *     id that happened to collide with an existing one silently overwrote
+     *     it, and everything the request left out was pruned. Here a name
+     *     collision is rejected outright and no other row is touched.
+     *
+     *     A genuine `201`, not a hedge: the id is derived from the name
+     *     (`{classification}:{slug}`), but the two 409s below mean this route
+     *     can only ever bring a category into existence. It never replaces one,
+     *     so `201 Created` is the whole truth about what happened — which is
+     *     why this stays a `POST` on the collection rather than becoming the
+     *     `PUT /{id}` the genuinely-upserting routes became.
+     *
+     *     Returns
+     *     -------
+     *     Category
+     *         The category just persisted, including its computed `category_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         409 if a top-level category of the same classification already
+     *         has this name (case-insensitive), or a distinct name collides with an existing category's slug id.
+     */
+    post: operations['post_category_api_v1_accounting_categories_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/categories/{parent_id}/subcategories': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Subcategory
+     * @description Create a new subcategory under `parent_id`, refusing a same-name sibling duplicate.
+     *
+     *     A genuine `201` for the same reason as `post_category`: the sibling
+     *     and slug 409s below leave creation as the only outcome. Its `Location`
+     *     points at `GET /categories/{category_id}`, not at a route nested under
+     *     the parent — a subcategory is addressed like any other category.
+     *
+     *     Returns
+     *     -------
+     *     Category
+     *         The subcategory just persisted, including its computed `category_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `parent_id` doesn't exist; 409 if a sibling subcategory
+     *         already has this name (case-insensitive), or a distinct name collides with an existing subcategory's slug id.
+     */
+    post: operations['post_subcategory_api_v1_accounting_categories__parent_id__subcategories_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/categories/{category_id}/delete-preview': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Category Delete Preview
+     * @description Report how many postings deleting `category_id` would uncategorize, before actually deleting it.
+     *
+     *     A caller can show a confirmation dialog with this count first, and
+     *     only actually call `DELETE /categories/{category_id}` once the user
+     *     accepts.
+     *
+     *     Returns
+     *     -------
+     *     CategoryDeletePreviewResponse
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `category_id` doesn't exist.
+     */
+    get: operations['get_category_delete_preview_api_v1_accounting_categories__category_id__delete_preview_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/categories/{category_id}/rename-preview': {
     parameters: {
       query?: never
       header?: never
@@ -254,7 +289,7 @@ export interface paths {
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    get: operations['get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get']
+    get: operations['get_category_rename_preview_api_v1_accounting_categories__category_id__rename_preview_get']
     put?: never
     post?: never
     delete?: never
@@ -263,7 +298,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/categories/{category_id}/rename': {
+  '/api/v1/accounting/categories/{category_id}/rename': {
     parameters: {
       query?: never
       header?: never
@@ -305,14 +340,62 @@ export interface paths {
      *     HTTPException
      *         404 if `category_id` doesn't exist.
      */
-    post: operations['post_category_rename_api_accounting_categories__category_id__rename_post']
+    post: operations['post_category_rename_api_v1_accounting_categories__category_id__rename_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags': {
+  '/api/v1/accounting/tags/{tag_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Tag
+     * @description Return one tag by id.
+     *
+     *     The address `post_tag` advertises in its `Location` — see
+     *     `api.locations.location_of` for why the header is resolved against
+     *     this route rather than formatted by hand.
+     *
+     *     Returns
+     *     -------
+     *     Tag
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no tag has this id.
+     */
+    get: operations['get_tag_api_v1_accounting_tags__tag_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Tag Route
+     * @description Delete one tag, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting a tag by re-sending the whole tag list minus one
+     *     (which risked a stale second delete resurrecting a just-removed tag);
+     *     see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
+     *     removed from them too, via the `posting_tags` FK cascade.
+     *
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no tag with `tag_id` exists.
+     */
+    delete: operations['delete_tag_route_api_v1_accounting_tags__tag_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/tags': {
     parameters: {
       query?: never
       header?: never
@@ -320,24 +403,19 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Tags
-     * @description Replace the whole tag list.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Tag]
-     *         The tags just persisted, keyed by `tag_id`.
-     */
-    put: operations['put_tags_api_accounting_tags_put']
+    put?: never
     /**
      * Post Tag
      * @description Create a new tag, refusing a same-name (case-insensitive) duplicate.
      *
-     *     Unlike `put_tags` (a whole-list replace, where a client-computed id
-     *     that happens to collide with an existing one silently overwrites it),
-     *     this only ever adds a tag — a name collision is rejected outright
-     *     rather than clobbering the existing entry.
+     *     The only way to add one: `PUT /tags`, a whole-list replace where a
+     *     client-computed id colliding with an existing one silently overwrote
+     *     it, is gone. This only ever adds a tag — a name collision is rejected
+     *     outright rather than clobbering the existing entry.
+     *
+     *     A genuine `201`: the id is the name's slug, but the two 409s below
+     *     leave creation as this route's only outcome, so it never replaces
+     *     anything and the status is not a hedge.
      *
      *     Returns
      *     -------
@@ -350,49 +428,14 @@ export interface paths {
      *         409 if a tag with this name (case-insensitive) already exists, or a
      *         distinct name collides with an existing tag's slug id.
      */
-    post: operations['post_tag_api_accounting_tags_post']
+    post: operations['post_tag_api_v1_accounting_tags_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags/{tag_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Tag Route
-     * @description Delete one tag, without touching any other. Idempotent, no version check.
-     *
-     *     Replaces deleting a tag by re-sending the whole tag list minus one
-     *     (which risked a stale second delete resurrecting a just-removed tag);
-     *     see `repositories.taxonomy.delete_tag`. A tag still applied to postings is
-     *     removed from them too, via the `posting_tags` FK cascade.
-     *
-     *     Returns
-     *     -------
-     *     TagIdResponse
-     *         The tag id just deleted.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no tag with `tag_id` exists.
-     */
-    delete: operations['delete_tag_route_api_accounting_tags__tag_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/tags/{tag_id}/rename-preview': {
+  '/api/v1/accounting/tags/{tag_id}/rename-preview': {
     parameters: {
       query?: never
       header?: never
@@ -420,7 +463,7 @@ export interface paths {
      *     HTTPException
      *         404 if `tag_id` doesn't exist.
      */
-    get: operations['get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get']
+    get: operations['get_tag_rename_preview_api_v1_accounting_tags__tag_id__rename_preview_get']
     put?: never
     post?: never
     delete?: never
@@ -429,7 +472,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/tags/{tag_id}/rename': {
+  '/api/v1/accounting/tags/{tag_id}/rename': {
     parameters: {
       query?: never
       header?: never
@@ -460,58 +503,34 @@ export interface paths {
      *     HTTPException
      *         404 if `tag_id` doesn't exist.
      */
-    post: operations['post_tag_rename_api_accounting_tags__tag_id__rename_post']
+    post: operations['post_tag_rename_api_v1_accounting_tags__tag_id__rename_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-rules': {
+  '/api/v1/accounting/transfer-rules/{rule_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
-    put?: never
     /**
-     * Post Transfer Rule
-     * @description Create one new transfer rule, without touching any other rule already saved.
-     *
-     *     Posting this again for the same
-     *     `(description_contains, account_id, counterparty_account_id)` replaces
-     *     that rule (its `priority`/`description` update in place, while its
-     *     `active` toggle and accumulated exclusions are preserved) rather than
-     *     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
-     *     for editing an existing rule by id, which never risks that ambiguity.
+     * Get Transfer Rule
+     * @description Return one transfer rule by id — the address `post_transfer_rule` advertises on a create.
      *
      *     Returns
      *     -------
      *     TransferRule
-     *         The rule just persisted.
      *
      *     Raises
      *     ------
      *     HTTPException
-     *         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
+     *         404 if no rule has this id.
      */
-    post: operations['post_transfer_rule_api_accounting_transfer_rules_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/transfer-rules/{rule_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
+    get: operations['get_transfer_rule_api_v1_accounting_transfer_rules__rule_id__get']
     put?: never
     post?: never
     /**
@@ -529,17 +548,13 @@ export interface paths {
      *     docstring for why deleting an already-gone rule is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
-     *     Returns
-     *     -------
-     *     RuleIdResponse
-     *         The rule id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no rule with `rule_id` exists.
      */
-    delete: operations['delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete']
+    delete: operations['delete_transfer_rule_route_api_v1_accounting_transfer_rules__rule_id__delete']
     options?: never
     head?: never
     /**
@@ -563,47 +578,10 @@ export interface paths {
      *     HTTPException
      *         404 if no rule with `rule_id` exists.
      */
-    patch: operations['patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch']
+    patch: operations['patch_transfer_rule_api_v1_accounting_transfer_rules__rule_id__patch']
     trace?: never
   }
-  '/api/accounting/category-patterns': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Category Patterns
-     * @description Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, CategoryPattern]
-     *         The patterns just persisted, keyed by `pattern_id`.
-     */
-    put: operations['put_category_patterns_api_accounting_category_patterns_put']
-    /**
-     * Post Category Pattern
-     * @description Create one new category pattern, without touching any other pattern already saved.
-     *
-     *     Posting this again for the same `(description_contains, category_id,
-     *     subcategory_id)` replaces that pattern rather than creating a duplicate.
-     *
-     *     Returns
-     *     -------
-     *     CategoryPattern
-     *         The pattern just persisted.
-     */
-    post: operations['post_category_pattern_api_accounting_category_patterns_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/category-patterns/{pattern_id}': {
+  '/api/v1/accounting/transfer-rules': {
     parameters: {
       query?: never
       header?: never
@@ -612,6 +590,65 @@ export interface paths {
     }
     get?: never
     put?: never
+    /**
+     * Post Transfer Rule
+     * @description Create one new transfer rule, without touching any other rule already saved.
+     *
+     *     Posting this again for the same
+     *     `(description_contains, account_id, counterparty_account_id)` replaces
+     *     that rule (its `priority`/`description` update in place, while its
+     *     `active` toggle and accumulated exclusions are preserved) rather than
+     *     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
+     *     for editing an existing rule by id, which never risks that ambiguity.
+     *     The status reports which of the two this call did: `201` with a
+     *     `Location` on a create, `200` on a replace. The answer costs nothing
+     *     extra — it is the same `existing` lookup the carry-forward below
+     *     already needs, in the same transaction as the write.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /transfer-rules/{rule_id}`: the id is derived from the request's
+     *     content, but through `importers.common.row_hash`, which no client can
+     *     compute, so there is no address a caller could name up front.
+     *
+     *     Returns
+     *     -------
+     *     TransferRule
+     *         The rule just persisted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
+     */
+    post: operations['post_transfer_rule_api_v1_accounting_transfer_rules_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/category-patterns/{pattern_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Category Pattern
+     * @description Return one category pattern by id — the address `post_category_pattern` advertises on a create.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPattern
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no pattern has this id.
+     */
+    get: operations['get_category_pattern_api_v1_accounting_category_patterns__pattern_id__get']
+    put?: never
     post?: never
     /**
      * Delete Category Pattern Route
@@ -619,17 +656,13 @@ export interface paths {
      *
      *     No version check — see `repositories.interpretation.delete_category_pattern`.
      *
-     *     Returns
-     *     -------
-     *     CategoryPatternIdResponse
-     *         The pattern id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no pattern with `pattern_id` exists.
      */
-    delete: operations['delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete']
+    delete: operations['delete_category_pattern_route_api_v1_accounting_category_patterns__pattern_id__delete']
     options?: never
     head?: never
     /**
@@ -649,10 +682,10 @@ export interface paths {
      *     HTTPException
      *         404 if no pattern with `pattern_id` exists.
      */
-    patch: operations['patch_category_pattern_api_accounting_category_patterns__pattern_id__patch']
+    patch: operations['patch_category_pattern_api_v1_accounting_category_patterns__pattern_id__patch']
     trace?: never
   }
-  '/api/accounting/other-assets': {
+  '/api/v1/accounting/category-patterns': {
     parameters: {
       query?: never
       header?: never
@@ -660,44 +693,55 @@ export interface paths {
       cookie?: never
     }
     get?: never
+    put?: never
     /**
-     * Put Other Assets
-     * @description Replace the whole manually-entered-asset list.
+     * Post Category Pattern
+     * @description Create one new category pattern, without touching any other pattern already saved.
+     *
+     *     Posting this again for the same `(description_contains, category_id,
+     *     subcategory_id)` replaces that pattern rather than creating a duplicate.
+     *     The status says which of the two happened: `201` with a `Location` on a
+     *     create, `200` on a replace.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /category-patterns/{pattern_id}`. The id is derived from the
+     *     request's content, but through `importers.common.row_hash` — a hash no
+     *     client can compute, so there is no address a caller could `PUT` to
+     *     without the server telling it first.
      *
      *     Returns
      *     -------
-     *     list[OtherAsset]
-     *         The assets just persisted.
+     *     CategoryPattern
+     *         The pattern just persisted.
      */
-    put: operations['put_other_assets_api_accounting_other_assets_put']
-    /**
-     * Post Other Asset
-     * @description Create one new manually-entered asset, without touching any other asset already saved.
-     *
-     *     `asset_id` is server-minted — two assets can validly share every
-     *     other field (e.g. two rental properties both named "Rental"), so
-     *     there's no natural key two "the same" asset would collide on.
-     *
-     *     Returns
-     *     -------
-     *     OtherAsset
-     *         The asset just persisted.
-     */
-    post: operations['post_other_asset_api_accounting_other_assets_post']
+    post: operations['post_category_pattern_api_v1_accounting_category_patterns_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/other-assets/{asset_id}': {
+  '/api/v1/accounting/other-assets/{asset_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Other Asset
+     * @description Return one manually-entered asset by id — the address `post_other_asset` advertises.
+     *
+     *     Returns
+     *     -------
+     *     OtherAsset
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no asset has this id.
+     */
+    get: operations['get_other_asset_api_v1_accounting_other_assets__asset_id__get']
     put?: never
     post?: never
     /**
@@ -707,66 +751,19 @@ export interface paths {
      *     Replaces deleting an asset by re-sending the whole list minus one; see
      *     `repositories.taxonomy.delete_other_asset`.
      *
-     *     Returns
-     *     -------
-     *     OtherAssetIdResponse
-     *         The asset id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no asset with `asset_id` exists.
      */
-    delete: operations['delete_other_asset_route_api_accounting_other_assets__asset_id__delete']
+    delete: operations['delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/budgets': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Budgets
-     * @description Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
-     *
-     *     Returns
-     *     -------
-     *     list[Budget]
-     *         The budgets just persisted.
-     */
-    put: operations['put_budgets_api_accounting_budgets_put']
-    /**
-     * Post Budget
-     * @description Set one spending target for one category (or subcategory), replacing any prior target for it.
-     *
-     *     `request.month` picks which target: a `"YYYY-MM"` sets that month's,
-     *     and omitting it sets the general, every-month-alike one. The two are
-     *     separate rows, so setting one never overwrites the other.
-     *
-     *     Unlike `PUT /budgets`, only the one budget in the request body is
-     *     sent or touched — every other month/category's target is left alone,
-     *     so editing one cell in the budget grid no longer means re-sending
-     *     every budget the user has ever set.
-     *
-     *     Returns
-     *     -------
-     *     Budget
-     *         The budget just persisted.
-     */
-    post: operations['post_budget_api_accounting_budgets_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/budgets/{budget_id}': {
+  '/api/v1/accounting/other-assets': {
     parameters: {
       query?: never
       header?: never
@@ -775,66 +772,31 @@ export interface paths {
     }
     get?: never
     put?: never
-    post?: never
     /**
-     * Delete Budget
-     * @description Remove one target — a month's, or the general one — for one category.
+     * Post Other Asset
+     * @description Create one new manually-entered asset, without touching any other asset already saved.
+     *
+     *     `asset_id` is server-minted — two assets can validly share every
+     *     other field (e.g. two rental properties both named "Rental"), so
+     *     there's no natural key two "the same" asset would collide on. That is
+     *     also why the `201` is unconditional: with no natural key there is
+     *     nothing this route could replace. Editing an asset's value means
+     *     deleting it and creating the new one; `PUT /other-assets` used to
+     *     replace the whole list and is gone.
      *
      *     Returns
      *     -------
-     *     BudgetIdResponse
-     *         The id just removed.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no budget has this id.
+     *     OtherAsset
+     *         The asset just persisted.
      */
-    delete: operations['delete_budget_api_accounting_budgets__budget_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/simulator/scenarios': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Simulator Scenarios
-     * @description Replace the whole saved-scenario list.
-     *
-     *     Returns
-     *     -------
-     *     list[SimulatorScenario]
-     *         The scenarios just persisted.
-     */
-    put: operations['put_simulator_scenarios_api_accounting_simulator_scenarios_put']
-    /**
-     * Post Simulator Scenario
-     * @description Create one new saved scenario, without touching any other scenario already saved.
-     *
-     *     `scenario_id` is server-minted — two scenarios can validly share
-     *     every input field (comparing "what if I ran this exact case twice"),
-     *     so there's no natural key two "the same" scenario would collide on.
-     *
-     *     Returns
-     *     -------
-     *     SimulatorScenario
-     *         The scenario just persisted.
-     */
-    post: operations['post_simulator_scenario_api_accounting_simulator_scenarios_post']
+    post: operations['post_other_asset_api_v1_accounting_other_assets_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/simulator/scenarios/{scenario_id}': {
+  '/api/v1/accounting/budgets': {
     parameters: {
       query?: never
       header?: never
@@ -842,6 +804,162 @@ export interface paths {
       cookie?: never
     }
     get?: never
+    put?: never
+    /**
+     * Post Budget
+     * @description Set one spending target for one category (or subcategory), replacing any prior target for it.
+     *
+     *     `request.month` picks which target: a `"YYYY-MM"` sets that month's,
+     *     and omitting it sets the general, every-month-alike one. The two are
+     *     separate rows, so setting one never overwrites the other.
+     *
+     *     Only the one budget in the request body is sent or touched — every
+     *     other month/category's target is left alone, so editing one cell in
+     *     the budget grid no longer means re-sending every budget the user has
+     *     ever set, the way the retired whole-list `PUT /budgets` did.
+     *
+     *     A genuine upsert, so the status distinguishes its two outcomes: `201`
+     *     with a `Location` when this call brought the cell into existence,
+     *     `200` when it replaced a target already set. `upsert_budget` reports
+     *     which happened out of the `INSERT ... ON CONFLICT` itself.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /budgets/{budget_id}`, even though the id *is* derived from the
+     *     body's `(month, category_id, subcategory_id)`: that derivation is
+     *     `repositories.planning.budget_row_key`, server code. Addressing the
+     *     cell directly would mean every client reimplementing that key format
+     *     and breaking silently the day it changes, which is a worse contract
+     *     than a `POST` that reports honestly which of the two things it did.
+     *
+     *     Returns
+     *     -------
+     *     Budget
+     *         The budget just persisted.
+     */
+    post: operations['post_budget_api_v1_accounting_budgets_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/budgets/{budget_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Budget
+     * @description Return one spending target by id — the address `post_budget` advertises when it creates one.
+     *
+     *     Returns
+     *     -------
+     *     Budget
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no budget has this id.
+     */
+    get: operations['get_budget_api_v1_accounting_budgets__budget_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Budget
+     * @description Remove one target — a month's, or the general one — for one category.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no budget has this id.
+     */
+    delete: operations['delete_budget_api_v1_accounting_budgets__budget_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/budgets/comparison': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Budget Comparison
+     * @description Every category budgeted for one month, actual spend next to the target.
+     *
+     *     Returns
+     *     -------
+     *     list[BudgetComparisonRow]
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if `month` isn't `"YYYY-MM"`.
+     */
+    get: operations['get_budget_comparison_api_v1_accounting_budgets_comparison_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/budgets/suggested-amount': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Suggested Budget Amount
+     * @description Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
+     *
+     *     Returns
+     *     -------
+     *     SuggestedBudgetAmount
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if `month` isn't `"YYYY-MM"`.
+     */
+    get: operations['get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/simulator/scenarios/{scenario_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Simulator Scenario
+     * @description Return one saved scenario by id — the address `post_simulator_scenario` advertises.
+     *
+     *     Returns
+     *     -------
+     *     SimulatorScenario
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no scenario has this id.
+     */
+    get: operations['get_simulator_scenario_api_v1_accounting_simulator_scenarios__scenario_id__get']
     put?: never
     post?: never
     /**
@@ -851,23 +969,19 @@ export interface paths {
      *     Replaces deleting a scenario by re-sending the whole list minus one;
      *     see `repositories.taxonomy.delete_simulator_scenario`.
      *
-     *     Returns
-     *     -------
-     *     SimulatorScenarioIdResponse
-     *         The scenario id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no scenario with `scenario_id` exists.
      */
-    delete: operations['delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete']
+    delete: operations['delete_simulator_scenario_route_api_v1_accounting_simulator_scenarios__scenario_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts': {
+  '/api/v1/accounting/simulator/scenarios': {
     parameters: {
       query?: never
       header?: never
@@ -877,36 +991,47 @@ export interface paths {
     get?: never
     put?: never
     /**
-     * Post Account
-     * @description Register a new account, generating its id.
+     * Post Simulator Scenario
+     * @description Create one new saved scenario, without touching any other scenario already saved.
+     *
+     *     `scenario_id` is server-minted — two scenarios can validly share
+     *     every input field (comparing "what if I ran this exact case twice"),
+     *     so there's no natural key two "the same" scenario would collide on,
+     *     and nothing this route could replace instead of creating.
      *
      *     Returns
      *     -------
-     *     Account
-     *         The account just persisted, including its newly-generated `account_id`.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if `parent_account_id` is set but names an account that doesn't
-     *         exist, or if `broker_connection_id` names a connection that doesn't;
-     *         400 if a broker connection is named on a non-investment account.
+     *     SimulatorScenario
+     *         The scenario just persisted.
      */
-    post: operations['post_account_api_accounting_accounts_post']
+    post: operations['post_simulator_scenario_api_v1_accounting_simulator_scenarios_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}': {
+  '/api/v1/accounting/accounts/{account_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Account
+     * @description Return one account by id — the address `post_account` advertises.
+     *
+     *     Returns
+     *     -------
+     *     Account
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no account has this id.
+     */
+    get: operations['get_account_api_v1_accounting_accounts__account_id__get']
     /**
      * Put Account
      * @description Update an account — full edit if it has no postings yet, name/meta-only afterward.
@@ -924,29 +1049,59 @@ export interface paths {
      *         an account that already has postings, or a broker connection is
      *         named on a non-investment account.
      */
-    put: operations['put_account_api_accounting_accounts__account_id__put']
+    put: operations['put_account_api_v1_accounting_accounts__account_id__put']
     post?: never
     /**
      * Delete Account
      * @description Delete an account, as long as it has no postings yet.
-     *
-     *     Returns
-     *     -------
-     *     AccountIdResponse
-     *         The account just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if the account doesn't exist; 400 if it already has postings.
      */
-    delete: operations['delete_account_api_accounting_accounts__account_id__delete']
+    delete: operations['delete_account_api_v1_accounting_accounts__account_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}/close': {
+  '/api/v1/accounting/accounts': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Account
+     * @description Register a new account, generating its id.
+     *
+     *     A genuine `201`: the id is a fresh `uuid4`, so this route cannot
+     *     replace an existing account no matter what the body says.
+     *
+     *     Returns
+     *     -------
+     *     Account
+     *         The account just persisted, including its newly-generated `account_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `parent_account_id` is set but names an account that doesn't
+     *         exist, or if `broker_connection_id` names a connection that doesn't;
+     *         400 if a broker connection is named on a non-investment account.
+     */
+    post: operations['post_account_api_v1_accounting_accounts_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/accounts/{account_id}/close': {
     parameters: {
       query?: never
       header?: never
@@ -977,14 +1132,14 @@ export interface paths {
      *         404 if the account doesn't exist; 400 if a transfer doesn't move
      *         money out of `account_id`, or names an unknown `to_account_id`.
      */
-    post: operations['close_account_api_accounting_accounts__account_id__close_post']
+    post: operations['close_account_api_v1_accounting_accounts__account_id__close_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}/reopen': {
+  '/api/v1/accounting/accounts/{account_id}/reopen': {
     parameters: {
       query?: never
       header?: never
@@ -1007,14 +1162,14 @@ export interface paths {
      *     HTTPException
      *         404 if the account doesn't exist.
      */
-    post: operations['reopen_account_api_accounting_accounts__account_id__reopen_post']
+    post: operations['reopen_account_api_v1_accounting_accounts__account_id__reopen_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/accounts/{account_id}/opening-balance': {
+  '/api/v1/accounting/accounts/{account_id}/opening-balance': {
     parameters: {
       query?: never
       header?: never
@@ -1036,24 +1191,19 @@ export interface paths {
      *     HTTPException
      *         404 if the account doesn't exist; 400 if `opening_balance.account_id` doesn't match the path.
      */
-    put: operations['put_opening_balance_api_accounting_accounts__account_id__opening_balance_put']
+    put: operations['put_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_put']
     post?: never
     /**
      * Delete Opening Balance
      * @description Remove an account's opening balance, if it has one.
-     *
-     *     Returns
-     *     -------
-     *     AccountIdResponse
-     *         The account whose opening balance was cleared.
      */
-    delete: operations['delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete']
+    delete: operations['delete_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/exchange-rates/current': {
+  '/api/v1/accounting/exchange-rates/current': {
     parameters: {
       query?: never
       header?: never
@@ -1068,7 +1218,7 @@ export interface paths {
      *     -------
      *     CurrentExchangeRate
      */
-    get: operations['get_current_exchange_rate_api_accounting_exchange_rates_current_get']
+    get: operations['get_current_exchange_rate_api_v1_accounting_exchange_rates_current_get']
     put?: never
     post?: never
     delete?: never
@@ -1077,7 +1227,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/exchange-rates/history': {
+  '/api/v1/accounting/exchange-rates/history': {
     parameters: {
       query?: never
       header?: never
@@ -1098,7 +1248,7 @@ export interface paths {
      *     HTTPException
      *         400 if exchange rates have never been synced.
      */
-    get: operations['get_exchange_rate_history_api_accounting_exchange_rates_history_get']
+    get: operations['get_exchange_rate_history_api_v1_accounting_exchange_rates_history_get']
     put?: never
     post?: never
     delete?: never
@@ -1107,7 +1257,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/detect': {
+  '/api/v1/accounting/detect': {
     parameters: {
       query?: never
       header?: never
@@ -1125,14 +1275,14 @@ export interface paths {
      *     DetectedAccount or None
      *         The best guess, or `None` if nothing matched.
      */
-    post: operations['post_detect_api_accounting_detect_post']
+    post: operations['post_detect_api_v1_accounting_detect_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/supported-import-kinds': {
+  '/api/v1/accounting/supported-import-kinds': {
     parameters: {
       query?: never
       header?: never
@@ -1149,7 +1299,7 @@ export interface paths {
      *         Lets the UI flag any registered account that has no importer able
      *         to actually parse a statement for it.
      */
-    get: operations['get_supported_import_kinds_api_accounting_supported_import_kinds_get']
+    get: operations['get_supported_import_kinds_api_v1_accounting_supported_import_kinds_get']
     put?: never
     post?: never
     delete?: never
@@ -1158,7 +1308,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/sync-status': {
+  '/api/v1/accounting/sync-status': {
     parameters: {
       query?: never
       header?: never
@@ -1174,7 +1324,7 @@ export interface paths {
      *     SyncStatus
      *         `last_import_at` is `None` if nothing has ever been imported.
      */
-    get: operations['get_sync_status_api_accounting_sync_status_get']
+    get: operations['get_sync_status_api_v1_accounting_sync_status_get']
     put?: never
     post?: never
     delete?: never
@@ -1183,7 +1333,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/import': {
+  '/api/v1/accounting/import': {
     parameters: {
       query?: never
       header?: never
@@ -1212,14 +1362,14 @@ export interface paths {
      *         422 if `account_id` doesn't already exist; 400 if no importer exists
      *         for this institution/account-kind combination.
      */
-    post: operations['post_import_api_accounting_import_post']
+    post: operations['post_import_api_v1_accounting_import_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/canonical/preview': {
+  '/api/v1/accounting/import/canonical/preview': {
     parameters: {
       query?: never
       header?: never
@@ -1249,14 +1399,14 @@ export interface paths {
      *     HTTPException
      *         422 if the file couldn't be parsed.
      */
-    post: operations['post_canonical_import_preview_api_accounting_import_canonical_preview_post']
+    post: operations['post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/canonical': {
+  '/api/v1/accounting/import/canonical': {
     parameters: {
       query?: never
       header?: never
@@ -1297,14 +1447,14 @@ export interface paths {
      *         can never be canonically imported into, the same guarantee the
      *         bank-specific `/import` route already has by construction.
      */
-    post: operations['post_canonical_import_api_accounting_import_canonical_post']
+    post: operations['post_canonical_import_api_v1_accounting_import_canonical_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/categorize-from-file/preview': {
+  '/api/v1/accounting/import/categorize-from-file/preview': {
     parameters: {
       query?: never
       header?: never
@@ -1347,14 +1497,14 @@ export interface paths {
      *     HTTPException
      *         422 if the file couldn't be parsed.
      */
-    post: operations['post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post']
+    post: operations['post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/categorize-from-file/apply': {
+  '/api/v1/accounting/import/categorize-from-file/apply': {
     parameters: {
       query?: never
       header?: never
@@ -1400,14 +1550,14 @@ export interface paths {
      *     HTTPException
      *         422 if the file couldn't be parsed.
      */
-    post: operations['post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post']
+    post: operations['post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/import/paystub': {
+  '/api/v1/accounting/import/paystub': {
     parameters: {
       query?: never
       header?: never
@@ -1439,14 +1589,14 @@ export interface paths {
      *         400 if the PDF's text doesn't match this module's expected paystub layout — see `importers.paystub`'s
      *         docstring: its patterns are a generic starting point, not tuned against every payroll provider.
      */
-    post: operations['post_paystub_reconciliation_api_accounting_import_paystub_post']
+    post: operations['post_paystub_reconciliation_api_v1_accounting_import_paystub_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/rebuild': {
+  '/api/v1/accounting/rebuild': {
     parameters: {
       query?: never
       header?: never
@@ -1468,14 +1618,14 @@ export interface paths {
      *     HTTPException
      *         404 if nothing has ever been imported.
      */
-    post: operations['post_rebuild_api_accounting_rebuild_post']
+    post: operations['post_rebuild_api_v1_accounting_rebuild_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings': {
+  '/api/v1/accounting/postings': {
     parameters: {
       query?: never
       header?: never
@@ -1525,7 +1675,7 @@ export interface paths {
      *         The page's postings, plus the total transaction count a client needs
      *         in order to ask for the next page.
      */
-    get: operations['get_postings_api_accounting_postings_get']
+    get: operations['get_postings_api_v1_accounting_postings_get']
     put?: never
     post?: never
     delete?: never
@@ -1534,7 +1684,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/ledger/export': {
+  '/api/v1/accounting/ledger/export': {
     parameters: {
       query?: never
       header?: never
@@ -1572,7 +1722,7 @@ export interface paths {
      *         rule/override/split/merge is applied on top — what the Transactions
      *         page actually shows.
      */
-    get: operations['get_ledger_export_api_accounting_ledger_export_get']
+    get: operations['get_ledger_export_api_v1_accounting_ledger_export_get']
     put?: never
     post?: never
     delete?: never
@@ -1581,7 +1731,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/statements/export': {
+  '/api/v1/accounting/statements/export': {
     parameters: {
       query?: never
       header?: never
@@ -1598,7 +1748,7 @@ export interface paths {
      *         A `.zip` attachment, one entry per archived file, empty if
      *         nothing has been imported yet.
      */
-    get: operations['get_statements_export_api_accounting_statements_export_get']
+    get: operations['get_statements_export_api_v1_accounting_statements_export_get']
     put?: never
     post?: never
     delete?: never
@@ -1607,7 +1757,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/override': {
+  '/api/v1/accounting/postings/{posting_id}/override': {
     parameters: {
       query?: never
       header?: never
@@ -1633,7 +1783,7 @@ export interface paths {
      *     ManualOverride
      *         The override just persisted, merged with any prior one.
      */
-    put: operations['put_posting_override_api_accounting_postings__posting_id__override_put']
+    put: operations['put_posting_override_api_v1_accounting_postings__posting_id__override_put']
     post?: never
     delete?: never
     options?: never
@@ -1641,7 +1791,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/split': {
+  '/api/v1/accounting/postings/{posting_id}/split': {
     parameters: {
       query?: never
       header?: never
@@ -1668,57 +1818,57 @@ export interface paths {
      *     HTTPException
      *         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
      */
-    put: operations['put_posting_split_api_accounting_postings__posting_id__split_put']
+    put: operations['put_posting_split_api_v1_accounting_postings__posting_id__split_put']
     post?: never
     /**
      * Delete Posting Split Route
      * @description Undo a posting split, restoring the single original posting.
-     *
-     *     Returns
-     *     -------
-     *     PostingIdResponse
      */
-    delete: operations['delete_posting_split_route_api_accounting_postings__posting_id__split_delete']
+    delete: operations['delete_posting_split_route_api_v1_accounting_postings__posting_id__split_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/posting-merges': {
+  '/api/v1/accounting/posting-merges/{merge_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
     /**
-     * Put Posting Merges
-     * @description Replace the whole posting-merge map, keyed by `merge_id`.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, PostingMerge]
-     *         The merges just persisted.
-     */
-    put: operations['put_posting_merges_api_accounting_posting_merges_put']
-    /**
-     * Post Posting Merge
-     * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
+     * Get Posting Merge
+     * @description Return one duplicate-resolution decision by id — the address `post_posting_merge` advertises.
      *
      *     Returns
      *     -------
      *     PostingMerge
-     *         The merge just persisted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no merge has this id.
      */
-    post: operations['post_posting_merge_api_accounting_posting_merges_post']
-    delete?: never
+    get: operations['get_posting_merge_api_v1_accounting_posting_merges__merge_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Posting Merge
+     * @description Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no merge with this id exists.
+     */
+    delete: operations['delete_posting_merge_api_v1_accounting_posting_merges__merge_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/posting-merges/{merge_id}': {
+  '/api/v1/accounting/posting-merges': {
     parameters: {
       query?: never
       header?: never
@@ -1727,27 +1877,72 @@ export interface paths {
     }
     get?: never
     put?: never
-    post?: never
     /**
-     * Delete Posting Merge
-     * @description Undo one duplicate-resolution decision, restoring the merged-away transactions to the ledger.
+     * Post Posting Merge
+     * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
+     *
+     *     A real upsert keyed on the kept transaction, so the status says which
+     *     of the two things happened: `201` with a `Location` when this recorded
+     *     a new decision, `200` when it replaced the decision already recorded
+     *     for that transaction.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /posting-merges/{merge_id}`. The id is `merge:{kept_transaction_id}`
+     *     — derivable in principle, but `_merge_id`'s prefix is this module's
+     *     private key format, and making every client build it would export that
+     *     format as part of the contract.
      *
      *     Returns
      *     -------
-     *     PostingMergeIdResponse
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no merge with this id exists.
+     *     PostingMerge
+     *         The merge just persisted.
      */
-    delete: operations['delete_posting_merge_api_accounting_posting_merges__merge_id__delete']
+    post: operations['post_posting_merge_api_v1_accounting_posting_merges_post']
+    delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-links': {
+  '/api/v1/accounting/transfer-links/{link_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Transfer Link
+     * @description Return one confirmed transfer link by id — the address `post_transfer_link` advertises.
+     *
+     *     Returns
+     *     -------
+     *     TransferLink
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no link has this id.
+     */
+    get: operations['get_transfer_link_api_v1_accounting_transfer_links__link_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Transfer Link
+     * @description Undo a confirmed transfer link, restoring both transactions to their prior classification.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no link with this id exists.
+     */
+    delete: operations['delete_transfer_link_api_v1_accounting_transfer_links__link_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/transfer-links': {
     parameters: {
       query?: never
       header?: never
@@ -1764,6 +1959,12 @@ export interface paths {
      *     `ledger.transfers.apply_transfer_links` for how this changes
      *     classification instead. Re-confirming the exact same pair (from
      *     either side) is a no-op, returning the existing link.
+     *
+     *     That no-op is why the status is conditional: `201` with a `Location`
+     *     when this call confirmed the pair, `200` when the identical link was
+     *     already there. Not strictly an upsert — nothing is overwritten on the
+     *     second call — but the same distinction, read from the `already_this_link`
+     *     lookup below, in the transaction that writes.
      *
      *     Returns
      *     -------
@@ -1784,43 +1985,14 @@ export interface paths {
      *         rule. Re-raised untouched rather than folded into the 409, so a
      *         genuinely unexpected violation stays a loud 500.
      */
-    post: operations['post_transfer_link_api_accounting_transfer_links_post']
+    post: operations['post_transfer_link_api_v1_accounting_transfer_links_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-links/{link_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Transfer Link
-     * @description Undo a confirmed transfer link, restoring both transactions to their prior classification.
-     *
-     *     Returns
-     *     -------
-     *     TransferLinkIdResponse
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no link with this id exists.
-     */
-    delete: operations['delete_transfer_link_api_accounting_transfer_links__link_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/postings/validate-pending': {
+  '/api/v1/accounting/postings/validate-pending': {
     parameters: {
       query?: never
       header?: never
@@ -1843,14 +2015,14 @@ export interface paths {
      *     -------
      *     ValidatePendingResult
      */
-    post: operations['post_validate_pending_api_accounting_postings_validate_pending_post']
+    post: operations['post_validate_pending_api_v1_accounting_postings_validate_pending_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/transfer-suggestions': {
+  '/api/v1/accounting/transfer-suggestions': {
     parameters: {
       query?: never
       header?: never
@@ -1876,7 +2048,7 @@ export interface paths {
      *         never applied automatically. Excludes any pair already dismissed
      *         (see `POST /dismissed-suggestions`).
      */
-    get: operations['get_transfer_suggestions_api_accounting_transfer_suggestions_get']
+    get: operations['get_transfer_suggestions_api_v1_accounting_transfer_suggestions_get']
     put?: never
     post?: never
     delete?: never
@@ -1885,7 +2057,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/duplicate-suggestions': {
+  '/api/v1/accounting/duplicate-suggestions': {
     parameters: {
       query?: never
       header?: never
@@ -1908,7 +2080,7 @@ export interface paths {
      *         Each carries a `suggestion_id` for dismissing it. Excludes any
      *         group already dismissed (see `POST /dismissed-suggestions`).
      */
-    get: operations['get_duplicate_suggestions_api_accounting_duplicate_suggestions_get']
+    get: operations['get_duplicate_suggestions_api_v1_accounting_duplicate_suggestions_get']
     put?: never
     post?: never
     delete?: never
@@ -1917,7 +2089,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/dismissed-suggestions': {
+  '/api/v1/accounting/dismissed-suggestions': {
     parameters: {
       query?: never
       header?: never
@@ -1932,55 +2104,74 @@ export interface paths {
      *     -------
      *     list[DismissedSuggestion]
      */
-    get: operations['get_dismissed_suggestions_api_accounting_dismissed_suggestions_get']
+    get: operations['get_dismissed_suggestions_api_v1_accounting_dismissed_suggestions_get']
     put?: never
-    /**
-     * Post Dismissed Suggestion
-     * @description Archive a suggestion so it stops being proposed, without discarding it.
-     *
-     *     Returns
-     *     -------
-     *     DismissedSuggestion
-     *         The archived entry just persisted.
-     */
-    post: operations['post_dismissed_suggestion_api_accounting_dismissed_suggestions_post']
+    post?: never
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/dismissed-suggestions/{suggestion_id}': {
+  '/api/v1/accounting/dismissed-suggestions/{suggestion_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
-    put?: never
-    post?: never
     /**
-     * Delete Dismissed Suggestion
-     * @description Restore a dismissed suggestion so it can be proposed again.
+     * Get Dismissed Suggestion
+     * @description Return one archived suggestion by id — the address `put_dismissed_suggestion` advertises.
      *
      *     Returns
      *     -------
-     *     SuggestionIdResponse
-     *         The entry just restored.
+     *     DismissedSuggestion
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no archived entry has this id.
      */
-    delete: operations['delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete']
+    get: operations['get_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__get']
+    /**
+     * Put Dismissed Suggestion
+     * @description Archive a suggestion so it stops being proposed, without discarding it.
+     *
+     *     A `PUT` at the id, not a `POST` to the collection, and the only upsert
+     *     in this API that could honestly become one: the archive entry's id is
+     *     the suggestion's own id, which the client already holds — it is reading
+     *     it off `GET /transfer-suggestions` or `GET /duplicate-suggestions` and
+     *     used to send it in the request body. Nothing is derived server-side, so
+     *     the caller can name the address, which is what makes this an idempotent
+     *     replace at a known URL rather than a submission to a collection.
+     *
+     *     `201` with a `Location` when this created the archive entry, `200` when
+     *     it replaced one already there — RFC 9110's own answer for `PUT`.
+     *
+     *     Returns
+     *     -------
+     *     DismissedSuggestion
+     *         The archived entry just persisted.
+     */
+    put: operations['put_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__put']
+    post?: never
+    /**
+     * Delete Dismissed Suggestion
+     * @description Restore a dismissed suggestion so it can be proposed again.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no archived entry has this id.
+     */
+    delete: operations['delete_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/llm-usage': {
+  '/api/v1/accounting/llm-usage': {
     parameters: {
       query?: never
       header?: never
@@ -1998,7 +2189,7 @@ export interface paths {
      *         the provider's own error text from the last refused call, `None`
      *         if it hasn't been refused since its count last reset.
      */
-    get: operations['get_llm_usage_api_accounting_llm_usage_get']
+    get: operations['get_llm_usage_api_v1_accounting_llm_usage_get']
     put?: never
     post?: never
     delete?: never
@@ -2007,7 +2198,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/settings/llm/verify': {
+  '/api/v1/accounting/settings/llm/verify': {
     parameters: {
       query?: never
       header?: never
@@ -2039,14 +2230,14 @@ export interface paths {
      *     HTTPException
      *         400 if `provider` isn't `"gemini"` or `"mistral"`.
      */
-    post: operations['verify_llm_settings_api_accounting_settings_llm_verify_post']
+    post: operations['verify_llm_settings_api_v1_accounting_settings_llm_verify_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/settings/llm': {
+  '/api/v1/accounting/settings/llm': {
     parameters: {
       query?: never
       header?: never
@@ -2064,7 +2255,7 @@ export interface paths {
      *         `.env` fallback left to also reflect (see `GET /llm-usage`'s own
      *         `configured`, which now means exactly the same thing).
      */
-    get: operations['get_llm_settings_api_accounting_settings_llm_get']
+    get: operations['get_llm_settings_api_v1_accounting_settings_llm_get']
     /**
      * Put Llm Settings
      * @description Persist an LLM API key update (merges into whatever's already saved).
@@ -2074,24 +2265,30 @@ export interface paths {
      *     LlmSettings
      *         Same shape as `GET /settings/llm`, reflecting what was just persisted.
      */
-    put: operations['put_llm_settings_api_accounting_settings_llm_put']
+    put: operations['put_llm_settings_api_v1_accounting_settings_llm_put']
     post?: never
     /**
      * Delete Llm Settings
      * @description Clear this user's saved API key for every provider.
+     *
+     *     One of the three deletes in this app that answers 200 with a body rather
+     *     than 204: this clears fields on a singleton settings row that still
+     *     exists afterwards, so there is a representation to return, and it is not
+     *     derivable from the request. The 15 deletes that remove a row the client
+     *     named answer 204.
      *
      *     Returns
      *     -------
      *     LlmSettings
      *         Same shape as `GET /settings/llm`.
      */
-    delete: operations['delete_llm_settings_api_accounting_settings_llm_delete']
+    delete: operations['delete_llm_settings_api_v1_accounting_settings_llm_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/ai-suggest-category': {
+  '/api/v1/accounting/postings/{posting_id}/ai-suggest-category': {
     parameters: {
       query?: never
       header?: never
@@ -2134,14 +2331,14 @@ export interface paths {
      *     HTTPException
      *         404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
      */
-    post: operations['post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post']
+    post: operations['post_ai_suggest_category_api_v1_accounting_postings__posting_id__ai_suggest_category_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/{posting_id}/pattern-suggest-category': {
+  '/api/v1/accounting/postings/{posting_id}/pattern-suggest-category': {
     parameters: {
       query?: never
       header?: never
@@ -2179,14 +2376,14 @@ export interface paths {
      *     HTTPException
      *         404 if the posting doesn't exist.
      */
-    post: operations['post_pattern_suggest_category_api_accounting_postings__posting_id__pattern_suggest_category_post']
+    post: operations['post_pattern_suggest_category_api_v1_accounting_postings__posting_id__pattern_suggest_category_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/postings/pattern-suggest-category/bulk': {
+  '/api/v1/accounting/postings/pattern-suggest-category/bulk': {
     parameters: {
       query?: never
       header?: never
@@ -2223,14 +2420,14 @@ export interface paths {
      *     BulkSuggestResult
      *         How many postings got a staged suggestion.
      */
-    post: operations['post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post']
+    post: operations['post_pattern_suggest_category_bulk_api_v1_accounting_postings_pattern_suggest_category_bulk_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/simulator/project': {
+  '/api/v1/accounting/simulator/project': {
     parameters: {
       query?: never
       header?: never
@@ -2245,7 +2442,7 @@ export interface paths {
      *     -------
      *     list[ProjectionPoint]
      */
-    get: operations['get_simulator_projection_api_accounting_simulator_project_get']
+    get: operations['get_simulator_projection_api_v1_accounting_simulator_project_get']
     put?: never
     post?: never
     delete?: never
@@ -2254,7 +2451,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/interest-summary': {
+  '/api/v1/accounting/interest-summary': {
     parameters: {
       query?: never
       header?: never
@@ -2269,7 +2466,7 @@ export interface paths {
      *     -------
      *     list[InterestAccountRow]
      */
-    get: operations['get_interest_summary_api_accounting_interest_summary_get']
+    get: operations['get_interest_summary_api_v1_accounting_interest_summary_get']
     put?: never
     post?: never
     delete?: never
@@ -2278,7 +2475,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/net-worth': {
+  '/api/v1/accounting/net-worth': {
     parameters: {
       query?: never
       header?: never
@@ -2293,7 +2490,7 @@ export interface paths {
      *     -------
      *     NetWorthSummary
      */
-    get: operations['get_net_worth_api_accounting_net_worth_get']
+    get: operations['get_net_worth_api_v1_accounting_net_worth_get']
     put?: never
     post?: never
     delete?: never
@@ -2302,7 +2499,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/net-worth/history': {
+  '/api/v1/accounting/net-worth/history': {
     parameters: {
       query?: never
       header?: never
@@ -2323,7 +2520,7 @@ export interface paths {
      *     list[NetWorthHistoryPoint]
      *         Oldest first.
      */
-    get: operations['get_net_worth_history_api_accounting_net_worth_history_get']
+    get: operations['get_net_worth_history_api_v1_accounting_net_worth_history_get']
     put?: never
     post?: never
     delete?: never
@@ -2332,7 +2529,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/net-worth/history/by-account': {
+  '/api/v1/accounting/net-worth/history/by-account': {
     parameters: {
       query?: never
       header?: never
@@ -2353,7 +2550,7 @@ export interface paths {
      *     list[NetWorthHistoryByAccountPoint]
      *         `balance` already converted into `display_currency`.
      */
-    get: operations['get_net_worth_history_by_account_api_accounting_net_worth_history_by_account_get']
+    get: operations['get_net_worth_history_by_account_api_v1_accounting_net_worth_history_by_account_get']
     put?: never
     post?: never
     delete?: never
@@ -2362,7 +2559,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/income-statement/category-totals': {
+  '/api/v1/accounting/income-statement/category-totals': {
     parameters: {
       query?: never
       header?: never
@@ -2377,7 +2574,7 @@ export interface paths {
      *     -------
      *     list[CategoryTotalRow]
      */
-    get: operations['get_category_totals_api_accounting_income_statement_category_totals_get']
+    get: operations['get_category_totals_api_v1_accounting_income_statement_category_totals_get']
     put?: never
     post?: never
     delete?: never
@@ -2386,7 +2583,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/income-statement/monthly': {
+  '/api/v1/accounting/income-statement/monthly': {
     parameters: {
       query?: never
       header?: never
@@ -2401,7 +2598,7 @@ export interface paths {
      *     -------
      *     list[MonthlyIncomeExpenseRow]
      */
-    get: operations['get_monthly_income_expense_api_accounting_income_statement_monthly_get']
+    get: operations['get_monthly_income_expense_api_v1_accounting_income_statement_monthly_get']
     put?: never
     post?: never
     delete?: never
@@ -2410,7 +2607,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/income-statement/spend-curve': {
+  '/api/v1/accounting/income-statement/spend-curve': {
     parameters: {
       query?: never
       header?: never
@@ -2425,7 +2622,7 @@ export interface paths {
      *     -------
      *     list[SpendCurvePoint]
      */
-    get: operations['get_spend_curve_api_accounting_income_statement_spend_curve_get']
+    get: operations['get_spend_curve_api_v1_accounting_income_statement_spend_curve_get']
     put?: never
     post?: never
     delete?: never
@@ -2434,65 +2631,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/budgets/comparison': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Budget Comparison
-     * @description Every category budgeted for one month, actual spend next to the target.
-     *
-     *     Returns
-     *     -------
-     *     list[BudgetComparisonRow]
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         400 if `month` isn't `"YYYY-MM"`.
-     */
-    get: operations['get_budget_comparison_api_accounting_budgets_comparison_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/budgets/suggested-amount': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Suggested Budget Amount
-     * @description Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
-     *
-     *     Returns
-     *     -------
-     *     SuggestedBudgetAmount
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         400 if `month` isn't `"YYYY-MM"`.
-     */
-    get: operations['get_suggested_budget_amount_api_accounting_budgets_suggested_amount_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/goals': {
+  '/api/v1/accounting/goals': {
     parameters: {
       query?: never
       header?: never
@@ -2500,22 +2639,14 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Goals
-     * @description Replace the whole goal list.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Goal]
-     *         The goals just persisted, keyed by `goal_id`.
-     */
-    put: operations['put_goals_api_accounting_goals_put']
+    put?: never
     /**
      * Post Goal
      * @description Create one new goal, without touching any other goal already saved.
      *
      *     `goal_id` is server-minted — two goals can validly share a name, so
-     *     there's no natural key two "the same" goal would collide on. `color`
+     *     there's no natural key two "the same" goal would collide on, which is
+     *     why the `201` is unconditional. `color`
      *     is picked to be distinct from every color already assigned to an
      *     existing goal, the same `taxonomy.next_available_color` helper
      *     categories already use for the same purpose.
@@ -2525,21 +2656,34 @@ export interface paths {
      *     Goal
      *         The goal just persisted.
      */
-    post: operations['post_goal_api_accounting_goals_post']
+    post: operations['post_goal_api_v1_accounting_goals_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/{goal_id}': {
+  '/api/v1/accounting/goals/{goal_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Goal
+     * @description Return one goal by id — the address `post_goal` advertises.
+     *
+     *     Returns
+     *     -------
+     *     Goal
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no goal has this id.
+     */
+    get: operations['get_goal_api_v1_accounting_goals__goal_id__get']
     put?: never
     post?: never
     /**
@@ -2550,17 +2694,13 @@ export interface paths {
      *     docstring for why deleting an already-gone goal is a plain 404, not a
      *     409: there's nothing left to conflict with.
      *
-     *     Returns
-     *     -------
-     *     GoalIdResponse
-     *         The goal id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no goal with `goal_id` exists.
      */
-    delete: operations['delete_goal_route_api_accounting_goals__goal_id__delete']
+    delete: operations['delete_goal_route_api_v1_accounting_goals__goal_id__delete']
     options?: never
     head?: never
     /**
@@ -2582,57 +2722,30 @@ export interface paths {
      *     HTTPException
      *         404 if no goal with `goal_id` exists.
      */
-    patch: operations['patch_goal_api_accounting_goals__goal_id__patch']
+    patch: operations['patch_goal_api_v1_accounting_goals__goal_id__patch']
     trace?: never
   }
-  '/api/accounting/goal-contributions': {
+  '/api/v1/accounting/goal-contributions/{contribution_id}': {
     parameters: {
       query?: never
       header?: never
       path?: never
       cookie?: never
     }
-    get?: never
     /**
-     * Put Goal Contributions
-     * @description Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, GoalContribution]
-     *         The contributions just persisted, keyed by `contribution_id`.
-     */
-    put: operations['put_goal_contributions_api_accounting_goal_contributions_put']
-    /**
-     * Post Goal Contribution
-     * @description Record one new dated allocation, without touching any other contribution already recorded.
-     *
-     *     Unlike a budget's `(month, category_id)`, a contribution is an
-     *     arbitrary event with no natural key to derive an id from, so the
-     *     server generates an opaque one — two contributions with identical
-     *     fields (e.g. the same goal, date, and amount entered twice) are
-     *     distinct rows, not a collision.
+     * Get Goal Contribution
+     * @description Return one dated allocation by id — the address `post_goal_contribution` advertises.
      *
      *     Returns
      *     -------
      *     GoalContribution
-     *         The contribution just persisted.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no contribution has this id.
      */
-    post: operations['post_goal_contribution_api_accounting_goal_contributions_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/goal-contributions/{contribution_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
+    get: operations['get_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__get']
     /**
      * Put Goal Contribution
      * @description Replace one contribution's fields, without touching any other contribution.
@@ -2652,78 +2765,24 @@ export interface paths {
      *     HTTPException
      *         404 if no contribution with this id exists.
      */
-    put: operations['put_goal_contribution_api_accounting_goal_contributions__contribution_id__put']
+    put: operations['put_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__put']
     post?: never
     /**
      * Delete Goal Contribution
      * @description Remove one contribution, without touching any other.
-     *
-     *     Returns
-     *     -------
-     *     GoalContributionIdResponse
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no contribution with this id exists.
      */
-    delete: operations['delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete']
+    delete: operations['delete_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goal-automations/contributions': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Goal Contribution Automations
-     * @description Replace the whole contribution-automation list — the priority-ordered allocation rules.
-     *
-     *     Scoped to `direction="contribution"`: the withdrawal ordering lives in
-     *     the same table now but is replaced by its own endpoint, so neither
-     *     list can wipe the other.
-     *
-     *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
-     *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
-     *     lowest priority) — the same check the single-row `PATCH` enforces.
-     *
-     *     Returns
-     *     -------
-     *     list[GoalAutomation]
-     *         The automations just persisted. Answers 400 if any entry is not a
-     *         `contribution`, or if the `remainder` invariant is broken.
-     */
-    put: operations['put_goal_contribution_automations_api_accounting_goal_automations_contributions_put']
-    /**
-     * Post Goal Automation
-     * @description Create one new scheduled contribution automation, appended after every one already saved.
-     *
-     *     `automation_id` is server-minted — two rules can validly share every
-     *     other field. `priority` is never taken from the client: this always
-     *     goes after the current lowest-priority contribution, matching the
-     *     Goals page's own "append at the end of the ordered list" behavior.
-     *     Drag-and-drop reordering still goes through
-     *     `PUT /goal-automations/contributions`.
-     *
-     *     Returns
-     *     -------
-     *     GoalAutomation
-     *         The automation just persisted.
-     */
-    post: operations['post_goal_automation_api_accounting_goal_automations_contributions_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/accounting/goal-automations/{automation_id}': {
+  '/api/v1/accounting/goal-contributions': {
     parameters: {
       query?: never
       header?: never
@@ -2732,31 +2791,78 @@ export interface paths {
     }
     get?: never
     put?: never
+    /**
+     * Post Goal Contribution
+     * @description Record one new dated allocation, without touching any other contribution already recorded.
+     *
+     *     Unlike a budget's `(month, category_id)`, a contribution is an
+     *     arbitrary event with no natural key to derive an id from, so the
+     *     server generates an opaque one — two contributions with identical
+     *     fields (e.g. the same goal, date, and amount entered twice) are
+     *     distinct rows, not a collision. So the `201` is unconditional even
+     *     though the write below goes through an upsert: the id it upserts on
+     *     was minted moments earlier and cannot already exist.
+     *
+     *     Returns
+     *     -------
+     *     GoalContribution
+     *         The contribution just persisted.
+     */
+    post: operations['post_goal_contribution_api_v1_accounting_goal_contributions_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goal-automations/{automation_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Goal Automation
+     * @description Return one automation by id, either direction — the address `post_goal_automation` advertises.
+     *
+     *     Not direction-scoped, matching `PATCH` and `DELETE` on this same path:
+     *     an automation is addressed by its id alone, and `contribution` versus
+     *     `withdrawal` is a field on it, not part of its address.
+     *
+     *     Returns
+     *     -------
+     *     GoalAutomation
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no automation has this id.
+     */
+    get: operations['get_goal_automation_api_v1_accounting_goal_automations__automation_id__get']
+    put?: never
     post?: never
     /**
      * Delete Goal Automation Route
      * @description Delete one goal automation, without touching any other. Idempotent, no version check.
-     *
-     *     Returns
-     *     -------
-     *     GoalAutomationIdResponse
-     *         The automation id just deleted.
      *
      *     Raises
      *     ------
      *     HTTPException
      *         404 if no automation with `automation_id` exists.
      */
-    delete: operations['delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete']
+    delete: operations['delete_goal_automation_route_api_v1_accounting_goal_automations__automation_id__delete']
     options?: never
     head?: never
     /**
      * Patch Goal Automation
      * @description Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
      *
-     *     A single-rule field edit no longer round-trips through the whole-list
-     *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-     *     edit to a different one); see `repositories.planning.upsert_goal_automation`.
+     *     A single-rule field edit does not round-trip through a whole-list
+     *     write (which blanket-reinserted every rule and could revert a
+     *     concurrent edit to a different one); see
+     *     `repositories.planning.upsert_goal_automation`. `priority` is carried
+     *     unchanged — the reorder route owns it.
      *
      *     Returns
      *     -------
@@ -2768,10 +2874,50 @@ export interface paths {
      *     HTTPException
      *         404 if no *contribution* automation with `automation_id` exists.
      */
-    patch: operations['patch_goal_automation_api_accounting_goal_automations__automation_id__patch']
+    patch: operations['patch_goal_automation_api_v1_accounting_goal_automations__automation_id__patch']
     trace?: never
   }
-  '/api/accounting/goal-automations/withdrawals': {
+  '/api/v1/accounting/goal-automations/contributions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Goal Automation
+     * @description Create one new scheduled contribution automation, appended after every one already saved.
+     *
+     *     `automation_id` is server-minted, so the `201` is unconditional — two
+     *     rules can validly share every other field. Its `Location` points at
+     *     `GET /goal-automations/{automation_id}`, dropping the `contributions`
+     *     segment: the direction picks which collection this posts *to*, and is
+     *     not part of the created row's own address. `priority` is never taken
+     *     from the client: this always
+     *     goes after the current lowest-priority contribution, matching the
+     *     Goals page's own "append at the end of the ordered list" behavior.
+     *     Drag-and-drop reordering goes through
+     *     `PUT /goal-automations/contributions/order`.
+     *
+     *     A body that would break a `remainder` rule is a 400 from
+     *     `_validate_remainder_invariant`, the same check the reorder and the
+     *     single-row `PATCH` run.
+     *
+     *     Returns
+     *     -------
+     *     GoalAutomation
+     *         The automation just persisted.
+     */
+    post: operations['post_goal_automation_api_v1_accounting_goal_automations_contributions_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goal-automations/contributions/order': {
     parameters: {
       query?: never
       header?: never
@@ -2780,22 +2926,28 @@ export interface paths {
     }
     get?: never
     /**
-     * Put Goal Withdrawal Automations
-     * @description Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
+     * Put Goal Contribution Automation Order
+     * @description Set the order the contribution automations run in — the priority a fixed-amount rule funds ahead of a lower one.
      *
-     *     A pure ordering + set-membership operation (no free text, schedule, or
-     *     amount anywhere — a withdrawal automation carries none), so it's
-     *     last-write-wins by nature: whichever ordering was submitted last is
-     *     the intended one. Scoped to `direction="withdrawal"`, so it never
-     *     touches the contribution automations sharing the table.
+     *     A named operation on a real single resource (this collection's
+     *     *ordering*), which is why it stays a `PUT` and not a `PATCH` per
+     *     automation: a reorder is atomic across every row in the list, and n
+     *     separate `PATCH`es of `priority` can only approximate that, passing
+     *     through states with two rules at the same priority. Idempotent —
+     *     submitting the same order twice lands the same priorities.
+     *
+     *     Scoped to `direction="contribution"`: the withdrawal ordering shares
+     *     the table but has its own route, so neither can renumber the other.
      *
      *     Returns
      *     -------
      *     list[GoalAutomation]
-     *         The withdrawal automations just persisted. Answers 400 if any
-     *         entry is not a `withdrawal`.
+     *         The contribution automations, renumbered, in the submitted order.
+     *         Answers 400 (from `_reorder_automations`) if the submitted ids
+     *         aren't exactly the persisted contribution automations, or if the
+     *         order would leave a `mode="remainder"` rule anywhere but last.
      */
-    put: operations['put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put']
+    put: operations['put_goal_contribution_automation_order_api_v1_accounting_goal_automations_contributions_order_put']
     post?: never
     delete?: never
     options?: never
@@ -2803,7 +2955,82 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/summary': {
+  '/api/v1/accounting/goal-automations/withdrawals': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Withdrawal Automation
+     * @description Put one goal into the drawdown order, appended last, without touching any other entry.
+     *
+     *     The counterpart to `post_goal_automation` for the other direction, and
+     *     the reason the withdrawal ordering no longer needs a whole-list write:
+     *     adding a goal is a create, dropping one is
+     *     `DELETE /goal-automations/{automation_id}`, and rearranging them is
+     *     `PUT /goal-automations/withdrawals/order`.
+     *
+     *     Unlike a contribution's minted id, this one is derived from the goal
+     *     (`repositories.planning.withdrawal_automation_id`) because a goal sits
+     *     at most once in the order — so re-adding a goal already in it is a
+     *     replace, not a second row, and answers `200` with the entry's existing
+     *     place rather than `201`. Re-adding therefore never silently moves a
+     *     goal to the bottom of the drawdown order.
+     *
+     *     Returns
+     *     -------
+     *     GoalAutomation
+     *         The drawdown entry just persisted.
+     */
+    post: operations['post_withdrawal_automation_api_v1_accounting_goal_automations_withdrawals_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goal-automations/withdrawals/order': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /**
+     * Put Goal Withdrawal Automation Order
+     * @description Set the order goals are drawn down in when unallocated money dips below zero.
+     *
+     *     A withdrawal automation carries nothing but its goal and its place in
+     *     this order, so the order *is* the whole resource here — which makes the
+     *     id-set check below load-bearing rather than defensive: it is the only
+     *     thing separating "rearrange the drawdown order" from "replace it".
+     *     Membership changes go through `post_withdrawal_automation` and
+     *     `DELETE /goal-automations/{automation_id}`.
+     *
+     *     Scoped to `direction="withdrawal"`, so it never renumbers the
+     *     contribution automations sharing the table.
+     *
+     *     Returns
+     *     -------
+     *     list[GoalAutomation]
+     *         The drawdown entries, renumbered, in the submitted order. Answers
+     *         400 (from `_reorder_automations`) if the submitted ids aren't
+     *         exactly the persisted withdrawal automations.
+     */
+    put: operations['put_goal_withdrawal_automation_order_api_v1_accounting_goal_automations_withdrawals_order_put']
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goals/summary': {
     parameters: {
       query?: never
       header?: never
@@ -2821,7 +3048,7 @@ export interface paths {
      *     -------
      *     GoalsSummary
      */
-    get: operations['get_goals_summary_api_accounting_goals_summary_get']
+    get: operations['get_goals_summary_api_v1_accounting_goals_summary_get']
     put?: never
     post?: never
     delete?: never
@@ -2830,7 +3057,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/run-recurring-additions': {
+  '/api/v1/accounting/goals/run-recurring-additions': {
     parameters: {
       query?: never
       header?: never
@@ -2857,14 +3084,14 @@ export interface paths {
      *     list[GoalContribution]
      *         The new contributions just written (empty if nothing was due).
      */
-    post: operations['post_run_recurring_additions_api_accounting_goals_run_recurring_additions_post']
+    post: operations['post_run_recurring_additions_api_v1_accounting_goals_run_recurring_additions_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/run-withdrawal-automation': {
+  '/api/v1/accounting/goals/run-withdrawal-automation': {
     parameters: {
       query?: never
       header?: never
@@ -2890,14 +3117,14 @@ export interface paths {
      *         The contributions just written, and however much of the shortfall
      *         (if any) no goal had enough left to cover.
      */
-    post: operations['post_run_withdrawal_automation_api_accounting_goals_run_withdrawal_automation_post']
+    post: operations['post_run_withdrawal_automation_api_v1_accounting_goals_run_withdrawal_automation_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/accounting/goals/simulate-contribution': {
+  '/api/v1/accounting/goals/simulate-contribution': {
     parameters: {
       query?: never
       header?: never
@@ -2922,14 +3149,14 @@ export interface paths {
      *         running once more, with this contribution already applied, so the
      *         user can see if it sets up a shortfall soon after (non-blocking).
      */
-    post: operations['post_simulate_contribution_api_accounting_goals_simulate_contribution_post']
+    post: operations['post_simulate_contribution_api_v1_accounting_goals_simulate_contribution_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/overview': {
+  '/api/v1/trades/overview': {
     parameters: {
       query?: never
       header?: never
@@ -2950,7 +3177,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_overview_api_overview_get']
+    get: operations['get_overview_api_v1_trades_overview_get']
     put?: never
     post?: never
     delete?: never
@@ -2959,7 +3186,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/dollar': {
+  '/api/v1/trades/chart/dollar': {
     parameters: {
       query?: never
       header?: never
@@ -2980,7 +3207,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_dollar_chart_api_chart_dollar_get']
+    get: operations['get_dollar_chart_api_v1_trades_chart_dollar_get']
     put?: never
     post?: never
     delete?: never
@@ -2989,7 +3216,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/growth-of-100': {
+  '/api/v1/trades/chart/growth-of-100': {
     parameters: {
       query?: never
       header?: never
@@ -3010,7 +3237,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_growth_of_100_chart_api_chart_growth_of_100_get']
+    get: operations['get_growth_of_100_chart_api_v1_trades_chart_growth_of_100_get']
     put?: never
     post?: never
     delete?: never
@@ -3019,7 +3246,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/cash-history': {
+  '/api/v1/trades/chart/cash-history': {
     parameters: {
       query?: never
       header?: never
@@ -3046,7 +3273,7 @@ export interface paths {
      *     HTTPException
      *         Via `_load_ledger`, if no ledger is cached yet (404).
      */
-    get: operations['get_cash_history_api_chart_cash_history_get']
+    get: operations['get_cash_history_api_v1_trades_chart_cash_history_get']
     put?: never
     post?: never
     delete?: never
@@ -3055,7 +3282,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/cash-sitting': {
+  '/api/v1/trades/cash-sitting': {
     parameters: {
       query?: never
       header?: never
@@ -3076,7 +3303,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_cash_sitting_api_cash_sitting_get']
+    get: operations['get_cash_sitting_api_v1_trades_cash_sitting_get']
     put?: never
     post?: never
     delete?: never
@@ -3085,7 +3312,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/monthly-pnl': {
+  '/api/v1/trades/chart/monthly-pnl': {
     parameters: {
       query?: never
       header?: never
@@ -3106,7 +3333,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_monthly_pnl_api_chart_monthly_pnl_get']
+    get: operations['get_monthly_pnl_api_v1_trades_chart_monthly_pnl_get']
     put?: never
     post?: never
     delete?: never
@@ -3115,7 +3342,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/chart/monthly-pnl/by-symbol': {
+  '/api/v1/trades/chart/monthly-pnl/by-symbol': {
     parameters: {
       query?: never
       header?: never
@@ -3136,7 +3363,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_monthly_pnl_by_symbol_api_chart_monthly_pnl_by_symbol_get']
+    get: operations['get_monthly_pnl_by_symbol_api_v1_trades_chart_monthly_pnl_by_symbol_get']
     put?: never
     post?: never
     delete?: never
@@ -3145,7 +3372,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/allocation': {
+  '/api/v1/trades/allocation': {
     parameters: {
       query?: never
       header?: never
@@ -3166,7 +3393,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_allocation_api_allocation_get']
+    get: operations['get_allocation_api_v1_trades_allocation_get']
     put?: never
     post?: never
     delete?: never
@@ -3175,7 +3402,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/tax/report': {
+  '/api/v1/trades/tax/report': {
     parameters: {
       query?: never
       header?: never
@@ -3203,7 +3430,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_tax_report_api_tax_report_get']
+    get: operations['get_tax_report_api_v1_trades_tax_report_get']
     put?: never
     post?: never
     delete?: never
@@ -3212,7 +3439,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/lots': {
+  '/api/v1/trades/lots': {
     parameters: {
       query?: never
       header?: never
@@ -3233,7 +3460,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_lots_api_lots_get']
+    get: operations['get_lots_api_v1_trades_lots_get']
     put?: never
     post?: never
     delete?: never
@@ -3242,7 +3469,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/risk': {
+  '/api/v1/trades/risk': {
     parameters: {
       query?: never
       header?: never
@@ -3263,7 +3490,7 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if a required price is missing.
      */
-    get: operations['get_risk_api_risk_get']
+    get: operations['get_risk_api_v1_trades_risk_get']
     put?: never
     post?: never
     delete?: never
@@ -3272,7 +3499,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/data-quality': {
+  '/api/v1/trades/data-quality': {
     parameters: {
       query?: never
       header?: never
@@ -3288,7 +3515,7 @@ export interface paths {
      *     list[DataQualityRow]
      *         One entry per symbol.
      */
-    get: operations['get_data_quality_api_data_quality_get']
+    get: operations['get_data_quality_api_v1_trades_data_quality_get']
     put?: never
     post?: never
     delete?: never
@@ -3297,7 +3524,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/ledger/export': {
+  '/api/v1/trades/ledger/export': {
     parameters: {
       query?: never
       header?: never
@@ -3313,7 +3540,7 @@ export interface paths {
      *     list[LedgerEvent]
      *         Every ledger row.
      */
-    get: operations['get_ledger_export_api_ledger_export_get']
+    get: operations['get_ledger_export_api_v1_trades_ledger_export_get']
     put?: never
     post?: never
     delete?: never
@@ -3322,7 +3549,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/target-allocation': {
+  '/api/v1/trades/settings/target-allocation': {
     parameters: {
       query?: never
       header?: never
@@ -3338,29 +3565,38 @@ export interface paths {
      *     dict[str, Rate]
      *         Symbol -> target percentage.
      */
-    get: operations['get_target_allocation_api_settings_target_allocation_get']
-    /**
-     * Put Target Allocation
-     * @description Persist a new target allocation, set from the frontend.
-     *
-     *     Merges into the existing settings — a settings row is one record, so
-     *     writing this field naively from a fresh `DashboardSettings()` would
-     *     silently wipe out the HYSA/benchmark settings saved separately.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Rate]
-     *         The persisted target allocation.
-     */
-    put: operations['put_target_allocation_api_settings_target_allocation_put']
+    get: operations['get_target_allocation_api_v1_trades_settings_target_allocation_get']
+    put?: never
     post?: never
     delete?: never
     options?: never
     head?: never
-    patch?: never
+    /**
+     * Patch Target Allocation
+     * @description Apply an RFC 7386 merge patch to the target allocation, one symbol at a time.
+     *
+     *     The resource is a `symbol -> target percentage` map, which is exactly
+     *     the shape merge-patch is defined over, so the body says only what
+     *     changed: a symbol with a number sets or replaces that symbol's target,
+     *     a symbol with `null` drops it from the allocation, and a symbol the
+     *     body never mentions is left alone. A caller editing one target no
+     *     longer has to resend every other one and risk clobbering an edit made
+     *     elsewhere in between.
+     *
+     *     Merges into the existing settings for a second, unrelated reason — a
+     *     settings row is one record, so writing this field naively from a fresh
+     *     `DashboardSettings()` would silently wipe out the HYSA/benchmark
+     *     settings saved separately.
+     *
+     *     Returns
+     *     -------
+     *     dict[str, Rate]
+     *         The whole resulting allocation, not just the patched entries.
+     */
+    patch: operations['patch_target_allocation_api_v1_trades_settings_target_allocation_patch']
     trace?: never
   }
-  '/api/settings/hysa': {
+  '/api/v1/trades/settings/hysa': {
     parameters: {
       query?: never
       header?: never
@@ -3376,7 +3612,7 @@ export interface paths {
      *     HysaSettings
      *         `bank_id`, `fixed_rate_pct` — both None if never set.
      */
-    get: operations['get_hysa_settings_api_settings_hysa_get']
+    get: operations['get_hysa_settings_api_v1_trades_settings_hysa_get']
     /**
      * Put Hysa Settings
      * @description Persist a HYSA bank selection and/or fixed-rate override (merges into existing settings).
@@ -3386,7 +3622,7 @@ export interface paths {
      *     HysaSettings
      *         `bank_id`, `fixed_rate_pct` as persisted.
      */
-    put: operations['put_hysa_settings_api_settings_hysa_put']
+    put: operations['put_hysa_settings_api_v1_trades_settings_hysa_put']
     post?: never
     delete?: never
     options?: never
@@ -3394,7 +3630,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/benchmark': {
+  '/api/v1/trades/settings/benchmark': {
     parameters: {
       query?: never
       header?: never
@@ -3412,7 +3648,7 @@ export interface paths {
      *         frontend needs the latter to display a concrete symbol even when
      *         no override is set.
      */
-    get: operations['get_benchmark_setting_api_settings_benchmark_get']
+    get: operations['get_benchmark_setting_api_v1_trades_settings_benchmark_get']
     /**
      * Put Benchmark Setting
      * @description Persist a benchmark symbol override (merges into existing settings).
@@ -3422,7 +3658,7 @@ export interface paths {
      *     BenchmarkSetting
      *         `symbol_override` as persisted, plus `default_symbol`.
      */
-    put: operations['put_benchmark_setting_api_settings_benchmark_put']
+    put: operations['put_benchmark_setting_api_v1_trades_settings_benchmark_put']
     post?: never
     delete?: never
     options?: never
@@ -3430,7 +3666,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/timezone': {
+  '/api/v1/trades/settings/timezone': {
     parameters: {
       query?: never
       header?: never
@@ -3448,7 +3684,7 @@ export interface paths {
      *         user yet), `resolved_local_zone` (what timestamps actually display
      *         in — `config.timezone.local_zone` until it has).
      */
-    get: operations['get_timezone_setting_api_settings_timezone_get']
+    get: operations['get_timezone_setting_api_v1_trades_settings_timezone_get']
     /**
      * Put Timezone Setting
      * @description Persist the browser-reported display timezone (merges into existing settings).
@@ -3460,10 +3696,10 @@ export interface paths {
      *     Returns
      *     -------
      *     TimezoneSetting
-     *         Same shape as `GET /api/settings/timezone`, reflecting what was
+     *         Same shape as `GET /api/v1/trades/settings/timezone`, reflecting what was
      *         just persisted.
      */
-    put: operations['put_timezone_setting_api_settings_timezone_put']
+    put: operations['put_timezone_setting_api_v1_trades_settings_timezone_put']
     post?: never
     delete?: never
     options?: never
@@ -3471,7 +3707,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/settings/tax': {
+  '/api/v1/trades/settings/tax': {
     parameters: {
       query?: never
       header?: never
@@ -3493,7 +3729,7 @@ export interface paths {
      *         alongside their `resolved_*_pct` counterparts (what the tax report
      *         actually uses — the code default when no override was made).
      */
-    get: operations['get_tax_settings_api_settings_tax_get']
+    get: operations['get_tax_settings_api_v1_trades_settings_tax_get']
     /**
      * Put Tax Settings
      * @description Persist tax-reporting settings (merges into existing settings).
@@ -3501,9 +3737,9 @@ export interface paths {
      *     Returns
      *     -------
      *     TaxSettings
-     *         Same shape as `GET /api/settings/tax`, reflecting what was just persisted.
+     *         Same shape as `GET /api/v1/trades/settings/tax`, reflecting what was just persisted.
      */
-    put: operations['put_tax_settings_api_settings_tax_put']
+    put: operations['put_tax_settings_api_v1_trades_settings_tax_put']
     post?: never
     delete?: never
     options?: never
@@ -3511,33 +3747,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/broker-connections': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Broker Connections
-     * @description List this user's broker connections — the only things an account may pull its value from.
-     *
-     *     Returns
-     *     -------
-     *     list[BrokerConnection]
-     *         Ordered by broker then id, so the frontend's list is stable across
-     *         requests. Empty until a sync has actually created a connection.
-     */
-    get: operations['get_broker_connections_api_broker_connections_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/settings/ibkr': {
+  '/api/v1/trades/settings/ibkr': {
     parameters: {
       query?: never
       header?: never
@@ -3555,7 +3765,7 @@ export interface paths {
      *         this user in Postgres — there is no `.env` fallback), `token_set`
      *         and `query_id_set` (whether each field individually is saved).
      */
-    get: operations['get_ibkr_settings_api_settings_ibkr_get']
+    get: operations['get_ibkr_settings_api_v1_trades_settings_ibkr_get']
     /**
      * Put Ibkr Settings
      * @description Persist an IBKR credential update (merges into whatever's already saved).
@@ -3563,26 +3773,31 @@ export interface paths {
      *     Returns
      *     -------
      *     IbkrSettings
-     *         Same shape as `GET /api/settings/ibkr`, reflecting what was just persisted.
+     *         Same shape as `GET /api/v1/trades/settings/ibkr`, reflecting what was just persisted.
      */
-    put: operations['put_ibkr_settings_api_settings_ibkr_put']
+    put: operations['put_ibkr_settings_api_v1_trades_settings_ibkr_put']
     post?: never
     /**
      * Delete Ibkr Settings
      * @description Clear this user's saved IBKR credentials entirely.
      *
+     *     Answers 200 with a body rather than 204 for the same reason
+     *     `DELETE /api/v1/accounting/settings/llm` does: this clears fields on a
+     *     settings row that still exists afterwards, so there is a representation
+     *     to return.
+     *
      *     Returns
      *     -------
      *     IbkrSettings
-     *         Same shape as `GET /api/settings/ibkr`.
+     *         Same shape as `GET /api/v1/trades/settings/ibkr`.
      */
-    delete: operations['delete_ibkr_settings_api_settings_ibkr_delete']
+    delete: operations['delete_ibkr_settings_api_v1_trades_settings_ibkr_delete']
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/settings/ibkr/verify': {
+  '/api/v1/trades/settings/ibkr/verify': {
     parameters: {
       query?: never
       header?: never
@@ -3605,14 +3820,40 @@ export interface paths {
      *         `ok` (whether IBKR accepted the token/query id) and `error`
      *         (IBKR's own message, or a generic one, only when `ok` is false).
      */
-    post: operations['verify_ibkr_settings_api_settings_ibkr_verify_post']
+    post: operations['verify_ibkr_settings_api_v1_trades_settings_ibkr_verify_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/hysa-rates': {
+  '/api/v1/trades/broker-connections': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Broker Connections
+     * @description List this user's broker connections — the only things an account may pull its value from.
+     *
+     *     Returns
+     *     -------
+     *     list[BrokerConnection]
+     *         Ordered by broker then id, so the frontend's list is stable across
+     *         requests. Empty until a sync has actually created a connection.
+     */
+    get: operations['get_broker_connections_api_v1_trades_broker_connections_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/trades/hysa-rates': {
     parameters: {
       query?: never
       header?: never
@@ -3628,7 +3869,7 @@ export interface paths {
      *     HysaRates
      *         `banks` (id/name pairs), `history` (every rate-change row), `default_bank_id`.
      */
-    get: operations['get_hysa_rates_api_hysa_rates_get']
+    get: operations['get_hysa_rates_api_v1_trades_hysa_rates_get']
     put?: never
     post?: never
     delete?: never
@@ -3637,7 +3878,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/symbols/search': {
+  '/api/v1/trades/symbols/search': {
     parameters: {
       query?: never
       header?: never
@@ -3656,7 +3897,7 @@ export interface paths {
      *     list[SymbolSearchResult]
      *         One entry per match: `symbol`, `name`, `exchange`.
      */
-    get: operations['get_symbol_search_api_symbols_search_get']
+    get: operations['get_symbol_search_api_v1_trades_symbols_search_get']
     put?: never
     post?: never
     delete?: never
@@ -3665,7 +3906,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/symbols/{symbol}/ensure-priced': {
+  '/api/v1/trades/symbols/{symbol}/ensure-priced': {
     parameters: {
       query?: never
       header?: never
@@ -3693,14 +3934,14 @@ export interface paths {
      *     HTTPException
      *         404 if no ledger is cached yet; 422 if Yahoo Finance has no data for `symbol`.
      */
-    post: operations['ensure_symbol_priced_api_symbols__symbol__ensure_priced_post']
+    post: operations['ensure_symbol_priced_api_v1_trades_symbols__symbol__ensure_priced_post']
     delete?: never
     options?: never
     head?: never
     patch?: never
     trace?: never
   }
-  '/api/statements/export': {
+  '/api/v1/trades/statements/export': {
     parameters: {
       query?: never
       header?: never
@@ -3717,7 +3958,7 @@ export interface paths {
      *         A `.zip` attachment, one entry per archived statement, empty if
      *         nothing has ever been synced.
      */
-    get: operations['get_statements_export_api_statements_export_get']
+    get: operations['get_statements_export_api_v1_trades_statements_export_get']
     put?: never
     post?: never
     delete?: never
@@ -3726,7 +3967,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/sync/progress': {
+  '/api/v1/trades/sync/progress': {
     parameters: {
       query?: never
       header?: never
@@ -3738,7 +3979,7 @@ export interface paths {
      * @description Return the current (or most recently finished) sync's progress — this user's own, never anyone else's.
      *
      *     Polled by the frontend's progress bar while a sync is running.
-     *     `POST /api/sync` runs in FastAPI's thread pool (it's a plain `def`,
+     *     `POST /api/v1/trades/sync` runs in FastAPI's thread pool (it's a plain `def`,
      *     not `async def`), so this GET is served concurrently on its own
      *     thread rather than queued behind the sync request.
      *
@@ -3748,7 +3989,7 @@ export interface paths {
      *         `step`, `percent`, `done`, `error` — `"Idle"`/`0.0`/`True`/`None`
      *         if this user has never triggered a sync.
      */
-    get: operations['get_sync_progress_api_sync_progress_get']
+    get: operations['get_sync_progress_api_v1_trades_sync_progress_get']
     put?: never
     post?: never
     delete?: never
@@ -3757,7 +3998,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/sync': {
+  '/api/v1/trades/sync': {
     parameters: {
       query?: never
       header?: never
@@ -3773,7 +4014,7 @@ export interface paths {
      *     Price, benchmark, CPI, and HYSA-rate cache refreshes no longer happen
      *     here — they run on their own cron schedule instead. Reports progress to
      *     this user's own entry in `app.state.sync_progress` throughout, readable
-     *     via `GET /api/sync/progress` — the IBKR pull can take a while, so a
+     *     via `GET /api/v1/trades/sync/progress` — the IBKR pull can take a while, so a
      *     bare spinner isn't good enough feedback.
      *
      *     Concurrent requests for the *same* user are serialized by that user's
@@ -3788,7 +4029,7 @@ export interface paths {
      *         `synced_at`, `new_event_count`, `total_event_count`, and `steps`
      *         — the one IBKR leg's own `label`/`ok`/`error`.
      */
-    post: operations['sync_api_sync_post']
+    post: operations['sync_api_v1_trades_sync_post']
     delete?: never
     options?: never
     head?: never
@@ -3838,32 +4079,6 @@ export interface components {
     /**
      * Account
      * @description One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
-     *
-     *     `parent_account_id` is only set for a `vault`, pointing at the savings
-     *     account it's a named sub-balance of. `broker_connection_id` is only set
-     *     for the `external_investment` kind, naming the *broker connection*
-     *     whose portfolio this account mirrors, since its balance is never
-     *     derived from its own postings.
-     *
-     *     That field replaces `external_ref`, a free-text column whose only ever
-     *     value was the literal `"trades"` and which `dashboard.net_worth`
-     *     string-matched on. It is the one id on this model that is a raw
-     *     `broker_connections.id` rather than a natural key, deliberately: it
-     *     points across the seam into the other ledger's schema, where this
-     *     package has no business resolving natural keys, and the database
-     *     enforces it as a real foreign key (see `db.core.Account`) so an account
-     *     can never name a connection that isn't there.
-     *
-     *     `meta` holds facts about the account itself rather than any one
-     *     posting — currently just `apy_pct`, the interest rate last seen on a
-     *     statement, carried here because it describes the account's terms, not
-     *     a single transaction. `closed` marks a real-world account that no
-     *     longer exists at its institution — its transaction history stays
-     *     exactly as imported (never deleted), it just stops being offered as a
-     *     destination for new imports or transfers. `last_four` is the real
-     *     trailing digits the institution shows for this account, when it shows
-     *     any at all — `None` for vaults, cash, loans, and virtual counterparties,
-     *     which have none.
      */
     Account: {
       /** Account Id */
@@ -3910,7 +4125,7 @@ export interface components {
     }
     /**
      * AccountCloseRequest
-     * @description Request body for `POST /api/accounting/accounts/{account_id}/close`.
+     * @description Request body for `POST /api/v1/accounting/accounts/{account_id}/close`.
      */
     AccountCloseRequest: {
       /** Transfers */
@@ -3918,7 +4133,7 @@ export interface components {
     }
     /**
      * AccountCloseResponse
-     * @description Response body for `POST /api/accounting/accounts/{account_id}/close`.
+     * @description Response body for `POST /api/v1/accounting/accounts/{account_id}/close`.
      */
     AccountCloseResponse: {
       account: components['schemas']['Account']
@@ -3927,7 +4142,7 @@ export interface components {
     }
     /**
      * AccountCreate
-     * @description Request body for `POST /api/accounting/accounts` — everything but the server-generated `account_id`.
+     * @description Request body for `POST /api/v1/accounting/accounts` — everything but the server-generated `account_id`.
      */
     AccountCreate: {
       /** Name */
@@ -3966,16 +4181,8 @@ export interface components {
       }
     }
     /**
-     * AccountIdResponse
-     * @description Response body naming one account, for endpoints whose only real effect is removing something.
-     */
-    AccountIdResponse: {
-      /** Account Id */
-      account_id: string
-    }
-    /**
      * AccountUpdate
-     * @description Request body for `PUT /api/accounting/accounts/{account_id}`.
+     * @description Request body for `PUT /api/v1/accounting/accounts/{account_id}`.
      *
      *     `institution`, `kind`, and `currency` may only differ from the
      *     account's current values while it has no postings yet — enforced in
@@ -4028,7 +4235,7 @@ export interface components {
      * @description Every persisted accounting entity: accounts, categories, tags, rules, other assets.
      *
      *     One field per repository `load_*`, recomposed at the router (see
-     *     `api.routers.store.get_store`) — this response model is the only
+     *     `api.routers.bootstrap.get_store`) — this response model is the only
      *     place the whole set is named together; nothing server-side passes it
      *     around. `transfer_rules` is `repositories.interpretation`'s
      *     `load_transfer_rules`, under the name every other endpoint and the
@@ -4132,6 +4339,25 @@ export interface components {
       withholding_tax_usd: number
     }
     /**
+     * AutomationOrder
+     * @description Request body for `PUT /api/v1/accounting/goal-automations/{contributions,withdrawals}/order`.
+     *
+     *     Every automation id currently persisted for that direction, in the
+     *     order they should run in — and nothing else. The narrowness is the
+     *     whole point: the whole-list `PUT` this replaced took full automation
+     *     rows, so a drag-to-reorder could smuggle a field edit, an insertion or
+     *     a deletion past the per-automation routes that exist for those. Ids
+     *     alone, checked against the set already stored, can express a
+     *     reordering and nothing more.
+     *
+     *     No `priority` field: the server reads it off list position, so a
+     *     submitted order and the stored priorities cannot disagree.
+     */
+    AutomationOrder: {
+      /** Automation Ids */
+      automation_ids: string[]
+    }
+    /**
      * BenchmarkSetting
      * @description The persisted benchmark symbol override, plus the default it falls back to.
      */
@@ -4143,14 +4369,14 @@ export interface components {
     }
     /**
      * BenchmarkSettingUpdate
-     * @description Request body for `PUT /api/settings/benchmark`.
+     * @description Request body for `PUT /api/v1/trades/settings/benchmark`.
      */
     BenchmarkSettingUpdate: {
       /** Symbol Override */
       symbol_override?: string | null
     }
-    /** Body_post_canonical_import_api_accounting_import_canonical_post */
-    Body_post_canonical_import_api_accounting_import_canonical_post: {
+    /** Body_post_canonical_import_api_v1_accounting_import_canonical_post */
+    Body_post_canonical_import_api_v1_accounting_import_canonical_post: {
       /** File */
       file: string
       /** Account Id */
@@ -4165,8 +4391,8 @@ export interface components {
       /** Category Overrides */
       category_overrides?: string | null
     }
-    /** Body_post_canonical_import_preview_api_accounting_import_canonical_preview_post */
-    Body_post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
+    /** Body_post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post */
+    Body_post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post: {
       /** File */
       file: string
       /** Account Id */
@@ -4184,8 +4410,8 @@ export interface components {
        */
       date_order: string
     }
-    /** Body_post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post */
-    Body_post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
+    /** Body_post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post */
+    Body_post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post: {
       /** File */
       file: string
       /** Confirmed Row Numbers */
@@ -4207,8 +4433,8 @@ export interface components {
       /** Category Overrides */
       category_overrides?: string | null
     }
-    /** Body_post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post */
-    Body_post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
+    /** Body_post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post */
+    Body_post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post: {
       /** File */
       file: string
       /** Account Ids */
@@ -4226,15 +4452,15 @@ export interface components {
        */
       window_days: number
     }
-    /** Body_post_import_api_accounting_import_post */
-    Body_post_import_api_accounting_import_post: {
+    /** Body_post_import_api_v1_accounting_import_post */
+    Body_post_import_api_v1_accounting_import_post: {
       /** File */
       file: string
       /** Account Id */
       account_id: string
     }
-    /** Body_post_paystub_reconciliation_api_accounting_import_paystub_post */
-    Body_post_paystub_reconciliation_api_accounting_import_paystub_post: {
+    /** Body_post_paystub_reconciliation_api_v1_accounting_import_paystub_post */
+    Body_post_paystub_reconciliation_api_v1_accounting_import_paystub_post: {
       /** File */
       file: string
     }
@@ -4263,29 +4489,6 @@ export interface components {
     /**
      * Budget
      * @description One spending target for one top-level expense category, or one of its subcategories.
-     *
-     *     `month` is what scopes the target: a `"YYYY-MM"` string targets that
-     *     one month, and `None` is the *general* target — the standing amount
-     *     that applies to every month alike, which the Budget page's "General"
-     *     mode edits. Both live in the same list (and the same `budgets` table):
-     *     a month target and a general target for the same category coexist as
-     *     two rows, and neither falls back to or overwrites the other, so
-     *     switching the page's mode never silently rewrites the other one.
-     *
-     *     `category_id` is always the top-level category, matching
-     *     `Posting.category_id`. `subcategory_id`, when set, scopes the target to
-     *     that one subcategory's actual spend alone rather than the whole
-     *     category's — matching `Posting.subcategory_id` — so a category and one
-     *     of its subcategories can each carry their own independent target for
-     *     the same month.
-     *
-     *     Actual spend against a budget is never stored here or on the postings
-     *     it covers — a posting's own `category_id`/`subcategory_id` already
-     *     determines which budget it counts against for whichever month it
-     *     landed in, so "actual" is always computed fresh from
-     *     `dashboard.income_statement.category_totals`, the same on-demand way
-     *     an account's balance comes from summing its postings rather than a
-     *     cached figure that could drift out of sync.
      */
     Budget: {
       /** Budget Id */
@@ -4333,14 +4536,6 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
-     * BudgetIdResponse
-     * @description Response body naming one budget, for endpoints whose only real effect is removing something.
-     */
-    BudgetIdResponse: {
-      /** Budget Id */
-      budget_id: string
-    }
-    /**
      * BudgetToDeletePreview
      * @description One `Budget` entry a category merge would discard rather than keep.
      *
@@ -4363,7 +4558,7 @@ export interface components {
     }
     /**
      * BudgetUpsert
-     * @description Request body for `POST /api/accounting/budgets` — sets one target for one category.
+     * @description Request body for `POST /api/v1/accounting/budgets` — sets one target for one category.
      *
      *     `month` is what picks which kind of target this is: `"YYYY-MM"` sets
      *     that one month's, and omitting it (`null`) sets the general,
@@ -4533,13 +4728,6 @@ export interface components {
     /**
      * Category
      * @description One node in the two-level category tree: a top-level category, or a subcategory of one.
-     *
-     *     `parent_category_id` is `None` for a top-level category and points at
-     *     one for a subcategory — never more than one level deep. A subcategory
-     *     is expected (not enforced here) to share its parent's `classification`
-     *     but have its own distinct `color`, never repeated by a sibling
-     *     subcategory or any other category — see `store.next_available_color`,
-     *     the single place a color is ever assigned.
      */
     Category: {
       /** Category Id */
@@ -4598,17 +4786,6 @@ export interface components {
     /**
      * CategoryPattern
      * @description A user-maintained description-match pattern that *suggests* a category — never applies one silently.
-     *
-     *     Deliberately distinct from `TransferRule`: a `TransferRule` resolves a
-     *     posting's counterparty/category automatically as part of every ledger
-     *     read, with no confirmation step. A `CategoryPattern` only ever produces a
-     *     suggestion the user must explicitly accept or reject (see
-     *     `ledger.pending`, `pending_source="pattern"` on `ManualOverride`) —
-     *     the same confirm-before-it-sticks flow an AI suggestion goes through,
-     *     just keyed off an explicit substring match instead of an LLM call.
-     *     `priority` breaks ties the same way `TransferRule.priority` does: the lowest
-     *     number wins. `active` lets a pattern be switched off without deleting
-     *     it — an inactive pattern is skipped by matching entirely.
      */
     CategoryPattern: {
       /** Pattern Id */
@@ -4637,7 +4814,7 @@ export interface components {
     }
     /**
      * CategoryPatternCreate
-     * @description Request body for `POST /api/accounting/category-patterns` — creates one new pattern.
+     * @description Request body for `POST /api/v1/accounting/category-patterns` — creates one new pattern.
      *
      *     `pattern_id` is derived server-side the same way `TransferRuleCreate`
      *     derives `rule_id` — from `(description_contains, category_id,
@@ -4657,16 +4834,8 @@ export interface components {
       priority: number
     }
     /**
-     * CategoryPatternIdResponse
-     * @description Response body naming one category pattern, for endpoints whose only real effect is removing something.
-     */
-    CategoryPatternIdResponse: {
-      /** Pattern Id */
-      pattern_id: string
-    }
-    /**
      * CategoryPatternUpdate
-     * @description Request body for `PATCH /api/accounting/category-patterns/{pattern_id}` — updates one in place.
+     * @description Request body for `PATCH /api/v1/accounting/category-patterns/{pattern_id}` — updates one in place.
      *
      *     Unlike `CategoryPatternCreate`, this never changes which pattern is being edited — the pattern
      *     stays identified by the `pattern_id` path param. `expected_version` is the pattern's own `version`
@@ -4814,7 +4983,7 @@ export interface components {
     }
     /**
      * Currency
-     * @description One supported currency's display metadata — never a value on its own, only ever attached to one.
+     * @description One supported currency's display metadata.
      */
     Currency: {
       /**
@@ -4883,7 +5052,7 @@ export interface components {
     }
     /**
      * DetectRequest
-     * @description Request body for `POST /api/accounting/detect`.
+     * @description Request body for `POST /api/v1/accounting/detect`.
      */
     DetectRequest: {
       /** Header */
@@ -4920,11 +5089,13 @@ export interface components {
     }
     /**
      * DismissSuggestionRequest
-     * @description Request body for `POST /api/accounting/dismissed-suggestions`.
+     * @description Request body for `PUT /api/v1/accounting/dismissed-suggestions/{suggestion_id}`.
+     *
+     *     No `suggestion_id`: the path carries it. Keeping a copy in the body
+     *     would give one request two places to name the same thing, and the
+     *     handler would have to decide which wins when they disagree.
      */
     DismissSuggestionRequest: {
-      /** Suggestion Id */
-      suggestion_id: string
       /**
        * Kind
        * @enum {string}
@@ -4936,15 +5107,6 @@ export interface components {
     /**
      * DismissedSuggestion
      * @description A user's decision that an auto-detected suggestion isn't relevant, archived rather than discarded.
-     *
-     *     `suggestion_id` is a stable key derived from the suggestion's own
-     *     content (see `api._transfer_suggestion_id`/`_duplicate_suggestion_id`),
-     *     not a random ID — the same real-world pair or group always dismisses
-     *     and restores under the same key, regardless of how many times the
-     *     detector recomputes it. Dismissing never edits a transfer rule, a
-     *     posting, or a merge; it only removes one entry from the list of things
-     *     still being proposed, so restoring it (deleting this record) is always
-     *     lossless.
      */
     DismissedSuggestion: {
       /** Suggestion Id */
@@ -5031,10 +5193,6 @@ export interface components {
     /**
      * EarningsDeposit
      * @description One destination a paystub's pay actually lands in — a wage deposit, or a separate reimbursement.
-     *
-     *     `account_last4` is the bank account digits the paystub itself prints
-     *     next to a deposit line, when it prints one at all — used to match
-     *     against a real `Account.last_four` during reconciliation.
      */
     EarningsDeposit: {
       /** Label */
@@ -5047,11 +5205,6 @@ export interface components {
     /**
      * EarningsLineItem
      * @description One named line under a paystub's reimbursements section, for one pay period.
-     *
-     *     Unlike `EarningsDeposit`, this isn't tied to a bank account — it's a
-     *     paystub's own breakdown of *why* money was paid out (a specific
-     *     reimbursement), used to propose splitting a matched deposit into
-     *     named legs (see `dashboard.paystub.propose_posting_splits`).
      */
     EarningsLineItem: {
       /** Label */
@@ -5062,14 +5215,6 @@ export interface components {
     /**
      * EarningsStatement
      * @description A parsed paystub: gross pay, taxes withheld, and where the net pay actually landed.
-     *
-     *     Deliberately doesn't try to capture every line item a paystub has —
-     *     only what `dashboard.paystub.reconcile_earnings_statement` and
-     *     `propose_posting_splits` need: the totals, the per-destination-account
-     *     split (one paycheck can land in more than one account), and the
-     *     reimbursement breakdown, since a paycheck-shaped deposit is often wage
-     *     plus one or more separate reimbursements arriving together — the case
-     *     that motivates splitting one bank posting into several (`PostingSplit`).
      */
     EarningsStatement: {
       /**
@@ -5105,13 +5250,7 @@ export interface components {
     }
     /**
      * Goal
-     * @description A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
-     *
-     *     See `dashboard.goals.all_goal_balances`: the balance at any point in time
-     *     is always the running sum of contributions up to that date, computed
-     *     fresh, the same way an account's balance is never a cached figure
-     *     (see `Budget`'s own docstring for the same reasoning applied to
-     *     spending).
+     * @description A savings target — its balance is never here, only derived from its contributions.
      */
     Goal: {
       /** Goal Id */
@@ -5148,33 +5287,11 @@ export interface components {
      * GoalAutomation
      * @description One ordered rule for automatically moving money into — or out of — a goal.
      *
-     *     `direction` is the discriminator, and it decides which of the fields
-     *     below are set (enforced here *and* by the `goal_automations` table's
-     *     own `schedule_matches_direction` CHECK, so neither layer can drift):
-     *
-     *     - `direction="contribution"` carries the whole schedule —
-     *       `start_date` + `frequency`, optionally bounded by `end_date`; see
-     *       `ledger.goal_automations.next_recurring_occurrence` for how a due
-     *       date is derived from those. For `frequency="monthly"`, the day of
-     *       month is `start_date`'s own day, capped at 28 so every month
-     *       actually has that day rather than silently skipping February on a
-     *       day-30 schedule. `mode`/`value`/`currency` say how much it wants.
-     *     - `direction="withdrawal"` carries none of them. The withdrawal
-     *       automation (`ledger.goal_automations.run_withdrawal_automation`) is
-     *       event-driven — triggered whenever unallocated money dips below zero
-     *       — not scheduled, so a withdrawal row is nothing but its goal and
-     *       its place in the drawdown order.
-     *
-     *     `priority` is the manually-set execution order (lowest first) the
-     *     Goals page's drag-and-drop reorders, and means the corresponding
-     *     thing in each direction: which contribution gets funded first (a
-     *     `fixed_amount` row funded first can leave less, or nothing, for a
-     *     lower-priority one when unallocated money runs out — see
-     *     `ledger.goal_automations.run_recurring_additions`), and which goal
-     *     gets drawn down first. `mode="remainder"` ("whatever's left after all
-     *     the others") is only ever valid on the single lowest-priority
-     *     contribution — enforced by the API that persists the list, not by
-     *     this model.
+     *     `direction` decides which of the schedule fields are set. The domain
+     *     model's `model_validator` is deliberately not mirrored: nothing is ever
+     *     parsed *into* this shape from a client — the request bodies are
+     *     `api_models.GoalAutomationCreate`/`GoalAutomationUpdate`, and each
+     *     carries its own rule.
      */
     GoalAutomation: {
       /** Automation Id */
@@ -5206,19 +5323,17 @@ export interface components {
     }
     /**
      * GoalAutomationCreate
-     * @description Request body for `POST /api/accounting/goal-automations/contributions` — one new scheduled contribution.
+     * @description Request body for `POST /api/v1/accounting/goal-automations/contributions` — one new scheduled contribution.
      *
-     *     Only the `contribution` direction is creatable one at a time: a
-     *     withdrawal automation has no fields of its own beyond its goal and its
-     *     place in the drawdown order, so the Goals page only ever submits that
-     *     ordering wholesale (`PUT /goal-automations/withdrawals`).
+     *     Contribution-shaped: a withdrawal automation carries none of these
+     *     fields, so it has its own, much smaller `WithdrawalAutomationCreate`.
      *
      *     `automation_id` is server-minted, same reasoning as `GoalCreate`.
      *     `priority` is never taken from the client either — a newly created
      *     rule always goes last (one past the current lowest-priority row),
      *     matching the Goals page's own "append at the end of the ordered list"
-     *     behavior; drag-and-drop reordering still goes through the existing
-     *     `PUT /goal-automations/contributions`, unaffected by this.
+     *     behavior; drag-and-drop reordering goes through
+     *     `PUT /goal-automations/contributions/order`, unaffected by this.
      */
     GoalAutomationCreate: {
       /** Goal Id */
@@ -5253,23 +5368,16 @@ export interface components {
       currency: 'USD' | 'EUR'
     }
     /**
-     * GoalAutomationIdResponse
-     * @description Response body naming one goal automation, for endpoints whose only real effect is removing something.
-     */
-    GoalAutomationIdResponse: {
-      /** Automation Id */
-      automation_id: string
-    }
-    /**
      * GoalAutomationUpdate
-     * @description Request body for `PATCH /api/accounting/goal-automations/{automation_id}` — edits one rule in place.
+     * @description Request body for `PATCH /api/v1/accounting/goal-automations/{automation_id}` — edits one rule in place.
      *
      *     A single-rule field edit (amount, dates, frequency, mode, goal),
      *     scoped to its own `automation_id` so it never blanket-reinserts every
      *     rule. Carries `priority` unchanged (the row keeps its place);
-     *     re-ordering the whole list is still
-     *     `PUT /goal-automations/contributions`. No `expected_version`: like a
-     *     budget cell, an edit of one rule is last-write-wins on that rule (see
+     *     re-ordering the list is `PUT /goal-automations/contributions/order`,
+     *     which is the only route that assigns priorities. No
+     *     `expected_version`: like a budget cell, an edit of one rule is
+     *     last-write-wins on that rule (see
      *     `docs/app-stack/optimistic-concurrency-versioning.md`).
      *
      *     Contribution-shaped for the same reason `GoalAutomationCreate` is —
@@ -5311,26 +5419,7 @@ export interface components {
     }
     /**
      * GoalContribution
-     * @description One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
-     *
-     *     `date` is the real day the allocation happened — never a month
-     *     bucket; "this month's contributions" is always a display-time filter
-     *     over these rows, never a separately-stored monthly figure (see
-     *     `dashboard.goals`). A positive `amount` is money going into the goal,
-     *     negative is a withdrawal (see `ledger.goal_automations` for the
-     *     withdrawal-automation trigger). `source_posting_id`, when set, links
-     *     to the real bank transfer this corresponds to, purely for
-     *     traceability — never read by any balance or unallocated computation,
-     *     per the user's own spec: "Never used in math." `origin` distinguishes
-     *     a manually-entered contribution from one an automation wrote; `edited`
-     *     flags an automation-written contribution the user has since hand-edited,
-     *     so the ledger table can show it's no longer purely automatic.
-     *
-     *     `account_id` names the account the allocated money actually sits in
-     *     ("envelope over balance"). It is plumbing only for now: nothing in
-     *     `dashboard.goals` reads it, so no goal balance, net-worth figure, or
-     *     unallocated-money computation changes because it is set — a later
-     *     change makes the unallocated arithmetic account-aware.
+     * @description One dated, signed allocation into (or withdrawal from) a goal.
      */
     GoalContribution: {
       /** Contribution Id */
@@ -5373,7 +5462,7 @@ export interface components {
     }
     /**
      * GoalContributionCreate
-     * @description Request body for `POST /api/accounting/goal-contributions` — records one new dated allocation.
+     * @description Request body for `POST /api/v1/accounting/goal-contributions` — records one new dated allocation.
      *
      *     `contribution_id` is never taken from the client — unlike a budget's
      *     `(month, category_id)`, a contribution is an arbitrary event with no
@@ -5421,16 +5510,8 @@ export interface components {
       edited: boolean
     }
     /**
-     * GoalContributionIdResponse
-     * @description Response body naming one goal contribution, for endpoints whose only real effect is removing something.
-     */
-    GoalContributionIdResponse: {
-      /** Contribution Id */
-      contribution_id: string
-    }
-    /**
      * GoalContributionUpdate
-     * @description Request body for `PUT /api/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
+     * @description Request body for `PUT /api/v1/accounting/goal-contributions/{contribution_id}` — replaces one contribution.
      *
      *     Every field is required, mirroring `PUT /accounts/{account_id}` — the
      *     caller already merges its patch into the existing row client-side
@@ -5475,7 +5556,7 @@ export interface components {
     }
     /**
      * GoalCreate
-     * @description Request body for `POST /api/accounting/goals` — creates one new goal.
+     * @description Request body for `POST /api/v1/accounting/goals` — creates one new goal.
      *
      *     `goal_id`, `color`, and `created_at` are never taken from the client —
      *     a goal is an arbitrary user record with no natural key two "the same"
@@ -5503,16 +5584,8 @@ export interface components {
       target_date: string
     }
     /**
-     * GoalIdResponse
-     * @description Response body naming one goal, for endpoints whose only real effect is removing something.
-     */
-    GoalIdResponse: {
-      /** Goal Id */
-      goal_id: string
-    }
-    /**
      * GoalUpdate
-     * @description Request body for `PATCH /api/accounting/goals/{goal_id}` — updates one existing goal in place.
+     * @description Request body for `PATCH /api/v1/accounting/goals/{goal_id}` — updates one existing goal in place.
      *
      *     Unlike `GoalCreate`, this never mints a new id or color — the goal
      *     stays identified by the `goal_id` path param, and `color` is an
@@ -5632,7 +5705,7 @@ export interface components {
     }
     /**
      * HysaSettingsUpdate
-     * @description Request body for `PUT /api/settings/hysa`.
+     * @description Request body for `PUT /api/v1/trades/settings/hysa`.
      */
     HysaSettingsUpdate: {
       /** Bank Id */
@@ -5642,11 +5715,11 @@ export interface components {
     }
     /**
      * IbkrCredentialsUpdate
-     * @description Request body for `PUT /api/settings/ibkr`.
+     * @description Request body for `PUT /api/v1/trades/settings/ibkr`.
      *
      *     Either field left `None` leaves that one exactly as it was — a query
      *     id entered with no token doesn't clear an existing token, the same
-     *     partial-merge convention `PUT /api/settings/benchmark`/`/tax` use.
+     *     partial-merge convention `PUT /api/v1/trades/settings/benchmark`/`/tax` use.
      */
     IbkrCredentialsUpdate: {
       /** Token */
@@ -5712,7 +5785,7 @@ export interface components {
     }
     /**
      * LLMSettingsUpdate
-     * @description Request body for `PUT /api/accounting/settings/llm`.
+     * @description Request body for `PUT /api/v1/accounting/settings/llm`.
      *
      *     Either field left `None` leaves that one exactly as it was — entering
      *     a Gemini key doesn't clear an existing Mistral one.
@@ -5725,13 +5798,15 @@ export interface components {
     }
     /**
      * LedgerEvent
-     * @description One immutable row of the transaction ledger.
+     * @description One immutable row of the transaction ledger, as exported.
      *
-     *     Field names double as the ledger's column names. `shares`/`price` are
-     *     `None` for event types with no share count or per-share price
-     *     (everything except `BUY`/`SELL`). `amount` is always the non-negative
-     *     magnitude of the cash effect; direction comes from `event_type` alone,
-     *     never a sign.
+     *     Mirrors `trades.models.LedgerEvent`'s nine wire fields and none of its
+     *     machinery: not `polars_schema`, the Polars projection's column types,
+     *     which is a fact about the analytics frame rather than about the row a
+     *     client reads, and not the two validators, which police what may be
+     *     *written* to the ledger. This model only ever describes rows already
+     *     stored, so re-policing them here could only turn a backup export of an
+     *     already-persisted row into a 500.
      */
     LedgerEvent: {
       /** Event Id */
@@ -5763,15 +5838,21 @@ export interface components {
     }
     /**
      * LedgerExportPage
-     * @description One page of the raw ledger, as exported.
+     * @description One page of the raw ledger, as exported, cut by posting.
      *
-     *     Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
-     *     export applies no overlay, so nothing here needs a transaction's legs
-     *     kept together. See `repositories.ledger.load_ledger_page`.
+     *     `items` is oldest first, exactly as imported. The raw export applies no
+     *     overlay, so nothing here needs a transaction's legs kept together — which
+     *     is the whole reason its window unit differs from `PostingPage`'s. See
+     *     `repositories.ledger.load_ledger_page`.
      */
     LedgerExportPage: {
       /** Items */
       items: components['schemas']['Posting'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'posting'
       /** Total */
       total: number
       /** Limit */
@@ -5824,24 +5905,8 @@ export interface components {
      * ManualOverride
      * @description A user's direct edit to one posting, always winning over whatever a rule would have produced.
      *
-     *     Every field is optional independently — setting only `tag_ids` on a
-     *     posting a rule already categorized correctly doesn't touch its
-     *     category. Keyed by `posting_id` in `store.overrides_path`, applied
-     *     after `ledger.categorization.apply_rules` every time postings are read,
-     *     never baked into the ledger cache itself — so re-importing a statement
-     *     or editing a rule can never silently erase a manual correction.
-     *
-     *     `pending_source`/`pending_selected`/`pending_previous_*` track a
-     *     suggestion an automated categorizer applied but the user hasn't
-     *     confirmed yet (see `ledger.pending.resolve_pending_postings`): the
-     *     category/subcategory fields are already updated optimistically, but
-     *     the posting still renders as "temporary" until the user either accepts
-     *     it (clearing the `pending_*` fields, keeping the new category) or
-     *     rejects it (restoring `pending_previous_category_id`/
-     *     `pending_previous_subcategory_id` and clearing `pending_*`). Snapshotting
-     *     the previous category/subcategory here, rather than trying to recompute
-     *     "what a rule would have produced," is what makes rejection exact even
-     *     when the previous value came from a rule rather than a prior override.
+     *     A mirror a client also sends: `PUT /postings/{posting_id}/override` takes
+     *     the whole shape, field-merged against whatever is already stored.
      */
     ManualOverride: {
       /** Account Id */
@@ -5868,37 +5933,10 @@ export interface components {
      * ManualTransfer
      * @description A user-recorded transfer between two of their own accounts, never derived from an import.
      *
-     *     Every other posting in this ledger traces back to a real bank
-     *     statement row (see `store`'s module docstring) — this is the one
-     *     deliberate exception, for the one case no statement can ever cover:
-     *     moving out whatever's left in an account right before closing it (see
-     *     `api.close_account`). `from_amount`/`to_amount` are each in that side's
-     *     own account's currency and entered independently rather than via a
-     *     stored exchange rate, so a transfer between two different currencies
-     *     is exactly what the user says left one side and arrived on the other,
-     *     not a computed conversion.
-     *
-     *     **This is a shape, not a table.** It used to be both: `manual_transfers`
-     *     was a parallel mini-ledger holding a date, two accounts, two amounts and
-     *     a description — everything `transactions` plus two `postings` already
-     *     express, expressed a second, incompatible way, which is why its rows had
-     *     to be turned into postings by a resolution stage of their own before any
-     *     balance could count them. A manual transfer is now stored as exactly
-     *     what it is: one `Transaction` with `origin = "manual"` and its two
-     *     balancing legs (see `repositories.accounts.insert_manual_transfers`,
-     *     which writes them, and `load_manual_transfers`, which reads this shape
-     *     back out of them). This model survives as the API's vocabulary for the
-     *     pair — "money left here, money arrived there" — and as the one place
-     *     the pair's own invariant lives.
-     *
-     *     That invariant is the positivity of both legs. `Posting.amount` is
-     *     signed by design (a debit is negative, a credit positive) and must stay
-     *     unconstrained, so the constraint cannot live on the storage the legs now
-     *     share with every imported posting; it lives here, on the only thing that
-     *     still expresses "the *from* amount" and "the *to* amount" as distinct,
-     *     directional quantities. `insert_manual_transfers` is what turns them
-     *     into the signed pair (`-from_amount`, `+to_amount`), so a negative
-     *     `from_amount` sneaking through would silently invert the transfer.
+     *     Both amounts stay `gt=0` here, unlike most constraints on a mirror: this
+     *     shape is a *request* body too (`api_models.AccountCloseRequest`), and the
+     *     positivity of the two legs is the invariant that makes them directional
+     *     at all — see `models.ManualTransfer`.
      */
     ManualTransfer: {
       /** Transfer Id */
@@ -6083,14 +6121,11 @@ export interface components {
     }
     /**
      * OpeningBalance
-     * @description The balance a real account already had the day before its postings start, e.g. a vault opened outside this app.
+     * @description The balance a real account already had the day before its postings start.
      *
-     *     A `Posting` can only ever reflect money moving *through* the ledger, so
-     *     a brand-new account with real money already in it (added here rather
-     *     than discovered via import) would otherwise show a $0 balance until its
-     *     first posting. This is added on top of the posting-derived balance in
-     *     `dashboard.net_worth`, contributing nothing for any `as_of` before
-     *     `as_of_date` — the account simply didn't exist to this ledger yet.
+     *     One of the two mirrors a client also *sends*: `PUT
+     *     /accounts/{account_id}/opening-balance` takes the whole entity, since
+     *     every field of it is the caller's to set.
      */
     OpeningBalance: {
       /** Account Id */
@@ -6106,13 +6141,6 @@ export interface components {
     /**
      * OtherAsset
      * @description A manually-entered net-worth line with no transaction history — property, a car, etc.
-     *
-     *     Unlike everything else in this module, this is a preference-like
-     *     record a user types in directly rather than something derived from a
-     *     posting; it lives in the same store for convenience, not because it's a
-     *     fact about what happened. `value` is in `currency`, not necessarily
-     *     the display currency any given page is showing totals in — conversion
-     *     happens where it's aggregated, in `dashboard.net_worth`.
      */
     OtherAsset: {
       /** Asset Id */
@@ -6135,7 +6163,7 @@ export interface components {
     }
     /**
      * OtherAssetCreate
-     * @description Request body for `POST /api/accounting/other-assets` — creates one new manually-entered asset.
+     * @description Request body for `POST /api/v1/accounting/other-assets` — creates one new manually-entered asset.
      *
      *     `asset_id` is server-minted, same reasoning as `GoalCreate` — two
      *     assets can validly share a name (e.g. two rental properties).
@@ -6156,14 +6184,6 @@ export interface components {
        * @default
        */
       note: string
-    }
-    /**
-     * OtherAssetIdResponse
-     * @description Response body naming one manually-entered asset, for endpoints whose only real effect is removing something.
-     */
-    OtherAssetIdResponse: {
-      /** Asset Id */
-      asset_id: string
     }
     /**
      * Overview
@@ -6233,29 +6253,10 @@ export interface components {
     }
     /**
      * Posting
-     * @description One leg of one economic event — one row, like `trades.models.LedgerEvent`.
-     *
-     *     `category_id` is always a top-level category; `subcategory_id`, when
-     *     set, must be a child of that same category — never a leaf stored
-     *     without its parent. Both are `None` on a posting against a virtual
-     *     `income_source`/`expense_payee` counterparty until a rule or a manual
-     *     edit resolves it. `amount` is signed from this posting's own account's
-     *     point of view: positive means money arrived, negative means it left.
-     *     `meta` carries provenance and rare, importer-specific facts (a dedup
-     *     hash, which bank format produced this row) the same way
-     *     `LedgerEvent.meta` does for IBKR data — never a new typed column for
-     *     something only one source ever needs.
+     * @description One leg of one economic event.
      *
      *     `posted_at` and `description` are the *transaction's*, not this leg's —
-     *     they are stored once, on `db.core.Transaction`, and appear on every leg
-     *     here because this model is the row shape of the analytics projection
-     *     (`ledger.frame.LEDGER_FRAME_SCHEMA`), which is flat by design. An
-     *     importer building a pair sets the same value on both legs
-     *     (`importers.common.posting_pair`), and `importers.ingest.load_ledger`
-     *     joins the one stored value back onto each leg on the way out. Nothing
-     *     downstream can therefore observe two legs of one transaction disagreeing
-     *     about either, which is what the storage move made structural rather than
-     *     merely conventional.
+     *     every leg of one transaction carries the same value for both.
      */
     Posting: {
       /** Posting Id */
@@ -6295,24 +6296,8 @@ export interface components {
       }
     }
     /**
-     * PostingIdResponse
-     * @description Response body naming one posting, for endpoints whose only real effect is removing something.
-     */
-    PostingIdResponse: {
-      /** Posting Id */
-      posting_id: string
-    }
-    /**
      * PostingMerge
-     * @description A user's decision that two or more imported transactions are the same real-world event, recorded twice.
-     *
-     *     Every transaction in `duplicate_transaction_ids` is dropped entirely
-     *     (both its legs) from the resolved ledger; `kept_transaction_id`'s own
-     *     transaction is the one that survives, its description overridden by
-     *     `description` when given. Never baked into the ledger cache itself,
-     *     for the same reason `PostingSplit`/`ManualOverride` aren't —
-     *     re-importing a statement or rebuilding from raw archives can never
-     *     silently resurrect a duplicate a user already resolved.
+     * @description A user's decision that two or more imported transactions are the same real-world event.
      */
     PostingMerge: {
       /** Merge Id */
@@ -6325,16 +6310,8 @@ export interface components {
       description?: string | null
     }
     /**
-     * PostingMergeIdResponse
-     * @description Response body naming one posting merge, for endpoints whose only real effect is removing something.
-     */
-    PostingMergeIdResponse: {
-      /** Merge Id */
-      merge_id: string
-    }
-    /**
      * PostingMergeUpsert
-     * @description Request body for `POST /api/accounting/posting-merges` — records one duplicate-resolution decision.
+     * @description Request body for `POST /api/v1/accounting/posting-merges` — records one duplicate-resolution decision.
      *
      *     `merge_id` is never taken from the client — derived server-side from
      *     `kept_transaction_id`, since a transaction can only ever be the kept
@@ -6351,17 +6328,24 @@ export interface components {
     }
     /**
      * PostingPage
-     * @description One page of resolved postings, with what a client needs to ask for the next one.
+     * @description One page of resolved postings, cut by transaction.
      *
-     *     Pages are cut by *transaction*, so `items` holds every leg of every
-     *     transaction on the page and its length is not `limit` — `limit` counts
-     *     transactions, `items` counts postings, and a split transaction
+     *     `items` holds every leg of every transaction on the page, ordered by
+     *     `posted_at` descending then posting id — the same order the window is cut
+     *     in, so concatenating consecutive pages yields one correctly sorted list
+     *     rather than ascending runs in descending order. A split transaction
      *     contributes more rows than legs it was imported with. See
-     *     `repositories.ledger.visible_transaction_page` for why the cut is there.
+     *     `repositories.ledger.visible_transaction_page` for why the cut is by
+     *     transaction rather than by posting.
      */
     PostingPage: {
       /** Items */
       items: components['schemas']['PostingRow'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'transaction'
       /** Total */
       total: number
       /** Limit */
@@ -6455,12 +6439,8 @@ export interface components {
      * PostingSplit
      * @description A user's decision to break one posting into several legs, keyed by the original posting's id.
      *
-     *     `legs` must sum to exactly the original posting's `amount` — enforced
-     *     where a split is written (the ledger still has to balance), not here,
-     *     since validating that requires looking up the posting this describes.
-     *     Never baked into the ledger cache itself, for the same reason
-     *     `ManualOverride` isn't: re-importing a statement or rebuilding from
-     *     raw archives can never silently erase a split a user set up.
+     *     A mirror a client also sends: `PUT /postings/{posting_id}/split` takes the
+     *     legs, and the posting id comes from the path.
      */
     PostingSplit: {
       /** Posting Id */
@@ -6471,11 +6451,6 @@ export interface components {
     /**
      * PostingSplitLeg
      * @description One piece of a posting split into several independently-categorized legs.
-     *
-     *     A paycheck landing as one $3,200 bank deposit might really be $3,000
-     *     wage plus $200 expense reimbursement — two different things that
-     *     happen to have arrived in one transfer. `amount` keeps the sign
-     *     convention of the posting being split (same account, same direction).
      */
     PostingSplitLeg: {
       /** Amount */
@@ -6599,11 +6574,7 @@ export interface components {
     }
     /**
      * SimulatorScenario
-     * @description A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`).
-     *
-     *     Every field here is one of the projector's five inputs, plus a name to
-     *     tell saved scenarios apart — nothing here is itself computed; the
-     *     projection is always run fresh from these inputs, never cached.
+     * @description A saved set of inputs to the compound-interest projector.
      */
     SimulatorScenario: {
       /** Scenario Id */
@@ -6633,7 +6604,7 @@ export interface components {
     }
     /**
      * SimulatorScenarioCreate
-     * @description Request body for `POST /api/accounting/simulator/scenarios` — creates one new saved scenario.
+     * @description Request body for `POST /api/v1/accounting/simulator/scenarios` — creates one new saved scenario.
      *
      *     `scenario_id` is never taken from the client — two scenarios can
      *     validly share every input field (a user comparing "what if I ran this
@@ -6663,14 +6634,6 @@ export interface components {
        * @enum {string}
        */
       currency: 'USD' | 'EUR'
-    }
-    /**
-     * SimulatorScenarioIdResponse
-     * @description Response body naming one simulator scenario, for endpoints whose only real effect is removing something.
-     */
-    SimulatorScenarioIdResponse: {
-      /** Scenario Id */
-      scenario_id: string
     }
     /**
      * SkippedRowsInfo
@@ -6719,14 +6682,6 @@ export interface components {
     SuggestedBudgetAmount: {
       /** Suggested Amount */
       suggested_amount: number
-    }
-    /**
-     * SuggestionIdResponse
-     * @description Response body naming one dismissed suggestion, for endpoints whose only real effect is removing something.
-     */
-    SuggestionIdResponse: {
-      /** Suggestion Id */
-      suggestion_id: string
     }
     /**
      * SupportedImportKind
@@ -6840,10 +6795,6 @@ export interface components {
     /**
      * Tag
      * @description A cross-cutting label — a trip, a move, an event — independent of the category tree.
-     *
-     *     Where a category answers "what kind of spend is this," a tag answers
-     *     "what's it part of": a single trip involves food, transport, and
-     *     lodging, each its own category, all sharing one tag.
      */
     Tag: {
       /** Tag Id */
@@ -6858,14 +6809,6 @@ export interface components {
     TagCreate: {
       /** Name */
       name: string
-    }
-    /**
-     * TagIdResponse
-     * @description Response body naming one tag, for endpoints whose only real effect is removing something.
-     */
-    TagIdResponse: {
-      /** Tag Id */
-      tag_id: string
     }
     /**
      * TagRenamePreviewResponse
@@ -6987,7 +6930,7 @@ export interface components {
     }
     /**
      * TaxSettingsUpdate
-     * @description Request body for `PUT /api/settings/tax`.
+     * @description Request body for `PUT /api/v1/trades/settings/tax`.
      */
     TaxSettingsUpdate: {
       /** Tax Enabled */
@@ -7017,7 +6960,7 @@ export interface components {
     }
     /**
      * TimezoneSettingUpdate
-     * @description Request body for `PUT /api/settings/timezone`.
+     * @description Request body for `PUT /api/v1/trades/settings/timezone`.
      *
      *     `local_zone` is the browser's own IANA zone name
      *     (`Intl.DateTimeFormat().resolvedOptions().timeZone`), reported once per
@@ -7031,28 +6974,6 @@ export interface components {
     /**
      * TransferLink
      * @description A confirmed pairing of two transactions as the two sides of one real-world transfer.
-     *
-     *     Neither transaction's own postings are ever changed to create this —
-     *     each side's real leg (already on its own real account from import)
-     *     stays exactly as it was; the link only changes classification, via
-     *     `ledger.transfers.apply_transfer_links`: both transactions are excluded
-     *     from income/expense regardless of what account either placeholder leg
-     *     still points at. `link_id` is always derived from the two transaction
-     *     ids sorted once (see `ledger.transfers.make_transfer_link`) — the same
-     *     real-world pair links (and unlinks) under the same id no matter which
-     *     side a caller names first. `source` is `"manual"` for a user's own
-     *     "flag as transfer"/suggestion-panel pick, `"rule"` for one a
-     *     `TransferRule` found a safe, unique match for at write time (see
-     *     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
-     *     resolution itself. `rule_id`, set only when `source == "rule"`, names
-     *     *which* rule found it. It used to be a plain historical label deliberately
-     *     left un-foreign-keyed, on the theory that a link should keep remembering
-     *     the rule that made it even after that rule is gone; it is a real foreign
-     *     key now (DB-audit D7's "Keyless Entry"), because a label naming a row
-     *     nobody can look up is not provenance. `ON DELETE SET NULL` keeps what was
-     *     actually worth keeping: the link survives its rule, `source` still records
-     *     that a rule rather than the user proposed it, and only the reference that
-     *     no longer resolves is cleared.
      */
     TransferLink: {
       /** Link Id */
@@ -7072,7 +6993,9 @@ export interface components {
     }
     /**
      * TransferLinkCreate
-     * @description Request body for `POST /api/accounting/transfer-links` — confirms two transactions as one transfer's two sides.
+     * @description Request body for `POST /api/v1/accounting/transfer-links`.
+     *
+     *     Confirms two transactions as one transfer's two sides.
      *
      *     `link_id`/ordering are never taken from the client — derived
      *     server-side from the two ids sorted once (see
@@ -7086,46 +7009,8 @@ export interface components {
       transaction_id_b: string
     }
     /**
-     * TransferLinkIdResponse
-     * @description Response body naming one transfer link, for endpoints whose only real effect is removing something.
-     */
-    TransferLinkIdResponse: {
-      /** Link Id */
-      link_id: string
-    }
-    /**
      * TransferRule
      * @description A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
-     *
-     *     Named specifically for what it's for — linking two of your own
-     *     accounts together as an internal transfer — to avoid reading as the
-     *     same thing as a `CategoryPattern` below, which only ever suggests a
-     *     category and never resolves a counterparty. Resolving a counterparty
-     *     into a real account you hold makes the transaction an internal
-     *     transfer, which is never categorizable in the first place (see
-     *     `dashboard.income_statement.real_income_expense_legs`) — so unlike
-     *     `CategoryPattern`, this has no category fields of its own to set.
-     *
-     *     Every field on the trigger side must match for the rule to apply
-     *     (`description_contains` is a case-insensitive substring check;
-     *     `account_id`, when set, restricts the rule to postings on that one
-     *     account). `counterparty_account_id`, when set, must name an *existing*
-     *     account (real or virtual) — a rule only ever repoints a posting's
-     *     placeholder counterparty at an account already known to the store,
-     *     never creates one; add the counterparty account first (see
-     *     `Account`), then reference it here. This applies to a vault the same
-     *     as anything else: create it as an ordinary `vault`-kind account
-     *     (parented at its savings account) first, then write one rule per
-     *     vault name. `priority` breaks ties when more than one rule matches;
-     *     the lowest number wins. `description` is a free-text note on what the
-     *     rule is actually for — purely for a human re-reading the rule list
-     *     later, never read by the matching logic. `active` lets a rule be
-     *     switched off without deleting it — an inactive rule is skipped by
-     *     matching entirely, as if it weren't in the list at all.
-     *     `excluded_transaction_ids` opts specific, otherwise-matching
-     *     transactions out of this one rule, without disabling it for anything
-     *     else it correctly resolves — the excluded transaction simply falls
-     *     back to whatever the next-matching rule (or no rule) would have done.
      */
     TransferRule: {
       /** Rule Id */
@@ -7161,7 +7046,7 @@ export interface components {
     }
     /**
      * TransferRuleCreate
-     * @description Request body for `POST /api/accounting/transfer-rules` — creates one new rule.
+     * @description Request body for `POST /api/v1/accounting/transfer-rules` — creates one new rule.
      *
      *     `rule_id` is never taken from the client — derived server-side from
      *     `(description_contains, account_id, counterparty_account_id)`, the
@@ -7189,16 +7074,8 @@ export interface components {
       description: string
     }
     /**
-     * TransferRuleIdResponse
-     * @description Response body naming one transfer rule, for endpoints whose only real effect is removing something.
-     */
-    TransferRuleIdResponse: {
-      /** Rule Id */
-      rule_id: string
-    }
-    /**
      * TransferRuleUpdate
-     * @description Request body for `PATCH /api/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
+     * @description Request body for `PATCH /api/v1/accounting/transfer-rules/{rule_id}` — updates one existing rule in place.
      *
      *     Unlike `TransferRuleCreate`, this never changes which rule is being
      *     edited — the rule stays identified by the `rule_id` path param even if
@@ -7348,6 +7225,23 @@ export interface components {
       wash_sale_flag: boolean
     }
     /**
+     * WithdrawalAutomationCreate
+     * @description Request body for `POST /api/v1/accounting/goal-automations/withdrawals` — puts one goal in the drawdown order.
+     *
+     *     A withdrawal automation is nothing but its goal and its place in that
+     *     order, so `goal_id` is the entire body — no schedule, no amount, no
+     *     currency (see `models.GoalAutomation`'s own field notes).
+     *
+     *     `automation_id` is *derived* rather than minted, unlike
+     *     `GoalAutomationCreate`: a goal appears at most once in the drawdown
+     *     order, so `repositories.planning.withdrawal_automation_id` is the
+     *     natural key. `priority` appends, exactly as it does for a contribution.
+     */
+    WithdrawalAutomationCreate: {
+      /** Goal Id */
+      goal_id: string
+    }
+    /**
      * WithdrawalAutomationResult
      * @description Response body for `POST /goals/run-withdrawal-automation`.
      */
@@ -7386,7 +7280,7 @@ export interface components {
 }
 export type $defs = Record<string, never>
 export interface operations {
-  get_store_api_accounting_store_get: {
+  get_store_api_v1_accounting_store_get: {
     parameters: {
       query?: never
       header?: never
@@ -7406,7 +7300,7 @@ export interface operations {
       }
     }
   }
-  get_currencies_api_accounting_currencies_get: {
+  get_currencies_api_v1_accounting_currencies_get: {
     parameters: {
       query?: never
       header?: never
@@ -7426,112 +7320,7 @@ export interface operations {
       }
     }
   }
-  put_categories_api_accounting_categories_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['Category']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['Category']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_category_api_accounting_categories_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CategoryCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Category']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_subcategory_api_accounting_categories__parent_id__subcategories_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        parent_id: string
-      }
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SubcategoryCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Category']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_category_delete_preview_api_accounting_categories__category_id__delete_preview_get: {
+  get_category_api_v1_accounting_categories__category_id__get: {
     parameters: {
       query?: never
       header?: never
@@ -7548,7 +7337,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['CategoryDeletePreviewResponse']
+          'application/json': components['schemas']['Category']
         }
       }
       /** @description Validation Error */
@@ -7562,7 +7351,7 @@ export interface operations {
       }
     }
   }
-  delete_category_api_accounting_categories__category_id__delete: {
+  delete_category_api_v1_accounting_categories__category_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -7593,7 +7382,110 @@ export interface operations {
       }
     }
   }
-  get_category_rename_preview_api_accounting_categories__category_id__rename_preview_get: {
+  post_category_api_v1_accounting_categories_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CategoryCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Category']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_subcategory_api_v1_accounting_categories__parent_id__subcategories_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        parent_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SubcategoryCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Category']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_category_delete_preview_api_v1_accounting_categories__category_id__delete_preview_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        category_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryDeletePreviewResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_category_rename_preview_api_v1_accounting_categories__category_id__rename_preview_get: {
     parameters: {
       query: {
         name: string
@@ -7626,7 +7518,7 @@ export interface operations {
       }
     }
   }
-  post_category_rename_api_accounting_categories__category_id__rename_post: {
+  post_category_rename_api_v1_accounting_categories__category_id__rename_post: {
     parameters: {
       query?: never
       header?: never
@@ -7661,55 +7553,16 @@ export interface operations {
       }
     }
   }
-  put_tags_api_accounting_tags_put: {
+  get_tag_api_v1_accounting_tags__tag_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        tag_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['Tag']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['Tag']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_tag_api_accounting_tags_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TagCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -7731,7 +7584,7 @@ export interface operations {
       }
     }
   }
-  delete_tag_route_api_accounting_tags__tag_id__delete: {
+  delete_tag_route_api_v1_accounting_tags__tag_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -7743,12 +7596,45 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
         headers: {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TagIdResponse']
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_tag_api_v1_accounting_tags_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TagCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Tag']
         }
       }
       /** @description Validation Error */
@@ -7762,7 +7648,7 @@ export interface operations {
       }
     }
   }
-  get_tag_rename_preview_api_accounting_tags__tag_id__rename_preview_get: {
+  get_tag_rename_preview_api_v1_accounting_tags__tag_id__rename_preview_get: {
     parameters: {
       query: {
         name: string
@@ -7795,7 +7681,7 @@ export interface operations {
       }
     }
   }
-  post_tag_rename_api_accounting_tags__tag_id__rename_post: {
+  post_tag_rename_api_v1_accounting_tags__tag_id__rename_post: {
     parameters: {
       query?: never
       header?: never
@@ -7830,18 +7716,16 @@ export interface operations {
       }
     }
   }
-  post_transfer_rule_api_accounting_transfer_rules_post: {
+  get_transfer_rule_api_v1_accounting_transfer_rules__rule_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        rule_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TransferRuleCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -7863,7 +7747,7 @@ export interface operations {
       }
     }
   }
-  delete_transfer_rule_route_api_accounting_transfer_rules__rule_id__delete: {
+  delete_transfer_rule_route_api_v1_accounting_transfer_rules__rule_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -7875,13 +7759,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['TransferRuleIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -7894,7 +7776,7 @@ export interface operations {
       }
     }
   }
-  patch_transfer_rule_api_accounting_transfer_rules__rule_id__patch: {
+  patch_transfer_rule_api_v1_accounting_transfer_rules__rule_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -7929,7 +7811,7 @@ export interface operations {
       }
     }
   }
-  put_category_patterns_api_accounting_category_patterns_put: {
+  post_transfer_rule_api_v1_accounting_transfer_rules_post: {
     parameters: {
       query?: never
       header?: never
@@ -7938,21 +7820,28 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': {
-          [key: string]: components['schemas']['CategoryPattern']
-        }
+        'application/json': components['schemas']['TransferRuleCreate']
       }
     }
     responses: {
-      /** @description Successful Response */
+      /** @description The request replaced a resource that already existed. */
       200: {
         headers: {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: components['schemas']['CategoryPattern']
-          }
+          'application/json': components['schemas']['TransferRule']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferRule']
         }
       }
       /** @description Validation Error */
@@ -7966,18 +7855,16 @@ export interface operations {
       }
     }
   }
-  post_category_pattern_api_accounting_category_patterns_post: {
+  get_category_pattern_api_v1_accounting_category_patterns__pattern_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        pattern_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CategoryPatternCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -7999,7 +7886,7 @@ export interface operations {
       }
     }
   }
-  delete_category_pattern_route_api_accounting_category_patterns__pattern_id__delete: {
+  delete_category_pattern_route_api_v1_accounting_category_patterns__pattern_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8011,13 +7898,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['CategoryPatternIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8030,7 +7915,7 @@ export interface operations {
       }
     }
   }
-  patch_category_pattern_api_accounting_category_patterns__pattern_id__patch: {
+  patch_category_pattern_api_v1_accounting_category_patterns__pattern_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -8065,7 +7950,7 @@ export interface operations {
       }
     }
   }
-  put_other_assets_api_accounting_other_assets_put: {
+  post_category_pattern_api_v1_accounting_category_patterns_post: {
     parameters: {
       query?: never
       header?: never
@@ -8074,17 +7959,28 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['OtherAsset'][]
+        'application/json': components['schemas']['CategoryPatternCreate']
       }
     }
     responses: {
-      /** @description Successful Response */
+      /** @description The request replaced a resource that already existed. */
       200: {
         headers: {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['OtherAsset'][]
+          'application/json': components['schemas']['CategoryPattern']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPattern']
         }
       }
       /** @description Validation Error */
@@ -8098,18 +7994,16 @@ export interface operations {
       }
     }
   }
-  post_other_asset_api_accounting_other_assets_post: {
+  get_other_asset_api_v1_accounting_other_assets__asset_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        asset_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['OtherAssetCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -8131,7 +8025,7 @@ export interface operations {
       }
     }
   }
-  delete_other_asset_route_api_accounting_other_assets__asset_id__delete: {
+  delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8143,13 +8037,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['OtherAssetIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8162,7 +8054,7 @@ export interface operations {
       }
     }
   }
-  put_budgets_api_accounting_budgets_put: {
+  post_other_asset_api_v1_accounting_other_assets_post: {
     parameters: {
       query?: never
       header?: never
@@ -8171,17 +8063,19 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['Budget'][]
+        'application/json': components['schemas']['OtherAssetCreate']
       }
     }
     responses: {
       /** @description Successful Response */
-      200: {
+      201: {
         headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['Budget'][]
+          'application/json': components['schemas']['OtherAsset']
         }
       }
       /** @description Validation Error */
@@ -8195,7 +8089,7 @@ export interface operations {
       }
     }
   }
-  post_budget_api_accounting_budgets_post: {
+  post_budget_api_v1_accounting_budgets_post: {
     parameters: {
       query?: never
       header?: never
@@ -8207,6 +8101,48 @@ export interface operations {
         'application/json': components['schemas']['BudgetUpsert']
       }
     }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Budget']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Budget']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_budget_api_v1_accounting_budgets__budget_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        budget_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -8228,7 +8164,7 @@ export interface operations {
       }
     }
   }
-  delete_budget_api_accounting_budgets__budget_id__delete: {
+  delete_budget_api_v1_accounting_budgets__budget_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -8240,13 +8176,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['BudgetIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8259,1713 +8193,7 @@ export interface operations {
       }
     }
   }
-  put_simulator_scenarios_api_accounting_simulator_scenarios_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SimulatorScenario'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SimulatorScenario'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_simulator_scenario_api_accounting_simulator_scenarios_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SimulatorScenarioCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SimulatorScenario']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_simulator_scenario_route_api_accounting_simulator_scenarios__scenario_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        scenario_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SimulatorScenarioIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_account_api_accounting_accounts_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AccountCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Account']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_account_api_accounting_accounts__account_id__put: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        account_id: string
-      }
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AccountUpdate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Account']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_account_api_accounting_accounts__account_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        account_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['AccountIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  close_account_api_accounting_accounts__account_id__close_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        account_id: string
-      }
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['AccountCloseRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['AccountCloseResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  reopen_account_api_accounting_accounts__account_id__reopen_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        account_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Account']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_opening_balance_api_accounting_accounts__account_id__opening_balance_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        account_id: string
-      }
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['OpeningBalance']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['OpeningBalance']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_opening_balance_api_accounting_accounts__account_id__opening_balance_delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        account_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['AccountIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_current_exchange_rate_api_accounting_exchange_rates_current_get: {
-    parameters: {
-      query: {
-        currency: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CurrentExchangeRate']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_exchange_rate_history_api_accounting_exchange_rates_history_get: {
-    parameters: {
-      query: {
-        currency: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExchangeRateHistoryPoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_detect_api_accounting_detect_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['DetectRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DetectedAccount'] | null
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_supported_import_kinds_api_accounting_supported_import_kinds_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SupportedImportKind'][]
-        }
-      }
-    }
-  }
-  get_sync_status_api_accounting_sync_status_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SyncStatus']
-        }
-      }
-    }
-  }
-  post_import_api_accounting_import_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'multipart/form-data': components['schemas']['Body_post_import_api_accounting_import_post']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ImportResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_canonical_import_preview_api_accounting_import_canonical_preview_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'multipart/form-data': components['schemas']['Body_post_canonical_import_preview_api_accounting_import_canonical_preview_post']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CanonicalImportPreview']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_canonical_import_api_accounting_import_canonical_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'multipart/form-data': components['schemas']['Body_post_canonical_import_api_accounting_import_canonical_post']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CanonicalImportResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_preview_api_accounting_import_categorize_from_file_preview_post']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CategorizeFromFilePreview']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_apply_api_accounting_import_categorize_from_file_apply_post']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CategorizeFromFileApplyResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_paystub_reconciliation_api_accounting_import_paystub_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'multipart/form-data': components['schemas']['Body_post_paystub_reconciliation_api_accounting_import_paystub_post']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PaystubReconciliationResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_rebuild_api_accounting_rebuild_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['RebuildResult']
-        }
-      }
-    }
-  }
-  get_postings_api_accounting_postings_get: {
-    parameters: {
-      query?: {
-        /** @description How many transactions to return, newest first. */
-        limit?: number
-        /** @description How many transactions to skip. */
-        offset?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingPage']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_ledger_export_api_accounting_ledger_export_get: {
-    parameters: {
-      query?: {
-        /** @description How many postings to return, oldest first. */
-        limit?: number
-        /** @description How many postings to skip. */
-        offset?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['LedgerExportPage']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_statements_export_api_accounting_statements_export_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': unknown
-        }
-      }
-    }
-  }
-  put_posting_override_api_accounting_postings__posting_id__override_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        posting_id: string
-      }
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ManualOverride']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ManualOverride']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_posting_split_api_accounting_postings__posting_id__split_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        posting_id: string
-      }
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['PostingSplitLeg'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingSplit']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_posting_split_route_api_accounting_postings__posting_id__split_delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        posting_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_posting_merges_api_accounting_posting_merges_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['PostingMerge']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['PostingMerge']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_posting_merge_api_accounting_posting_merges_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['PostingMergeUpsert']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingMerge']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_posting_merge_api_accounting_posting_merges__merge_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        merge_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingMergeIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_transfer_link_api_accounting_transfer_links_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TransferLinkCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['TransferLink']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_transfer_link_api_accounting_transfer_links__link_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        link_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['TransferLinkIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_validate_pending_api_accounting_postings_validate_pending_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ValidatePendingRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ValidatePendingResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_transfer_suggestions_api_accounting_transfer_suggestions_get: {
-    parameters: {
-      query?: {
-        window_days?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['TransferSuggestion'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_duplicate_suggestions_api_accounting_duplicate_suggestions_get: {
-    parameters: {
-      query?: {
-        window_days?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DuplicateGroup'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_dismissed_suggestions_api_accounting_dismissed_suggestions_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DismissedSuggestion'][]
-        }
-      }
-    }
-  }
-  post_dismissed_suggestion_api_accounting_dismissed_suggestions_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['DismissSuggestionRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['DismissedSuggestion']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_dismissed_suggestion_api_accounting_dismissed_suggestions__suggestion_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        suggestion_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SuggestionIdResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_llm_usage_api_accounting_llm_usage_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['LlmProviderUsage']
-          }
-        }
-      }
-    }
-  }
-  verify_llm_settings_api_accounting_settings_llm_verify_post: {
-    parameters: {
-      query: {
-        provider: string
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['accounting__api__api_models__VerifyResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_llm_settings_api_accounting_settings_llm_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['LlmSettings']
-        }
-      }
-    }
-  }
-  put_llm_settings_api_accounting_settings_llm_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['LLMSettingsUpdate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['LlmSettings']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_llm_settings_api_accounting_settings_llm_delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['LlmSettings']
-        }
-      }
-    }
-  }
-  post_ai_suggest_category_api_accounting_postings__posting_id__ai_suggest_category_post: {
-    parameters: {
-      query?: {
-        lock_category_id?: string | null
-      }
-      header?: never
-      path: {
-        posting_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CategorySuggestionResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_pattern_suggest_category_api_accounting_postings__posting_id__pattern_suggest_category_post: {
-    parameters: {
-      query?: {
-        lock_category_id?: string | null
-      }
-      header?: never
-      path: {
-        posting_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CategorySuggestionResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_pattern_suggest_category_bulk_api_accounting_postings_pattern_suggest_category_bulk_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['PatternSuggestBulkRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['BulkSuggestResult']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_simulator_projection_api_accounting_simulator_project_get: {
-    parameters: {
-      query: {
-        initial_capital: number
-        monthly_contribution: number
-        horizon_years: number
-        annual_rate_pct: number
-        compounding_frequency?: 'annually' | 'monthly' | 'daily'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ProjectionPoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_interest_summary_api_accounting_interest_summary_get: {
-    parameters: {
-      query?: {
-        as_of?: string | null
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['InterestAccountRow'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_net_worth_api_accounting_net_worth_get: {
-    parameters: {
-      query?: {
-        as_of?: string | null
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['NetWorthSummary']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_net_worth_history_api_accounting_net_worth_history_get: {
-    parameters: {
-      query: {
-        start: string
-        end: string
-        interval_days?: number
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['NetWorthHistoryPoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_net_worth_history_by_account_api_accounting_net_worth_history_by_account_get: {
-    parameters: {
-      query: {
-        start: string
-        end: string
-        interval_days?: number
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['NetWorthHistoryByAccountPoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_category_totals_api_accounting_income_statement_category_totals_get: {
-    parameters: {
-      query: {
-        start: string
-        end: string
-        account_ids?: string | null
-        tag_id?: string | null
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CategoryTotalRow'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_monthly_income_expense_api_accounting_income_statement_monthly_get: {
-    parameters: {
-      query: {
-        start: string
-        end: string
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['MonthlyIncomeExpenseRow'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_spend_curve_api_accounting_income_statement_spend_curve_get: {
-    parameters: {
-      query: {
-        month: string
-        lookback_months?: number
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SpendCurvePoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_budget_comparison_api_accounting_budgets_comparison_get: {
+  get_budget_comparison_api_v1_accounting_budgets_comparison_get: {
     parameters: {
       query: {
         month: string
@@ -9997,7 +8225,7 @@ export interface operations {
       }
     }
   }
-  get_suggested_budget_amount_api_accounting_budgets_suggested_amount_get: {
+  get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get: {
     parameters: {
       query: {
         category_id: string
@@ -10032,20 +8260,16 @@ export interface operations {
       }
     }
   }
-  put_goals_api_accounting_goals_put: {
+  get_simulator_scenario_api_v1_accounting_simulator_scenarios__scenario_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        scenario_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['Goal']
-        }
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -10053,9 +8277,7 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: components['schemas']['Goal']
-          }
+          'application/json': components['schemas']['SimulatorScenario']
         }
       }
       /** @description Validation Error */
@@ -10069,7 +8291,1792 @@ export interface operations {
       }
     }
   }
-  post_goal_api_accounting_goals_post: {
+  delete_simulator_scenario_route_api_v1_accounting_simulator_scenarios__scenario_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        scenario_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_simulator_scenario_api_v1_accounting_simulator_scenarios_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SimulatorScenarioCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SimulatorScenario']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_account_api_v1_accounting_accounts__account_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Account']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_account_api_v1_accounting_accounts__account_id__put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Account']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_account_api_v1_accounting_accounts__account_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_account_api_v1_accounting_accounts_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Account']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  close_account_api_v1_accounting_accounts__account_id__close_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountCloseRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AccountCloseResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  reopen_account_api_v1_accounting_accounts__account_id__reopen_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Account']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['OpeningBalance']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OpeningBalance']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_opening_balance_api_v1_accounting_accounts__account_id__opening_balance_delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_current_exchange_rate_api_v1_accounting_exchange_rates_current_get: {
+    parameters: {
+      query: {
+        currency: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CurrentExchangeRate']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_exchange_rate_history_api_v1_accounting_exchange_rates_history_get: {
+    parameters: {
+      query: {
+        currency: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ExchangeRateHistoryPoint'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_detect_api_v1_accounting_detect_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DetectRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DetectedAccount'] | null
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_supported_import_kinds_api_v1_accounting_supported_import_kinds_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SupportedImportKind'][]
+        }
+      }
+    }
+  }
+  get_sync_status_api_v1_accounting_sync_status_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SyncStatus']
+        }
+      }
+    }
+  }
+  post_import_api_v1_accounting_import_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['Body_post_import_api_v1_accounting_import_post']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ImportResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['Body_post_canonical_import_preview_api_v1_accounting_import_canonical_preview_post']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CanonicalImportPreview']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_canonical_import_api_v1_accounting_import_canonical_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['Body_post_canonical_import_api_v1_accounting_import_canonical_post']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CanonicalImportResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_preview_api_v1_accounting_import_categorize_from_file_preview_post']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategorizeFromFilePreview']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['Body_post_categorize_from_file_apply_api_v1_accounting_import_categorize_from_file_apply_post']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategorizeFromFileApplyResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_paystub_reconciliation_api_v1_accounting_import_paystub_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': components['schemas']['Body_post_paystub_reconciliation_api_v1_accounting_import_paystub_post']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PaystubReconciliationResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_rebuild_api_v1_accounting_rebuild_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RebuildResult']
+        }
+      }
+    }
+  }
+  get_postings_api_v1_accounting_postings_get: {
+    parameters: {
+      query?: {
+        /** @description How many transactions to return, newest first. */
+        limit?: number
+        /** @description How many transactions to skip. */
+        offset?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_ledger_export_api_v1_accounting_ledger_export_get: {
+    parameters: {
+      query?: {
+        /** @description How many postings to return, oldest first. */
+        limit?: number
+        /** @description How many postings to skip. */
+        offset?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LedgerExportPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_statements_export_api_v1_accounting_statements_export_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': unknown
+        }
+      }
+    }
+  }
+  put_posting_override_api_v1_accounting_postings__posting_id__override_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        posting_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ManualOverride']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ManualOverride']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_posting_split_api_v1_accounting_postings__posting_id__split_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        posting_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PostingSplitLeg'][]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingSplit']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_posting_split_route_api_v1_accounting_postings__posting_id__split_delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        posting_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_posting_merge_api_v1_accounting_posting_merges__merge_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        merge_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_posting_merge_api_v1_accounting_posting_merges__merge_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        merge_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_posting_merge_api_v1_accounting_posting_merges_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PostingMergeUpsert']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_transfer_link_api_v1_accounting_transfer_links__link_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        link_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferLink']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_transfer_link_api_v1_accounting_transfer_links__link_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        link_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_transfer_link_api_v1_accounting_transfer_links_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TransferLinkCreate']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferLink']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferLink']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_validate_pending_api_v1_accounting_postings_validate_pending_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['ValidatePendingRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ValidatePendingResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_transfer_suggestions_api_v1_accounting_transfer_suggestions_get: {
+    parameters: {
+      query?: {
+        window_days?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferSuggestion'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_duplicate_suggestions_api_v1_accounting_duplicate_suggestions_get: {
+    parameters: {
+      query?: {
+        window_days?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DuplicateGroup'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_dismissed_suggestions_api_v1_accounting_dismissed_suggestions_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion'][]
+        }
+      }
+    }
+  }
+  get_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DismissSuggestionRequest']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_llm_usage_api_v1_accounting_llm_usage_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            [key: string]: components['schemas']['LlmProviderUsage']
+          }
+        }
+      }
+    }
+  }
+  verify_llm_settings_api_v1_accounting_settings_llm_verify_post: {
+    parameters: {
+      query: {
+        provider: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['accounting__api__api_models__VerifyResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_llm_settings_api_v1_accounting_settings_llm_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LlmSettings']
+        }
+      }
+    }
+  }
+  put_llm_settings_api_v1_accounting_settings_llm_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['LLMSettingsUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LlmSettings']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_llm_settings_api_v1_accounting_settings_llm_delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['LlmSettings']
+        }
+      }
+    }
+  }
+  post_ai_suggest_category_api_v1_accounting_postings__posting_id__ai_suggest_category_post: {
+    parameters: {
+      query?: {
+        lock_category_id?: string | null
+      }
+      header?: never
+      path: {
+        posting_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategorySuggestionResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_pattern_suggest_category_api_v1_accounting_postings__posting_id__pattern_suggest_category_post: {
+    parameters: {
+      query?: {
+        lock_category_id?: string | null
+      }
+      header?: never
+      path: {
+        posting_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategorySuggestionResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_pattern_suggest_category_bulk_api_v1_accounting_postings_pattern_suggest_category_bulk_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PatternSuggestBulkRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BulkSuggestResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_simulator_projection_api_v1_accounting_simulator_project_get: {
+    parameters: {
+      query: {
+        initial_capital: number
+        monthly_contribution: number
+        horizon_years: number
+        annual_rate_pct: number
+        compounding_frequency?: 'annually' | 'monthly' | 'daily'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ProjectionPoint'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_interest_summary_api_v1_accounting_interest_summary_get: {
+    parameters: {
+      query?: {
+        as_of?: string | null
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['InterestAccountRow'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_net_worth_api_v1_accounting_net_worth_get: {
+    parameters: {
+      query?: {
+        as_of?: string | null
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NetWorthSummary']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_net_worth_history_api_v1_accounting_net_worth_history_get: {
+    parameters: {
+      query: {
+        start: string
+        end: string
+        interval_days?: number
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NetWorthHistoryPoint'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_net_worth_history_by_account_api_v1_accounting_net_worth_history_by_account_get: {
+    parameters: {
+      query: {
+        start: string
+        end: string
+        interval_days?: number
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NetWorthHistoryByAccountPoint'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_category_totals_api_v1_accounting_income_statement_category_totals_get: {
+    parameters: {
+      query: {
+        start: string
+        end: string
+        account_ids?: string | null
+        tag_id?: string | null
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryTotalRow'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_monthly_income_expense_api_v1_accounting_income_statement_monthly_get: {
+    parameters: {
+      query: {
+        start: string
+        end: string
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MonthlyIncomeExpenseRow'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_spend_curve_api_v1_accounting_income_statement_spend_curve_get: {
+    parameters: {
+      query: {
+        month: string
+        lookback_months?: number
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SpendCurvePoint'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_goal_api_v1_accounting_goals_post: {
     parameters: {
       query?: never
       header?: never
@@ -10081,6 +10088,39 @@ export interface operations {
         'application/json': components['schemas']['GoalCreate']
       }
     }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Goal']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_goal_api_v1_accounting_goals__goal_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        goal_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -10102,7 +10142,7 @@ export interface operations {
       }
     }
   }
-  delete_goal_route_api_accounting_goals__goal_id__delete: {
+  delete_goal_route_api_v1_accounting_goals__goal_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -10114,13 +10154,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['GoalIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -10133,7 +10171,7 @@ export interface operations {
       }
     }
   }
-  patch_goal_api_accounting_goals__goal_id__patch: {
+  patch_goal_api_v1_accounting_goals__goal_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -10168,55 +10206,16 @@ export interface operations {
       }
     }
   }
-  put_goal_contributions_api_accounting_goal_contributions_put: {
+  get_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        contribution_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['GoalContribution']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['GoalContribution']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_goal_contribution_api_accounting_goal_contributions_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GoalContributionCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -10238,7 +10237,7 @@ export interface operations {
       }
     }
   }
-  put_goal_contribution_api_accounting_goal_contributions__contribution_id__put: {
+  put_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__put: {
     parameters: {
       query?: never
       header?: never
@@ -10273,7 +10272,7 @@ export interface operations {
       }
     }
   }
-  delete_goal_contribution_api_accounting_goal_contributions__contribution_id__delete: {
+  delete_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -10285,13 +10284,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['GoalContributionIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -10304,7 +10301,7 @@ export interface operations {
       }
     }
   }
-  put_goal_contribution_automations_api_accounting_goal_automations_contributions_put: {
+  post_goal_contribution_api_v1_accounting_goal_contributions_post: {
     parameters: {
       query?: never
       header?: never
@@ -10313,17 +10310,19 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['GoalAutomation'][]
+        'application/json': components['schemas']['GoalContributionCreate']
       }
     }
     responses: {
       /** @description Successful Response */
-      200: {
+      201: {
         headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['GoalAutomation'][]
+          'application/json': components['schemas']['GoalContribution']
         }
       }
       /** @description Validation Error */
@@ -10337,18 +10336,16 @@ export interface operations {
       }
     }
   }
-  post_goal_automation_api_accounting_goal_automations_contributions_post: {
+  get_goal_automation_api_v1_accounting_goal_automations__automation_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        automation_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GoalAutomationCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -10370,7 +10367,7 @@ export interface operations {
       }
     }
   }
-  delete_goal_automation_route_api_accounting_goal_automations__automation_id__delete: {
+  delete_goal_automation_route_api_v1_accounting_goal_automations__automation_id__delete: {
     parameters: {
       query?: never
       header?: never
@@ -10382,13 +10379,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': components['schemas']['GoalAutomationIdResponse']
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -10401,7 +10396,7 @@ export interface operations {
       }
     }
   }
-  patch_goal_automation_api_accounting_goal_automations__automation_id__patch: {
+  patch_goal_automation_api_v1_accounting_goal_automations__automation_id__patch: {
     parameters: {
       query?: never
       header?: never
@@ -10436,7 +10431,7 @@ export interface operations {
       }
     }
   }
-  put_goal_withdrawal_automations_api_accounting_goal_automations_withdrawals_put: {
+  post_goal_automation_api_v1_accounting_goal_automations_contributions_post: {
     parameters: {
       query?: never
       header?: never
@@ -10445,7 +10440,42 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['GoalAutomation'][]
+        'application/json': components['schemas']['GoalAutomationCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_goal_contribution_automation_order_api_v1_accounting_goal_automations_contributions_order_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AutomationOrder']
       }
     }
     responses: {
@@ -10469,7 +10499,84 @@ export interface operations {
       }
     }
   }
-  get_goals_summary_api_accounting_goals_summary_get: {
+  post_withdrawal_automation_api_v1_accounting_goal_automations_withdrawals_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WithdrawalAutomationCreate']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_goal_withdrawal_automation_order_api_v1_accounting_goal_automations_withdrawals_order_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AutomationOrder']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_goals_summary_api_v1_accounting_goals_summary_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10501,7 +10608,7 @@ export interface operations {
       }
     }
   }
-  post_run_recurring_additions_api_accounting_goals_run_recurring_additions_post: {
+  post_run_recurring_additions_api_v1_accounting_goals_run_recurring_additions_post: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10532,7 +10639,7 @@ export interface operations {
       }
     }
   }
-  post_run_withdrawal_automation_api_accounting_goals_run_withdrawal_automation_post: {
+  post_run_withdrawal_automation_api_v1_accounting_goals_run_withdrawal_automation_post: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10563,7 +10670,7 @@ export interface operations {
       }
     }
   }
-  post_simulate_contribution_api_accounting_goals_simulate_contribution_post: {
+  post_simulate_contribution_api_v1_accounting_goals_simulate_contribution_post: {
     parameters: {
       query?: never
       header?: never
@@ -10596,7 +10703,7 @@ export interface operations {
       }
     }
   }
-  get_overview_api_overview_get: {
+  get_overview_api_v1_trades_overview_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10627,7 +10734,7 @@ export interface operations {
       }
     }
   }
-  get_dollar_chart_api_chart_dollar_get: {
+  get_dollar_chart_api_v1_trades_chart_dollar_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10659,7 +10766,7 @@ export interface operations {
       }
     }
   }
-  get_growth_of_100_chart_api_chart_growth_of_100_get: {
+  get_growth_of_100_chart_api_v1_trades_chart_growth_of_100_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10691,7 +10798,7 @@ export interface operations {
       }
     }
   }
-  get_cash_history_api_chart_cash_history_get: {
+  get_cash_history_api_v1_trades_chart_cash_history_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10723,7 +10830,7 @@ export interface operations {
       }
     }
   }
-  get_cash_sitting_api_cash_sitting_get: {
+  get_cash_sitting_api_v1_trades_cash_sitting_get: {
     parameters: {
       query?: never
       header?: never
@@ -10743,7 +10850,7 @@ export interface operations {
       }
     }
   }
-  get_monthly_pnl_api_chart_monthly_pnl_get: {
+  get_monthly_pnl_api_v1_trades_chart_monthly_pnl_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10775,7 +10882,7 @@ export interface operations {
       }
     }
   }
-  get_monthly_pnl_by_symbol_api_chart_monthly_pnl_by_symbol_get: {
+  get_monthly_pnl_by_symbol_api_v1_trades_chart_monthly_pnl_by_symbol_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10807,7 +10914,7 @@ export interface operations {
       }
     }
   }
-  get_allocation_api_allocation_get: {
+  get_allocation_api_v1_trades_allocation_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10838,7 +10945,7 @@ export interface operations {
       }
     }
   }
-  get_tax_report_api_tax_report_get: {
+  get_tax_report_api_v1_trades_tax_report_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10869,7 +10976,7 @@ export interface operations {
       }
     }
   }
-  get_lots_api_lots_get: {
+  get_lots_api_v1_trades_lots_get: {
     parameters: {
       query?: {
         as_of?: string | null
@@ -10900,7 +11007,7 @@ export interface operations {
       }
     }
   }
-  get_risk_api_risk_get: {
+  get_risk_api_v1_trades_risk_get: {
     parameters: {
       query?: {
         start?: string | null
@@ -10932,7 +11039,7 @@ export interface operations {
       }
     }
   }
-  get_data_quality_api_data_quality_get: {
+  get_data_quality_api_v1_trades_data_quality_get: {
     parameters: {
       query?: never
       header?: never
@@ -10952,7 +11059,7 @@ export interface operations {
       }
     }
   }
-  get_ledger_export_api_ledger_export_get: {
+  get_ledger_export_api_v1_trades_ledger_export_get: {
     parameters: {
       query?: never
       header?: never
@@ -10972,7 +11079,7 @@ export interface operations {
       }
     }
   }
-  get_target_allocation_api_settings_target_allocation_get: {
+  get_target_allocation_api_v1_trades_settings_target_allocation_get: {
     parameters: {
       query?: never
       header?: never
@@ -10994,7 +11101,7 @@ export interface operations {
       }
     }
   }
-  put_target_allocation_api_settings_target_allocation_put: {
+  patch_target_allocation_api_v1_trades_settings_target_allocation_patch: {
     parameters: {
       query?: never
       header?: never
@@ -11003,8 +11110,8 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': {
-          [key: string]: number
+        'application/merge-patch+json': {
+          [key: string]: number | null
         }
       }
     }
@@ -11031,7 +11138,7 @@ export interface operations {
       }
     }
   }
-  get_hysa_settings_api_settings_hysa_get: {
+  get_hysa_settings_api_v1_trades_settings_hysa_get: {
     parameters: {
       query?: never
       header?: never
@@ -11051,7 +11158,7 @@ export interface operations {
       }
     }
   }
-  put_hysa_settings_api_settings_hysa_put: {
+  put_hysa_settings_api_v1_trades_settings_hysa_put: {
     parameters: {
       query?: never
       header?: never
@@ -11084,7 +11191,7 @@ export interface operations {
       }
     }
   }
-  get_benchmark_setting_api_settings_benchmark_get: {
+  get_benchmark_setting_api_v1_trades_settings_benchmark_get: {
     parameters: {
       query?: never
       header?: never
@@ -11104,7 +11211,7 @@ export interface operations {
       }
     }
   }
-  put_benchmark_setting_api_settings_benchmark_put: {
+  put_benchmark_setting_api_v1_trades_settings_benchmark_put: {
     parameters: {
       query?: never
       header?: never
@@ -11137,7 +11244,7 @@ export interface operations {
       }
     }
   }
-  get_timezone_setting_api_settings_timezone_get: {
+  get_timezone_setting_api_v1_trades_settings_timezone_get: {
     parameters: {
       query?: never
       header?: never
@@ -11157,7 +11264,7 @@ export interface operations {
       }
     }
   }
-  put_timezone_setting_api_settings_timezone_put: {
+  put_timezone_setting_api_v1_trades_settings_timezone_put: {
     parameters: {
       query?: never
       header?: never
@@ -11190,7 +11297,7 @@ export interface operations {
       }
     }
   }
-  get_tax_settings_api_settings_tax_get: {
+  get_tax_settings_api_v1_trades_settings_tax_get: {
     parameters: {
       query?: never
       header?: never
@@ -11210,7 +11317,7 @@ export interface operations {
       }
     }
   }
-  put_tax_settings_api_settings_tax_put: {
+  put_tax_settings_api_v1_trades_settings_tax_put: {
     parameters: {
       query?: never
       header?: never
@@ -11243,27 +11350,7 @@ export interface operations {
       }
     }
   }
-  get_broker_connections_api_broker_connections_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['BrokerConnection'][]
-        }
-      }
-    }
-  }
-  get_ibkr_settings_api_settings_ibkr_get: {
+  get_ibkr_settings_api_v1_trades_settings_ibkr_get: {
     parameters: {
       query?: never
       header?: never
@@ -11283,7 +11370,7 @@ export interface operations {
       }
     }
   }
-  put_ibkr_settings_api_settings_ibkr_put: {
+  put_ibkr_settings_api_v1_trades_settings_ibkr_put: {
     parameters: {
       query?: never
       header?: never
@@ -11316,7 +11403,7 @@ export interface operations {
       }
     }
   }
-  delete_ibkr_settings_api_settings_ibkr_delete: {
+  delete_ibkr_settings_api_v1_trades_settings_ibkr_delete: {
     parameters: {
       query?: never
       header?: never
@@ -11336,7 +11423,7 @@ export interface operations {
       }
     }
   }
-  verify_ibkr_settings_api_settings_ibkr_verify_post: {
+  verify_ibkr_settings_api_v1_trades_settings_ibkr_verify_post: {
     parameters: {
       query?: never
       header?: never
@@ -11356,7 +11443,27 @@ export interface operations {
       }
     }
   }
-  get_hysa_rates_api_hysa_rates_get: {
+  get_broker_connections_api_v1_trades_broker_connections_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BrokerConnection'][]
+        }
+      }
+    }
+  }
+  get_hysa_rates_api_v1_trades_hysa_rates_get: {
     parameters: {
       query?: never
       header?: never
@@ -11376,7 +11483,7 @@ export interface operations {
       }
     }
   }
-  get_symbol_search_api_symbols_search_get: {
+  get_symbol_search_api_v1_trades_symbols_search_get: {
     parameters: {
       query: {
         q: string
@@ -11407,7 +11514,7 @@ export interface operations {
       }
     }
   }
-  ensure_symbol_priced_api_symbols__symbol__ensure_priced_post: {
+  ensure_symbol_priced_api_v1_trades_symbols__symbol__ensure_priced_post: {
     parameters: {
       query?: never
       header?: never
@@ -11438,7 +11545,7 @@ export interface operations {
       }
     }
   }
-  get_statements_export_api_statements_export_get: {
+  get_statements_export_api_v1_trades_statements_export_get: {
     parameters: {
       query?: never
       header?: never
@@ -11458,7 +11565,7 @@ export interface operations {
       }
     }
   }
-  get_sync_progress_api_sync_progress_get: {
+  get_sync_progress_api_v1_trades_sync_progress_get: {
     parameters: {
       query?: never
       header?: never
@@ -11478,7 +11585,7 @@ export interface operations {
       }
     }
   }
-  sync_api_sync_post: {
+  sync_api_v1_trades_sync_post: {
     parameters: {
       query?: never
       header?: never

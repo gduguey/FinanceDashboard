@@ -260,7 +260,7 @@ export function BudgetPage() {
   }
 
   // Each edit only sends the one budget that changed, not the user's
-  // whole budget history — see accounting.api.routers.store.post_budget.
+  // whole budget history — see accounting.api.routers.budgets.post_budget.
   function commitAmount(categoryId: string, subcategoryId: string | null, rawValue: string) {
     const amount = Number.parseFloat(rawValue)
     const isValid = rawValue.trim() !== '' && !Number.isNaN(amount)

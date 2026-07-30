@@ -217,7 +217,7 @@ def test_an_unauthenticated_request_against_the_real_app_is_rejected() -> None:
     """
     trades_api.app.dependency_overrides.pop(auth.require_clerk_session, None)
     try:
-        response = TestClient(trades_api.app).get("/api/overview", params={"as_of": "2026-01-03"})
+        response = TestClient(trades_api.app).get("/api/v1/trades/overview", params={"as_of": "2026-01-03"})
     finally:
         trades_api.app.dependency_overrides[auth.require_clerk_session] = lambda: None
     assert response.status_code == 401

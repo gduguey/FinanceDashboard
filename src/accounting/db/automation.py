@@ -89,7 +89,8 @@ class CategorizationRule(Base, Timestamped):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     natural_key: Mapped[str]
     """Prefixed per effect at the point it is derived (`rule:…` / `pattern:…`, see
-    `api.routers.store._transfer_rule_id`/`_category_pattern_id`), which is what lets one
+    `api.routers.transfer_rules._transfer_rule_id`/`category_patterns._category_pattern_id`),
+    which is what lets one
     `UNIQUE(user_id, natural_key)` cover both effects without a transfer rule and a category
     pattern ever colliding on the same key."""
     effect: Mapped[str]

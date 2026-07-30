@@ -134,7 +134,7 @@ class AllocationRow(BaseModel):
 
 
 class HysaSettingsUpdate(BaseModel):
-    """Request body for `PUT /api/settings/hysa`."""
+    """Request body for `PUT /api/v1/trades/settings/hysa`."""
 
     bank_id: str | None = None
     fixed_rate_pct: Rate | None = None
@@ -148,7 +148,7 @@ class HysaSettings(BaseModel):
 
 
 class BenchmarkSettingUpdate(BaseModel):
-    """Request body for `PUT /api/settings/benchmark`."""
+    """Request body for `PUT /api/v1/trades/settings/benchmark`."""
 
     symbol_override: str | None = None
 
@@ -161,7 +161,7 @@ class BenchmarkSetting(BaseModel):
 
 
 class TimezoneSettingUpdate(BaseModel):
-    """Request body for `PUT /api/settings/timezone`.
+    """Request body for `PUT /api/v1/trades/settings/timezone`.
 
     `local_zone` is the browser's own IANA zone name
     (`Intl.DateTimeFormat().resolvedOptions().timeZone`), reported once per
@@ -191,7 +191,7 @@ class TimezoneSetting(BaseModel):
 
 
 class TaxSettingsUpdate(BaseModel):
-    """Request body for `PUT /api/settings/tax`."""
+    """Request body for `PUT /api/v1/trades/settings/tax`."""
 
     tax_enabled: bool
     tax_regime: TaxRegime | None
@@ -218,11 +218,11 @@ class TaxSettings(BaseModel):
 
 
 class IbkrCredentialsUpdate(BaseModel):
-    """Request body for `PUT /api/settings/ibkr`.
+    """Request body for `PUT /api/v1/trades/settings/ibkr`.
 
     Either field left `None` leaves that one exactly as it was — a query
     id entered with no token doesn't clear an existing token, the same
-    partial-merge convention `PUT /api/settings/benchmark`/`/tax` use.
+    partial-merge convention `PUT /api/v1/trades/settings/benchmark`/`/tax` use.
     """
 
     token: str | None = None

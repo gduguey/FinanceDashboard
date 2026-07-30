@@ -6,32 +6,36 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
+    AutomationOrder,
     GoalAutomationCreate,
-    GoalAutomationIdResponse,
     GoalAutomationUpdate,
     GoalContributionCreate,
-    GoalContributionIdResponse,
     GoalContributionUpdate,
     GoalCreate,
-    GoalIdResponse,
     GoalsSummary,
     GoalUpdate,
     SimulateContributionRequest,
     SimulateContributionResult,
+    WithdrawalAutomationCreate,
     WithdrawalAutomationResult,
 )
 from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
+from accounting.api.entities import Goal, GoalAutomation, GoalContribution
+from accounting.api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
     run_recurring_additions,
     run_withdrawal_automation,
 )
-from accounting.models import CurrencyCode, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
+from accounting.models import CurrencyCode, GoalAutomationDirection
+from accounting.models import Goal as DomainGoal
+from accounting.models import GoalAutomation as DomainGoalAutomation
+from accounting.models import GoalContribution as DomainGoalContribution
 from accounting.repositories.planning import (
     delete_goal,
     goal_automation_exists,
@@ -44,11 +48,10 @@ from accounting.repositories.planning import (
     remove_goal_automation,
     remove_goal_contribution,
     replace_goal_automations,
-    replace_goal_contributions,
-    replace_goals,
     update_goal,
     upsert_goal_automation,
     upsert_goal_contribution,
+    withdrawal_automation_id,
 )
 from accounting.taxonomy import next_available_color, seeded_accounts
 from db.current_user import get_current_user_id
@@ -58,16 +61,19 @@ from db.session import get_db
 router = APIRouter()
 
 
-@router.post("/goals")
+@router.post("/goals", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_goal(
     request: GoalCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Goal:
     """Create one new goal, without touching any other goal already saved.
 
     `goal_id` is server-minted — two goals can validly share a name, so
-    there's no natural key two "the same" goal would collide on. `color`
+    there's no natural key two "the same" goal would collide on, which is
+    why the `201` is unconditional. `color`
     is picked to be distinct from every color already assigned to an
     existing goal, the same `taxonomy.next_available_color` helper
     categories already use for the same purpose.
@@ -78,7 +84,7 @@ def post_goal(
         The goal just persisted.
     """
     existing = load_goals(session, user_id)
-    goal = Goal(
+    goal = DomainGoal(
         goal_id=f"goal:{uuid.uuid4().hex}",
         name=request.name,
         target_amount=request.target_amount,
@@ -88,25 +94,8 @@ def post_goal(
         created_at=datetime.now(tz=UTC),
     )
     insert_goal(session, user_id, goal)
-    return goal
-
-
-@router.put("/goals")
-def put_goals(
-    goals: dict[str, Goal],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, Goal]:
-    """Replace the whole goal list.
-
-    Returns
-    -------
-    dict[str, Goal]
-        The goals just persisted, keyed by `goal_id`.
-    """
-    replace_goals(session, user_id, goals.values())
-    session.commit()
-    return goals
+    location_of(http_request, response, "get_goal", goal_id=goal.goal_id)
+    return Goal.from_domain(goal)
 
 
 @router.patch("/goals/{goal_id}")
@@ -135,7 +124,7 @@ def patch_goal(
     """
     # `created_at` is a required field on `Goal` but `update_goal` never
     # touches it — it always returns the row's real, untouched value.
-    goal = Goal(
+    goal = DomainGoal(
         goal_id=goal_id,
         name=request.name,
         target_amount=request.target_amount,
@@ -148,25 +137,21 @@ def patch_goal(
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
     session.commit()
-    return updated
+    return Goal.from_domain(updated)
 
 
-@router.delete("/goals/{goal_id}")
+@router.delete("/goals/{goal_id}", status_code=204)
 def delete_goal_route(
     goal_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GoalIdResponse:
+) -> None:
     """Delete one goal, without touching any other goal already saved.
 
     No version check — see `repositories.planning.delete_goal`'s own
     docstring for why deleting an already-gone goal is a plain 404, not a
     409: there's nothing left to conflict with.
 
-    Returns
-    -------
-    GoalIdResponse
-        The goal id just deleted.
 
     Raises
     ------
@@ -177,55 +162,84 @@ def delete_goal_route(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
     session.commit()
-    return GoalIdResponse(goal_id=goal_id)
 
 
-@router.put("/goal-contributions")
-def put_goal_contributions(
-    contributions: dict[str, GoalContribution],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, GoalContribution]:
-    """Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
+def _reorder_automations(
+    session: Session, user_id: uuid.UUID, automation_ids: list[str], direction: GoalAutomationDirection
+) -> list[DomainGoalAutomation]:
+    """Renumber one direction's automations into `automation_ids`' order, changing nothing else about them.
+
+    The submitted id set must equal the persisted one exactly — not a
+    subset, not a superset. That equality is what makes this a reorder
+    instead of a whole-list replace under a new name: an insertion, a
+    deletion or a field edit has nowhere to hide in a body that carries no
+    fields and may name no id the server isn't already storing. It also
+    subsumes the direction check the old whole-list `PUT` needed, since the
+    other direction's ids are simply not in this direction's set.
+
+    `priority` comes from list position, 0-based, matching what
+    `post_goal_automation` assigns a newly appended rule.
+
+    Parameters
+    ----------
+    session
+        An open database session; committed here on success.
+    user_id
+        Whose automations to reorder.
+    automation_ids
+        The ids persisted for `direction`, in the desired order.
+    direction
+        Which of the two orderings is being submitted.
 
     Returns
     -------
-    dict[str, GoalContribution]
-        The contributions just persisted, keyed by `contribution_id`.
-    """
-    replace_goal_contributions(session, user_id, contributions.values())
-    session.commit()
-    return contributions
-
-
-def _reject_wrong_direction(automations: list[GoalAutomation], direction: GoalAutomationDirection) -> None:
-    """Refuse a whole-list replace that carries automations of the other direction.
-
-    Both directions live in one table now, and each whole-list `PUT`
-    deletes only its own direction's rows before reinserting — so a body
-    mixing the two would silently drop the entries that don't match.
-    A 400 at the edge says that, rather than letting
-    `repositories.planning.replace_goal_automations` raise a `ValueError`
-    into a 500.
+    list[DomainGoalAutomation]
+        The same automations, renumbered, in the submitted order.
 
     Raises
     ------
     HTTPException
-        400 if any entry's `direction` isn't `direction`.
+        400 if `automation_ids` repeats an id, or is not exactly the set
+        persisted for `direction`, or would leave a `remainder` rule
+        somewhere other than last.
     """
-    wrong = [automation.automation_id for automation in automations if automation.direction != direction]
-    if wrong:
-        raise HTTPException(status_code=400, detail=f"Every automation here must be a {direction!r}: {wrong}")
+    persisted = {
+        automation.automation_id: automation
+        for automation in load_goal_automations(session, user_id)
+        if automation.direction == direction
+    }
+    submitted = set(automation_ids)
+    if len(submitted) != len(automation_ids):
+        duplicated = sorted({name for name in automation_ids if automation_ids.count(name) > 1})
+        raise HTTPException(status_code=400, detail=f"An automation cannot appear twice in one order: {duplicated}")
+    if submitted != set(persisted):
+        missing = sorted(set(persisted) - submitted)
+        unknown = sorted(submitted - set(persisted))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"An order must list every {direction!r} automation exactly once and no others — "
+                f"missing: {missing}, not a persisted {direction!r}: {unknown}"
+            ),
+        )
+    reordered = [
+        persisted[automation_id].model_copy(update={"priority": priority})
+        for priority, automation_id in enumerate(automation_ids)
+    ]
+    _validate_remainder_invariant(reordered)
+    replace_goal_automations(session, user_id, reordered, direction)
+    session.commit()
+    return reordered
 
 
-def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
-    """Enforce the whole-list `remainder` rules against a full contribution-automation set.
+def _validate_remainder_invariant(automations: list[DomainGoalAutomation]) -> None:
+    """Enforce the `remainder` rules against a full contribution-automation set.
 
-    Shared by the whole-list `PUT` and the single-row `PATCH` so both reject
-    the same illegal states: a single-row edit is validated against the list it
+    Shared by the reorder and the single-row `PATCH` so both reject the
+    same illegal states: a single-row edit is validated against the list it
     would produce, never in isolation — otherwise a `PATCH` could create a
     second `remainder` row, or move the `remainder` row off the lowest
-    priority, a state `PUT` itself refuses.
+    priority, a state a reorder itself refuses.
 
     The first of the two rules is *also* structural now — `goal_automations`
     carries `UNIQUE (user_id) WHERE mode = 'remainder'` (see
@@ -247,9 +261,34 @@ def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
         raise HTTPException(status_code=400, detail="A 'remainder' automation must be the lowest-priority row")
 
 
-@router.post("/goal-contributions")
+@router.get("/goal-contributions/{contribution_id}")
+def get_goal_contribution(
+    contribution_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalContribution:
+    """Return one dated allocation by id — the address `post_goal_contribution` advertises.
+
+    Returns
+    -------
+    GoalContribution
+
+    Raises
+    ------
+    HTTPException
+        404 if no contribution has this id.
+    """
+    contribution = load_goal_contributions(session, user_id).get(contribution_id)
+    if contribution is None:
+        raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
+    return GoalContribution.from_domain(contribution)
+
+
+@router.post("/goal-contributions", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_goal_contribution(
     request: GoalContributionCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> GoalContribution:
@@ -259,14 +298,16 @@ def post_goal_contribution(
     arbitrary event with no natural key to derive an id from, so the
     server generates an opaque one — two contributions with identical
     fields (e.g. the same goal, date, and amount entered twice) are
-    distinct rows, not a collision.
+    distinct rows, not a collision. So the `201` is unconditional even
+    though the write below goes through an upsert: the id it upserts on
+    was minted moments earlier and cannot already exist.
 
     Returns
     -------
     GoalContribution
         The contribution just persisted.
     """
-    contribution = GoalContribution(
+    contribution = DomainGoalContribution(
         contribution_id=f"manual:{uuid.uuid4().hex}",
         goal_id=request.goal_id,
         date=request.date,
@@ -279,7 +320,8 @@ def post_goal_contribution(
         edited=request.edited,
     )
     upsert_goal_contribution(contribution, session, user_id)
-    return contribution
+    location_of(http_request, response, "get_goal_contribution", contribution_id=contribution.contribution_id)
+    return GoalContribution.from_domain(contribution)
 
 
 @router.put("/goal-contributions/{contribution_id}")
@@ -308,7 +350,7 @@ def put_goal_contribution(
     """
     if not goal_contribution_exists(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
-    contribution = GoalContribution(
+    contribution = DomainGoalContribution(
         contribution_id=contribution_id,
         goal_id=request.goal_id,
         date=request.date,
@@ -321,20 +363,16 @@ def put_goal_contribution(
         edited=request.edited,
     )
     upsert_goal_contribution(contribution, session, user_id)
-    return contribution
+    return GoalContribution.from_domain(contribution)
 
 
-@router.delete("/goal-contributions/{contribution_id}")
+@router.delete("/goal-contributions/{contribution_id}", status_code=204)
 def delete_goal_contribution(
     contribution_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GoalContributionIdResponse:
+) -> None:
     """Remove one contribution, without touching any other.
-
-    Returns
-    -------
-    GoalContributionIdResponse
 
     Raises
     ------
@@ -344,23 +382,62 @@ def delete_goal_contribution(
     if not remove_goal_contribution(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
     session.commit()
-    return GoalContributionIdResponse(contribution_id=contribution_id)
 
 
-@router.post("/goal-automations/contributions")
+@router.get("/goal-automations/{automation_id}")
+def get_goal_automation(
+    automation_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalAutomation:
+    """Return one automation by id, either direction — the address `post_goal_automation` advertises.
+
+    Not direction-scoped, matching `PATCH` and `DELETE` on this same path:
+    an automation is addressed by its id alone, and `contribution` versus
+    `withdrawal` is a field on it, not part of its address.
+
+    Returns
+    -------
+    GoalAutomation
+
+    Raises
+    ------
+    HTTPException
+        404 if no automation has this id.
+    """
+    automation = next(
+        (a for a in load_goal_automations(session, user_id) if a.automation_id == automation_id),
+        None,
+    )
+    if automation is None:
+        raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
+    return GoalAutomation.from_domain(automation)
+
+
+@router.post("/goal-automations/contributions", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_goal_automation(
     request: GoalAutomationCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> GoalAutomation:
     """Create one new scheduled contribution automation, appended after every one already saved.
 
-    `automation_id` is server-minted — two rules can validly share every
-    other field. `priority` is never taken from the client: this always
+    `automation_id` is server-minted, so the `201` is unconditional — two
+    rules can validly share every other field. Its `Location` points at
+    `GET /goal-automations/{automation_id}`, dropping the `contributions`
+    segment: the direction picks which collection this posts *to*, and is
+    not part of the created row's own address. `priority` is never taken
+    from the client: this always
     goes after the current lowest-priority contribution, matching the
     Goals page's own "append at the end of the ordered list" behavior.
-    Drag-and-drop reordering still goes through
-    `PUT /goal-automations/contributions`.
+    Drag-and-drop reordering goes through
+    `PUT /goal-automations/contributions/order`.
+
+    A body that would break a `remainder` rule is a 400 from
+    `_validate_remainder_invariant`, the same check the reorder and the
+    single-row `PATCH` run.
 
     Returns
     -------
@@ -370,7 +447,7 @@ def post_goal_automation(
     existing = [
         automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
     ]
-    automation = GoalAutomation(
+    automation = DomainGoalAutomation(
         automation_id=f"addition:{uuid.uuid4().hex}",
         goal_id=request.goal_id,
         direction="contribution",
@@ -382,37 +459,48 @@ def post_goal_automation(
         value=request.value,
         currency=request.currency,
     )
+    # Validated against the list this would produce, exactly as `patch_goal_automation`
+    # and the reorder are. Skipping it here left the `remainder` rules to the
+    # `goal_automations` partial unique index alone, whose only vocabulary is a
+    # unique violation — so a second `remainder` reached the client as a 500
+    # instead of the documented 400, and appending an ordinary rule *after* a
+    # `remainder` one persisted a state the reorder would refuse.
+    _validate_remainder_invariant([*existing, automation])
     upsert_goal_automation(automation, session, user_id)
-    return automation
+    location_of(http_request, response, "get_goal_automation", automation_id=automation.automation_id)
+    return GoalAutomation.from_domain(automation)
 
 
-@router.put("/goal-automations/contributions")
-def put_goal_contribution_automations(
-    automations: list[GoalAutomation],
+@router.put("/goal-automations/contributions/order")
+def put_goal_contribution_automation_order(
+    order: AutomationOrder,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[GoalAutomation]:
-    """Replace the whole contribution-automation list — the priority-ordered allocation rules.
+    """Set the order the contribution automations run in — the priority a fixed-amount rule funds ahead of a lower one.
 
-    Scoped to `direction="contribution"`: the withdrawal ordering lives in
-    the same table now but is replaced by its own endpoint, so neither
-    list can wipe the other.
+    A named operation on a real single resource (this collection's
+    *ordering*), which is why it stays a `PUT` and not a `PATCH` per
+    automation: a reorder is atomic across every row in the list, and n
+    separate `PATCH`es of `priority` can only approximate that, passing
+    through states with two rules at the same priority. Idempotent —
+    submitting the same order twice lands the same priorities.
 
-    Rejects an illegal list with a 400 via `_validate_remainder_invariant`
-    (more than one `mode="remainder"`, or a `remainder` row that isn't the
-    lowest priority) — the same check the single-row `PATCH` enforces.
+    Scoped to `direction="contribution"`: the withdrawal ordering shares
+    the table but has its own route, so neither can renumber the other.
 
     Returns
     -------
     list[GoalAutomation]
-        The automations just persisted. Answers 400 if any entry is not a
-        `contribution`, or if the `remainder` invariant is broken.
+        The contribution automations, renumbered, in the submitted order.
+        Answers 400 (from `_reorder_automations`) if the submitted ids
+        aren't exactly the persisted contribution automations, or if the
+        order would leave a `mode="remainder"` rule anywhere but last.
     """
-    _reject_wrong_direction(automations, "contribution")
-    _validate_remainder_invariant(automations)
-    replace_goal_automations(session, user_id, automations, "contribution")
-    session.commit()
-    return automations
+    return [
+        GoalAutomation.from_domain(automation)
+        for automation in _reorder_automations(session, user_id, order.automation_ids, "contribution")
+    ]
 
 
 @router.patch("/goal-automations/{automation_id}")
@@ -424,9 +512,11 @@ def patch_goal_automation(
 ) -> GoalAutomation:
     """Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
 
-    A single-rule field edit no longer round-trips through the whole-list
-    `PUT` (which blanket-reinserts every rule and could revert a concurrent
-    edit to a different one); see `repositories.planning.upsert_goal_automation`.
+    A single-rule field edit does not round-trip through a whole-list
+    write (which blanket-reinserted every rule and could revert a
+    concurrent edit to a different one); see
+    `repositories.planning.upsert_goal_automation`. `priority` is carried
+    unchanged — the reorder route owns it.
 
     Returns
     -------
@@ -447,7 +537,7 @@ def patch_goal_automation(
     # honest answer.
     if not goal_automation_exists(session, user_id, automation_id, direction="contribution"):
         raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
-    automation = GoalAutomation(
+    automation = DomainGoalAutomation(
         automation_id=automation_id,
         goal_id=request.goal_id,
         direction="contribution",
@@ -461,7 +551,7 @@ def patch_goal_automation(
     )
     # Validate against the whole list this edit would produce, not the row in
     # isolation — the single-row PATCH must not be able to reach a state the
-    # whole-list PUT would reject (a second `remainder`, or one out of order).
+    # reorder route would reject (a second `remainder`, or one out of order).
     effective = [
         automation if existing.automation_id == automation_id else existing
         for existing in load_goal_automations(session, user_id)
@@ -469,21 +559,16 @@ def patch_goal_automation(
     ]
     _validate_remainder_invariant(effective)
     upsert_goal_automation(automation, session, user_id)
-    return automation
+    return GoalAutomation.from_domain(automation)
 
 
-@router.delete("/goal-automations/{automation_id}")
+@router.delete("/goal-automations/{automation_id}", status_code=204)
 def delete_goal_automation_route(
     automation_id: str,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> GoalAutomationIdResponse:
+) -> None:
     """Delete one goal automation, without touching any other. Idempotent, no version check.
-
-    Returns
-    -------
-    GoalAutomationIdResponse
-        The automation id just deleted.
 
     Raises
     ------
@@ -493,33 +578,84 @@ def delete_goal_automation_route(
     if not remove_goal_automation(session, user_id, automation_id):
         raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
     session.commit()
-    return GoalAutomationIdResponse(automation_id=automation_id)
 
 
-@router.put("/goal-automations/withdrawals")
-def put_goal_withdrawal_automations(
-    automations: list[GoalAutomation],
+@router.post("/goal-automations/withdrawals", status_code=201, responses=created_or_replaced(GoalAutomation))
+def post_withdrawal_automation(
+    request: WithdrawalAutomationCreate,
+    http_request: Request,
+    response: Response,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalAutomation:
+    """Put one goal into the drawdown order, appended last, without touching any other entry.
+
+    The counterpart to `post_goal_automation` for the other direction, and
+    the reason the withdrawal ordering no longer needs a whole-list write:
+    adding a goal is a create, dropping one is
+    `DELETE /goal-automations/{automation_id}`, and rearranging them is
+    `PUT /goal-automations/withdrawals/order`.
+
+    Unlike a contribution's minted id, this one is derived from the goal
+    (`repositories.planning.withdrawal_automation_id`) because a goal sits
+    at most once in the order — so re-adding a goal already in it is a
+    replace, not a second row, and answers `200` with the entry's existing
+    place rather than `201`. Re-adding therefore never silently moves a
+    goal to the bottom of the drawdown order.
+
+    Returns
+    -------
+    GoalAutomation
+        The drawdown entry just persisted.
+    """
+    existing = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "withdrawal"
+    ]
+    automation_id = withdrawal_automation_id(request.goal_id)
+    already_ordered = next((a for a in existing if a.automation_id == automation_id), None)
+    automation = DomainGoalAutomation(
+        automation_id=automation_id,
+        goal_id=request.goal_id,
+        direction="withdrawal",
+        priority=already_ordered.priority if already_ordered else len(existing),
+    )
+    upsert_goal_automation(automation, session, user_id)
+    if already_ordered is None:
+        location_of(http_request, response, "get_goal_automation", automation_id=automation_id)
+    else:
+        response.status_code = 200
+    return GoalAutomation.from_domain(automation)
+
+
+@router.put("/goal-automations/withdrawals/order")
+def put_goal_withdrawal_automation_order(
+    order: AutomationOrder,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[GoalAutomation]:
-    """Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
+    """Set the order goals are drawn down in when unallocated money dips below zero.
 
-    A pure ordering + set-membership operation (no free text, schedule, or
-    amount anywhere — a withdrawal automation carries none), so it's
-    last-write-wins by nature: whichever ordering was submitted last is
-    the intended one. Scoped to `direction="withdrawal"`, so it never
-    touches the contribution automations sharing the table.
+    A withdrawal automation carries nothing but its goal and its place in
+    this order, so the order *is* the whole resource here — which makes the
+    id-set check below load-bearing rather than defensive: it is the only
+    thing separating "rearrange the drawdown order" from "replace it".
+    Membership changes go through `post_withdrawal_automation` and
+    `DELETE /goal-automations/{automation_id}`.
+
+    Scoped to `direction="withdrawal"`, so it never renumbers the
+    contribution automations sharing the table.
 
     Returns
     -------
     list[GoalAutomation]
-        The withdrawal automations just persisted. Answers 400 if any
-        entry is not a `withdrawal`.
+        The drawdown entries, renumbered, in the submitted order. Answers
+        400 (from `_reorder_automations`) if the submitted ids aren't
+        exactly the persisted withdrawal automations.
     """
-    _reject_wrong_direction(automations, "withdrawal")
-    replace_goal_automations(session, user_id, automations, "withdrawal")
-    session.commit()
-    return automations
+    return [
+        GoalAutomation.from_domain(automation)
+        for automation in _reorder_automations(session, user_id, order.automation_ids, "withdrawal")
+    ]
 
 
 @router.get("/goals/summary")
@@ -546,6 +682,35 @@ def get_goals_summary(
     balances = all_goal_balances(contributions, list(load_goals(session, user_id).keys()), as_of_date, display)
     unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions, as_of_date, display)
     return GoalsSummary(balances=balances, unallocated=unallocated)
+
+
+# Registered *after* `GET /goals/summary`, and that ordering is load-bearing:
+# Starlette matches routes in registration order, and `/goals/summary` matches
+# `/goals/{goal_id}` on a GET just as well as a real goal id does. Declared
+# first, this route would swallow the summary endpoint and answer 404 for
+# `goal_id="summary"`. Nothing enforces the order but this comment, so a
+# future `GET /goals/<literal>` has to go above here too.
+@router.get("/goals/{goal_id}")
+def get_goal(
+    goal_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Goal:
+    """Return one goal by id — the address `post_goal` advertises.
+
+    Returns
+    -------
+    Goal
+
+    Raises
+    ------
+    HTTPException
+        404 if no goal has this id.
+    """
+    goal = load_goals(session, user_id).get(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
+    return Goal.from_domain(goal)
 
 
 def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
@@ -619,12 +784,12 @@ def post_run_recurring_additions(
     # second silently overwrote the first here — while `run_recurring_additions`
     # had already counted both against unallocated.
     by_automation_id = {automation.automation_id: automation for automation in due}
-    new_contributions: dict[str, GoalContribution] = {}
+    new_contributions: dict[str, DomainGoalContribution] = {}
     for automation_id, amount in funded:
         automation = by_automation_id[automation_id]
         occurrence = occurrences[automation.automation_id]
         contribution_id = f"auto:{automation.automation_id}:{occurrence.isoformat()}"
-        new_contributions[contribution_id] = GoalContribution(
+        new_contributions[contribution_id] = DomainGoalContribution(
             contribution_id=contribution_id,
             goal_id=automation.goal_id,
             date=datetime.combine(occurrence, datetime.min.time()),
@@ -637,7 +802,7 @@ def post_run_recurring_additions(
         )
 
     insert_goal_contributions(session, user_id, new_contributions.values())
-    return list(new_contributions.values())
+    return [GoalContribution.from_domain(contribution) for contribution in new_contributions.values()]
 
 
 @router.post("/goals/run-withdrawal-automation")
@@ -678,11 +843,11 @@ def post_run_withdrawal_automation(
     drawn = run_withdrawal_automation(withdrawals, balances, shortfall)
 
     existing_ids = set(contributions.keys())
-    new_contributions: dict[str, GoalContribution] = {}
+    new_contributions: dict[str, DomainGoalContribution] = {}
     for goal_id, amount in drawn:
         contribution_id = _next_contribution_id(existing_ids, f"auto-withdrawal:{goal_id}:{as_of_date.isoformat()}")
         existing_ids.add(contribution_id)
-        new_contributions[contribution_id] = GoalContribution(
+        new_contributions[contribution_id] = DomainGoalContribution(
             contribution_id=contribution_id,
             goal_id=goal_id,
             date=datetime(as_of_date.year, as_of_date.month, as_of_date.day),  # noqa: DTZ001  (ledger dates are naive)
@@ -695,7 +860,8 @@ def post_run_withdrawal_automation(
     insert_goal_contributions(session, user_id, new_contributions.values())
     remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
     return WithdrawalAutomationResult(
-        withdrawals=list(new_contributions.values()), remaining_shortfall=remaining_shortfall
+        withdrawals=[GoalContribution.from_domain(contribution) for contribution in new_contributions.values()],
+        remaining_shortfall=remaining_shortfall,
     )
 
 

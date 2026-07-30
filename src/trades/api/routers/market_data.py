@@ -21,7 +21,7 @@ from trades.utils.frames import collect_if_lazy
 router = APIRouter()
 
 
-@router.get("/api/hysa-rates")
+@router.get("/hysa-rates")
 def get_hysa_rates() -> HysaRates:
     """Return every bank's known rate history, for the bank picker and APY comparison chart.
 
@@ -40,7 +40,7 @@ def get_hysa_rates() -> HysaRates:
     )
 
 
-@router.get("/api/symbols/search")
+@router.get("/symbols/search")
 def get_symbol_search(q: str) -> list[SymbolSearchResult]:
     """Search Yahoo Finance for a ticker symbol, for the benchmark picker.
 
@@ -55,7 +55,7 @@ def get_symbol_search(q: str) -> list[SymbolSearchResult]:
     return [SymbolSearchResult(**row) for row in symbol_search_module.search_symbols(q, _config())]
 
 
-@router.post("/api/symbols/{symbol}/ensure-priced")
+@router.post("/symbols/{symbol}/ensure-priced")
 def ensure_symbol_priced(
     symbol: str,
     session: Annotated[Session, Depends(get_db)],

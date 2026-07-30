@@ -24,6 +24,7 @@ import type {
   SyncProgress,
   SyncResult,
   TargetAllocation,
+  TargetAllocationPatch,
   TaxReport,
   TaxSettings,
   TaxSettingsUpdate,
@@ -46,13 +47,33 @@ export class ApiError extends Error {}
 // taxonomy, which is where App.tsx's mutationCache imports it from.
 export class RowVersionConflictError extends ApiError {}
 
+// Where this module's endpoints live, declared once rather than repeated in
+// every path below — the mirror image of `trades.api.api`'s own router prefix,
+// so the two move together. `/api` keeps a versioned path from being swallowed
+// by the SPA catch-all that serves `index.html`; `trades` is the module
+// namespace (`accountingApi.ts` has its own). Exported for the handful of
+// callers that need a URL rather than a parsed response — a browser-driven CSV
+// download, which cannot go through `request`.
+export const TRADES_API_BASE = '/api/v1/trades'
+
+// A 204 has no body at all, so `response.json()` on one throws
+// "Unexpected end of JSON input" — which is why this check is not an
+// optimization. Every delete answers 204 (see `accounting.api.routers.*`),
+// so without this branch every delete in the app fails after succeeding on
+// the server. Shared by `accountingApi.ts`'s own wrapper, which has the same
+// hazard.
+export async function parseBody(response: Response): Promise<unknown> {
+  if (response.status === 204) return undefined
+  return await response.json()
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const response = await fetch(`${TRADES_API_BASE}${path}`, init)
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     throw new ApiError(body?.detail ?? `${response.status} ${response.statusText}`)
   }
-  return (await response.json()) as T
+  return (await parseBody(response)) as T
 }
 
 // Date range params shared by every chart/stat endpoint — omitted keys let
@@ -72,67 +93,71 @@ function withRange(path: string, range?: DateRange): string {
 }
 
 export const api = {
-  overview: (asOf?: string) => request<Overview>(asOf ? `/api/overview?as_of=${asOf}` : '/api/overview'),
-  dollarChart: (range?: DateRange) => request<DollarChart>(withRange('/api/chart/dollar', range)),
-  growthOf100Chart: (range?: DateRange) => request<GrowthOf100Point[]>(withRange('/api/chart/growth-of-100', range)),
-  monthlyPnl: (range?: DateRange) => request<MonthlyPnl[]>(withRange('/api/chart/monthly-pnl', range)),
+  overview: (asOf?: string) => request<Overview>(asOf ? `/overview?as_of=${asOf}` : '/overview'),
+  dollarChart: (range?: DateRange) => request<DollarChart>(withRange('/chart/dollar', range)),
+  growthOf100Chart: (range?: DateRange) => request<GrowthOf100Point[]>(withRange('/chart/growth-of-100', range)),
+  monthlyPnl: (range?: DateRange) => request<MonthlyPnl[]>(withRange('/chart/monthly-pnl', range)),
   monthlyPnlBySymbol: (range?: DateRange) =>
-    request<MonthlyPnlBySymbol[]>(withRange('/api/chart/monthly-pnl/by-symbol', range)),
-  allocation: (asOf?: string) => request<AllocationRow[]>(asOf ? `/api/allocation?as_of=${asOf}` : '/api/allocation'),
-  targetAllocation: () => request<TargetAllocation>('/api/settings/target-allocation'),
-  setTargetAllocation: (target: TargetAllocation) =>
-    request<TargetAllocation>('/api/settings/target-allocation', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(target),
+    request<MonthlyPnlBySymbol[]>(withRange('/chart/monthly-pnl/by-symbol', range)),
+  allocation: (asOf?: string) => request<AllocationRow[]>(asOf ? `/allocation?as_of=${asOf}` : '/allocation'),
+  targetAllocation: () => request<TargetAllocation>('/settings/target-allocation'),
+  // RFC 7386 merge patch over the `symbol -> pct` map: a number sets that
+  // symbol's target, an explicit `null` removes it, and an absent symbol is
+  // left as-is. The media type is what tells the server to read the body that
+  // way rather than as a whole-map replacement.
+  patchTargetAllocation: (patch: TargetAllocationPatch) =>
+    request<TargetAllocation>('/settings/target-allocation', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+      body: JSON.stringify(patch),
     }),
-  lots: (asOf?: string) => request<LotsTable>(asOf ? `/api/lots?as_of=${asOf}` : '/api/lots'),
-  risk: (range?: DateRange) => request<RiskStat>(withRange('/api/risk', range)),
-  cashHistory: (range?: DateRange) => request<CashHistoryPoint[]>(withRange('/api/chart/cash-history', range)),
-  cashSitting: () => request<CashSitting>('/api/cash-sitting'),
-  dataQuality: () => request<DataQualityRow[]>('/api/data-quality'),
-  ledgerExport: () => request<LedgerEvent[]>('/api/ledger/export'),
-  sync: () => request<SyncResult>('/api/sync', { method: 'POST' }),
-  syncProgress: () => request<SyncProgress>('/api/sync/progress'),
-  hysaRates: () => request<HysaRates>('/api/hysa-rates'),
-  hysaSettings: () => request<HysaSettings>('/api/settings/hysa'),
+  lots: (asOf?: string) => request<LotsTable>(asOf ? `/lots?as_of=${asOf}` : '/lots'),
+  risk: (range?: DateRange) => request<RiskStat>(withRange('/risk', range)),
+  cashHistory: (range?: DateRange) => request<CashHistoryPoint[]>(withRange('/chart/cash-history', range)),
+  cashSitting: () => request<CashSitting>('/cash-sitting'),
+  dataQuality: () => request<DataQualityRow[]>('/data-quality'),
+  ledgerExport: () => request<LedgerEvent[]>('/ledger/export'),
+  sync: () => request<SyncResult>('/sync', { method: 'POST' }),
+  syncProgress: () => request<SyncProgress>('/sync/progress'),
+  hysaRates: () => request<HysaRates>('/hysa-rates'),
+  hysaSettings: () => request<HysaSettings>('/settings/hysa'),
   setHysaSettings: (settings: HysaSettingsUpdate) =>
-    request<HysaSettings>('/api/settings/hysa', {
+    request<HysaSettings>('/settings/hysa', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     }),
-  benchmarkSetting: () => request<BenchmarkSetting>('/api/settings/benchmark'),
+  benchmarkSetting: () => request<BenchmarkSetting>('/settings/benchmark'),
   setBenchmarkSetting: (setting: BenchmarkSettingUpdate) =>
-    request<BenchmarkSetting>('/api/settings/benchmark', {
+    request<BenchmarkSetting>('/settings/benchmark', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(setting),
     }),
-  searchSymbols: (query: string) => request<SymbolSearchResult[]>(`/api/symbols/search?q=${encodeURIComponent(query)}`),
+  searchSymbols: (query: string) => request<SymbolSearchResult[]>(`/symbols/search?q=${encodeURIComponent(query)}`),
   ensureSymbolPriced: (symbol: string) =>
-    request<SymbolPriceStatus>(`/api/symbols/${encodeURIComponent(symbol)}/ensure-priced`, { method: 'POST' }),
-  taxSettings: () => request<TaxSettings>('/api/settings/tax'),
+    request<SymbolPriceStatus>(`/symbols/${encodeURIComponent(symbol)}/ensure-priced`, { method: 'POST' }),
+  taxSettings: () => request<TaxSettings>('/settings/tax'),
   setTaxSettings: (settings: TaxSettingsUpdate) =>
-    request<TaxSettings>('/api/settings/tax', {
+    request<TaxSettings>('/settings/tax', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     }),
-  taxReport: (asOf?: string) => request<TaxReport>(asOf ? `/api/tax/report?as_of=${asOf}` : '/api/tax/report'),
-  brokerConnections: () => request<BrokerConnection[]>('/api/broker-connections'),
-  ibkrSettings: () => request<IbkrSettings>('/api/settings/ibkr'),
+  taxReport: (asOf?: string) => request<TaxReport>(asOf ? `/tax/report?as_of=${asOf}` : '/tax/report'),
+  brokerConnections: () => request<BrokerConnection[]>('/broker-connections'),
+  ibkrSettings: () => request<IbkrSettings>('/settings/ibkr'),
   setIbkrSettings: (update: IbkrSettingsUpdate) =>
-    request<IbkrSettings>('/api/settings/ibkr', {
+    request<IbkrSettings>('/settings/ibkr', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update),
     }),
-  clearIbkrSettings: () => request<IbkrSettings>('/api/settings/ibkr', { method: 'DELETE' }),
-  verifyIbkrSettings: () => request<VerifyResult>('/api/settings/ibkr/verify', { method: 'POST' }),
-  timezoneSetting: () => request<TimezoneSetting>('/api/settings/timezone'),
+  clearIbkrSettings: () => request<IbkrSettings>('/settings/ibkr', { method: 'DELETE' }),
+  verifyIbkrSettings: () => request<VerifyResult>('/settings/ibkr/verify', { method: 'POST' }),
+  timezoneSetting: () => request<TimezoneSetting>('/settings/timezone'),
   setTimezoneSetting: (setting: TimezoneSettingUpdate) =>
-    request<TimezoneSetting>('/api/settings/timezone', {
+    request<TimezoneSetting>('/settings/timezone', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(setting),

@@ -50,13 +50,13 @@ from accounting.repositories.accounts import (
 )
 from accounting.repositories.planning import (
     insert_goal,
+    insert_goal_contributions,
     load_budgets,
     load_goal_automations,
     load_goal_contributions,
     load_goals,
     replace_budgets,
     replace_goal_automations,
-    replace_goal_contributions,
     withdrawal_automation_id,
 )
 from accounting.repositories.interpretation import (
@@ -543,7 +543,7 @@ def test_every_repository_round_trips_its_own_entity_type(db_session: Session, t
             created_at=datetime(2026, 1, 1),
         ),
     )
-    replace_goal_contributions(
+    insert_goal_contributions(
         db_session,
         test_user_id,
         [GoalContribution(contribution_id="gc1", goal_id="g1", date=datetime(2026, 1, 5), amount=100)],
@@ -953,7 +953,7 @@ def test_goal_contribution_referencing_a_nonexistent_goal_raises(db_session: Ses
         contribution_id="gc1", goal_id="does-not-exist", date=datetime(2026, 1, 5), amount=100
     )
     with pytest.raises(UnknownNaturalKeyError):
-        replace_goal_contributions(db_session, test_user_id, [contribution])
+        insert_goal_contributions(db_session, test_user_id, [contribution])
 
 
 def test_contribution_automation_referencing_a_nonexistent_goal_raises(

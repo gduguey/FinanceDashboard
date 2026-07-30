@@ -88,8 +88,9 @@ needed.
 
 The backend's `src/trades/api/routers/` and `src/accounting/api/routers/`
 are a different, unrelated kind of "router" — FastAPI `APIRouter`s that
-group HTTP endpoints by domain (`dashboard.py`, `settings.py`, `store.py`,
-...) rather than map folder paths to URLs. Don't conflate the two: this
+group HTTP endpoints by domain (`dashboard.py`, `settings.py`,
+`categories.py`, ...) rather than map folder paths to URLs. Don't
+conflate the two: this
 folder's routing decides what the *browser* shows for a given URL; the
 backend's routers decide what *HTTP endpoint* handles a given API path.
 

@@ -203,6 +203,12 @@ def delete_llm_settings(
 ) -> LlmSettings:
     """Clear this user's saved API key for every provider.
 
+    One of the three deletes in this app that answers 200 with a body rather
+    than 204: this clears fields on a singleton settings row that still
+    exists afterwards, so there is a representation to return, and it is not
+    derivable from the request. The 15 deletes that remove a row the client
+    named answer 204.
+
     Returns
     -------
     LlmSettings

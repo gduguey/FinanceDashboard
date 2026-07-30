@@ -213,7 +213,7 @@ collections it actually uses — the resolution pipeline takes the five
 overlay tables plus accounts, a net-worth request takes accounts,
 opening balances and other assets, and `GET /store` is a router-level
 recomposition of every `load_*` rather than a type anything passes
-around (see `accounting.api.routers.store.get_store`). What survives of
+around (see `accounting.api.routers.bootstrap.get_store`). What survives of
 the old whole-store read is `accounting.taxonomy.seeded_categories`/
 `seeded_accounts`: the same `load_*`, with a brand-new user's defaults
 seeded first.
@@ -229,8 +229,10 @@ in this repo: `db.base.check_and_bump_row_version`, against the `version`
 column on `accounting.goals` and `accounting.categorization_rules`
 (both effects alike). A caller sends the version it last read as
 `expected_version` in the request body; a mismatch raises
-`db.base.VersionConflictError`, which one global handler in
-`trades.api.api` turns into an HTTP 409. `expected_version=None` opts a
+`db.base.VersionConflictError`, which one handler in
+`accounting.api.api` (registered by `install_error_handlers`, since
+FastAPI hangs exception handlers off the application rather than off an
+`APIRouter`) turns into an HTTP 409. `expected_version=None` opts a
 write out of the check entirely (last-write-wins), which is the right
 choice for an idempotent toggle. There is no version header, no per-user
 counter table, and nothing store-wide — a second, identical mechanism for
@@ -591,7 +593,7 @@ function meant to run — its own body just raises an error
 unconditionally. Nothing in the real, running app ever actually executes
 that body. Concretely, here's what happens for one real request — say,
 Bob (a real invited user) loads the dashboard, which calls
-`GET /api/overview`:
+`GET /api/v1/trades/overview`:
 
 1. The endpoint declares it needs two things, both *by name*, not by
    calling anything directly:

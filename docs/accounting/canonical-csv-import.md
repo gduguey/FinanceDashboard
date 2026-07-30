@@ -78,6 +78,6 @@ archives the raw file, calls it, persists the new categories through
 `repositories.taxonomy`, and merges the postings into the ledger —
 mirroring `ingest_csv`'s archive-then-merge shape, but also touching the
 category tree, which `ingest_csv` never needs to. Two API endpoints cover this path:
-`POST /api/accounting/import/canonical/preview` parses without persisting
+`POST /api/v1/accounting/import/canonical/preview` parses without persisting
 anything (for previewing which categories a file would create before
-committing), and `POST /api/accounting/import/canonical` actually imports.
+committing), and `POST /api/v1/accounting/import/canonical` actually imports.

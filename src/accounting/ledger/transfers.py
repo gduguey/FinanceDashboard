@@ -29,7 +29,7 @@ could retroactively flip after some unrelated future import with no
 visible signal. So `reconcile_rule_links` itself stays pure (proposes,
 never writes) — it's meant to be called, and its result persisted, at
 controlled write points only (import, ledger rebuild, rule save; see
-`accounting.importers.ingest` and `accounting.api.routers.store`).
+`accounting.importers.ingest` and `accounting.api.routers.transfer_rules`).
 """
 
 from __future__ import annotations

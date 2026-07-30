@@ -226,7 +226,8 @@ def _upsert_rule(session: Session, user_id: uuid.UUID, natural_key: str, **colum
     `uq_categorization_rules_user_natural_key`, the table's real key. One
     constraint covers both effects because the natural keys are prefixed
     apart at the point they are minted (`rule:` / `pattern:`, see
-    `api.routers.store._transfer_rule_id`/`_category_pattern_id`), so a
+    `api.routers.transfer_rules._transfer_rule_id` /
+    `api.routers.category_patterns._category_pattern_id`), so a
     transfer rule and a category pattern can never collide on it.
 
     Parameters
@@ -1077,7 +1078,7 @@ def replace_posting_merges(session: Session, user_id: uuid.UUID, merges: Iterabl
     session.flush()
 
 
-def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UUID) -> None:
+def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UUID) -> bool:
     """Persist one duplicate-resolution decision, replacing only that merge's prior rows.
 
     Scoped counterpart to routing `POST /posting-merges` through the
@@ -1097,6 +1098,17 @@ def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UU
         An open database session; `session.commit()` is called on success.
     user_id
         Whose merge this is.
+
+    Returns
+    -------
+    bool
+        `True` if this call brought the merge into existence, `False` if it
+        replaced one already recorded. `POST /posting-merges` needs the
+        difference to answer `201` versus `200` honestly, and it comes free
+        from the delete below: this is a replace-in-full, so the parent
+        row's delete count already says whether a merge was there. No
+        separate `SELECT`, and nothing a concurrent writer could invalidate
+        between the read and the write.
     """
     transaction_ids = ids_by_natural_key(
         session, adb.Transaction, user_id, [merge.kept_transaction_id, *merge.duplicate_transaction_ids]
@@ -1113,8 +1125,11 @@ def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UU
             )
         ),
     ).delete(synchronize_session=False)
-    session.query(adb.PostingMerge).filter_by(user_id=user_id, natural_key=merge.merge_id).delete(
-        synchronize_session=False
+    replaced = (
+        session
+        .query(adb.PostingMerge)
+        .filter_by(user_id=user_id, natural_key=merge.merge_id)
+        .delete(synchronize_session=False)
     )
     session.flush()
     merge_row = adb.PostingMerge(
@@ -1132,6 +1147,7 @@ def upsert_posting_merge(merge: PostingMerge, session: Session, user_id: uuid.UU
         for duplicate_id in merge.duplicate_transaction_ids
     )
     session.commit()
+    return not replaced
 
 
 def remove_posting_merge(session: Session, user_id: uuid.UUID, merge_id: str) -> bool:
@@ -1794,7 +1810,7 @@ def list_dismissed_suggestions(session: Session, user_id: uuid.UUID) -> list[Dis
     ]
 
 
-def dismiss_suggestion(session: Session, user_id: uuid.UUID, entry: DismissedSuggestion) -> None:
+def dismiss_suggestion(session: Session, user_id: uuid.UUID, entry: DismissedSuggestion) -> bool:
     """Archive one suggestion so it stops being proposed, replacing any existing entry with the same id.
 
     Parameters
@@ -1805,7 +1821,18 @@ def dismiss_suggestion(session: Session, user_id: uuid.UUID, entry: DismissedSug
         Whose suggestion this is.
     entry
         The suggestion to archive.
+
+    Returns
+    -------
+    bool
+        `True` if this call created the archive entry, `False` if one with
+        this id was already there. `PUT /dismissed-suggestions/{id}` needs
+        the difference to answer `201` versus `200`. Read with the same
+        `ids_by_natural_key` lookup `merge_by_natural_key` below performs
+        anyway, and in the same transaction as the write, so the answer
+        cannot be invalidated by another request between the two.
     """
+    existed = bool(ids_by_natural_key(session, adb.Suggestion, user_id, [entry.suggestion_id]))
     merge_by_natural_key(
         session,
         adb.Suggestion,
@@ -1823,6 +1850,7 @@ def dismiss_suggestion(session: Session, user_id: uuid.UUID, entry: DismissedSug
         ],
     )
     session.commit()
+    return not existed
 
 
 def undismiss_suggestion(session: Session, user_id: uuid.UUID, suggestion_id: str) -> bool:
