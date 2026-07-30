@@ -196,10 +196,18 @@ computed over the ledger.
 `OtherAsset.value`, `Goal.target_amount`, `GoalContribution.amount`,
 `OpeningBalance.amount`, `Posting.amount`, `PostingSplitLeg.amount`,
 `ManualTransfer.from_amount`/`to_amount`. Each is a `NUMERIC(18, 4)` column,
-exact in Postgres and exact as a Python `Decimal` all the way to the JSON
-encode. A client may round-trip one of these back to the server and get the
-same value; a split's legs are checked for exact equality against the posting
-they came from (`PUT /postings/{posting_id}/split`) on that basis.
+exact in Postgres and exact as a Python `Decimal` right up to the JSON encode.
+
+What "exact" claims is that nothing rounded, summed, or converted the value
+between the column and the response — not that the JSON number survives every
+input. The final encode is through a double, so a value near the top of
+`NUMERIC(18, 4)`'s range does lose digits on the wire
+(`99999999999999.9999` encodes as `1e14`). At the magnitudes a personal ledger
+holds, a double carries the four decimal places exactly, which is why the
+split-leg equality check (`PUT /postings/{posting_id}/split`) can compare a
+client's legs to the posting they came from. A ledger large enough to exceed
+that is the case decimal strings would exist to serve, and `src/db/money.py`
+records why they do not.
 
 **Analytics.** Every figure summed, averaged, projected, or converted at a
 display currency's rate: the whole of `GET /net-worth` and its history,

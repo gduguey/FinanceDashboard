@@ -136,12 +136,24 @@ export function budget(): Plugin {
 
       const entry = preloaded.find((f) => f.endsWith('.js'))
       if (entry === undefined) this.error('bundle-budget found no entry script in index.html')
-      const entryName = path.basename(entry as string)
+      const entryName = path.basename(entry)
       const alreadyLoaded = new Set(preloaded.map((f) => path.basename(f)))
-      // The entry's dynamic imports are exactly the lazy routes.
+      // The entry's dynamic imports are exactly the lazy routes. Matched in
+      // either quoting the bundler emits — a template literal today, a plain
+      // string in other output modes — because a matcher that silently finds
+      // nothing turns the route budget below into a loop over zero routes that
+      // passes every build.
       const routeChunks = [
-        ...new Set([...(sources.get(entryName) ?? '').matchAll(/import\(`\.\/([^`]+\.js)`\)/g)].map((m) => m[1])),
+        ...new Set(
+          [...(sources.get(entryName) ?? '').matchAll(/import\(\s*['"`]\.\/([^'"`]+\.js)['"`]\s*\)/g)].map((m) => m[1]),
+        ),
       ].sort()
+      if (routeChunks.length === 0) {
+        this.error(
+          `bundle-budget found no dynamic imports in ${entryName}, so the route budget checked nothing. ` +
+            'The bundler changed how it emits `import()`; update the matcher in web/tooling/budget.ts.',
+        )
+      }
 
       const overBudget: string[] = []
       for (const route of routeChunks) {

@@ -28,6 +28,16 @@ export const useClearLlmSettings = () =>
 
 export type ConnectionState = 'none' | 'checking' | 'invalid' | 'connected'
 
+/**
+ * What to show the user for a request that never reached an answer.
+ *
+ * @param error - Whatever the query rejected with.
+ * @returns A message, never `null` — an errored verify always has something to say.
+ */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Could not reach the provider'
+}
+
 // The one shared definition of "is this provider actually connected" —
 // Settings and Transactions' usage banner both read this same cached
 // query rather than each deciding for themselves. A real auth check (one
@@ -49,6 +59,11 @@ export function useLlmConnectionStatus(provider: 'gemini' | 'mistral'): {
   })
 
   if (!configured) return { state: 'none', error: null }
+  // A request that failed is an answer, not a pending one. Reading only
+  // `isPending`/`data` left this stuck on `checking` forever once the query
+  // had exhausted its retries and settled as an error — an offline or 500
+  // verify showed a permanent spinner instead of something to act on.
+  if (verify.isError) return { state: 'invalid', error: errorMessage(verify.error) }
   if (verify.isPending || !verify.data) return { state: 'checking', error: null }
   if (!verify.data.ok) return { state: 'invalid', error: verify.data.error }
   return { state: 'connected', error: null }

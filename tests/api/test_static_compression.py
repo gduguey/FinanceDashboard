@@ -77,6 +77,44 @@ def test_the_media_type_survives_compression(assets: Path) -> None:
     assert response.headers["content-type"] == "text/javascript; charset=utf-8"
 
 
+def test_a_ranged_request_for_a_variant_still_names_its_coding(assets: Path) -> None:
+    """A 206 carries the variant's bytes, so it states the variant's coding.
+
+    Starlette answers a `Range` request off whichever file it was handed, and
+    the handler hands it the `.br` — so the response has to say the bytes are
+    brotli, not just that they are ten bytes of something.
+
+    Two layers agree on this today: `mimetypes.encodings_map` knows both `.gz`
+    and `.br`, so Starlette would label the response correctly on its own, and
+    the handler sets both headers explicitly anyway. This pins the observable
+    result rather than which of the two supplied it — the point being that the
+    contract holds for a coding `mimetypes` has never heard of.
+    """
+    variant = (assets / "app-abc123.js.br").read_bytes()
+
+    response = _client(assets).get("/assets/app-abc123.js", headers={"accept-encoding": "br", "range": "bytes=0-4"})
+
+    assert response.status_code == 206
+    assert response.headers["content-encoding"] == "br"
+    assert response.headers["content-type"] == "text/javascript; charset=utf-8"
+    assert response.headers["vary"] == "accept-encoding"
+    # Stated against the *variant*: the total is the `.br` file's length, not
+    # the original's, which is what says whose bytes are on the wire.
+    assert response.headers["content-range"] == f"bytes 0-4/{len(variant)}"
+    assert len(variant) != len(BODY)
+
+
+def test_a_ranged_request_with_no_variant_is_untouched(assets: Path) -> None:
+    """The fallback path answers a range off the original file, uncompressed."""
+    response = _client(assets).get(
+        "/assets/plain-def456.css", headers={"accept-encoding": "gzip", "range": "bytes=0-9"}
+    )
+
+    assert response.status_code == 206
+    assert "content-encoding" not in response.headers
+    assert response.content == CSS[:10]
+
+
 def test_a_client_accepting_no_coding_gets_the_uncompressed_file(assets: Path) -> None:
     response = _client(assets).get("/assets/app-abc123.js", headers={"Accept-Encoding": "identity"})
 

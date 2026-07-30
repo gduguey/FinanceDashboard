@@ -18,10 +18,11 @@ describe('NumberInput', () => {
     await user.clear(field)
     await user.type(field, '6')
 
-    // The bug this component exists to prevent: coercing '' to 0 on the
-    // keystroke that clears the field leaves a '0' behind, so the next digit
-    // lands after it and 6 reads back as 6 only if the 0 really went away.
-    expect(field).toHaveValue(6)
+    // Asserted on the raw text, not on `toHaveValue(6)`: a `<input
+    // type="number">` holding "06" reads back as the number 6, which is
+    // exactly the state this component exists to prevent. Coercing '' to 0 on
+    // the keystroke that clears the field is what leaves the 0 behind.
+    expect((field as HTMLInputElement).value).toBe('6')
   })
 
   it('reports nothing until the field is left', async () => {

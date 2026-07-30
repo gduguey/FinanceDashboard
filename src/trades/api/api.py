@@ -276,12 +276,21 @@ class _PrecompressedStaticFiles(StaticFiles):
                 continue
             if candidate.status_code >= HTTPStatus.BAD_REQUEST:
                 continue
-            if candidate.status_code == HTTPStatus.OK:
+            # Stated here rather than inherited. Starlette derives both
+            # headers from `mimetypes`, whose `encodings_map` happens to know
+            # `.gz` and `.br` today and would answer `None` for a coding added
+            # later — so this handler says which coding it chose rather than
+            # depending on a table it does not own.
+            #
+            # Applied to a 206 as well as a 200 for the same reason: a byte
+            # range of a variant is still the variant's bytes, and a client
+            # resuming a download needs to be told what they are encoded as.
+            if candidate.status_code in {HTTPStatus.OK, HTTPStatus.PARTIAL_CONTENT}:
                 candidate.headers["content-encoding"] = encoding
                 candidate.headers["content-type"] = _identity_content_type(path)
-            # A 304 or a 206 is passed through untouched: Starlette derived it
-            # from the variant's own ETag and byte range, which are the right
-            # ones for the entity actually being served.
+            # A 304 is passed through untouched — it carries no body, and its
+            # ETag is the variant's, which is the right one for the entity
+            # actually being served.
             response = candidate
             break
         if response is None:

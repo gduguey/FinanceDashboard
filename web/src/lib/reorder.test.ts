@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { moveItem, sameOrder } from '@/lib/reorder'
+import { moveItem, sameMembers, sameOrder } from '@/lib/reorder'
 
 const key = (s: string) => s
 
@@ -65,5 +65,32 @@ describe('sameOrder', () => {
     const left = [{ id: 'a' }, { id: 'b' }]
     const right = [{ id: 'a' }, { id: 'b' }]
     expect(sameOrder(left, right, (item) => item.id)).toBe(true)
+  })
+})
+
+describe('sameMembers', () => {
+  const keyOf = (item: { id: string }) => item.id
+  const a = { id: 'a' }
+  const b = { id: 'b' }
+  const c = { id: 'c' }
+
+  it('is true for the same items in a different order', () => {
+    expect(sameMembers([a, b, c], [c, a, b], keyOf)).toBe(true)
+  })
+
+  it('is false once an item is added', () => {
+    expect(sameMembers([a, b], [a, b, c], keyOf)).toBe(false)
+  })
+
+  it('is false once an item is removed', () => {
+    expect(sameMembers([a, b, c], [a, b], keyOf)).toBe(false)
+  })
+
+  it('is false when one item is swapped for another', () => {
+    expect(sameMembers([a, b], [a, c], keyOf)).toBe(false)
+  })
+
+  it('is true for two empty lists', () => {
+    expect(sameMembers([], [], keyOf)).toBe(true)
   })
 })

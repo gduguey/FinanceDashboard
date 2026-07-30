@@ -14,7 +14,7 @@ import {
   useReorderContributionAutomations,
   useReorderWithdrawalAutomations,
 } from '@/hooks/useAccountingData'
-import { moveItem, sameOrder } from '@/lib/reorder'
+import { moveItem, sameMembers, sameOrder } from '@/lib/reorder'
 import type { Goal, GoalAutomation, GoalAutomationFrequency, GoalAutomationMode } from '@/types/accounting'
 
 const MODE_LABELS: Record<GoalAutomationMode, string> = {
@@ -57,8 +57,15 @@ function useRowDrag<T>(items: T[], keyOf: (item: T) => string, onReorder: (items
   // Drop the local copy once the server's own order agrees with it. Clearing
   // it at drop time instead would snap the rows back to the pre-drag order for
   // as long as the request took, then forward again when it landed.
+  //
+  // Membership is the second reason to drop it, and the one agreement alone
+  // cannot reach: an automation created or deleted while a reorder is
+  // unresolved gives the server a list the pending copy can never equal, so
+  // waiting on order alone would keep rendering the stale rows — a deleted one
+  // included — for as long as the panel stayed mounted.
   useEffect(() => {
-    if (pending !== null && sameOrder(pending, items, keyOf)) setPending(null)
+    if (pending === null) return
+    if (sameOrder(pending, items, keyOf) || !sameMembers(pending, items, keyOf)) setPending(null)
   }, [pending, items, keyOf])
 
   return {

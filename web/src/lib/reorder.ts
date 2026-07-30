@@ -31,3 +31,24 @@ export function sameOrder<T>(a: T[], b: T[], keyOf: (item: T) => string): boolea
   if (a.length !== b.length) return false
   return a.every((item, index) => keyOf(item) === keyOf(b[index]))
 }
+
+/**
+ * Whether two lists hold the same items, in any order.
+ *
+ * The weaker companion to `sameOrder`, for deciding whether a pending local
+ * order is still *about* the list it was taken from. A create or a delete
+ * landing while a reorder is unresolved changes the membership, and no
+ * permutation of the old list will ever equal the new one — so a caller
+ * waiting on `sameOrder` alone would wait forever, rendering rows that no
+ * longer exist.
+ *
+ * @param a - One list.
+ * @param b - The other.
+ * @param keyOf - How to identify an item.
+ * @returns `true` when both hold exactly the same keys.
+ */
+export function sameMembers<T>(a: T[], b: T[], keyOf: (item: T) => string): boolean {
+  if (a.length !== b.length) return false
+  const keys = new Set(a.map(keyOf))
+  return b.every((item) => keys.has(keyOf(item)))
+}
