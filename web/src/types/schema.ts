@@ -2901,6 +2901,10 @@ export interface paths {
      *     Drag-and-drop reordering goes through
      *     `PUT /goal-automations/contributions/order`.
      *
+     *     A body that would break a `remainder` rule is a 400 from
+     *     `_validate_remainder_invariant`, the same check the reorder and the
+     *     single-row `PATCH` run.
+     *
      *     Returns
      *     -------
      *     GoalAutomation

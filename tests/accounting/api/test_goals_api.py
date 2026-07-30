@@ -979,6 +979,60 @@ def test_reordering_rejects_moving_a_remainder_off_the_bottom(client, db_session
     assert stored[remainder["automation_id"]]["priority"] == 1  # still last
 
 
+def test_creating_a_second_remainder_automation_is_a_400_not_a_500(client, db_session) -> None:
+    """`goal_automations` carries `UNIQUE (user_id) WHERE mode = 'remainder'`, whose only voice is a 500.
+
+    The create route used to skip `_validate_remainder_invariant` entirely and
+    leave both `remainder` rules to that index, so the second one surfaced as an
+    unhandled `IntegrityError` rather than the 400 the reorder and the
+    single-row `PATCH` answer for the same illegal state.
+    """
+    _create_goal(db_session)
+    remainder = _add_contribution_automation(client, mode="remainder")
+
+    response = client.post(
+        "/api/v1/accounting/goal-automations/contributions",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-01-05",
+            "frequency": "monthly",
+            "mode": "remainder",
+            "value": 0.0,
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "remainder" in response.json()["detail"]
+    assert list(_stored_automations(client)) == [remainder["automation_id"]]
+
+
+def test_appending_an_ordinary_automation_after_a_remainder_is_refused(client, db_session) -> None:
+    """A create appends at the end, which would push the `remainder` row off the bottom.
+
+    That is the state the reorder route rejects, so the create has to reject it
+    too — it used to persist it silently and leave the list in a shape a
+    subsequent reorder could no longer submit.
+    """
+    _create_goal(db_session)
+    remainder = _add_contribution_automation(client, mode="remainder")
+
+    response = client.post(
+        "/api/v1/accounting/goal-automations/contributions",
+        json={
+            "goal_id": "emergency-fund",
+            "start_date": "2026-01-05",
+            "frequency": "monthly",
+            "mode": "fixed_amount",
+            "value": 100.0,
+            "currency": "USD",
+        },
+    )
+
+    assert response.status_code == 400
+    assert list(_stored_automations(client)) == [remainder["automation_id"]]
+
+
 def test_reordering_accepts_a_remainder_that_stays_last(client, db_session) -> None:
     _create_goal(db_session)
     first = _add_contribution_automation(client, value=100.0)

@@ -435,6 +435,10 @@ def post_goal_automation(
     Drag-and-drop reordering goes through
     `PUT /goal-automations/contributions/order`.
 
+    A body that would break a `remainder` rule is a 400 from
+    `_validate_remainder_invariant`, the same check the reorder and the
+    single-row `PATCH` run.
+
     Returns
     -------
     GoalAutomation
@@ -455,6 +459,13 @@ def post_goal_automation(
         value=request.value,
         currency=request.currency,
     )
+    # Validated against the list this would produce, exactly as `patch_goal_automation`
+    # and the reorder are. Skipping it here left the `remainder` rules to the
+    # `goal_automations` partial unique index alone, whose only vocabulary is a
+    # unique violation — so a second `remainder` reached the client as a 500
+    # instead of the documented 400, and appending an ordinary rule *after* a
+    # `remainder` one persisted a state the reorder would refuse.
+    _validate_remainder_invariant([*existing, automation])
     upsert_goal_automation(automation, session, user_id)
     location_of(http_request, response, "get_goal_automation", automation_id=automation.automation_id)
     return GoalAutomation.from_domain(automation)
