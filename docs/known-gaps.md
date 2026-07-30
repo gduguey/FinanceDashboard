@@ -105,38 +105,7 @@ the auth path.
 path (every request's auth check), so it deserves careful, isolated implementation
 and tests — not a quick bolt-on.
 
-## 4. ~53 routes are annotated with domain models rather than API-layer models
-
-**Where:** every module in `src/accounting/api/routers/` and
-`src/trades/api/routers/`. The return annotation is the whole response
-contract on every route in both packages — neither uses `response_model=`
-anywhere — and roughly 53 of those annotations name a type from
-`accounting.models` / `trades.models` (`Category`, `Goal`, `Posting`,
-`TransferRule`, `Budget`, `Account`, …) instead of a mirror in
-`api.api_models`. About four more leak transitively, through a wrapper field
-on a model that *is* in `api_models`.
-
-**What:** the wire format is coupled to the domain model, so a field added for
-internal reasons ships to every client and to `web/src/types/schema.ts`
-without anyone deciding it should. Nothing here returns a SQLAlchemy object —
-the audit finding that named this "ORM types on the wire" (F12) is wrong on
-that point, and was corrected when annotated. These are Pydantic domain
-models, which is a much smaller problem than an ORM leak but the same
-coupling.
-
-**Intended fix:** an `api_models` mirror per response type, and the routes
-annotated against those. `Money` is already a single centralized alias
-(`db.money`), so writing the mirrors does not have to wait for, and creates no
-rework for, the decimal-string cutover.
-
-**Why deferred:** it is ~53 mechanical but individually-reviewable
-annotations, touching every router in both packages, and it regenerates the
-whole TypeScript client. Bundling it into the PR that moved every path,
-status code and `Location` would have made a large diff impossible to review
-for the contract changes that carry real behaviour. Deliberately left as its
-own PR, where the diff *is* the finding.
-
-## 5. `PostingPage` and `LedgerExportPage` give identical field names different units
+## 4. `PostingPage` and `LedgerExportPage` give identical field names different units
 
 **Where:** `PostingPage` and `LedgerExportPage` in
 `src/accounting/api/api_models.py`, served by `GET /api/v1/accounting/postings`

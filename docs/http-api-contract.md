@@ -157,6 +157,41 @@ load-bearing and commented at each site:
 A future `GET /<collection>/<literal>` has to go above the item route in the
 same module.
 
+## Which models the wire is made of
+
+Every route answers with a model declared in `api.api_models` or
+`api.entities` — never with one from `accounting.models`/`trades.models`.
+The return annotation *is* the response contract (neither package uses
+`response_model=` anywhere), so an annotation naming a domain model makes the
+wire format a projection of internal state: a field added there for internal
+reasons ships to every client and into `web/src/types/schema.ts` with nobody
+deciding it should. Before PR 3, 46 routes named a domain model directly and
+14 more reached one through a wrapper field.
+
+`api.entities` holds one mirror per entity a client reads, each restating the
+fields it puts on the wire, with `from_domain` as the single copying seam. The
+fields a mirror does not declare are dropped there, which is the whole point.
+Four mirrors also carry `to_domain`, for the four entities a client *sends* as
+a whole (`OpeningBalance`, `ManualTransfer`, `ManualOverride`, `PostingSplit`);
+every other write takes a purpose-built body from `api_models`, because a
+request body is rarely the shape of the entity it creates.
+
+Two things are deliberately **not** mirrored:
+
+- **The `Literal` vocabularies** — `AccountKind`, `CurrencyCode`,
+  `CategoryClassification`, `GoalAutomationMode` and the rest. They are value
+  sets, not shapes: they have no fields to leak, they appear in the schema
+  inlined rather than as components, and duplicating them would mean a new
+  currency had to be added in two places before it could be said. Adding a
+  member is a deliberate vocabulary change under either arrangement.
+- **Validators and class-level machinery.** A mirror restates fields and
+  constraints, not `model_validator`s that police what may be *written*
+  (`GoalAutomation`'s schedule check, `LedgerEvent`'s event-type invariants)
+  nor `polars_schema`, which is a fact about the analytics frame.
+  `tests/api/test_response_models.py` pins the rule against the real routing
+  table, walking into type arguments and model fields alike, so a route added
+  later either follows it or fails.
+
 ## Deliberate non-goals
 
 **No HATEOAS.** (API-audit F11.) A single first-party SPA that is generated
