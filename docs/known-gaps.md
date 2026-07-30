@@ -251,3 +251,37 @@ attribute's clothes.
 `onDragEnd` already calls, so the two paths cannot disagree. That is a UI change
 with its own design question (whether the buttons are always visible or appear
 on focus), which is why it is not bundled into a lint-gate PR.
+
+## 8. Two `pytest` runs against the same database destroy each other
+
+`tests/conftest.py`'s session-scoped `_db_engine` opens `DATABASE_URL_TEST`
+and, before yielding, runs `DROP SCHEMA IF EXISTS accounting CASCADE`,
+the same for `trades`, then `Base.metadata.drop_all` / `create_all`. That is
+correct for one run and destructive for two: a second session starting while
+the first is mid-suite drops the tables the first is still using, and the
+first then fails in whatever test happens to be executing.
+
+The failures do not look like a fixture problem. They surface as a scattered
+handful of unrelated assertion errors and `ProgrammingError`s — a different
+set each time, in whichever tests were in flight — so they read as a real
+regression in whatever change is being tested. This cost real time during
+PR 5: two concurrent runs produced first "5 failed, 4 errors" and then
+"4 failed, 7 errors" on a **different** set including a trades
+statements-export test, and both were artefacts. CI was green on the same
+commit throughout, because CI runs one suite against its own container.
+
+Nothing warns about it. There is no lock, and no check that the database is
+not already in use. `tests/db/test_rls_coverage.py` and
+`test_rls_isolation.py` are immune by construction — `tests/db/conftest.py`
+gives them a uuid-suffixed scratch database each — which is the shape the fix
+should take.
+
+**Fix direction:** derive the database name per run rather than taking it
+verbatim, the way the RLS conftest already does — suffix
+`DATABASE_URL_TEST`'s database with `os.environ.get("PYTEST_XDIST_WORKER",
+"")` plus a per-session token, create it, migrate or `create_all` into it,
+and drop it at the end. That fixes the human-runs-two-terminals case and the
+`pytest-xdist` case with one mechanism. A cheaper stopgap is a
+`pg_advisory_lock` taken in `_db_engine` so the second run blocks instead of
+corrupting, but that serialises rather than parallelises, and it still needs
+the lock to be released on a crashed run.
