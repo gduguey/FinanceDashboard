@@ -4075,32 +4075,6 @@ export interface components {
     /**
      * Account
      * @description One place money can sit or be attributed to — a real account, a vault, or a virtual counterparty.
-     *
-     *     `parent_account_id` is only set for a `vault`, pointing at the savings
-     *     account it's a named sub-balance of. `broker_connection_id` is only set
-     *     for the `external_investment` kind, naming the *broker connection*
-     *     whose portfolio this account mirrors, since its balance is never
-     *     derived from its own postings.
-     *
-     *     That field replaces `external_ref`, a free-text column whose only ever
-     *     value was the literal `"trades"` and which `dashboard.net_worth`
-     *     string-matched on. It is the one id on this model that is a raw
-     *     `broker_connections.id` rather than a natural key, deliberately: it
-     *     points across the seam into the other ledger's schema, where this
-     *     package has no business resolving natural keys, and the database
-     *     enforces it as a real foreign key (see `db.core.Account`) so an account
-     *     can never name a connection that isn't there.
-     *
-     *     `meta` holds facts about the account itself rather than any one
-     *     posting — currently just `apy_pct`, the interest rate last seen on a
-     *     statement, carried here because it describes the account's terms, not
-     *     a single transaction. `closed` marks a real-world account that no
-     *     longer exists at its institution — its transaction history stays
-     *     exactly as imported (never deleted), it just stops being offered as a
-     *     destination for new imports or transfers. `last_four` is the real
-     *     trailing digits the institution shows for this account, when it shows
-     *     any at all — `None` for vaults, cash, loans, and virtual counterparties,
-     *     which have none.
      */
     Account: {
       /** Account Id */
@@ -4773,13 +4747,6 @@ export interface components {
     /**
      * Category
      * @description One node in the two-level category tree: a top-level category, or a subcategory of one.
-     *
-     *     `parent_category_id` is `None` for a top-level category and points at
-     *     one for a subcategory — never more than one level deep. A subcategory
-     *     is expected (not enforced here) to share its parent's `classification`
-     *     but have its own distinct `color`, never repeated by a sibling
-     *     subcategory or any other category — see `store.next_available_color`,
-     *     the single place a color is ever assigned.
      */
     Category: {
       /** Category Id */
@@ -5046,7 +5013,7 @@ export interface components {
     }
     /**
      * Currency
-     * @description One supported currency's display metadata — never a value on its own, only ever attached to one.
+     * @description One supported currency's display metadata.
      */
     Currency: {
       /**
@@ -6077,37 +6044,10 @@ export interface components {
      * ManualTransfer
      * @description A user-recorded transfer between two of their own accounts, never derived from an import.
      *
-     *     Every other posting in this ledger traces back to a real bank
-     *     statement row (see `store`'s module docstring) — this is the one
-     *     deliberate exception, for the one case no statement can ever cover:
-     *     moving out whatever's left in an account right before closing it (see
-     *     `api.close_account`). `from_amount`/`to_amount` are each in that side's
-     *     own account's currency and entered independently rather than via a
-     *     stored exchange rate, so a transfer between two different currencies
-     *     is exactly what the user says left one side and arrived on the other,
-     *     not a computed conversion.
-     *
-     *     **This is a shape, not a table.** It used to be both: `manual_transfers`
-     *     was a parallel mini-ledger holding a date, two accounts, two amounts and
-     *     a description — everything `transactions` plus two `postings` already
-     *     express, expressed a second, incompatible way, which is why its rows had
-     *     to be turned into postings by a resolution stage of their own before any
-     *     balance could count them. A manual transfer is now stored as exactly
-     *     what it is: one `Transaction` with `origin = "manual"` and its two
-     *     balancing legs (see `repositories.accounts.insert_manual_transfers`,
-     *     which writes them, and `load_manual_transfers`, which reads this shape
-     *     back out of them). This model survives as the API's vocabulary for the
-     *     pair — "money left here, money arrived there" — and as the one place
-     *     the pair's own invariant lives.
-     *
-     *     That invariant is the positivity of both legs. `Posting.amount` is
-     *     signed by design (a debit is negative, a credit positive) and must stay
-     *     unconstrained, so the constraint cannot live on the storage the legs now
-     *     share with every imported posting; it lives here, on the only thing that
-     *     still expresses "the *from* amount" and "the *to* amount" as distinct,
-     *     directional quantities. `insert_manual_transfers` is what turns them
-     *     into the signed pair (`-from_amount`, `+to_amount`), so a negative
-     *     `from_amount` sneaking through would silently invert the transfer.
+     *     Both amounts stay `gt=0` here, unlike most constraints on a mirror: this
+     *     shape is a *request* body too (`api_models.AccountCloseRequest`), and the
+     *     positivity of the two legs is the invariant that makes them directional
+     *     at all — see `models.ManualTransfer`.
      */
     ManualTransfer: {
       /** Transfer Id */
@@ -6292,14 +6232,11 @@ export interface components {
     }
     /**
      * OpeningBalance
-     * @description The balance a real account already had the day before its postings start, e.g. a vault opened outside this app.
+     * @description The balance a real account already had the day before its postings start.
      *
-     *     A `Posting` can only ever reflect money moving *through* the ledger, so
-     *     a brand-new account with real money already in it (added here rather
-     *     than discovered via import) would otherwise show a $0 balance until its
-     *     first posting. This is added on top of the posting-derived balance in
-     *     `dashboard.net_worth`, contributing nothing for any `as_of` before
-     *     `as_of_date` — the account simply didn't exist to this ledger yet.
+     *     One of the two mirrors a client also *sends*: `PUT
+     *     /accounts/{account_id}/opening-balance` takes the whole entity, since
+     *     every field of it is the caller's to set.
      */
     OpeningBalance: {
       /** Account Id */
@@ -7009,10 +6946,6 @@ export interface components {
     /**
      * Tag
      * @description A cross-cutting label — a trip, a move, an event — independent of the category tree.
-     *
-     *     Where a category answers "what kind of spend is this," a tag answers
-     *     "what's it part of": a single trip involves food, transport, and
-     *     lodging, each its own category, all sharing one tag.
      */
     Tag: {
       /** Tag Id */

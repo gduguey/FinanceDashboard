@@ -28,6 +28,7 @@ from accounting.api.api_models import (
     SyncStatus,
 )
 from accounting.api.dependencies import _resolved_postings, state
+from accounting.api.entities import Category
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
@@ -277,7 +278,9 @@ async def post_canonical_import_preview(
             )
     except CanonicalCsvError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return CanonicalImportPreview(new_categories=list(outcome.new_categories.values()))
+    return CanonicalImportPreview(
+        new_categories=[Category.from_domain(category) for category in outcome.new_categories.values()]
+    )
 
 
 @router.post("/import/canonical")
@@ -365,7 +368,7 @@ async def post_canonical_import(
         account_id=result.account_id,
         new_posting_count=result.new_posting_count,
         total_posting_count=result.total_posting_count,
-        new_categories=list(result.new_categories.values()),
+        new_categories=[Category.from_domain(category) for category in result.new_categories.values()],
         skipped_rows=SkippedRowsInfo(**vars(result.skipped_rows)) if result.skipped_rows else None,
     )
 
@@ -444,7 +447,7 @@ async def post_categorize_from_file_preview(
 
     return CategorizeFromFilePreview(
         matches=[_match_response(match) for match in preview.matches],
-        new_categories=list(preview.new_categories.values()),
+        new_categories=[Category.from_domain(category) for category in preview.new_categories.values()],
         skipped_rows=SkippedRowsInfo(**vars(preview.skipped_rows)) if preview.skipped_rows else None,
     )
 
@@ -538,7 +541,8 @@ async def post_categorize_from_file_apply(  # noqa: PLR0913
     updated_count = apply_categorize_from_file(session, to_apply, user_id)
 
     return CategorizeFromFileApplyResult(
-        updated_posting_count=updated_count, new_categories=list(preview.new_categories.values())
+        updated_posting_count=updated_count,
+        new_categories=[Category.from_domain(category) for category in preview.new_categories.values()],
     )
 
 

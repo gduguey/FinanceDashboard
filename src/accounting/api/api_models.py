@@ -4,6 +4,12 @@ Every `BaseModel` subclass used by the routers in `accounting.api.routers`
 lives here — request bodies and response models alike — so a model's
 shape is defined exactly once, importable by whichever router needs it,
 without any router needing to know about another router's models.
+
+The one exception is the entities themselves. An endpoint that returns *an
+account* or *a category* returns the mirror in `accounting.api.entities`,
+not `accounting.models`' own class — see that module for why. The models
+here compose those mirrors (`AccountCloseResponse.account`), so nothing in
+this file names a domain entity type directly.
 """
 
 from __future__ import annotations
@@ -14,11 +20,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+from accounting.api.entities import Account, Category, ManualTransfer, Tag
 from accounting.models import (
-    Account,
     AccountKind,
     Budget,
-    Category,
     CategoryClassification,
     CategoryPattern,
     CompoundingFrequency,
@@ -30,13 +35,11 @@ from accounting.models import (
     GoalAutomationMode,
     GoalContribution,
     GoalContributionOrigin,
-    ManualTransfer,
     OtherAsset,
     PendingSuggestionSource,
     Posting,
     PostingSplitLeg,
     SimulatorScenario,
-    Tag,
     TransferLink,
     TransferLinkSource,
     TransferRule,

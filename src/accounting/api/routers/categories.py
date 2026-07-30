@@ -19,9 +19,11 @@ from accounting.api.api_models import (
     CategoryRenameResponse,
     SubcategoryCreate,
 )
+from accounting.api.entities import Category
 from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.importers.ingest import load_ledger
-from accounting.models import Budget, Category
+from accounting.models import Budget
+from accounting.models import Category as DomainCategory
 from accounting.repositories.interpretation import (
     load_category_patterns,
     load_overrides,
@@ -48,7 +50,7 @@ from db.session import get_db
 router = APIRouter()
 
 
-def _added_categories(before: dict[str, Category], after: dict[str, Category]) -> list[Category]:
+def _added_categories(before: dict[str, DomainCategory], after: dict[str, DomainCategory]) -> list[DomainCategory]:
     """Which categories a create actually introduced or changed, so only those need writing.
 
     Returns
@@ -89,7 +91,7 @@ def get_category(
     category = seeded_categories(session, user_id).get(category_id)
     if category is None:
         raise HTTPException(status_code=404, detail=f"Category {category_id!r} not found")
-    return category
+    return Category.from_domain(category)
 
 
 @router.post("/categories", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -147,7 +149,7 @@ def post_category(
         raise HTTPException(
             status_code=409, detail=f"The name {request.name!r} is too similar to an existing category — pick another"
         )
-    new_category = Category(
+    new_category = DomainCategory(
         category_id=category_id,
         name=request.name,
         classification=request.classification,
@@ -162,7 +164,7 @@ def post_category(
     replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
     session.commit()
     location_of(http_request, response, "get_category", category_id=category_id)
-    return new_category
+    return Category.from_domain(new_category)
 
 
 @router.post("/categories/{parent_id}/subcategories", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -215,7 +217,7 @@ def post_subcategory(
             status_code=409,
             detail=f"The name {request.name!r} is too similar to an existing subcategory — pick another",
         )
-    new_category = Category(
+    new_category = DomainCategory(
         category_id=category_id,
         name=request.name,
         classification=parent.classification,
@@ -228,7 +230,7 @@ def post_subcategory(
     replace_categories(session, user_id, _added_categories(existing_categories, categories), prune=False)
     session.commit()
     location_of(http_request, response, "get_category", category_id=category_id)
-    return new_category
+    return Category.from_domain(new_category)
 
 
 def _category_references(session: Session, user_id: uuid.UUID) -> CategoryReferences:
@@ -389,7 +391,12 @@ def delete_category(
     # `normalize_categories` above. Its prune never touches a retired row.
     replace_categories(session, user_id, remaining_categories.values())
     session.commit()
-    return CategoryDeleteResponse(categories=remaining_categories, uncategorized_posting_count=posting_count)
+    return CategoryDeleteResponse(
+        categories={
+            category_id: Category.from_domain(category) for category_id, category in remaining_categories.items()
+        },
+        uncategorized_posting_count=posting_count,
+    )
 
 
 @router.get("/categories/{category_id}/rename-preview")
@@ -551,4 +558,7 @@ def post_category_rename(
     replace_categories(session, user_id, categories.values())
     session.commit()
 
-    return CategoryRenameResponse(categories=categories, merged=bool(id_remap))
+    return CategoryRenameResponse(
+        categories={renamed_id: Category.from_domain(category) for renamed_id, category in categories.items()},
+        merged=bool(id_remap),
+    )

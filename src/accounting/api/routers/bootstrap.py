@@ -30,7 +30,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import AccountingStoreResponse
-from accounting.models import SUPPORTED_CURRENCIES, Currency
+from accounting.api.entities import Account, Category, Currency, Tag
+from accounting.models import SUPPORTED_CURRENCIES
 from accounting.repositories.interpretation import (
     load_category_patterns,
     load_transfer_links,
@@ -71,9 +72,15 @@ def get_store(
         `AccountingStoreResponse` for why.
     """
     return AccountingStoreResponse(
-        accounts=seeded_accounts(session, user_id),
-        categories=seeded_categories(session, user_id),
-        tags=load_tags(session, user_id),
+        accounts={
+            account_id: Account.from_domain(account)
+            for account_id, account in seeded_accounts(session, user_id).items()
+        },
+        categories={
+            category_id: Category.from_domain(category)
+            for category_id, category in seeded_categories(session, user_id).items()
+        },
+        tags={tag_id: Tag.from_domain(tag) for tag_id, tag in load_tags(session, user_id).items()},
         transfer_rules=load_transfer_rules(session, user_id),
         other_assets=load_other_assets(session, user_id),
         budgets=load_budgets(session, user_id),
@@ -95,4 +102,4 @@ def get_currencies() -> list[Currency]:
     list[Currency]
         One entry per supported currency.
     """
-    return list(SUPPORTED_CURRENCIES.values())
+    return [Currency.from_domain(currency) for currency in SUPPORTED_CURRENCIES.values()]

@@ -15,8 +15,10 @@ from accounting.api.api_models import (
     AccountUpdate,
 )
 from accounting.api.dependencies import _account_has_postings
+from accounting.api.entities import Account, ManualTransfer, OpeningBalance
 from accounting.api.locations import CREATED_WITH_LOCATION, location_of
-from accounting.models import Account, AccountKind, OpeningBalance
+from accounting.models import Account as DomainAccount
+from accounting.models import AccountKind
 from accounting.repositories.accounts import (
     broker_connection_exists,
     insert_manual_transfers,
@@ -95,7 +97,7 @@ def get_account(
     account = seeded_accounts(session, user_id).get(account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
-    return account
+    return Account.from_domain(account)
 
 
 @router.post("/accounts", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -127,7 +129,7 @@ def post_account(
     if account.parent_account_id is not None and account.parent_account_id not in accounts:
         raise HTTPException(status_code=404, detail=f"Parent account {account.parent_account_id!r} does not exist")
     _check_broker_link(session, user_id, account.kind, account.broker_connection_id)
-    new_account = Account(
+    new_account = DomainAccount(
         account_id=uuid.uuid4().hex,
         name=account.name,
         kind=account.kind,
@@ -141,7 +143,7 @@ def post_account(
     replace_accounts(session, user_id, [new_account], prune=False)
     session.commit()
     location_of(http_request, response, "get_account", account_id=new_account.account_id)
-    return new_account
+    return Account.from_domain(new_account)
 
 
 @router.put("/accounts/{account_id}")
@@ -196,7 +198,7 @@ def put_account(
     if not update_account_fields(session, user_id, updated):
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     session.commit()
-    return updated
+    return Account.from_domain(updated)
 
 
 @router.delete("/accounts/{account_id}", status_code=204)
@@ -262,9 +264,15 @@ def close_account(
     updated_account = account.model_copy(update={"closed": True})
     if not set_account_closed(session, user_id, account_id, closed=True):
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
-    insert_manual_transfers(request.transfers, session, user_id)
+    insert_manual_transfers([transfer.to_domain() for transfer in request.transfers], session, user_id)
     session.commit()
-    return AccountCloseResponse(account=updated_account, manual_transfers=[*existing_transfers, *request.transfers])
+    return AccountCloseResponse(
+        account=Account.from_domain(updated_account),
+        manual_transfers=[
+            *(ManualTransfer.from_domain(transfer) for transfer in existing_transfers),
+            *request.transfers,
+        ],
+    )
 
 
 @router.post("/accounts/{account_id}/reopen")
@@ -292,7 +300,7 @@ def reopen_account(
     if not set_account_closed(session, user_id, account_id, closed=False):
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     session.commit()
-    return updated_account
+    return Account.from_domain(updated_account)
 
 
 @router.put("/accounts/{account_id}/opening-balance")
@@ -318,7 +326,7 @@ def put_opening_balance(
         raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
     if opening_balance.account_id != account_id:
         raise HTTPException(status_code=400, detail="account_id in the body must match the URL")
-    upsert_opening_balance(opening_balance, session, user_id)
+    upsert_opening_balance(opening_balance.to_domain(), session, user_id)
     return opening_balance
 
 

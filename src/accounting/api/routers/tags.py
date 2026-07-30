@@ -14,8 +14,9 @@ from accounting.api.api_models import (
     TagRenameRequest,
     TagRenameResponse,
 )
+from accounting.api.entities import Tag
 from accounting.api.locations import CREATED_WITH_LOCATION, location_of
-from accounting.models import Tag
+from accounting.models import Tag as DomainTag
 from accounting.repositories.taxonomy import delete_tag, load_tags, remap_tag_ids, replace_tags
 from accounting.taxonomy import plan_tag_rename, slugify
 from db.current_user import get_current_user_id
@@ -48,7 +49,7 @@ def get_tag(
     tag = load_tags(session, user_id).get(tag_id)
     if tag is None:
         raise HTTPException(status_code=404, detail=f"Tag {tag_id!r} not found")
-    return tag
+    return Tag.from_domain(tag)
 
 
 @router.post("/tags", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -94,11 +95,11 @@ def post_tag(
         raise HTTPException(
             status_code=409, detail=f"The name {request.name!r} is too similar to an existing tag — pick another"
         )
-    new_tag = Tag(tag_id=tag_id, name=request.name)
+    new_tag = DomainTag(tag_id=tag_id, name=request.name)
     replace_tags(session, user_id, [new_tag], prune=False)
     session.commit()
     location_of(http_request, response, "get_tag", tag_id=tag_id)
-    return new_tag
+    return Tag.from_domain(new_tag)
 
 
 @router.delete("/tags/{tag_id}", status_code=204)
@@ -203,4 +204,6 @@ def post_tag_rename(
     replace_tags(session, user_id, tags.values())
     session.commit()
 
-    return TagRenameResponse(tags=tags, merged=bool(id_remap))
+    return TagRenameResponse(
+        tags={renamed_id: Tag.from_domain(tag) for renamed_id, tag in tags.items()}, merged=bool(id_remap)
+    )
