@@ -22,6 +22,7 @@ export function TagsCell({
         <Badge key={tagId} variant="outline" className="gap-1 pr-1">
           {tags[tagId]?.name ?? tagId}
           <button
+            type="button"
             onClick={() => onChange(tagIds.filter((id) => id !== tagId))}
             className="text-muted-foreground/60 hover:text-destructive"
           >

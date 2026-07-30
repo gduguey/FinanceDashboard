@@ -256,7 +256,11 @@ export function PaystubReconciliationCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* The drop target is pointer-only by nature; the "choose files" label
+            below wraps a real file input, so keyboard users reach the same
+            action there. */}
         <div
+          role="none"
           className={cn(
             'flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-6 text-center transition-colors',
             isDragging ? 'border-primary bg-primary/5' : 'border-muted-foreground/25',

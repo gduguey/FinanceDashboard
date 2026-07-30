@@ -96,7 +96,10 @@ export function SynthwaveChaseLanding() {
   const label = FLEE_LABELS[Math.min(escapes, FLEE_LABELS.length - 1)]
 
   return (
-    <div className="crt" ref={arenaRef} onClick={() => setCredits((c) => c + 1)}>
+    // The click only bumps the decorative arcade "CREDITS" counter — it drives
+    // nothing, so there is no action a keyboard user is missing out on. The
+    // arena itself wraps the real login button and can't become one.
+    <div className="crt" role="none" ref={arenaRef} onClick={() => setCredits((c) => c + 1)}>
       <style>{css}</style>
 
       {/* Starfield */}
@@ -134,6 +137,7 @@ export function SynthwaveChaseLanding() {
 
       {/* The fleeing login button */}
       <button
+        type="button"
         className={`login ${tired ? 'tired' : ''}`}
         style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
         aria-label="Se connecter"

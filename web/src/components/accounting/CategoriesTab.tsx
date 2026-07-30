@@ -296,6 +296,7 @@ function ClassificationSection({
                   />
                 </span>
                 <button
+                  type="button"
                   onClick={() => removeCategory(category.category_id, category.name)}
                   className="text-muted-foreground/60 hover:text-destructive"
                 >
@@ -324,6 +325,7 @@ function ClassificationSection({
                       )}
                       {!isOther && (
                         <button
+                          type="button"
                           onClick={() => removeCategory(child.category_id, child.name)}
                           className="text-muted-foreground/60 hover:text-destructive"
                         >

@@ -161,103 +161,114 @@ function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomatio
           lower one. Drag to reorder; only the bottom row may be "Remainder".
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-2">
-        {drag.rows.map((addition, index) => {
-          const isLast = index === ordered.length - 1
-          return (
-            <div
-              key={addition.automation_id}
-              draggable
-              onDragStart={drag.onDragStart(index)}
-              onDragOver={drag.onDragOver(index)}
-              onDragEnd={drag.onDragEnd}
-              className="flex flex-wrap items-center gap-2 rounded-md border p-2"
-            >
-              <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
-              <Select
-                value={addition.goal_id}
-                onValueChange={(value) => value && update(addition.automation_id, { goal_id: value })}
+      <CardContent>
+        {/* An ordered list, because the order is the meaning — the card's own
+            description says these run top to bottom. `<li>` also gives the
+            drag handlers a semantic element to sit on. */}
+        <ol className="space-y-2">
+          {drag.rows.map((addition, index) => {
+            const isLast = index === ordered.length - 1
+            return (
+              <li
+                key={addition.automation_id}
+                draggable
+                onDragStart={drag.onDragStart(index)}
+                onDragOver={drag.onDragOver(index)}
+                onDragEnd={drag.onDragEnd}
+                className="flex flex-wrap items-center gap-2 rounded-md border p-2"
               >
-                <SelectTrigger size="sm" className="min-w-36">
-                  <SelectValue items={Object.fromEntries(goalList.map((g) => [g.goal_id, g.name]))} />
-                </SelectTrigger>
-                <SelectContent>
-                  {goalList.map((goal) => (
-                    <SelectItem key={goal.goal_id} value={goal.goal_id}>
-                      {goal.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Field label="Starting" className="flex-row items-center gap-1">
-                {(id) => (
-                  <Input
-                    id={id}
-                    type="date"
-                    className="w-36"
-                    value={addition.start_date ?? ''}
-                    onChange={(event) => update(addition.automation_id, { start_date: event.target.value })}
-                  />
-                )}
-              </Field>
-              <Select
-                value={addition.frequency ?? 'monthly'}
-                onValueChange={(value) =>
-                  value && update(addition.automation_id, { frequency: value as GoalAutomationFrequency })
-                }
-              >
-                <SelectTrigger size="sm" className="min-w-28">
-                  <SelectValue items={FREQUENCY_LABELS} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.entries(FREQUENCY_LABELS) as [GoalAutomationFrequency, string][]).map(
-                    ([frequency, label]) => (
-                      <SelectItem key={frequency} value={frequency}>
+                <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
+                <Select
+                  value={addition.goal_id}
+                  onValueChange={(value) => value && update(addition.automation_id, { goal_id: value })}
+                >
+                  <SelectTrigger size="sm" className="min-w-36">
+                    <SelectValue items={Object.fromEntries(goalList.map((g) => [g.goal_id, g.name]))} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {goalList.map((goal) => (
+                      <SelectItem key={goal.goal_id} value={goal.goal_id}>
+                        {goal.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Field label="Starting" className="flex-row items-center gap-1">
+                  {(id) => (
+                    <Input
+                      id={id}
+                      type="date"
+                      className="w-36"
+                      value={addition.start_date ?? ''}
+                      onChange={(event) => update(addition.automation_id, { start_date: event.target.value })}
+                    />
+                  )}
+                </Field>
+                <Select
+                  value={addition.frequency ?? 'monthly'}
+                  onValueChange={(value) =>
+                    value && update(addition.automation_id, { frequency: value as GoalAutomationFrequency })
+                  }
+                >
+                  <SelectTrigger size="sm" className="min-w-28">
+                    <SelectValue items={FREQUENCY_LABELS} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.entries(FREQUENCY_LABELS) as [GoalAutomationFrequency, string][]).map(
+                      ([frequency, label]) => (
+                        <SelectItem key={frequency} value={frequency}>
+                          {label}
+                        </SelectItem>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+                <Field label="Until (optional)" className="flex-row items-center gap-1">
+                  {(id) => (
+                    <OptionalDateInput
+                      id={id}
+                      value={addition.end_date ?? ''}
+                      onChange={(value) => update(addition.automation_id, { end_date: value || null })}
+                      placeholder="No end date"
+                    />
+                  )}
+                </Field>
+                <Select
+                  value={addition.mode ?? 'fixed_amount'}
+                  onValueChange={(value) => update(addition.automation_id, { mode: value as GoalAutomationMode })}
+                >
+                  <SelectTrigger size="sm" className="min-w-44">
+                    <SelectValue items={MODE_LABELS} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.entries(MODE_LABELS) as [GoalAutomationMode, string][]).map(([mode, label]) => (
+                      <SelectItem key={mode} value={mode} disabled={mode === 'remainder' && !isLast}>
                         {label}
                       </SelectItem>
-                    ),
-                  )}
-                </SelectContent>
-              </Select>
-              <Field label="Until (optional)" className="flex-row items-center gap-1">
-                {(id) => (
-                  <OptionalDateInput
-                    id={id}
-                    value={addition.end_date ?? ''}
-                    onChange={(value) => update(addition.automation_id, { end_date: value || null })}
-                    placeholder="No end date"
+                    ))}
+                  </SelectContent>
+                </Select>
+                {addition.mode !== 'remainder' && (
+                  <NumberInput
+                    className="w-24"
+                    value={addition.value ?? 0}
+                    onCommit={(value) => update(addition.automation_id, { value: value ?? 0 })}
                   />
                 )}
-              </Field>
-              <Select
-                value={addition.mode ?? 'fixed_amount'}
-                onValueChange={(value) => update(addition.automation_id, { mode: value as GoalAutomationMode })}
-              >
-                <SelectTrigger size="sm" className="min-w-44">
-                  <SelectValue items={MODE_LABELS} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.entries(MODE_LABELS) as [GoalAutomationMode, string][]).map(([mode, label]) => (
-                    <SelectItem key={mode} value={mode} disabled={mode === 'remainder' && !isLast}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {addition.mode !== 'remainder' && (
-                <NumberInput
-                  className="w-24"
-                  value={addition.value ?? 0}
-                  onCommit={(value) => update(addition.automation_id, { value: value ?? 0 })}
-                />
-              )}
-              <Button variant="ghost" size="icon" onClick={() => remove(addition.automation_id)}>
-                <Trash2 className="size-3.5 text-muted-foreground" />
-              </Button>
-            </div>
-          )
-        })}
-        <Button variant="outline" size="sm" onClick={add} disabled={goalList.length === 0 || createAddition.isPending}>
+                <Button variant="ghost" size="icon" onClick={() => remove(addition.automation_id)}>
+                  <Trash2 className="size-3.5 text-muted-foreground" />
+                </Button>
+              </li>
+            )
+          })}
+        </ol>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={add}
+          disabled={goalList.length === 0 || createAddition.isPending}
+        >
           + Add recurring addition
         </Button>
       </CardContent>
@@ -303,26 +314,29 @@ function WithdrawalPrioritiesList({
           listed goal is exhausted). Drag to reorder.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-2">
-        {drag.rows.map((entry, index) => (
-          <div
-            key={entry.goal_id}
-            draggable
-            onDragStart={drag.onDragStart(index)}
-            onDragOver={drag.onDragOver(index)}
-            onDragEnd={drag.onDragEnd}
-            className="flex items-center gap-2 rounded-md border p-2"
-          >
-            <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
-            <span className="flex-1 text-sm">{goalName(goals, entry.goal_id)}</span>
-            <Button variant="ghost" size="icon" onClick={() => remove(entry.automation_id)}>
-              <Trash2 className="size-3.5 text-muted-foreground" />
-            </Button>
-          </div>
-        ))}
+      <CardContent>
+        {/* Ordered for the same reason as the contributions list above. */}
+        <ol className="space-y-2">
+          {drag.rows.map((entry, index) => (
+            <li
+              key={entry.goal_id}
+              draggable
+              onDragStart={drag.onDragStart(index)}
+              onDragOver={drag.onDragOver(index)}
+              onDragEnd={drag.onDragEnd}
+              className="flex items-center gap-2 rounded-md border p-2"
+            >
+              <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
+              <span className="flex-1 text-sm">{goalName(goals, entry.goal_id)}</span>
+              <Button variant="ghost" size="icon" onClick={() => remove(entry.automation_id)}>
+                <Trash2 className="size-3.5 text-muted-foreground" />
+              </Button>
+            </li>
+          ))}
+        </ol>
         {unranked.length > 0 && (
           <Select onValueChange={(value) => value && add(String(value))}>
-            <SelectTrigger size="sm" className="min-w-48">
+            <SelectTrigger size="sm" className="mt-2 min-w-48">
               <SelectValue items={{ '': '+ Add a goal to the priority list' }} />
             </SelectTrigger>
             <SelectContent>

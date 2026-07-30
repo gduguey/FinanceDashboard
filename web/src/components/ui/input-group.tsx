@@ -46,7 +46,13 @@ function InputGroupAddon({
   ...props
 }: React.ComponentProps<'div'> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
+    // The click only forwards focus to the group's input, which is a plain
+    // focusable control already in the tab order — so this is a pointer
+    // convenience, not a control of its own. Giving the addon a button role
+    // would be a lie (it holds text, icons and real buttons, and a `<button>`
+    // cannot nest those) and would add a bogus tab stop ahead of the input.
     <div
+      role="none"
       data-slot="input-group-addon"
       data-align={align}
       className={cn(inputGroupAddonVariants({ align }), className)}

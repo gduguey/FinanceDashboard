@@ -199,7 +199,11 @@ export function LinkedTransactionsTable({
                           />
                         </div>
                         {renderRowAction && (
+                          // Pure event containment — it keeps the row's own
+                          // handlers off the action control it wraps, and adds
+                          // no behaviour of its own to expose.
                           <div
+                            role="none"
                             onClick={(event) => event.stopPropagation()}
                             onKeyDown={(event) => event.stopPropagation()}
                           >

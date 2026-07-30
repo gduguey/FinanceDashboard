@@ -100,7 +100,10 @@ export function BergeriePastoralLanding() {
   )
 
   return (
-    <div className="scene" onClick={() => setCredits((c) => c + 1)}>
+    // The click only bumps the decorative arcade "CREDITS" counter — it drives
+    // nothing, so there is no action a keyboard user is missing out on. The
+    // scene itself wraps the real login buttons and can't become one.
+    <div className="scene" role="none" onClick={() => setCredits((c) => c + 1)}>
       <style>{css}</style>
 
       {/* ---- Sky ---- */}
@@ -224,7 +227,7 @@ export function BergeriePastoralLanding() {
 
       {/* ---- Drifting login buttons (they wander, they don't flee) ---- */}
       {LOGIN_BUTTONS.map((b) => (
-        <button key={b.id} className={`login ${b.cls}`} onClick={login}>
+        <button type="button" key={b.id} className={`login ${b.cls}`} onClick={login}>
           <span className="login-note">{b.note}</span>
           {b.label}
         </button>

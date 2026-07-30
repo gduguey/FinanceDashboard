@@ -31,7 +31,10 @@
       "a11y": {
         "noLabelWithoutControl": "error",
         "useSemanticElements": "error",
-        "useAriaPropsSupportedByRole": "error"
+        "useAriaPropsSupportedByRole": "error",
+        "useButtonType": "error",
+        "noStaticElementInteractions": "error",
+        "useKeyWithClickEvents": "error"
       }
     }
   },

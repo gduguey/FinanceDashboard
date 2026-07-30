@@ -224,3 +224,30 @@ migration, backfill and invalidation design, which is why it is its own PR
 rather than the tail of a frontend one. Filter-shaped bulk actions
 (`validate-pending`, `pattern-suggest-category/bulk` resolving a filter instead
 of a list of ids) depend on it and are deferred with it.
+
+## 7. Reordering an automation is drag-only, so a keyboard cannot do it
+
+The two reorderable lists in `web/src/components/goals/GoalAutomationsPanel.tsx`
+— "Recurring additions" and "Withdrawal priority" — are driven entirely by
+`draggable` plus `onDragStart`/`onDragOver`/`onDragEnd`. There is no move-up /
+move-down control and no keyboard path to the operation, in this file or any
+other: `onDragStart` appears nowhere else in `web/src`.
+
+PR 5 turned Biome's accessibility rules on, and this is the one place where the
+rule pointed at something a lint fix cannot close. The rows are now `<ol>`/`<li>`
+rather than `<div>`s, which is a real improvement — the order *is* the meaning
+in both lists, and a screen reader now announces the position of each row — but
+it does not make the reorder reachable. Nor is there a truthful ARIA role that
+would: `aria-grabbed` and `aria-dropeffect` were deprecated and removed in ARIA
+1.2, so nothing expresses "draggable region" any more.
+
+`role="none"` would have made the rule pass. It was declined: it asserts the
+interaction is presentational, and here the drag is the *only* means of
+performing a real operation, so it would have been a suppression wearing an
+attribute's clothes.
+
+**Fix direction:** move-up / move-down buttons beside the existing
+`GripVertical` handle, reusing `lib/reorder.ts`'s `moveItem` — the same function
+`onDragEnd` already calls, so the two paths cannot disagree. That is a UI change
+with its own design question (whether the buttons are always visible or appear
+on focus), which is why it is not bundled into a lint-gate PR.

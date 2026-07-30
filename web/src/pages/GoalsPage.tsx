@@ -175,7 +175,11 @@ function GoalListSection({
                     {expanded && (
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
                         <TableCell colSpan={5}>
+                          {/* Pure event containment — it keeps the row's expand
+                              toggle off the fields it wraps, and adds no
+                              behaviour of its own to expose. */}
                           <div
+                            role="none"
                             className="flex flex-wrap items-end gap-3 py-1"
                             onClick={(event) => event.stopPropagation()}
                           >
