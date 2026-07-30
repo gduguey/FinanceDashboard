@@ -53,13 +53,11 @@ const CHUNK_BUDGET = 90_000
  * ~109 kB of recharts on the landing until it was found by measurement. With
  * this budget in place that mistake fails the build instead.
  *
- * Set to the current worst route, not to a target. The overview came down from
- * 137,276 B to 19,253 B when its four charts were deferred; seven routes
- * (allocation, budget, goals, insights, investments, net-worth, simulator)
- * still import their charts directly and sit between 101 kB and 146 kB. Each
- * one deferred lowers this number, and it should be lowered with them.
+ * Measured range with every chart deferred: 1,739 B (onboarding) to 48,704 B
+ * (import). Eight routes were between 101 kB and 146 kB before, all of it
+ * recharts — the overview alone came down from 137,276 B to 19,650 B.
  */
-const ROUTE_BUDGET = 150_000
+const ROUTE_BUDGET = 60_000
 
 async function* walk(dir: string): AsyncGenerator<string> {
   for (const entry of await readdir(dir, { withFileTypes: true })) {

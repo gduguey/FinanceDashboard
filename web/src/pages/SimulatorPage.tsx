@@ -1,8 +1,8 @@
 import { Trash2 } from 'lucide-react'
 import { useState } from 'react'
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,8 +17,15 @@ import {
   useSimulatorProjection,
 } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
-import { formatCurrency, formatCurrencyCompact } from '@/lib/format'
+import { formatCurrency } from '@/lib/format'
 import type { CompoundingFrequency, SimulatorScenario } from '@/types/accounting'
+
+// The simulator projection is the page's only chart; deferring it keeps
+// recharts off this route's critical path. See `lazyChart`.
+const ProjectionChart = lazyChart(
+  () => import('@/components/investments/ProjectionChart').then((m) => m.ProjectionChart),
+  'h-72 w-full',
+)
 
 const FREQUENCY_ITEMS: Record<CompoundingFrequency, string> = {
   annually: 'Annually',
@@ -227,48 +234,7 @@ export function SimulatorPage() {
                     </span>
                   </div>
                 )}
-                <ResponsiveContainer width="100%" height={288}>
-                  <LineChart data={points} margin={{ left: 8, right: 8, top: 8 }}>
-                    <CartesianGrid vertical={false} stroke="var(--border)" />
-                    <XAxis
-                      dataKey="month"
-                      tickFormatter={(m) => `${Math.round(m / 12)}y`}
-                      tick={{ fontSize: 12 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tickFormatter={(v) => formatCurrencyCompact(v, displayCurrency)}
-                      tick={{ fontSize: 12 }}
-                      axisLine={false}
-                      tickLine={false}
-                      width={64}
-                    />
-                    <Tooltip
-                      formatter={(value, name) => [
-                        formatCurrency(Number(value), displayCurrency),
-                        name === 'balance' ? 'Balance' : 'Contributed',
-                      ]}
-                      labelFormatter={(label) => `Month ${label}`}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="balance"
-                      name="balance"
-                      stroke="#0f172a"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="contributions_to_date"
-                      name="contributions_to_date"
-                      stroke="#94a3b8"
-                      strokeWidth={1.5}
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                <ProjectionChart points={points} displayCurrency={displayCurrency} />
               </>
             )}
 

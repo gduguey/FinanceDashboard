@@ -1,5 +1,3 @@
-import type { ComponentProps } from 'react'
-import type { NetWorthHistoryChart as NetWorthHistoryChartComponent } from '@/components/accounting/NetWorthHistoryChart'
 import { lazyChart } from '@/components/shared/lazyChart'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -11,7 +9,7 @@ import type { CurrencyCode } from '@/types/accounting'
 // — a compact sparkline inside a stat card. Left static it alone would have
 // kept all of recharts on the landing's critical path, undoing the other
 // three. See `lazyChart`.
-const NetWorthHistoryChart = lazyChart<ComponentProps<typeof NetWorthHistoryChartComponent>>(
+const NetWorthHistoryChart = lazyChart(
   () => import('@/components/accounting/NetWorthHistoryChart').then((m) => m.NetWorthHistoryChart),
   'h-28 w-full',
 )

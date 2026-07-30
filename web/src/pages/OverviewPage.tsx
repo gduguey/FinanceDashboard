@@ -1,10 +1,5 @@
-import { type ComponentProps, useMemo } from 'react'
-import type {
-  CashflowSankeyChart as CashflowSankeyChartComponent,
-  GoalFlow,
-} from '@/components/accounting/CashflowSankeyChart'
-import type { NetWorthAllocationPie as NetWorthAllocationPieComponent } from '@/components/accounting/NetWorthAllocationPie'
-import type { GoalsBalanceBarChart as GoalsBalanceBarChartComponent } from '@/components/goals/GoalsOverviewCharts'
+import { useMemo } from 'react'
+import type { GoalFlow } from '@/components/accounting/CashflowSankeyChart'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { AlertsPanel } from '@/components/overview/AlertsPanel'
 import { FinancialHealthStrip } from '@/components/overview/FinancialHealthStrip'
@@ -29,14 +24,14 @@ import { hasAnyRealAccount } from '@/lib/postingClassification'
 // This is the one route every signed-in user lands on, and these three are the
 // app's only entry points into recharts from it. Deferring them keeps ~109 kB
 // brotli of charting code off the landing's critical path — see `lazyChart`.
-const CashflowSankeyChart = lazyChart<ComponentProps<typeof CashflowSankeyChartComponent>>(
+const CashflowSankeyChart = lazyChart(
   () => import('@/components/accounting/CashflowSankeyChart').then((m) => m.CashflowSankeyChart),
   'h-80 w-full',
 )
-const NetWorthAllocationPie = lazyChart<ComponentProps<typeof NetWorthAllocationPieComponent>>(() =>
+const NetWorthAllocationPie = lazyChart(() =>
   import('@/components/accounting/NetWorthAllocationPie').then((m) => m.NetWorthAllocationPie),
 )
-const GoalsBalanceBarChart = lazyChart<ComponentProps<typeof GoalsBalanceBarChartComponent>>(() =>
+const GoalsBalanceBarChart = lazyChart(() =>
   import('@/components/goals/GoalsOverviewCharts').then((m) => m.GoalsBalanceBarChart),
 )
 

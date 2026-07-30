@@ -1,9 +1,9 @@
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { CashflowSankeyChart } from '@/components/accounting/CashflowSankeyChart'
 import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,6 +26,13 @@ import { formatCurrency } from '@/lib/format'
 import { availableMonths } from '@/lib/months'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Category, CategoryTotalRow, CurrencyCode } from '@/types/accounting'
+
+// Charts are the heaviest code the app ships. `lazyChart` keeps them off this
+// page's critical path and streams them in behind a skeleton.
+const CashflowSankeyChart = lazyChart(
+  () => import('@/components/accounting/CashflowSankeyChart').then((m) => m.CashflowSankeyChart),
+  'h-80 w-full',
+)
 
 type BudgetMode = 'general' | 'per_month'
 

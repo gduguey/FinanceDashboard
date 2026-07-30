@@ -1,12 +1,10 @@
 import { Trash2, TrendingDown, TrendingUp } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { AccountCompositionBar } from '@/components/accounting/AccountCompositionBar'
-import { ExchangeRatePanel } from '@/components/accounting/ExchangeRatePanel'
 import { InterestTrackingPanel } from '@/components/accounting/InterestTrackingPanel'
-import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
-import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
 import { PageHeader, type PageHeaderSection } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
@@ -28,6 +26,18 @@ import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { formatCurrency, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { AccountKind, CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
+
+// Charts are the heaviest code the app ships. `lazyChart` keeps them off this
+// page's critical path and streams them in behind a skeleton.
+const ExchangeRatePanel = lazyChart(() =>
+  import('@/components/accounting/ExchangeRatePanel').then((m) => m.ExchangeRatePanel),
+)
+const NetWorthAllocationPie = lazyChart(() =>
+  import('@/components/accounting/NetWorthAllocationPie').then((m) => m.NetWorthAllocationPie),
+)
+const NetWorthHistoryChart = lazyChart(() =>
+  import('@/components/accounting/NetWorthHistoryChart').then((m) => m.NetWorthHistoryChart),
+)
 
 function StatCard({
   label,

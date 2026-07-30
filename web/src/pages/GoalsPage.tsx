@@ -3,10 +3,9 @@ import { Fragment, useEffect, useState } from 'react'
 import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { ContributionLedgerTable } from '@/components/goals/ContributionLedgerTable'
 import { GoalAutomationsPanel } from '@/components/goals/GoalAutomationsPanel'
-import { GoalDetailChart } from '@/components/goals/GoalDetailChart'
-import { GoalsOverviewCharts } from '@/components/goals/GoalsOverviewCharts'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -29,6 +28,13 @@ import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { formatCurrency, formatDate } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
+
+// Charts are the heaviest code the app ships. `lazyChart` keeps them off this
+// page's critical path and streams them in behind a skeleton.
+const GoalDetailChart = lazyChart(() => import('@/components/goals/GoalDetailChart').then((m) => m.GoalDetailChart))
+const GoalsOverviewCharts = lazyChart(() =>
+  import('@/components/goals/GoalsOverviewCharts').then((m) => m.GoalsOverviewCharts),
+)
 
 type ViewMode = 'all_time' | 'per_month'
 
