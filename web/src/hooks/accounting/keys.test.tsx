@@ -190,9 +190,10 @@ describe('what each mutation invalidates', () => {
     // invalidated without being refetched, which is exactly the signal under
     // test and keeps the stubbed `fetch` free for the mutations themselves.
     for (const probe of Object.values(PROBES)) queryClient.setQueryData(probe, {})
-    // The store's own probe needs a real shape: nine of these mutations patch
-    // it optimistically and read a named collection off it.
+    // Two probes need a real shape rather than a placeholder, because a
+    // mutation paints them optimistically and reads into them to do it.
     queryClient.setQueryData(keys.store, emptyStore())
+    queryClient.setQueryData(keys.postings, [])
   })
 
   afterEach(() => {

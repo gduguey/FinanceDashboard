@@ -5,21 +5,20 @@ import {
   usePreviewMutation,
   withoutEntry,
 } from '@/hooks/accounting/mutations'
-import {
-  type AccountCreate,
-  type AccountUpdate,
-  accountingApi,
-  type CategoryCreate,
-  type SubcategoryCreate,
-  type TagCreate,
-} from '@/lib/accountingApi'
+import { accountingApi } from '@/lib/accountingApi'
 import type {
+  AccountCreate,
+  AccountUpdate,
+  Budget,
   BudgetUpsert,
+  CategoryCreate,
   CategoryPatternCreate,
   CategoryPatternUpdate,
   ManualTransfer,
   OpeningBalance,
   OtherAssetCreate,
+  SubcategoryCreate,
+  TagCreate,
   TransferRuleCreate,
   TransferRuleUpdate,
 } from '@/types/accounting'
@@ -87,9 +86,13 @@ export const useTagRenamePreview = () =>
 // `posting_tags` rows and `tag_ids_override` arrays — so this moves the ledger
 // too, not just the tag list.
 export const useRenameTag = () =>
-  useAccountingMutation({
+  useOptimisticStoreMutation({
     mutationFn: ({ tagId, name }: { tagId: string; name: string }) => accountingApi.renameTag(tagId, name),
     changes: ['store', 'ledger'],
+    // Paints the plain rename. A rename that turns out to be a *merge* repoints
+    // rows this cannot see, and the refetch corrects the chip's name and the
+    // tag it collapsed into together.
+    edit: (store, { tagId, name }) => ({ ...store, tags: patchEntry(store.tags, tagId, { name }) }),
   })
 
 // Scoped to the one rule being edited (toggling active, editing fields,
@@ -143,16 +146,49 @@ export const useCreateOtherAsset = () =>
 // the wire, not the user's entire budget history for every edit (see
 // accounting.api.routers.budgets.post_budget). A `month: null` upsert is the
 // general, every-month-alike target; both go through the same endpoint.
+//
+// The paint covers the *replace* half of the upsert only. A budget's id is
+// derived server-side from its `(month, category_id, subcategory_id)`
+// (`repositories.planning.budget_row_key`), so painting a cell that does not
+// exist yet would mean reimplementing that key format client-side and
+// inventing a row the reconciling refetch then replaces — a create, which
+// stays non-optimistic. Retyping an amount already set is the reversible edit
+// this is for, and it matches on the natural key rather than the derived id.
 export const useSetBudget = () =>
-  useAccountingMutation({
+  useOptimisticStoreMutation({
     mutationFn: (budget: BudgetUpsert) => accountingApi.setBudget(budget),
     changes: ['store', 'budgets'],
+    edit: (store, budget) => ({
+      ...store,
+      budgets: store.budgets.map((existing) =>
+        sameBudgetCell(existing, budget) ? { ...existing, ...budget } : existing,
+      ),
+    }),
   })
 
+/**
+ * Whether two budget rows target the same cell of the budget grid.
+ *
+ * @param existing - A budget already in the store.
+ * @param upsert - The budget being written.
+ * @returns `true` when the write replaces `existing` rather than adding a row.
+ */
+function sameBudgetCell(existing: Budget, upsert: BudgetUpsert): boolean {
+  return (
+    (existing.month ?? null) === (upsert.month ?? null) &&
+    existing.category_id === upsert.category_id &&
+    (existing.subcategory_id ?? null) === (upsert.subcategory_id ?? null)
+  )
+}
+
 export const useRemoveBudget = () =>
-  useAccountingMutation({
+  useOptimisticStoreMutation({
     mutationFn: (budgetId: string) => accountingApi.removeBudget(budgetId),
     changes: ['store', 'budgets'],
+    edit: (store, budgetId) => ({
+      ...store,
+      budgets: store.budgets.filter((budget) => budget.budget_id !== budgetId),
+    }),
   })
 
 export const useCreateAccount = () =>
@@ -165,21 +201,25 @@ export const useCreateAccount = () =>
 // income/expense and whether a rule may repoint onto it, so an edit moves the
 // resolved ledger as well as the store.
 export const useUpdateAccount = () =>
-  useAccountingMutation({
+  useOptimisticStoreMutation({
     mutationFn: ({ accountId, update }: { accountId: string; update: AccountUpdate }) =>
       accountingApi.putAccount(accountId, update),
     changes: ['store', 'ledger'],
+    edit: (store, { accountId, update }) => ({ ...store, accounts: patchEntry(store.accounts, accountId, update) }),
   })
 
 export const useDeleteAccount = () =>
-  useAccountingMutation({
+  useOptimisticStoreMutation({
     mutationFn: (accountId: string) => accountingApi.deleteAccount(accountId),
     changes: ['store', 'ledger'],
+    edit: (store, accountId) => ({ ...store, accounts: withoutEntry(store.accounts, accountId) }),
   })
 
 // An opening balance is the balance held the day before the first posting. It
 // creates no posting and appears in no store collection, so nothing but the
-// balances move.
+// balances move — and, for the same reason, there is nothing cached to paint
+// optimistically: its only visible effect is a server-computed net worth. The
+// form field is write-only; no query reads an opening balance back.
 export const useSetOpeningBalance = () =>
   useAccountingMutation({
     mutationFn: ({ accountId, openingBalance }: { accountId: string; openingBalance: OpeningBalance }) =>

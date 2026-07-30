@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
 import { keys } from '@/hooks/accounting/keys'
-import { useAccountingMutation, useOptimisticStoreMutation } from '@/hooks/accounting/mutations'
+import { useAccountingMutation, useOptimisticMutation, useOptimisticStoreMutation } from '@/hooks/accounting/mutations'
 import { accountingApi } from '@/lib/accountingApi'
 import type {
   DismissSuggestionRequest,
   ManualOverride,
+  Posting,
   PostingMergeUpsert,
   PostingSplitLeg,
   TransferLinkCreate,
@@ -79,11 +80,45 @@ export const useRemoveTransferLink = () =>
     }),
   })
 
+/**
+ * The fields of an override that map straight onto the posting row on screen.
+ *
+ * `account_id` is deliberately absent. Repointing a placeholder leg is what
+ * turns a transaction into a transfer, and the badge, the category cell and
+ * the sibling-leg lookups that follow from it are the output of the whole
+ * server-side resolution pipeline — not something four lines here can predict.
+ * That one field waits for the refetch; the four below are the ones a
+ * categorizing click actually changes, and they are a straight copy.
+ */
+const PAINTABLE_OVERRIDE_FIELDS = ['category_id', 'subcategory_id', 'tag_ids', 'pending_selected'] as const
+
+/**
+ * Apply an override's directly-displayable fields to one posting row.
+ *
+ * @param posting - The row as cached.
+ * @param override - The partial override being sent.
+ * @returns The row as it should read immediately, or the row itself when the
+ *   override changes nothing this function can predict.
+ */
+function paintOverride(posting: Posting, override: Partial<ManualOverride>): Posting {
+  const painted: Partial<Posting> = {}
+  for (const field of PAINTABLE_OVERRIDE_FIELDS) {
+    if (field in override) Object.assign(painted, { [field]: override[field] })
+  }
+  return { ...posting, ...painted }
+}
+
+// Categorizing used to wait on the round trip plus a full posting refetch
+// before the cell showed what was picked. Matched on the exact posting id an
+// override is stored under, which for a split leg is the leg's own id — the
+// id the caller sent — not the posting it was split from.
 export const useSetPostingOverride = () =>
-  useAccountingMutation({
-    mutationFn: ({ postingId, override }: { postingId: string; override: Partial<ManualOverride> }) =>
-      accountingApi.putPostingOverride(postingId, override),
+  useOptimisticMutation<Posting[], ManualOverride, { postingId: string; override: Partial<ManualOverride> }>({
+    queryKey: keys.postings,
+    mutationFn: ({ postingId, override }) => accountingApi.putPostingOverride(postingId, override),
     changes: ['ledger'],
+    edit: (postings, { postingId, override }) =>
+      postings.map((posting) => (posting.posting_id === postingId ? paintOverride(posting, override) : posting)),
   })
 
 export const useSetPostingSplit = () =>

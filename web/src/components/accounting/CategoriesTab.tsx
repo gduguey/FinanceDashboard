@@ -32,11 +32,10 @@ import {
   useRenameCategory,
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import type { BudgetToDeletePreview } from '@/lib/accountingApi'
 import { nextAvailableColor } from '@/lib/colors'
 import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import type { Category, CategoryClassification, CategoryPattern } from '@/types/accounting'
+import type { BudgetToDeletePreview, Category, CategoryClassification, CategoryPattern } from '@/types/accounting'
 
 // An inline click-to-rename field — looks like plain text until focused, at
 // which point it grows to fit what's typed (`field-sizing-content`) rather

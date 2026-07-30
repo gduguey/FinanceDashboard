@@ -30,7 +30,12 @@ export function useAccountingMutation<TData, TVariables = void>({
 }
 
 /**
- * A write that paints the cached store before the server confirms it.
+ * A write that paints one cached query before the server confirms it.
+ *
+ * `useOptimisticStoreMutation` is this over the store, which is where all but
+ * one of the optimistic writes land; the posting list is the exception (see
+ * `useSetPostingOverride`), and it needs the same guarantees over a different
+ * key rather than a second copy of them.
  *
  * `edit` is applied as a function of whatever is in the cache at the moment
  * the mutation fires, never as a spread of the snapshot taken beside it. That
@@ -52,6 +57,49 @@ export function useAccountingMutation<TData, TVariables = void>({
  * refetch then has to remove — see the repo's own convention that optimistic
  * updates are for updates and deletes.
  *
+ * @param queryKey - The cached query to paint.
+ * @param mutationFn - The request.
+ * @param changes - What the write moved. See `AccountingFamily`.
+ * @param edit - The cached value as it should look the instant the user acts,
+ *   given the value as it is now and the mutation's own variables.
+ * @returns A React Query mutation.
+ */
+export function useOptimisticMutation<TCache, TData, TVariables = void>({
+  queryKey,
+  mutationFn,
+  changes,
+  edit,
+}: {
+  queryKey: readonly unknown[]
+  mutationFn: (variables: TVariables) => Promise<TData>
+  changes: readonly AccountingFamily[]
+  edit: (cached: TCache, variables: TVariables) => TCache
+}) {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn,
+    onMutate: async (variables: TVariables) => {
+      await queryClient.cancelQueries({ queryKey })
+      const previous = queryClient.getQueryData<TCache>(queryKey)
+      queryClient.setQueryData<TCache>(queryKey, (current) =>
+        current === undefined ? current : edit(current, variables),
+      )
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous !== undefined) queryClient.setQueryData(queryKey, context.previous)
+    },
+    onSuccess: () => invalidate(...changes),
+  })
+}
+
+/**
+ * A write that paints the cached store before the server confirms it.
+ *
+ * `useOptimisticMutation` fixed to the store's own key and shape — the common
+ * case, and the one every hook but `useSetPostingOverride` needs.
+ *
  * @param mutationFn - The request.
  * @param changes - What the write moved. See `AccountingFamily`.
  * @param edit - The store as it should look the instant the user acts, given
@@ -67,20 +115,11 @@ export function useOptimisticStoreMutation<TData, TVariables = void>({
   changes: readonly AccountingFamily[]
   edit: (store: AccountingStore, variables: TVariables) => AccountingStore
 }) {
-  const queryClient = useQueryClient()
-  const invalidate = useInvalidateAccounting()
-  return useMutation({
+  return useOptimisticMutation<AccountingStore, TData, TVariables>({
+    queryKey: keys.store,
     mutationFn,
-    onMutate: async (variables: TVariables) => {
-      await queryClient.cancelQueries({ queryKey: keys.store })
-      const previous = queryClient.getQueryData<AccountingStore>(keys.store)
-      queryClient.setQueryData<AccountingStore>(keys.store, (current) => (current ? edit(current, variables) : current))
-      return { previous }
-    },
-    onError: (_error, _variables, context) => {
-      if (context?.previous) queryClient.setQueryData(keys.store, context.previous)
-    },
-    onSuccess: () => invalidate(...changes),
+    changes,
+    edit,
   })
 }
 
