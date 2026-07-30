@@ -357,55 +357,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/accounting/tags': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Tags
-     * @description Replace the whole tag list.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Tag]
-     *         The tags just persisted, keyed by `tag_id`.
-     */
-    put: operations['put_tags_api_v1_accounting_tags_put']
-    /**
-     * Post Tag
-     * @description Create a new tag, refusing a same-name (case-insensitive) duplicate.
-     *
-     *     Unlike `put_tags` (a whole-list replace, where a client-computed id
-     *     that happens to collide with an existing one silently overwrites it),
-     *     this only ever adds a tag — a name collision is rejected outright
-     *     rather than clobbering the existing entry.
-     *
-     *     A genuine `201`: the id is the name's slug, but the two 409s below
-     *     leave creation as this route's only outcome, so it never replaces
-     *     anything and the status is not a hedge.
-     *
-     *     Returns
-     *     -------
-     *     Tag
-     *         The tag just persisted, including its computed `tag_id`.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         409 if a tag with this name (case-insensitive) already exists, or a
-     *         distinct name collides with an existing tag's slug id.
-     */
-    post: operations['post_tag_api_v1_accounting_tags_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/accounting/tags/{tag_id}': {
     parameters: {
       query?: never
@@ -449,6 +400,46 @@ export interface paths {
      *         404 if no tag with `tag_id` exists.
      */
     delete: operations['delete_tag_route_api_v1_accounting_tags__tag_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/tags': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Tag
+     * @description Create a new tag, refusing a same-name (case-insensitive) duplicate.
+     *
+     *     The only way to add one: `PUT /tags`, a whole-list replace where a
+     *     client-computed id colliding with an existing one silently overwrote
+     *     it, is gone. This only ever adds a tag — a name collision is rejected
+     *     outright rather than clobbering the existing entry.
+     *
+     *     A genuine `201`: the id is the name's slug, but the two 409s below
+     *     leave creation as this route's only outcome, so it never replaces
+     *     anything and the status is not a hedge.
+     *
+     *     Returns
+     *     -------
+     *     Tag
+     *         The tag just persisted, including its computed `tag_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         409 if a tag with this name (case-insensitive) already exists, or a
+     *         distinct name collides with an existing tag's slug id.
+     */
+    post: operations['post_tag_api_v1_accounting_tags_post']
+    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -712,16 +703,7 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Category Patterns
-     * @description Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, CategoryPattern]
-     *         The patterns just persisted, keyed by `pattern_id`.
-     */
-    put: operations['put_category_patterns_api_v1_accounting_category_patterns_put']
+    put?: never
     /**
      * Post Category Pattern
      * @description Create one new category pattern, without touching any other pattern already saved.
@@ -799,16 +781,7 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Other Assets
-     * @description Replace the whole manually-entered-asset list.
-     *
-     *     Returns
-     *     -------
-     *     list[OtherAsset]
-     *         The assets just persisted.
-     */
-    put: operations['put_other_assets_api_v1_accounting_other_assets_put']
+    put?: never
     /**
      * Post Other Asset
      * @description Create one new manually-entered asset, without touching any other asset already saved.
@@ -817,7 +790,9 @@ export interface paths {
      *     other field (e.g. two rental properties both named "Rental"), so
      *     there's no natural key two "the same" asset would collide on. That is
      *     also why the `201` is unconditional: with no natural key there is
-     *     nothing this route could replace.
+     *     nothing this route could replace. Editing an asset's value means
+     *     deleting it and creating the new one; `PUT /other-assets` used to
+     *     replace the whole list and is gone.
      *
      *     Returns
      *     -------
@@ -1033,16 +1008,7 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Simulator Scenarios
-     * @description Replace the whole saved-scenario list.
-     *
-     *     Returns
-     *     -------
-     *     list[SimulatorScenario]
-     *         The scenarios just persisted.
-     */
-    put: operations['put_simulator_scenarios_api_v1_accounting_simulator_scenarios_put']
+    put?: never
     /**
      * Post Simulator Scenario
      * @description Create one new saved scenario, without touching any other scenario already saved.
@@ -1883,51 +1849,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/accounting/posting-merges': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Posting Merges
-     * @description Replace the whole posting-merge map, keyed by `merge_id`.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, PostingMerge]
-     *         The merges just persisted.
-     */
-    put: operations['put_posting_merges_api_v1_accounting_posting_merges_put']
-    /**
-     * Post Posting Merge
-     * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
-     *
-     *     A real upsert keyed on the kept transaction, so the status says which
-     *     of the two things happened: `201` with a `Location` when this recorded
-     *     a new decision, `200` when it replaced the decision already recorded
-     *     for that transaction.
-     *
-     *     Stays a `POST` on the collection rather than becoming
-     *     `PUT /posting-merges/{merge_id}`. The id is `merge:{kept_transaction_id}`
-     *     — derivable in principle, but `_merge_id`'s prefix is this module's
-     *     private key format, and making every client build it would export that
-     *     format as part of the contract.
-     *
-     *     Returns
-     *     -------
-     *     PostingMerge
-     *         The merge just persisted.
-     */
-    post: operations['post_posting_merge_api_v1_accounting_posting_merges_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/accounting/posting-merges/{merge_id}': {
     parameters: {
       query?: never
@@ -1961,6 +1882,42 @@ export interface paths {
      *         404 if no merge with this id exists.
      */
     delete: operations['delete_posting_merge_api_v1_accounting_posting_merges__merge_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/posting-merges': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Posting Merge
+     * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
+     *
+     *     A real upsert keyed on the kept transaction, so the status says which
+     *     of the two things happened: `201` with a `Location` when this recorded
+     *     a new decision, `200` when it replaced the decision already recorded
+     *     for that transaction.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /posting-merges/{merge_id}`. The id is `merge:{kept_transaction_id}`
+     *     — derivable in principle, but `_merge_id`'s prefix is this module's
+     *     private key format, and making every client build it would export that
+     *     format as part of the contract.
+     *
+     *     Returns
+     *     -------
+     *     PostingMerge
+     *         The merge just persisted.
+     */
+    post: operations['post_posting_merge_api_v1_accounting_posting_merges_post']
+    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -7831,78 +7788,6 @@ export interface operations {
       }
     }
   }
-  put_tags_api_v1_accounting_tags_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['Tag']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['Tag']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_tag_api_v1_accounting_tags_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TagCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          /** @description URL of the resource this request created. */
-          Location?: string
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Tag']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   get_tag_api_v1_accounting_tags__tag_id__get: {
     parameters: {
       query?: never
@@ -7951,6 +7836,41 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_tag_api_v1_accounting_tags_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TagCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Tag']
+        }
       }
       /** @description Validation Error */
       422: {
@@ -8265,43 +8185,6 @@ export interface operations {
       }
     }
   }
-  put_category_patterns_api_v1_accounting_category_patterns_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['CategoryPattern']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['CategoryPattern']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   post_category_pattern_api_v1_accounting_category_patterns_post: {
     parameters: {
       query?: never
@@ -8394,39 +8277,6 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_other_assets_api_v1_accounting_other_assets_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['OtherAsset'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['OtherAsset'][]
-        }
       }
       /** @description Validation Error */
       422: {
@@ -8726,39 +8576,6 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_simulator_scenarios_api_v1_accounting_simulator_scenarios_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SimulatorScenario'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SimulatorScenario'][]
-        }
       }
       /** @description Validation Error */
       422: {
@@ -9606,87 +9423,6 @@ export interface operations {
       }
     }
   }
-  put_posting_merges_api_v1_accounting_posting_merges_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['PostingMerge']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['PostingMerge']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_posting_merge_api_v1_accounting_posting_merges_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['PostingMergeUpsert']
-      }
-    }
-    responses: {
-      /** @description The request replaced a resource that already existed. */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingMerge']
-        }
-      }
-      /** @description Successful Response */
-      201: {
-        headers: {
-          /** @description URL of the resource this request created. */
-          Location?: string
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['PostingMerge']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   get_posting_merge_api_v1_accounting_posting_merges__merge_id__get: {
     parameters: {
       query?: never
@@ -9735,6 +9471,50 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_posting_merge_api_v1_accounting_posting_merges_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PostingMergeUpsert']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
       }
       /** @description Validation Error */
       422: {

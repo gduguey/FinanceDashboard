@@ -891,9 +891,9 @@ def test_pattern_suggest_category_stages_a_pending_suggestion(client) -> None:
     postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
 
-    client.put(
+    client.post(
         "/api/v1/accounting/category-patterns",
-        json={"p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"}},
+        json={"description_contains": "PAYROLL", "category_id": "income:salary"},
     )
 
     response = client.post(f"/api/v1/accounting/postings/{payroll['posting_id']}/pattern-suggest-category")
@@ -921,13 +921,11 @@ def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_o
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
     card_payment = next(p for p in postings if p["account_id"] == account_id and p["amount"] < 0)
 
-    client.put(
-        "/api/v1/accounting/category-patterns",
-        json={
-            "p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"},
-            "p2": {"pattern_id": "p2", "description_contains": "Chase card", "category_id": "expense:admin-fees"},
-        },
-    )
+    for pattern in (
+        {"description_contains": "PAYROLL", "category_id": "income:salary"},
+        {"description_contains": "Chase card", "category_id": "expense:admin-fees"},
+    ):
+        client.post("/api/v1/accounting/category-patterns", json=pattern)
 
     response = client.post(
         "/api/v1/accounting/postings/pattern-suggest-category/bulk",
@@ -954,9 +952,9 @@ def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_di
         json={"category_id": "income:bonus"},
     )
 
-    client.put(
+    client.post(
         "/api/v1/accounting/category-patterns",
-        json={"p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"}},
+        json={"description_contains": "PAYROLL", "category_id": "income:salary"},
     )
 
     response = client.post(
@@ -968,17 +966,6 @@ def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_di
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
     assert updated_payroll["category_id"] == "income:bonus"
     assert updated_payroll["pending_source"] is None
-
-
-def test_put_category_patterns_persists_and_is_returned_by_store(client) -> None:
-    response = client.put(
-        "/api/v1/accounting/category-patterns",
-        json={"p1": {"pattern_id": "p1", "description_contains": "PAYROLL", "category_id": "income:salary"}},
-    )
-    assert response.status_code == 200
-
-    store = client.get("/api/v1/accounting/store").json()
-    assert store["category_patterns"]["p1"]["category_id"] == "income:salary"
 
 
 def test_post_category_pattern_mints_a_content_derived_id(client) -> None:
@@ -1319,18 +1306,15 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
     assert len(group["postings"]) == 2
 
     transaction_ids = [posting["transaction_id"] for posting in group["postings"]]
-    merge_response = client.put(
+    merge_response = client.post(
         "/api/v1/accounting/posting-merges",
         json={
-            "m1": {
-                "merge_id": "m1",
-                "kept_transaction_id": transaction_ids[0],
-                "duplicate_transaction_ids": [transaction_ids[1]],
-                "description": "Whole Foods Market",
-            }
+            "kept_transaction_id": transaction_ids[0],
+            "duplicate_transaction_ids": [transaction_ids[1]],
+            "description": "Whole Foods Market",
         },
     )
-    assert merge_response.status_code == 200
+    assert merge_response.status_code == 201
     assert client.get("/api/v1/accounting/duplicate-suggestions").json() == []
 
     postings = _postings(client)
@@ -1380,11 +1364,11 @@ def test_monthly_income_expense_correctly_drops_a_duplicate_that_straddles_the_q
     postings_in_group = suggestions[0]["postings"]
     kept_id = next(p for p in postings_in_group if p["posted_at"].startswith("2026-06-30"))["transaction_id"]
     duplicate_id = next(p for p in postings_in_group if p["posted_at"].startswith("2026-07-01"))["transaction_id"]
-    merge_response = client.put(
+    merge_response = client.post(
         "/api/v1/accounting/posting-merges",
-        json={"m1": {"merge_id": "m1", "kept_transaction_id": kept_id, "duplicate_transaction_ids": [duplicate_id]}},
+        json={"kept_transaction_id": kept_id, "duplicate_transaction_ids": [duplicate_id]},
     )
-    assert merge_response.status_code == 200
+    assert merge_response.status_code == 201
 
     july = client.get(
         "/api/v1/accounting/income-statement/monthly", params={"start": "2026-07-01", "end": "2026-07-31"}
@@ -2974,15 +2958,6 @@ def test_put_categories_removes_other_once_it_is_left_alone(client) -> None:
     assert "expense:custom:other" not in response.json()
 
 
-def test_put_other_assets_persists(client) -> None:
-    response = client.put(
-        "/api/v1/accounting/other-assets", json=[{"asset_id": "car", "name": "Car", "value": 15000.0}]
-    )
-    assert response.status_code == 200
-    body = client.get("/api/v1/accounting/net-worth").json()
-    assert body["other_assets_total"] == pytest.approx(15000.0)
-
-
 def test_post_other_asset_creates_one_with_a_server_generated_id(client) -> None:
     response = client.post("/api/v1/accounting/other-assets", json={"name": "Car", "value": 15000.0})
     assert response.status_code == 201
@@ -3705,25 +3680,6 @@ def test_get_simulator_projection_computes_compound_growth(client) -> None:
     points = response.json()
     assert points[0]["balance"] == pytest.approx(1000.0)
     assert points[12]["balance"] == pytest.approx(1000.0 * (1.01**12))
-
-
-def test_put_simulator_scenarios_persists(client) -> None:
-    response = client.put(
-        "/api/v1/accounting/simulator/scenarios",
-        json=[
-            {
-                "scenario_id": "s1",
-                "name": "Base case",
-                "initial_capital": 1000.0,
-                "monthly_contribution": 100.0,
-                "horizon_years": 10,
-                "annual_rate_pct": 6.0,
-            }
-        ],
-    )
-    assert response.status_code == 200
-    store = client.get("/api/v1/accounting/store").json()
-    assert store["simulator_scenarios"][0]["name"] == "Base case"
 
 
 def test_post_simulator_scenario_creates_one_with_a_server_generated_id(client) -> None:

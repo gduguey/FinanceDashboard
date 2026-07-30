@@ -15,7 +15,6 @@ from accounting.models import CategoryPattern
 from accounting.repositories.interpretation import (
     delete_category_pattern,
     load_category_patterns,
-    replace_category_patterns,
     update_category_pattern,
     upsert_category_pattern,
 )
@@ -106,25 +105,6 @@ def post_category_pattern(
     else:
         location_of(http_request, response, "get_category_pattern", pattern_id=pattern.pattern_id)
     return pattern
-
-
-@router.put("/category-patterns")
-def put_category_patterns(
-    category_patterns: dict[str, CategoryPattern],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, CategoryPattern]:
-    """Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
-
-    Returns
-    -------
-    dict[str, CategoryPattern]
-        The patterns just persisted, keyed by `pattern_id`.
-    """
-    seed_new_user_defaults(session, user_id)  # see the equivalent note in `post_category_pattern`
-    replace_category_patterns(session, user_id, category_patterns.values())
-    session.commit()
-    return category_patterns
 
 
 @router.patch("/category-patterns/{pattern_id}")

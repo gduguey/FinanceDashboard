@@ -1,4 +1,4 @@
-"""Simulator-scenario endpoints — create, replace and delete the saved compound-growth scenarios."""
+"""Simulator-scenario endpoints — read, create and delete the saved compound-growth scenarios."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from accounting.repositories.taxonomy import (
     delete_simulator_scenario,
     insert_simulator_scenario,
     load_simulator_scenarios,
-    replace_simulator_scenarios,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -79,24 +78,6 @@ def post_simulator_scenario(
     insert_simulator_scenario(session, user_id, scenario)
     location_of(http_request, response, "get_simulator_scenario", scenario_id=scenario.scenario_id)
     return scenario
-
-
-@router.put("/simulator/scenarios")
-def put_simulator_scenarios(
-    scenarios: list[SimulatorScenario],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[SimulatorScenario]:
-    """Replace the whole saved-scenario list.
-
-    Returns
-    -------
-    list[SimulatorScenario]
-        The scenarios just persisted.
-    """
-    replace_simulator_scenarios(session, user_id, scenarios)
-    session.commit()
-    return scenarios
 
 
 @router.delete("/simulator/scenarios/{scenario_id}", status_code=204)

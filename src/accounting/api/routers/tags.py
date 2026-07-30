@@ -1,4 +1,4 @@
-"""Tag endpoints — the tag list plus its create, rename-with-merge and delete writes."""
+"""Tag endpoints — read one tag, create, rename-with-merge, delete. No whole-list replace."""
 
 from __future__ import annotations
 
@@ -17,32 +17,11 @@ from accounting.api.api_models import (
 from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import Tag
 from accounting.repositories.taxonomy import delete_tag, load_tags, remap_tag_ids, replace_tags
-from accounting.taxonomy import plan_tag_rename, seed_new_user_defaults, slugify
+from accounting.taxonomy import plan_tag_rename, slugify
 from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
-
-
-@router.put("/tags")
-def put_tags(
-    tags: dict[str, Tag],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, Tag]:
-    """Replace the whole tag list.
-
-    Returns
-    -------
-    dict[str, Tag]
-        The tags just persisted, keyed by `tag_id`.
-    """
-    # See `put_categories`: a brand-new user's placeholder accounts and default
-    # category tree are seeded together, and only on first contact.
-    seed_new_user_defaults(session, user_id)
-    replace_tags(session, user_id, tags.values())
-    session.commit()
-    return tags
 
 
 @router.get("/tags/{tag_id}")
@@ -82,10 +61,10 @@ def post_tag(
 ) -> Tag:
     """Create a new tag, refusing a same-name (case-insensitive) duplicate.
 
-    Unlike `put_tags` (a whole-list replace, where a client-computed id
-    that happens to collide with an existing one silently overwrites it),
-    this only ever adds a tag — a name collision is rejected outright
-    rather than clobbering the existing entry.
+    The only way to add one: `PUT /tags`, a whole-list replace where a
+    client-computed id colliding with an existing one silently overwrote
+    it, is gone. This only ever adds a tag — a name collision is rejected
+    outright rather than clobbering the existing entry.
 
     A genuine `201`: the id is the name's slug, but the two 409s below
     leave creation as this route's only outcome, so it never replaces

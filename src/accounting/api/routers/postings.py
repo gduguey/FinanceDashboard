@@ -56,7 +56,6 @@ from accounting.repositories.interpretation import (
     load_transfer_links,
     remove_posting_merge,
     remove_transfer_link,
-    replace_posting_merges,
     save_overrides_for_postings,
     save_posting_split,
     undismiss_suggestion,
@@ -335,24 +334,6 @@ def delete_posting_split_route(
     """Undo a posting split, restoring the single original posting."""
     delete_posting_split(session, user_id, posting_id)
     session.commit()
-
-
-@router.put("/posting-merges")
-def put_posting_merges(
-    merges: dict[str, PostingMerge],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, PostingMerge]:
-    """Replace the whole posting-merge map, keyed by `merge_id`.
-
-    Returns
-    -------
-    dict[str, PostingMerge]
-        The merges just persisted.
-    """
-    replace_posting_merges(session, user_id, merges.values())
-    session.commit()
-    return merges
 
 
 def _merge_id(kept_transaction_id: str) -> str:

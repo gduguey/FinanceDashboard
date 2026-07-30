@@ -1,4 +1,4 @@
-"""Other-asset endpoints — create, replace and delete the manually-valued assets held outside any account."""
+"""Other-asset endpoints — read, create and delete the manually-valued assets held outside any account."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from accounting.repositories.taxonomy import (
     delete_other_asset,
     insert_other_asset,
     load_other_assets,
-    replace_other_assets,
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
@@ -60,7 +59,9 @@ def post_other_asset(
     other field (e.g. two rental properties both named "Rental"), so
     there's no natural key two "the same" asset would collide on. That is
     also why the `201` is unconditional: with no natural key there is
-    nothing this route could replace.
+    nothing this route could replace. Editing an asset's value means
+    deleting it and creating the new one; `PUT /other-assets` used to
+    replace the whole list and is gone.
 
     Returns
     -------
@@ -77,24 +78,6 @@ def post_other_asset(
     insert_other_asset(session, user_id, asset)
     location_of(http_request, response, "get_other_asset", asset_id=asset.asset_id)
     return asset
-
-
-@router.put("/other-assets")
-def put_other_assets(
-    other_assets: list[OtherAsset],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[OtherAsset]:
-    """Replace the whole manually-entered-asset list.
-
-    Returns
-    -------
-    list[OtherAsset]
-        The assets just persisted.
-    """
-    replace_other_assets(session, user_id, other_assets)
-    session.commit()
-    return other_assets
 
 
 @router.delete("/other-assets/{asset_id}", status_code=204)
