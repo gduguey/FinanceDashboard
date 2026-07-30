@@ -5,7 +5,7 @@ import type {
   BenchmarkSettingUpdate,
   HysaSettingsUpdate,
   IbkrSettingsUpdate,
-  TargetAllocation,
+  TargetAllocationPatch,
   TaxSettingsUpdate,
   TimezoneSettingUpdate,
 } from '@/types/portfolio'
@@ -54,10 +54,10 @@ export const useAllocation = () => useQuery({ queryKey: keys.allocation, queryFn
 
 export const useTargetAllocation = () => useQuery({ queryKey: keys.targetAllocation, queryFn: api.targetAllocation })
 
-export function useSetTargetAllocation() {
+export function usePatchTargetAllocation() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (target: TargetAllocation) => api.setTargetAllocation(target),
+    mutationFn: (patch: TargetAllocationPatch) => api.patchTargetAllocation(patch),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.targetAllocation }),
   })
 }

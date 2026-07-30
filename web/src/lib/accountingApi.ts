@@ -522,8 +522,14 @@ export const accountingApi = {
     request<void>(`/goal-contributions/${encodeURIComponent(contributionId)}`, {
       method: 'DELETE',
     }),
-  putContributionAutomations: (automations: GoalAutomation[]) =>
-    request<GoalAutomation[]>('/goal-automations/contributions', jsonInit('PUT', automations)),
+  // Ids only, in the wanted order — the server derives every `priority` from
+  // list position, and refuses an id set that isn't exactly what it already
+  // stores, so a reorder cannot carry a field edit, an insert or a delete.
+  reorderContributionAutomations: (automationIds: string[]) =>
+    request<GoalAutomation[]>(
+      '/goal-automations/contributions/order',
+      jsonInit('PUT', { automation_ids: automationIds }),
+    ),
   createContributionAutomation: (automation: GoalAutomationCreate) =>
     request<GoalAutomation>('/goal-automations/contributions', jsonInit('POST', automation)),
   patchGoalAutomation: (automationId: string, update: GoalAutomationUpdate) =>
@@ -532,8 +538,16 @@ export const accountingApi = {
     request<void>(`/goal-automations/${encodeURIComponent(automationId)}`, {
       method: 'DELETE',
     }),
-  putWithdrawalAutomations: (automations: GoalAutomation[]) =>
-    request<GoalAutomation[]>('/goal-automations/withdrawals', jsonInit('PUT', automations)),
+  // Adding a goal to the drawdown order and rearranging it are two different
+  // requests now: the create is what makes a goal a member of the order, and
+  // the reorder may only permute the members it already has.
+  createWithdrawalAutomation: (goalId: string) =>
+    request<GoalAutomation>('/goal-automations/withdrawals', jsonInit('POST', { goal_id: goalId })),
+  reorderWithdrawalAutomations: (automationIds: string[]) =>
+    request<GoalAutomation[]>(
+      '/goal-automations/withdrawals/order',
+      jsonInit('PUT', { automation_ids: automationIds }),
+    ),
   syncStatus: () => request<SyncStatus>('/sync-status'),
   goalsSummary: (asOf?: string, displayCurrency?: string) =>
     request<GoalsSummary>(`/goals/summary${queryString({ as_of: asOf, display_currency: displayCurrency })}`),

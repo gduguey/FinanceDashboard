@@ -706,6 +706,11 @@ def replace_goal_automations(
     withdrawal ordering): replacing one must never wipe the other, even
     though they now share a table.
 
+    Its one caller is `api.routers.goals._reorder_automations`, which has
+    already checked that `automations` is exactly the persisted set for
+    `direction` — so the delete-and-reinsert below only ever changes
+    `priority`. Nothing else in the API replaces a list wholesale.
+
     Parameters
     ----------
     session

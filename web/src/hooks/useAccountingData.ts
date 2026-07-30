@@ -16,7 +16,6 @@ import type {
   CategoryPatternUpdate,
   CurrencyCode,
   DismissSuggestionRequest,
-  GoalAutomation,
   GoalAutomationCreate,
   GoalAutomationUpdate,
   GoalContributionCreate,
@@ -1026,12 +1025,13 @@ export function useRemoveGoalContribution() {
   })
 }
 
-// Whole-list PUT — used only for drag-to-reorder (a pure ordering operation); single-rule field
-// edits and deletes go through the scoped hooks below.
-export function useSetContributionAutomations() {
+// Drag-to-reorder, and nothing else: the body is the automation ids in the
+// wanted order, so this can no longer express a field edit, an insert or a
+// delete even by accident — those go through the scoped hooks below.
+export function useReorderContributionAutomations() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (automations: GoalAutomation[]) => accountingApi.putContributionAutomations(automations),
+    mutationFn: (automationIds: string[]) => accountingApi.reorderContributionAutomations(automationIds),
     onSuccess: invalidate,
   })
 }
@@ -1096,10 +1096,20 @@ export function useCreateContributionAutomation() {
   })
 }
 
-export function useSetWithdrawalAutomations() {
+export function useCreateWithdrawalAutomation() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (automations: GoalAutomation[]) => accountingApi.putWithdrawalAutomations(automations),
+    mutationFn: (goalId: string) => accountingApi.createWithdrawalAutomation(goalId),
+    onSuccess: invalidate,
+  })
+}
+
+// Same narrowing as `useReorderContributionAutomations`; joining or leaving the
+// drawdown order is `useCreateWithdrawalAutomation` / `useDeleteGoalAutomation`.
+export function useReorderWithdrawalAutomations() {
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn: (automationIds: string[]) => accountingApi.reorderWithdrawalAutomations(automationIds),
     onSuccess: invalidate,
   })
 }

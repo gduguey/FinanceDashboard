@@ -2858,9 +2858,11 @@ export interface paths {
      * Patch Goal Automation
      * @description Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
      *
-     *     A single-rule field edit no longer round-trips through the whole-list
-     *     `PUT` (which blanket-reinserts every rule and could revert a concurrent
-     *     edit to a different one); see `repositories.planning.upsert_goal_automation`.
+     *     A single-rule field edit does not round-trip through a whole-list
+     *     write (which blanket-reinserted every rule and could revert a
+     *     concurrent edit to a different one); see
+     *     `repositories.planning.upsert_goal_automation`. `priority` is carried
+     *     unchanged — the reorder route owns it.
      *
      *     Returns
      *     -------
@@ -2883,25 +2885,7 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Goal Contribution Automations
-     * @description Replace the whole contribution-automation list — the priority-ordered allocation rules.
-     *
-     *     Scoped to `direction="contribution"`: the withdrawal ordering lives in
-     *     the same table now but is replaced by its own endpoint, so neither
-     *     list can wipe the other.
-     *
-     *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
-     *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
-     *     lowest priority) — the same check the single-row `PATCH` enforces.
-     *
-     *     Returns
-     *     -------
-     *     list[GoalAutomation]
-     *         The automations just persisted. Answers 400 if any entry is not a
-     *         `contribution`, or if the `remainder` invariant is broken.
-     */
-    put: operations['put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put']
+    put?: never
     /**
      * Post Goal Automation
      * @description Create one new scheduled contribution automation, appended after every one already saved.
@@ -2914,8 +2898,8 @@ export interface paths {
      *     from the client: this always
      *     goes after the current lowest-priority contribution, matching the
      *     Goals page's own "append at the end of the ordered list" behavior.
-     *     Drag-and-drop reordering still goes through
-     *     `PUT /goal-automations/contributions`.
+     *     Drag-and-drop reordering goes through
+     *     `PUT /goal-automations/contributions/order`.
      *
      *     Returns
      *     -------
@@ -2923,6 +2907,44 @@ export interface paths {
      *         The automation just persisted.
      */
     post: operations['post_goal_automation_api_v1_accounting_goal_automations_contributions_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goal-automations/contributions/order': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /**
+     * Put Goal Contribution Automation Order
+     * @description Set the order the contribution automations run in — the priority a fixed-amount rule funds ahead of a lower one.
+     *
+     *     A named operation on a real single resource (this collection's
+     *     *ordering*), which is why it stays a `PUT` and not a `PATCH` per
+     *     automation: a reorder is atomic across every row in the list, and n
+     *     separate `PATCH`es of `priority` can only approximate that, passing
+     *     through states with two rules at the same priority. Idempotent —
+     *     submitting the same order twice lands the same priorities.
+     *
+     *     Scoped to `direction="contribution"`: the withdrawal ordering shares
+     *     the table but has its own route, so neither can renumber the other.
+     *
+     *     Returns
+     *     -------
+     *     list[GoalAutomation]
+     *         The contribution automations, renumbered, in the submitted order.
+     *         Answers 400 (from `_reorder_automations`) if the submitted ids
+     *         aren't exactly the persisted contribution automations, or if the
+     *         order would leave a `mode="remainder"` rule anywhere but last.
+     */
+    put: operations['put_goal_contribution_automation_order_api_v1_accounting_goal_automations_contributions_order_put']
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -2937,23 +2959,66 @@ export interface paths {
       cookie?: never
     }
     get?: never
+    put?: never
     /**
-     * Put Goal Withdrawal Automations
-     * @description Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
+     * Post Withdrawal Automation
+     * @description Put one goal into the drawdown order, appended last, without touching any other entry.
      *
-     *     A pure ordering + set-membership operation (no free text, schedule, or
-     *     amount anywhere — a withdrawal automation carries none), so it's
-     *     last-write-wins by nature: whichever ordering was submitted last is
-     *     the intended one. Scoped to `direction="withdrawal"`, so it never
-     *     touches the contribution automations sharing the table.
+     *     The counterpart to `post_goal_automation` for the other direction, and
+     *     the reason the withdrawal ordering no longer needs a whole-list write:
+     *     adding a goal is a create, dropping one is
+     *     `DELETE /goal-automations/{automation_id}`, and rearranging them is
+     *     `PUT /goal-automations/withdrawals/order`.
+     *
+     *     Unlike a contribution's minted id, this one is derived from the goal
+     *     (`repositories.planning.withdrawal_automation_id`) because a goal sits
+     *     at most once in the order — so re-adding a goal already in it is a
+     *     replace, not a second row, and answers `200` with the entry's existing
+     *     place rather than `201`. Re-adding therefore never silently moves a
+     *     goal to the bottom of the drawdown order.
+     *
+     *     Returns
+     *     -------
+     *     GoalAutomation
+     *         The drawdown entry just persisted.
+     */
+    post: operations['post_withdrawal_automation_api_v1_accounting_goal_automations_withdrawals_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goal-automations/withdrawals/order': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /**
+     * Put Goal Withdrawal Automation Order
+     * @description Set the order goals are drawn down in when unallocated money dips below zero.
+     *
+     *     A withdrawal automation carries nothing but its goal and its place in
+     *     this order, so the order *is* the whole resource here — which makes the
+     *     id-set check below load-bearing rather than defensive: it is the only
+     *     thing separating "rearrange the drawdown order" from "replace it".
+     *     Membership changes go through `post_withdrawal_automation` and
+     *     `DELETE /goal-automations/{automation_id}`.
+     *
+     *     Scoped to `direction="withdrawal"`, so it never renumbers the
+     *     contribution automations sharing the table.
      *
      *     Returns
      *     -------
      *     list[GoalAutomation]
-     *         The withdrawal automations just persisted. Answers 400 if any
-     *         entry is not a `withdrawal`.
+     *         The drawdown entries, renumbered, in the submitted order. Answers
+     *         400 (from `_reorder_automations`) if the submitted ids aren't
+     *         exactly the persisted withdrawal automations.
      */
-    put: operations['put_goal_withdrawal_automations_api_v1_accounting_goal_automations_withdrawals_put']
+    put: operations['put_goal_withdrawal_automation_order_api_v1_accounting_goal_automations_withdrawals_order_put']
     post?: never
     delete?: never
     options?: never
@@ -3497,25 +3562,34 @@ export interface paths {
      *         Symbol -> target percentage.
      */
     get: operations['get_target_allocation_api_v1_trades_settings_target_allocation_get']
-    /**
-     * Put Target Allocation
-     * @description Persist a new target allocation, set from the frontend.
-     *
-     *     Merges into the existing settings — a settings row is one record, so
-     *     writing this field naively from a fresh `DashboardSettings()` would
-     *     silently wipe out the HYSA/benchmark settings saved separately.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Rate]
-     *         The persisted target allocation.
-     */
-    put: operations['put_target_allocation_api_v1_trades_settings_target_allocation_put']
+    put?: never
     post?: never
     delete?: never
     options?: never
     head?: never
-    patch?: never
+    /**
+     * Patch Target Allocation
+     * @description Apply an RFC 7386 merge patch to the target allocation, one symbol at a time.
+     *
+     *     The resource is a `symbol -> target percentage` map, which is exactly
+     *     the shape merge-patch is defined over, so the body says only what
+     *     changed: a symbol with a number sets or replaces that symbol's target,
+     *     a symbol with `null` drops it from the allocation, and a symbol the
+     *     body never mentions is left alone. A caller editing one target no
+     *     longer has to resend every other one and risk clobbering an edit made
+     *     elsewhere in between.
+     *
+     *     Merges into the existing settings for a second, unrelated reason — a
+     *     settings row is one record, so writing this field naively from a fresh
+     *     `DashboardSettings()` would silently wipe out the HYSA/benchmark
+     *     settings saved separately.
+     *
+     *     Returns
+     *     -------
+     *     dict[str, Rate]
+     *         The whole resulting allocation, not just the patched entries.
+     */
+    patch: operations['patch_target_allocation_api_v1_trades_settings_target_allocation_patch']
     trace?: never
   }
   '/api/v1/trades/settings/hysa': {
@@ -4285,6 +4359,25 @@ export interface components {
       ordinary_interest_usd: number
       /** Withholding Tax Usd */
       withholding_tax_usd: number
+    }
+    /**
+     * AutomationOrder
+     * @description Request body for `PUT /api/v1/accounting/goal-automations/{contributions,withdrawals}/order`.
+     *
+     *     Every automation id currently persisted for that direction, in the
+     *     order they should run in — and nothing else. The narrowness is the
+     *     whole point: the whole-list `PUT` this replaced took full automation
+     *     rows, so a drag-to-reorder could smuggle a field edit, an insertion or
+     *     a deletion past the per-automation routes that exist for those. Ids
+     *     alone, checked against the set already stored, can express a
+     *     reordering and nothing more.
+     *
+     *     No `priority` field: the server reads it off list position, so a
+     *     submitted order and the stored priorities cannot disagree.
+     */
+    AutomationOrder: {
+      /** Automation Ids */
+      automation_ids: string[]
     }
     /**
      * BenchmarkSetting
@@ -5349,17 +5442,15 @@ export interface components {
      * GoalAutomationCreate
      * @description Request body for `POST /api/v1/accounting/goal-automations/contributions` — one new scheduled contribution.
      *
-     *     Only the `contribution` direction is creatable one at a time: a
-     *     withdrawal automation has no fields of its own beyond its goal and its
-     *     place in the drawdown order, so the Goals page only ever submits that
-     *     ordering wholesale (`PUT /goal-automations/withdrawals`).
+     *     Contribution-shaped: a withdrawal automation carries none of these
+     *     fields, so it has its own, much smaller `WithdrawalAutomationCreate`.
      *
      *     `automation_id` is server-minted, same reasoning as `GoalCreate`.
      *     `priority` is never taken from the client either — a newly created
      *     rule always goes last (one past the current lowest-priority row),
      *     matching the Goals page's own "append at the end of the ordered list"
-     *     behavior; drag-and-drop reordering still goes through the existing
-     *     `PUT /goal-automations/contributions`, unaffected by this.
+     *     behavior; drag-and-drop reordering goes through
+     *     `PUT /goal-automations/contributions/order`, unaffected by this.
      */
     GoalAutomationCreate: {
       /** Goal Id */
@@ -5400,9 +5491,10 @@ export interface components {
      *     A single-rule field edit (amount, dates, frequency, mode, goal),
      *     scoped to its own `automation_id` so it never blanket-reinserts every
      *     rule. Carries `priority` unchanged (the row keeps its place);
-     *     re-ordering the whole list is still
-     *     `PUT /goal-automations/contributions`. No `expected_version`: like a
-     *     budget cell, an edit of one rule is last-write-wins on that rule (see
+     *     re-ordering the list is `PUT /goal-automations/contributions/order`,
+     *     which is the only route that assigns priorities. No
+     *     `expected_version`: like a budget cell, an edit of one rule is
+     *     last-write-wins on that rule (see
      *     `docs/app-stack/optimistic-concurrency-versioning.md`).
      *
      *     Contribution-shaped for the same reason `GoalAutomationCreate` is —
@@ -7401,6 +7493,23 @@ export interface components {
       dividends_received: number
       /** Wash Sale Flag */
       wash_sale_flag: boolean
+    }
+    /**
+     * WithdrawalAutomationCreate
+     * @description Request body for `POST /api/v1/accounting/goal-automations/withdrawals` — puts one goal in the drawdown order.
+     *
+     *     A withdrawal automation is nothing but its goal and its place in that
+     *     order, so `goal_id` is the entire body — no schedule, no amount, no
+     *     currency (see `models.GoalAutomation`'s own field notes).
+     *
+     *     `automation_id` is *derived* rather than minted, unlike
+     *     `GoalAutomationCreate`: a goal appears at most once in the drawdown
+     *     order, so `repositories.planning.withdrawal_automation_id` is the
+     *     natural key. `priority` appends, exactly as it does for a contribution.
+     */
+    WithdrawalAutomationCreate: {
+      /** Goal Id */
+      goal_id: string
     }
     /**
      * WithdrawalAutomationResult
@@ -10592,39 +10701,6 @@ export interface operations {
       }
     }
   }
-  put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GoalAutomation'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GoalAutomation'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   post_goal_automation_api_v1_accounting_goal_automations_contributions_post: {
     parameters: {
       query?: never
@@ -10660,7 +10736,7 @@ export interface operations {
       }
     }
   }
-  put_goal_withdrawal_automations_api_v1_accounting_goal_automations_withdrawals_put: {
+  put_goal_contribution_automation_order_api_v1_accounting_goal_automations_contributions_order_put: {
     parameters: {
       query?: never
       header?: never
@@ -10669,7 +10745,84 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['GoalAutomation'][]
+        'application/json': components['schemas']['AutomationOrder']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_withdrawal_automation_api_v1_accounting_goal_automations_withdrawals_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['WithdrawalAutomationCreate']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_goal_withdrawal_automation_order_api_v1_accounting_goal_automations_withdrawals_order_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AutomationOrder']
       }
     }
     responses: {
@@ -11218,7 +11371,7 @@ export interface operations {
       }
     }
   }
-  put_target_allocation_api_v1_trades_settings_target_allocation_put: {
+  patch_target_allocation_api_v1_trades_settings_target_allocation_patch: {
     parameters: {
       query?: never
       header?: never
@@ -11227,8 +11380,8 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': {
-          [key: string]: number
+        'application/merge-patch+json': {
+          [key: string]: number | null
         }
       }
     }

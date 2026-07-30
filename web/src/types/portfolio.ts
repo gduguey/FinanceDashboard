@@ -20,10 +20,15 @@ export type MonthlyPnlBySymbol = components['schemas']['MonthlyPnlBySymbolRow']
 export type AllocationRow = components['schemas']['AllocationRow']
 
 // The `symbol -> target percentage` map, which is exactly what
-// `GET`/`PUT /api/v1/trades/settings/target-allocation` returns — no envelope: the
+// `GET /api/v1/trades/settings/target-allocation` returns — no envelope: the
 // envelope only ever existed to carry a settings-row `version`, and that
 // mechanism is gone.
 export type TargetAllocation = Record<string, number>
+
+// What `PATCH /api/v1/trades/settings/target-allocation` accepts: the same map,
+// except a `null` value means "remove this symbol" (RFC 7386 merge patch), and
+// any symbol the patch omits keeps whatever target it already had.
+export type TargetAllocationPatch = Record<string, number | null>
 
 export type OpenLot = components['schemas']['OpenLotRow']
 export type ClosedLot = components['schemas']['ClosedLotRow']

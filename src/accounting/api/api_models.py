@@ -292,17 +292,15 @@ class SimulatorScenarioCreate(BaseModel):
 class GoalAutomationCreate(BaseModel):
     """Request body for `POST /api/v1/accounting/goal-automations/contributions` — one new scheduled contribution.
 
-    Only the `contribution` direction is creatable one at a time: a
-    withdrawal automation has no fields of its own beyond its goal and its
-    place in the drawdown order, so the Goals page only ever submits that
-    ordering wholesale (`PUT /goal-automations/withdrawals`).
+    Contribution-shaped: a withdrawal automation carries none of these
+    fields, so it has its own, much smaller `WithdrawalAutomationCreate`.
 
     `automation_id` is server-minted, same reasoning as `GoalCreate`.
     `priority` is never taken from the client either — a newly created
     rule always goes last (one past the current lowest-priority row),
     matching the Goals page's own "append at the end of the ordered list"
-    behavior; drag-and-drop reordering still goes through the existing
-    `PUT /goal-automations/contributions`, unaffected by this.
+    behavior; drag-and-drop reordering goes through
+    `PUT /goal-automations/contributions/order`, unaffected by this.
     """
 
     goal_id: str = Field(min_length=1)
@@ -320,9 +318,10 @@ class GoalAutomationUpdate(BaseModel):
     A single-rule field edit (amount, dates, frequency, mode, goal),
     scoped to its own `automation_id` so it never blanket-reinserts every
     rule. Carries `priority` unchanged (the row keeps its place);
-    re-ordering the whole list is still
-    `PUT /goal-automations/contributions`. No `expected_version`: like a
-    budget cell, an edit of one rule is last-write-wins on that rule (see
+    re-ordering the list is `PUT /goal-automations/contributions/order`,
+    which is the only route that assigns priorities. No
+    `expected_version`: like a budget cell, an edit of one rule is
+    last-write-wins on that rule (see
     `docs/app-stack/optimistic-concurrency-versioning.md`).
 
     Contribution-shaped for the same reason `GoalAutomationCreate` is —
@@ -337,6 +336,40 @@ class GoalAutomationUpdate(BaseModel):
     value: Money = Field(default=ZERO, json_schema_extra={"default": 0})
     currency: CurrencyCode = "USD"
     priority: int
+
+
+class WithdrawalAutomationCreate(BaseModel):
+    """Request body for `POST /api/v1/accounting/goal-automations/withdrawals` — puts one goal in the drawdown order.
+
+    A withdrawal automation is nothing but its goal and its place in that
+    order, so `goal_id` is the entire body — no schedule, no amount, no
+    currency (see `models.GoalAutomation`'s own field notes).
+
+    `automation_id` is *derived* rather than minted, unlike
+    `GoalAutomationCreate`: a goal appears at most once in the drawdown
+    order, so `repositories.planning.withdrawal_automation_id` is the
+    natural key. `priority` appends, exactly as it does for a contribution.
+    """
+
+    goal_id: str = Field(min_length=1)
+
+
+class AutomationOrder(BaseModel):
+    """Request body for `PUT /api/v1/accounting/goal-automations/{contributions,withdrawals}/order`.
+
+    Every automation id currently persisted for that direction, in the
+    order they should run in — and nothing else. The narrowness is the
+    whole point: the whole-list `PUT` this replaced took full automation
+    rows, so a drag-to-reorder could smuggle a field edit, an insertion or
+    a deletion past the per-automation routes that exist for those. Ids
+    alone, checked against the set already stored, can express a
+    reordering and nothing more.
+
+    No `priority` field: the server reads it off list position, so a
+    submitted order and the stored priorities cannot disagree.
+    """
+
+    automation_ids: list[str]
 
 
 class OtherAssetCreate(BaseModel):

@@ -8,10 +8,11 @@ import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   useCreateContributionAutomation,
+  useCreateWithdrawalAutomation,
   useDeleteGoalAutomation,
   usePatchGoalAutomation,
-  useSetContributionAutomations,
-  useSetWithdrawalAutomations,
+  useReorderContributionAutomations,
+  useReorderWithdrawalAutomations,
 } from '@/hooks/useAccountingData'
 import type { Goal, GoalAutomation, GoalAutomationFrequency, GoalAutomationMode } from '@/types/accounting'
 
@@ -33,10 +34,10 @@ function today(): string {
 }
 
 // Native HTML5 drag-and-drop for row reordering — no extra dependency
-// needed for a plain vertical-list reorder. `priority` is never edited
-// directly; it's always recomputed as the list's own array order right
-// before persisting, so "drag to reorder" and "priority" can never drift
-// apart from each other.
+// needed for a plain vertical-list reorder. `priority` is never sent from
+// here at all: the reorder endpoints read it off the position of each id in
+// the submitted list, so "drag to reorder" and "priority" have no way to
+// drift apart from each other.
 function useRowDrag<T>(items: T[], onReorder: (items: T[]) => void) {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   return {
@@ -60,16 +61,16 @@ function goalName(goals: Record<string, Goal>, goalId: string): string {
 }
 
 function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomation[]; goals: Record<string, Goal> }) {
-  const setAdditions = useSetContributionAutomations()
+  const reorderAdditions = useReorderContributionAutomations()
   const patchAddition = usePatchGoalAutomation()
   const deleteAddition = useDeleteGoalAutomation()
   const createAddition = useCreateContributionAutomation()
   const ordered = [...additions].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
-  // Drag-to-reorder is the one whole-list operation (renumbers every rule's priority at once).
-  const drag = useRowDrag(ordered, (next) =>
-    setAdditions.mutate(next.map((addition, index) => ({ ...addition, priority: index }))),
-  )
+  // Drag-to-reorder is the one operation spanning the whole list — it renumbers
+  // every rule's priority at once, which is why it is a single request and not
+  // one PATCH per moved row.
+  const drag = useRowDrag(ordered, (next) => reorderAdditions.mutate(next.map((addition) => addition.automation_id)))
 
   // A single-rule field edit is scoped to its own id (last-write-wins), so it can't revert a
   // concurrent edit to a different rule the way the old whole-list PUT could.
@@ -229,28 +230,24 @@ function WithdrawalPrioritiesList({
   priorities: GoalAutomation[]
   goals: Record<string, Goal>
 }) {
-  const setPriorities = useSetWithdrawalAutomations()
+  const reorderPriorities = useReorderWithdrawalAutomations()
+  const createPriority = useCreateWithdrawalAutomation()
+  const deletePriority = useDeleteGoalAutomation()
   const ordered = [...priorities].sort((a, b) => a.priority - b.priority)
   const goalList = Object.values(goals)
-  const drag = useRowDrag(ordered, (next) => persist(next))
+  const drag = useRowDrag(ordered, (next) => reorderPriorities.mutate(next.map((entry) => entry.automation_id)))
   const unranked = goalList.filter((goal) => !ordered.some((entry) => entry.goal_id === goal.goal_id))
 
-  function persist(next: GoalAutomation[]) {
-    setPriorities.mutate(next.map((entry, index) => ({ ...entry, priority: index })))
-  }
-
-  function remove(goalId: string) {
-    persist(ordered.filter((entry) => entry.goal_id !== goalId))
+  // Joining and leaving the drawdown order are their own requests — the reorder
+  // route only permutes the entries already in it. Neither call needs to mint an
+  // id: the create derives one from the goal server-side, and every row rendered
+  // here already carries the `automation_id` the delete addresses.
+  function remove(automationId: string) {
+    deletePriority.mutate(automationId)
   }
 
   function add(goalId: string) {
-    // A withdrawal automation has no identity beyond its goal — the id mirrors
-    // `repositories.planning.withdrawal_automation_id`, which the server
-    // derives the row's own id from.
-    persist([
-      ...ordered,
-      { automation_id: `withdrawal:${goalId}`, goal_id: goalId, direction: 'withdrawal', priority: ordered.length },
-    ])
+    createPriority.mutate(goalId)
   }
 
   return (
@@ -274,7 +271,7 @@ function WithdrawalPrioritiesList({
           >
             <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
             <span className="flex-1 text-sm">{goalName(goals, entry.goal_id)}</span>
-            <Button variant="ghost" size="icon" onClick={() => remove(entry.goal_id)}>
+            <Button variant="ghost" size="icon" onClick={() => remove(entry.automation_id)}>
               <Trash2 className="size-3.5 text-muted-foreground" />
             </Button>
           </div>

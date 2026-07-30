@@ -24,6 +24,7 @@ import type {
   SyncProgress,
   SyncResult,
   TargetAllocation,
+  TargetAllocationPatch,
   TaxReport,
   TaxSettings,
   TaxSettingsUpdate,
@@ -100,11 +101,15 @@ export const api = {
     request<MonthlyPnlBySymbol[]>(withRange('/chart/monthly-pnl/by-symbol', range)),
   allocation: (asOf?: string) => request<AllocationRow[]>(asOf ? `/allocation?as_of=${asOf}` : '/allocation'),
   targetAllocation: () => request<TargetAllocation>('/settings/target-allocation'),
-  setTargetAllocation: (target: TargetAllocation) =>
+  // RFC 7386 merge patch over the `symbol -> pct` map: a number sets that
+  // symbol's target, an explicit `null` removes it, and an absent symbol is
+  // left as-is. The media type is what tells the server to read the body that
+  // way rather than as a whole-map replacement.
+  patchTargetAllocation: (patch: TargetAllocationPatch) =>
     request<TargetAllocation>('/settings/target-allocation', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(target),
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/merge-patch+json' },
+      body: JSON.stringify(patch),
     }),
   lots: (asOf?: string) => request<LotsTable>(asOf ? `/lots?as_of=${asOf}` : '/lots'),
   risk: (range?: DateRange) => request<RiskStat>(withRange('/risk', range)),

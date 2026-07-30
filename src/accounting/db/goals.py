@@ -139,10 +139,10 @@ class GoalAutomation(Base, Timestamped):
     row carries none of it.
 
     `goal_id` is a real foreign key into `goals` — see `GoalContribution`'s
-    own docstring; both `PUT /goal-automations/contributions` and
-    `PUT /goal-automations/withdrawals` are the same "replace the whole
-    list, every entry must name a goal that already exists" shape, each
-    scoped to its own `direction`.
+    own docstring; every write path in either direction names a goal that
+    has to already exist, whether it creates one rule
+    (`POST /goal-automations/{contributions,withdrawals}`) or renumbers a
+    whole direction's rules (`PUT /goal-automations/.../order`).
 
     The partial unique index is what `withdrawal_priority_entries`'
     `UNIQUE (user_id, goal_id)` becomes: a goal appears at most once in

@@ -213,17 +213,71 @@ def test_target_allocation_defaults_to_empty(client) -> None:
     assert client.get("/api/v1/trades/settings/target-allocation").json() == {}
 
 
-def test_target_allocation_put_then_get_round_trips(client) -> None:
+def _patch_target_allocation(client, patch: dict[str, float | None]):
+    """Send one RFC 7386 merge patch to the target allocation, with the media type the route declares.
+
+    Returns
+    -------
+    httpx.Response
+    """
+    return client.patch(
+        "/api/v1/trades/settings/target-allocation",
+        json=patch,
+        headers={"Content-Type": "application/merge-patch+json"},
+    )
+
+
+def test_target_allocation_patch_then_get_round_trips(client) -> None:
     """The endpoint returns the bare `symbol -> pct` map — no envelope, since there is no version to carry."""
-    put_response = client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
-    assert put_response.status_code == 200
-    assert put_response.json() == {"VOO": 80.0}
+    response = _patch_target_allocation(client, {"VOO": 80.0})
+    assert response.status_code == 200
+    assert response.json() == {"VOO": 80.0}
     assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 80.0}
 
 
-def test_target_allocation_put_preserves_other_settings(client) -> None:
+def test_target_allocation_patch_sets_one_symbol_and_leaves_the_rest_alone(client) -> None:
+    """The point of the merge patch: editing one symbol is not a chance to clobber the others.
+
+    A whole-map `PUT` made every save a full replacement, so a client
+    holding a stale map silently reverted anything saved since it read.
+    """
+    _patch_target_allocation(client, {"VOO": 60.0, "BND": 30.0, "CASH": 10.0})
+
+    response = _patch_target_allocation(client, {"BND": 25.0})
+
+    assert response.json() == {"VOO": 60.0, "BND": 25.0, "CASH": 10.0}
+
+
+def test_target_allocation_patch_removes_a_symbol_set_to_null(client) -> None:
+    _patch_target_allocation(client, {"VOO": 60.0, "BND": 40.0})
+
+    response = _patch_target_allocation(client, {"BND": None})
+
+    assert response.json() == {"VOO": 60.0}
+    assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 60.0}
+
+
+def test_target_allocation_patch_ignores_a_null_for_a_symbol_that_was_never_set(client) -> None:
+    """Removing what isn't there is a no-op, not a 404 — merge-patch says nothing about absent keys."""
+    _patch_target_allocation(client, {"VOO": 60.0})
+
+    response = _patch_target_allocation(client, {"NVDA": None})
+
+    assert response.status_code == 200
+    assert response.json() == {"VOO": 60.0}
+
+
+def test_target_allocation_patch_with_an_empty_body_changes_nothing(client) -> None:
+    _patch_target_allocation(client, {"VOO": 60.0})
+
+    response = _patch_target_allocation(client, {})
+
+    assert response.json() == {"VOO": 60.0}
+
+
+def test_target_allocation_patch_preserves_other_settings(client) -> None:
     client.put("/api/v1/trades/settings/hysa", json={"bank_id": "marcus"})
-    client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
+    _patch_target_allocation(client, {"VOO": 80.0})
     assert client.get("/api/v1/trades/settings/hysa").json()["bank_id"] == "marcus"
 
 
@@ -233,7 +287,7 @@ def test_a_settings_save_never_conflicts_with_a_sibling_settings_save(client) ->
     The shared settings-row counter is gone (see `trades.dashboard.settings.save_settings`), so a
     target-allocation save followed by an unrelated hysa save just both land.
     """
-    assert client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0}).status_code == 200
+    assert _patch_target_allocation(client, {"VOO": 80.0}).status_code == 200
 
     followup = client.put("/api/v1/trades/settings/hysa", json={"bank_id": "marcus", "fixed_rate_pct": None})
     assert followup.status_code == 200
@@ -251,7 +305,7 @@ def test_hysa_settings_put_then_get_round_trips(client) -> None:
 
 
 def test_hysa_settings_put_preserves_target_allocation(client) -> None:
-    client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
+    _patch_target_allocation(client, {"VOO": 80.0})
     client.put("/api/v1/trades/settings/hysa", json={"fixed_rate_pct": 5.0})
     assert client.get("/api/v1/trades/settings/target-allocation").json() == {"VOO": 80.0}
 
@@ -325,7 +379,7 @@ def test_tax_settings_put_then_get_round_trips(client) -> None:
 
 
 def test_tax_settings_put_preserves_target_allocation(client) -> None:
-    client.put("/api/v1/trades/settings/target-allocation", json={"VOO": 80.0})
+    _patch_target_allocation(client, {"VOO": 80.0})
     client.put(
         "/api/v1/trades/settings/tax",
         json={

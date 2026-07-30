@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
+    AutomationOrder,
     GoalAutomationCreate,
     GoalAutomationUpdate,
     GoalContributionCreate,
@@ -19,10 +20,11 @@ from accounting.api.api_models import (
     GoalUpdate,
     SimulateContributionRequest,
     SimulateContributionResult,
+    WithdrawalAutomationCreate,
     WithdrawalAutomationResult,
 )
 from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
-from accounting.api.locations import CREATED_WITH_LOCATION, location_of
+from accounting.api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
@@ -45,6 +47,7 @@ from accounting.repositories.planning import (
     update_goal,
     upsert_goal_automation,
     upsert_goal_contribution,
+    withdrawal_automation_id,
 )
 from accounting.taxonomy import next_available_color, seeded_accounts
 from db.current_user import get_current_user_id
@@ -157,34 +160,82 @@ def delete_goal_route(
     session.commit()
 
 
-def _reject_wrong_direction(automations: list[GoalAutomation], direction: GoalAutomationDirection) -> None:
-    """Refuse a whole-list replace that carries automations of the other direction.
+def _reorder_automations(
+    session: Session, user_id: uuid.UUID, automation_ids: list[str], direction: GoalAutomationDirection
+) -> list[GoalAutomation]:
+    """Renumber one direction's automations into `automation_ids`' order, changing nothing else about them.
 
-    Both directions live in one table now, and each whole-list `PUT`
-    deletes only its own direction's rows before reinserting — so a body
-    mixing the two would silently drop the entries that don't match.
-    A 400 at the edge says that, rather than letting
-    `repositories.planning.replace_goal_automations` raise a `ValueError`
-    into a 500.
+    The submitted id set must equal the persisted one exactly — not a
+    subset, not a superset. That equality is what makes this a reorder
+    instead of a whole-list replace under a new name: an insertion, a
+    deletion or a field edit has nowhere to hide in a body that carries no
+    fields and may name no id the server isn't already storing. It also
+    subsumes the direction check the old whole-list `PUT` needed, since the
+    other direction's ids are simply not in this direction's set.
+
+    `priority` comes from list position, 0-based, matching what
+    `post_goal_automation` assigns a newly appended rule.
+
+    Parameters
+    ----------
+    session
+        An open database session; committed here on success.
+    user_id
+        Whose automations to reorder.
+    automation_ids
+        The ids persisted for `direction`, in the desired order.
+    direction
+        Which of the two orderings is being submitted.
+
+    Returns
+    -------
+    list[GoalAutomation]
+        The same automations, renumbered, in the submitted order.
 
     Raises
     ------
     HTTPException
-        400 if any entry's `direction` isn't `direction`.
+        400 if `automation_ids` repeats an id, or is not exactly the set
+        persisted for `direction`, or would leave a `remainder` rule
+        somewhere other than last.
     """
-    wrong = [automation.automation_id for automation in automations if automation.direction != direction]
-    if wrong:
-        raise HTTPException(status_code=400, detail=f"Every automation here must be a {direction!r}: {wrong}")
+    persisted = {
+        automation.automation_id: automation
+        for automation in load_goal_automations(session, user_id)
+        if automation.direction == direction
+    }
+    submitted = set(automation_ids)
+    if len(submitted) != len(automation_ids):
+        duplicated = sorted({name for name in automation_ids if automation_ids.count(name) > 1})
+        raise HTTPException(status_code=400, detail=f"An automation cannot appear twice in one order: {duplicated}")
+    if submitted != set(persisted):
+        missing = sorted(set(persisted) - submitted)
+        unknown = sorted(submitted - set(persisted))
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"An order must list every {direction!r} automation exactly once and no others — "
+                f"missing: {missing}, not a persisted {direction!r}: {unknown}"
+            ),
+        )
+    reordered = [
+        persisted[automation_id].model_copy(update={"priority": priority})
+        for priority, automation_id in enumerate(automation_ids)
+    ]
+    _validate_remainder_invariant(reordered)
+    replace_goal_automations(session, user_id, reordered, direction)
+    session.commit()
+    return reordered
 
 
 def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
-    """Enforce the whole-list `remainder` rules against a full contribution-automation set.
+    """Enforce the `remainder` rules against a full contribution-automation set.
 
-    Shared by the whole-list `PUT` and the single-row `PATCH` so both reject
-    the same illegal states: a single-row edit is validated against the list it
+    Shared by the reorder and the single-row `PATCH` so both reject the
+    same illegal states: a single-row edit is validated against the list it
     would produce, never in isolation — otherwise a `PATCH` could create a
     second `remainder` row, or move the `remainder` row off the lowest
-    priority, a state `PUT` itself refuses.
+    priority, a state a reorder itself refuses.
 
     The first of the two rules is *also* structural now — `goal_automations`
     carries `UNIQUE (user_id) WHERE mode = 'remainder'` (see
@@ -377,8 +428,8 @@ def post_goal_automation(
     from the client: this always
     goes after the current lowest-priority contribution, matching the
     Goals page's own "append at the end of the ordered list" behavior.
-    Drag-and-drop reordering still goes through
-    `PUT /goal-automations/contributions`.
+    Drag-and-drop reordering goes through
+    `PUT /goal-automations/contributions/order`.
 
     Returns
     -------
@@ -405,33 +456,33 @@ def post_goal_automation(
     return automation
 
 
-@router.put("/goal-automations/contributions")
-def put_goal_contribution_automations(
-    automations: list[GoalAutomation],
+@router.put("/goal-automations/contributions/order")
+def put_goal_contribution_automation_order(
+    order: AutomationOrder,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[GoalAutomation]:
-    """Replace the whole contribution-automation list — the priority-ordered allocation rules.
+    """Set the order the contribution automations run in — the priority a fixed-amount rule funds ahead of a lower one.
 
-    Scoped to `direction="contribution"`: the withdrawal ordering lives in
-    the same table now but is replaced by its own endpoint, so neither
-    list can wipe the other.
+    A named operation on a real single resource (this collection's
+    *ordering*), which is why it stays a `PUT` and not a `PATCH` per
+    automation: a reorder is atomic across every row in the list, and n
+    separate `PATCH`es of `priority` can only approximate that, passing
+    through states with two rules at the same priority. Idempotent —
+    submitting the same order twice lands the same priorities.
 
-    Rejects an illegal list with a 400 via `_validate_remainder_invariant`
-    (more than one `mode="remainder"`, or a `remainder` row that isn't the
-    lowest priority) — the same check the single-row `PATCH` enforces.
+    Scoped to `direction="contribution"`: the withdrawal ordering shares
+    the table but has its own route, so neither can renumber the other.
 
     Returns
     -------
     list[GoalAutomation]
-        The automations just persisted. Answers 400 if any entry is not a
-        `contribution`, or if the `remainder` invariant is broken.
+        The contribution automations, renumbered, in the submitted order.
+        Answers 400 (from `_reorder_automations`) if the submitted ids
+        aren't exactly the persisted contribution automations, or if the
+        order would leave a `mode="remainder"` rule anywhere but last.
     """
-    _reject_wrong_direction(automations, "contribution")
-    _validate_remainder_invariant(automations)
-    replace_goal_automations(session, user_id, automations, "contribution")
-    session.commit()
-    return automations
+    return _reorder_automations(session, user_id, order.automation_ids, "contribution")
 
 
 @router.patch("/goal-automations/{automation_id}")
@@ -443,9 +494,11 @@ def patch_goal_automation(
 ) -> GoalAutomation:
     """Edit one contribution automation in place, without touching any other. Scoped, last-write-wins.
 
-    A single-rule field edit no longer round-trips through the whole-list
-    `PUT` (which blanket-reinserts every rule and could revert a concurrent
-    edit to a different one); see `repositories.planning.upsert_goal_automation`.
+    A single-rule field edit does not round-trip through a whole-list
+    write (which blanket-reinserted every rule and could revert a
+    concurrent edit to a different one); see
+    `repositories.planning.upsert_goal_automation`. `priority` is carried
+    unchanged — the reorder route owns it.
 
     Returns
     -------
@@ -480,7 +533,7 @@ def patch_goal_automation(
     )
     # Validate against the whole list this edit would produce, not the row in
     # isolation — the single-row PATCH must not be able to reach a state the
-    # whole-list PUT would reject (a second `remainder`, or one out of order).
+    # reorder route would reject (a second `remainder`, or one out of order).
     effective = [
         automation if existing.automation_id == automation_id else existing
         for existing in load_goal_automations(session, user_id)
@@ -509,30 +562,79 @@ def delete_goal_automation_route(
     session.commit()
 
 
-@router.put("/goal-automations/withdrawals")
-def put_goal_withdrawal_automations(
-    automations: list[GoalAutomation],
+@router.post("/goal-automations/withdrawals", status_code=201, responses=created_or_replaced(GoalAutomation))
+def post_withdrawal_automation(
+    request: WithdrawalAutomationCreate,
+    http_request: Request,
+    response: Response,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalAutomation:
+    """Put one goal into the drawdown order, appended last, without touching any other entry.
+
+    The counterpart to `post_goal_automation` for the other direction, and
+    the reason the withdrawal ordering no longer needs a whole-list write:
+    adding a goal is a create, dropping one is
+    `DELETE /goal-automations/{automation_id}`, and rearranging them is
+    `PUT /goal-automations/withdrawals/order`.
+
+    Unlike a contribution's minted id, this one is derived from the goal
+    (`repositories.planning.withdrawal_automation_id`) because a goal sits
+    at most once in the order — so re-adding a goal already in it is a
+    replace, not a second row, and answers `200` with the entry's existing
+    place rather than `201`. Re-adding therefore never silently moves a
+    goal to the bottom of the drawdown order.
+
+    Returns
+    -------
+    GoalAutomation
+        The drawdown entry just persisted.
+    """
+    existing = [
+        automation for automation in load_goal_automations(session, user_id) if automation.direction == "withdrawal"
+    ]
+    automation_id = withdrawal_automation_id(request.goal_id)
+    already_ordered = next((a for a in existing if a.automation_id == automation_id), None)
+    automation = GoalAutomation(
+        automation_id=automation_id,
+        goal_id=request.goal_id,
+        direction="withdrawal",
+        priority=already_ordered.priority if already_ordered else len(existing),
+    )
+    upsert_goal_automation(automation, session, user_id)
+    if already_ordered is None:
+        location_of(http_request, response, "get_goal_automation", automation_id=automation_id)
+    else:
+        response.status_code = 200
+    return automation
+
+
+@router.put("/goal-automations/withdrawals/order")
+def put_goal_withdrawal_automation_order(
+    order: AutomationOrder,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> list[GoalAutomation]:
-    """Replace the whole withdrawal ordering — which goals are drawn down, and in what order, when unallocated dips.
+    """Set the order goals are drawn down in when unallocated money dips below zero.
 
-    A pure ordering + set-membership operation (no free text, schedule, or
-    amount anywhere — a withdrawal automation carries none), so it's
-    last-write-wins by nature: whichever ordering was submitted last is
-    the intended one. Scoped to `direction="withdrawal"`, so it never
-    touches the contribution automations sharing the table.
+    A withdrawal automation carries nothing but its goal and its place in
+    this order, so the order *is* the whole resource here — which makes the
+    id-set check below load-bearing rather than defensive: it is the only
+    thing separating "rearrange the drawdown order" from "replace it".
+    Membership changes go through `post_withdrawal_automation` and
+    `DELETE /goal-automations/{automation_id}`.
+
+    Scoped to `direction="withdrawal"`, so it never renumbers the
+    contribution automations sharing the table.
 
     Returns
     -------
     list[GoalAutomation]
-        The withdrawal automations just persisted. Answers 400 if any
-        entry is not a `withdrawal`.
+        The drawdown entries, renumbered, in the submitted order. Answers
+        400 (from `_reorder_automations`) if the submitted ids aren't
+        exactly the persisted withdrawal automations.
     """
-    _reject_wrong_direction(automations, "withdrawal")
-    replace_goal_automations(session, user_id, automations, "withdrawal")
-    session.commit()
-    return automations
+    return _reorder_automations(session, user_id, order.automation_ids, "withdrawal")
 
 
 @router.get("/goals/summary")

@@ -21,13 +21,55 @@ CHECKING_CSV = (
 )
 
 
-def _withdrawal(goal_id: str, priority: int) -> dict[str, object]:
-    return {
-        "automation_id": f"withdrawal:{goal_id}",
-        "goal_id": goal_id,
-        "direction": "withdrawal",
-        "priority": priority,
+def _add_contribution_automation(client, **overrides) -> dict:
+    payload = {
+        "goal_id": "emergency-fund",
+        "start_date": "2026-01-05",
+        "frequency": "monthly",
+        "mode": "fixed_amount",
+        "value": 500.0,
+        "currency": "USD",
+        **overrides,
     }
+    response = client.post("/api/v1/accounting/goal-automations/contributions", json=payload)
+    assert response.status_code == 201
+    return response.json()
+
+
+def _add_withdrawal(client, goal_id: str = "emergency-fund") -> dict:
+    """Put one goal into the drawdown order, the only way a client can join it.
+
+    Returns
+    -------
+    dict
+        The created entry, whose `automation_id` the reorder route addresses it by.
+    """
+    response = client.post("/api/v1/accounting/goal-automations/withdrawals", json={"goal_id": goal_id})
+    assert response.status_code == 201
+    return response.json()
+
+
+def _reorder(client, direction: str, automation_ids: list[str]):
+    """Submit one direction's whole ordering as ids.
+
+    Returns
+    -------
+    httpx.Response
+    """
+    return client.put(
+        f"/api/v1/accounting/goal-automations/{direction}/order",
+        json={"automation_ids": automation_ids},
+    )
+
+
+def _stored_automations(client) -> dict[str, dict]:
+    """Read every automation back out of the store, keyed by id.
+
+    Returns
+    -------
+    dict[str, dict]
+    """
+    return {a["automation_id"]: a for a in client.get("/api/v1/accounting/store").json()["goal_automations"]}
 
 
 def _fake_rate_history() -> pl.DataFrame:
@@ -502,22 +544,7 @@ def test_goals_summary_converts_into_the_requested_display_currency(client, monk
 def test_run_contribution_automations_writes_a_contribution_once_due(client, db_session) -> None:
     _import_checking(client)
     _create_goal(db_session)
-    client.put(
-        "/api/v1/accounting/goal-automations/contributions",
-        json=[
-            {
-                "automation_id": "auto:emergency-fund",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-01-05",
-                "frequency": "monthly",
-                "mode": "fixed_amount",
-                "value": 500.0,
-                "currency": "USD",
-                "priority": 0,
-            }
-        ],
-    )
+    _add_contribution_automation(client)
     response = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
     assert response.status_code == 200
     written = response.json()
@@ -543,35 +570,21 @@ def test_run_contribution_automations_funds_two_schedules_on_one_goal_separately
     """
     _import_checking(client)
     _create_goal(db_session)
-    client.put(
-        "/api/v1/accounting/goal-automations/contributions",
-        json=[
-            {
-                "automation_id": f"auto:emergency-fund:{index}",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-01-05",
-                "frequency": "monthly",
-                "mode": "fixed_amount",
-                "value": value,
-                "currency": "USD",
-                "priority": index,
-            }
-            for index, value in enumerate((300.0, 200.0))
-        ],
-    )
+    first = _add_contribution_automation(client, value=300.0)
+    second = _add_contribution_automation(client, value=200.0)
 
     written = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"}).json()
 
-    # One contribution per schedule, each carrying its own automation's amount.
+    # One contribution per schedule, each carrying its own automation's amount —
+    # and each under an id derived from its *own* automation, which is the bug
+    # this pins: a `goal_id`-keyed map collapsed both onto one id.
     assert len(written) == 2
-    assert {row["contribution_id"] for row in written} == {
-        "auto:auto:emergency-fund:0:2026-06-05",
-        "auto:auto:emergency-fund:1:2026-06-05",
-    }
+    first_contribution_id = f"auto:{first['automation_id']}:2026-06-05"
+    second_contribution_id = f"auto:{second['automation_id']}:2026-06-05"
+    assert {row["contribution_id"] for row in written} == {first_contribution_id, second_contribution_id}
     by_id = {row["contribution_id"]: row for row in written}
-    assert by_id["auto:auto:emergency-fund:0:2026-06-05"]["amount"] == pytest.approx(300.0)
-    assert by_id["auto:auto:emergency-fund:1:2026-06-05"]["amount"] == pytest.approx(200.0)
+    assert by_id[first_contribution_id]["amount"] == pytest.approx(300.0)
+    assert by_id[second_contribution_id]["amount"] == pytest.approx(200.0)
 
     summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
     assert summary["balances"]["emergency-fund"] == pytest.approx(500.0)
@@ -580,22 +593,7 @@ def test_run_contribution_automations_funds_two_schedules_on_one_goal_separately
 def test_run_contribution_automations_is_idempotent_within_the_same_month(client, db_session) -> None:
     _import_checking(client)
     _create_goal(db_session)
-    client.put(
-        "/api/v1/accounting/goal-automations/contributions",
-        json=[
-            {
-                "automation_id": "auto:emergency-fund",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-01-05",
-                "frequency": "monthly",
-                "mode": "fixed_amount",
-                "value": 500.0,
-                "currency": "USD",
-                "priority": 0,
-            }
-        ],
-    )
+    _add_contribution_automation(client)
     client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
     second_run = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-20"})
     assert second_run.json() == []
@@ -607,22 +605,7 @@ def test_run_contribution_automations_is_idempotent_within_the_same_month(client
 def test_run_contribution_automations_supports_a_weekly_schedule(client, db_session) -> None:
     _import_checking(client)
     _create_goal(db_session)
-    client.put(
-        "/api/v1/accounting/goal-automations/contributions",
-        json=[
-            {
-                "automation_id": "auto:emergency-fund",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-06-01",
-                "frequency": "weekly",
-                "mode": "fixed_amount",
-                "value": 100.0,
-                "currency": "USD",
-                "priority": 0,
-            }
-        ],
-    )
+    _add_contribution_automation(client, start_date="2026-06-01", frequency="weekly", value=100.0)
     first = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-01"})
     assert len(first.json()) == 1
     # Same week — already funded, so a second call the same week is a no-op...
@@ -639,23 +622,7 @@ def test_run_contribution_automations_supports_a_weekly_schedule(client, db_sess
 def test_run_contribution_automations_stops_after_the_end_date(client, db_session) -> None:
     _import_checking(client)
     _create_goal(db_session)
-    client.put(
-        "/api/v1/accounting/goal-automations/contributions",
-        json=[
-            {
-                "automation_id": "auto:emergency-fund",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-06-01",
-                "frequency": "daily",
-                "end_date": "2026-06-03",
-                "mode": "fixed_amount",
-                "value": 50.0,
-                "currency": "USD",
-                "priority": 0,
-            }
-        ],
-    )
+    _add_contribution_automation(client, start_date="2026-06-01", frequency="daily", end_date="2026-06-03", value=50.0)
     client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-03"})
     past_end = client.post("/api/v1/accounting/goals/run-recurring-additions", params={"as_of": "2026-06-10"})
     assert past_end.json() == []  # already funded through the end date — nothing new to add
@@ -664,59 +631,48 @@ def test_run_contribution_automations_stops_after_the_end_date(client, db_sessio
     assert summary["balances"]["emergency-fund"] == pytest.approx(50.0)
 
 
-def test_put_contribution_automations_rejects_a_withdrawal_in_the_body(client, db_session) -> None:
-    # Both directions share one table, and each whole-list PUT only deletes its
-    # own direction's rows — a mixed body would silently drop the mismatched
-    # entries, so it is refused outright.
+def test_reordering_contributions_rejects_a_withdrawal_id(client, db_session) -> None:
+    """Both directions share one table, and each reorder renumbers only its own direction's rows.
+
+    A withdrawal's id names nothing in the contribution ordering, so it is
+    refused outright rather than quietly ignored — the same invariant the
+    whole-list `PUT`'s direction check used to enforce, now a consequence of
+    the id set having to match exactly.
+    """
     _create_goal(db_session)
-    response = client.put("/api/v1/accounting/goal-automations/contributions", json=[_withdrawal("emergency-fund", 0)])
+    contribution = _add_contribution_automation(client)
+    withdrawal = _add_withdrawal(client)
+
+    response = _reorder(client, "contributions", [contribution["automation_id"], withdrawal["automation_id"]])
+
+    assert response.status_code == 400
+    assert withdrawal["automation_id"] in response.json()["detail"]
+
+
+def test_reordering_withdrawals_rejects_a_contribution_id(client, db_session) -> None:
+    _create_goal(db_session)
+    contribution = _add_contribution_automation(client)
+    withdrawal = _add_withdrawal(client)
+
+    response = _reorder(client, "withdrawals", [withdrawal["automation_id"], contribution["automation_id"]])
+
     assert response.status_code == 400
 
 
-def test_put_withdrawal_automations_rejects_a_contribution_in_the_body(client, db_session) -> None:
+def test_reordering_one_direction_leaves_the_other_untouched(client, db_session) -> None:
     _create_goal(db_session)
-    response = client.put(
-        "/api/v1/accounting/goal-automations/withdrawals",
-        json=[
-            {
-                "automation_id": "auto:emergency-fund",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-01-05",
-                "frequency": "monthly",
-                "mode": "fixed_amount",
-                "value": 500.0,
-                "currency": "USD",
-                "priority": 0,
-            }
-        ],
-    )
-    assert response.status_code == 400
+    first = _add_contribution_automation(client, value=100.0)
+    second = _add_contribution_automation(client, value=200.0)
+    withdrawal = _add_withdrawal(client)
 
+    assert _reorder(client, "contributions", [second["automation_id"], first["automation_id"]]).status_code == 200
 
-def test_replacing_one_direction_leaves_the_other_untouched(client, db_session) -> None:
-    _create_goal(db_session)
-    client.put(
-        "/api/v1/accounting/goal-automations/contributions",
-        json=[
-            {
-                "automation_id": "auto:emergency-fund",
-                "goal_id": "emergency-fund",
-                "direction": "contribution",
-                "start_date": "2026-01-05",
-                "frequency": "monthly",
-                "mode": "fixed_amount",
-                "value": 500.0,
-                "currency": "USD",
-                "priority": 0,
-            }
-        ],
-    )
-    client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
-    client.put("/api/v1/accounting/goal-automations/contributions", json=[])
-
-    automations = client.get("/api/v1/accounting/store").json()["goal_automations"]
-    assert [automation["direction"] for automation in automations] == ["withdrawal"]
+    stored = _stored_automations(client)
+    assert stored[second["automation_id"]]["priority"] == 0
+    assert stored[first["automation_id"]]["priority"] == 1
+    # The withdrawal row shares the table and was never named — still there, still a withdrawal, still first.
+    assert stored[withdrawal["automation_id"]]["direction"] == "withdrawal"
+    assert stored[withdrawal["automation_id"]]["priority"] == 0
 
 
 def test_post_goal_automation_creates_one_with_a_server_generated_id(client, db_session) -> None:
@@ -823,7 +779,7 @@ def test_patch_goal_automation_404s_for_a_withdrawal_id(client, db_session) -> N
     so this was reachable by anyone holding a goal id.
     """
     _create_goal(db_session)
-    client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    _add_withdrawal(client)
 
     response = client.patch(
         "/api/v1/accounting/goal-automations/withdrawal:emergency-fund",
@@ -892,7 +848,7 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
         "/api/v1/accounting/goal-contributions",
         json={"goal_id": "emergency-fund", "date": "2026-06-01T00:00:00", "amount": 1000.0, "currency": "USD"},
     )
-    client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
+    _add_withdrawal(client)
 
     response = client.post("/api/v1/accounting/goals/run-withdrawal-automation", params={"as_of": "2026-06-25"})
     assert response.status_code == 200
@@ -904,7 +860,7 @@ def test_run_withdrawal_automation_draws_down_a_goal_when_unallocated_goes_negat
     assert body["remaining_shortfall"] == pytest.approx(4000.0)
 
 
-def test_put_withdrawal_automations_never_conflicts(client, db_session) -> None:
+def test_reordering_withdrawals_never_conflicts(client, db_session) -> None:
     """Reordering withdrawal priorities is a pure last-write-wins ordering op with no version of its own.
 
     A per-row `expected_version` governs only the row it names (`PATCH /goals/{goal_id}`); nothing
@@ -923,10 +879,179 @@ def test_put_withdrawal_automations_never_conflicts(client, db_session) -> None:
             "expected_version": 1,
         },
     )
-    first = client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 0)])
-    second = client.put("/api/v1/accounting/goal-automations/withdrawals", json=[_withdrawal("emergency-fund", 1)])
+    entry = _add_withdrawal(client)
+    first = _reorder(client, "withdrawals", [entry["automation_id"]])
+    second = _reorder(client, "withdrawals", [entry["automation_id"]])
     assert first.status_code == 200
     assert second.status_code == 200
+
+
+def test_reordering_contributions_renumbers_priority_from_list_position(client, db_session) -> None:
+    _create_goal(db_session)
+    first = _add_contribution_automation(client, value=100.0)
+    second = _add_contribution_automation(client, value=200.0)
+    third = _add_contribution_automation(client, value=300.0)
+
+    response = _reorder(
+        client, "contributions", [third["automation_id"], first["automation_id"], second["automation_id"]]
+    )
+
+    assert response.status_code == 200
+    # Returned in the submitted order, renumbered 0-based — the same convention
+    # `POST /goal-automations/contributions` appends with.
+    assert [(a["automation_id"], a["priority"]) for a in response.json()] == [
+        (third["automation_id"], 0),
+        (first["automation_id"], 1),
+        (second["automation_id"], 2),
+    ]
+    stored = _stored_automations(client)
+    assert stored[third["automation_id"]]["priority"] == 0
+    assert stored[first["automation_id"]]["priority"] == 1
+    assert stored[second["automation_id"]]["priority"] == 2
+    # Nothing but `priority` moved: a reorder carries no fields to move.
+    assert stored[third["automation_id"]]["value"] == pytest.approx(300.0)
+
+
+def test_reordering_the_same_order_twice_is_idempotent(client, db_session) -> None:
+    _create_goal(db_session)
+    first = _add_contribution_automation(client)
+    second = _add_contribution_automation(client)
+    order = [second["automation_id"], first["automation_id"]]
+
+    assert _reorder(client, "contributions", order).json() == _reorder(client, "contributions", order).json()
+
+
+def test_reordering_rejects_an_order_missing_a_persisted_automation(client, db_session) -> None:
+    """A short list is a deletion in disguise, which is what the id-set check exists to refuse.
+
+    The whole-list `PUT` this replaced treated an omitted entry as "delete
+    it", so a reorder request built from a stale list silently dropped rows.
+    """
+    _create_goal(db_session)
+    first = _add_contribution_automation(client)
+    second = _add_contribution_automation(client)
+
+    response = _reorder(client, "contributions", [first["automation_id"]])
+
+    assert response.status_code == 400
+    assert second["automation_id"] in response.json()["detail"]
+    assert set(_stored_automations(client)) == {first["automation_id"], second["automation_id"]}
+
+
+def test_reordering_rejects_an_order_naming_an_unknown_automation(client, db_session) -> None:
+    """And a long list is an insertion in disguise — creates have their own route."""
+    _create_goal(db_session)
+    first = _add_contribution_automation(client)
+
+    response = _reorder(client, "contributions", [first["automation_id"], "addition:does-not-exist"])
+
+    assert response.status_code == 400
+    assert set(_stored_automations(client)) == {first["automation_id"]}
+
+
+def test_reordering_rejects_the_same_automation_twice(client, db_session) -> None:
+    _create_goal(db_session)
+    first = _add_contribution_automation(client)
+    second = _add_contribution_automation(client)
+
+    response = _reorder(
+        client, "contributions", [first["automation_id"], first["automation_id"], second["automation_id"]]
+    )
+
+    assert response.status_code == 400
+
+
+def test_reordering_rejects_moving_a_remainder_off_the_bottom(client, db_session) -> None:
+    """`mode="remainder"` means "whatever is left after every other rule ran", so it can only be last.
+
+    The same invariant the single-row `PATCH` checks — a reorder must not be
+    able to reach a state a field edit is refused for.
+    """
+    _create_goal(db_session)
+    fixed = _add_contribution_automation(client, value=100.0)
+    remainder = _add_contribution_automation(client, mode="remainder")
+
+    response = _reorder(client, "contributions", [remainder["automation_id"], fixed["automation_id"]])
+
+    assert response.status_code == 400
+    assert "remainder" in response.json()["detail"]
+    stored = _stored_automations(client)
+    assert stored[remainder["automation_id"]]["priority"] == 1  # still last
+
+
+def test_reordering_accepts_a_remainder_that_stays_last(client, db_session) -> None:
+    _create_goal(db_session)
+    first = _add_contribution_automation(client, value=100.0)
+    second = _add_contribution_automation(client, value=200.0)
+    remainder = _add_contribution_automation(client, mode="remainder")
+
+    response = _reorder(
+        client, "contributions", [second["automation_id"], first["automation_id"], remainder["automation_id"]]
+    )
+
+    assert response.status_code == 200
+    assert [a["automation_id"] for a in response.json()][-1] == remainder["automation_id"]
+
+
+def test_reordering_an_empty_direction_is_a_no_op(client, db_session) -> None:
+    _create_goal(db_session)
+    assert _reorder(client, "contributions", []).json() == []
+
+
+def test_post_withdrawal_automation_derives_its_id_from_the_goal_and_appends(client, db_session) -> None:
+    _create_goal(db_session)
+    _create_goal(db_session, goal_id="house")
+
+    first = client.post("/api/v1/accounting/goal-automations/withdrawals", json={"goal_id": "emergency-fund"})
+    second = client.post("/api/v1/accounting/goal-automations/withdrawals", json={"goal_id": "house"})
+
+    assert first.status_code == 201
+    assert first.json() == {
+        "automation_id": "withdrawal:emergency-fund",
+        "goal_id": "emergency-fund",
+        "direction": "withdrawal",
+        "priority": 0,
+        "start_date": None,
+        "frequency": None,
+        "end_date": None,
+        "mode": None,
+        "value": None,
+        "currency": None,
+    }
+    assert second.json()["priority"] == 1
+    # Same `Location` shape as a contribution create: the direction picks the
+    # collection posted to, not the created row's address.
+    assert first.headers["Location"].endswith("/goal-automations/withdrawal:emergency-fund")
+    assert client.get(first.headers["Location"]).json() == first.json()
+
+
+def test_re_adding_a_goal_to_the_drawdown_order_keeps_its_place(client, db_session) -> None:
+    """The id is derived from the goal, so a repeat add is a replace — and must not shove it to the bottom."""
+    _create_goal(db_session)
+    _create_goal(db_session, goal_id="house")
+    _add_withdrawal(client, "emergency-fund")
+    _add_withdrawal(client, "house")
+
+    again = client.post("/api/v1/accounting/goal-automations/withdrawals", json={"goal_id": "emergency-fund"})
+
+    assert again.status_code == 200  # replaced, not created
+    assert "Location" not in again.headers
+    assert again.json()["priority"] == 0
+    assert len([a for a in _stored_automations(client).values() if a["direction"] == "withdrawal"]) == 2
+
+
+def test_leaving_the_drawdown_order_is_a_plain_delete(client, db_session) -> None:
+    _create_goal(db_session)
+    _create_goal(db_session, goal_id="house")
+    emergency = _add_withdrawal(client, "emergency-fund")
+    house = _add_withdrawal(client, "house")
+
+    assert client.delete(f"/api/v1/accounting/goal-automations/{emergency['automation_id']}").status_code == 204
+
+    remaining = _stored_automations(client)
+    assert set(remaining) == {house["automation_id"]}
+    # And the survivor can still be reordered on its own afterwards.
+    assert _reorder(client, "withdrawals", [house["automation_id"]]).status_code == 200
 
 
 def test_simulate_contribution_flags_exceeding_unallocated(client, db_session) -> None:

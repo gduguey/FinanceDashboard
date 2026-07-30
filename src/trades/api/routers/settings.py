@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from sqlalchemy.orm import Session
 
 from db.current_user import get_current_user_id
@@ -61,30 +61,44 @@ def get_target_allocation(
     return dashboard.load_settings(session, user_id).target_allocation_pct
 
 
-@router.put("/settings/target-allocation")
-def put_target_allocation(
+@router.patch("/settings/target-allocation")
+def patch_target_allocation(
     # `Rate`, not `float`: `model_copy(update=...)` below skips validation, so a
     # `float` here would leave the frozen `DashboardSettings` holding a double in
     # a field that promises `Decimal`. `Rate` pins its own OpenAPI type to
     # `number`, so the wire contract is unchanged.
-    target_allocation_pct: dict[str, Rate],
+    patch: Annotated[dict[str, Rate | None], Body(media_type="application/merge-patch+json")],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> dict[str, Rate]:
-    """Persist a new target allocation, set from the frontend.
+    """Apply an RFC 7386 merge patch to the target allocation, one symbol at a time.
 
-    Merges into the existing settings — a settings row is one record, so
-    writing this field naively from a fresh `DashboardSettings()` would
-    silently wipe out the HYSA/benchmark settings saved separately.
+    The resource is a `symbol -> target percentage` map, which is exactly
+    the shape merge-patch is defined over, so the body says only what
+    changed: a symbol with a number sets or replaces that symbol's target,
+    a symbol with `null` drops it from the allocation, and a symbol the
+    body never mentions is left alone. A caller editing one target no
+    longer has to resend every other one and risk clobbering an edit made
+    elsewhere in between.
+
+    Merges into the existing settings for a second, unrelated reason — a
+    settings row is one record, so writing this field naively from a fresh
+    `DashboardSettings()` would silently wipe out the HYSA/benchmark
+    settings saved separately.
 
     Returns
     -------
     dict[str, Rate]
-        The persisted target allocation.
+        The whole resulting allocation, not just the patched entries.
     """
-    updated = dashboard.load_settings(session, user_id).model_copy(
-        update={"target_allocation_pct": target_allocation_pct}
-    )
+    settings = dashboard.load_settings(session, user_id)
+    allocation = dict(settings.target_allocation_pct)
+    for symbol, target in patch.items():
+        if target is None:
+            allocation.pop(symbol, None)
+        else:
+            allocation[symbol] = target
+    updated = settings.model_copy(update={"target_allocation_pct": allocation})
     dashboard.save_settings(updated, session, user_id)
     return updated.target_allocation_pct
 

@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Legend, Tooltip, XAxis, YAxis } from 'recharts'
 import { ChartCard } from '@/components/shared/ChartCard'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
-import { useAllocation, useSetTargetAllocation, useTargetAllocation } from '@/hooks/usePortfolioData'
+import { useAllocation, usePatchTargetAllocation, useTargetAllocation } from '@/hooks/usePortfolioData'
 import { formatPercent, formatUsd } from '@/lib/format'
+import type { TargetAllocationPatch } from '@/types/portfolio'
 
 // Sliced by current value (including cash), not invested dollars —
 // invested-dollar slices can't show drift from a target. A horizontal bar
@@ -16,7 +17,7 @@ import { formatPercent, formatUsd } from '@/lib/format'
 export function AllocationView() {
   const { data, isLoading, error } = useAllocation()
   const { data: targets } = useTargetAllocation()
-  const setTargets = useSetTargetAllocation()
+  const patchTargets = usePatchTargetAllocation()
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
@@ -39,7 +40,17 @@ export function AllocationView() {
         .map(([symbol, value]) => [symbol, Number(value)] as const)
         .filter(([, value]) => Number.isFinite(value)),
     )
-    setTargets.mutate(parsed)
+    // This panel submits every field it knows about at once, and the filter
+    // above is how a target gets *removed* — a draft that no longer parses to a
+    // number drops out of `parsed`. Merge-patch leaves an omitted symbol
+    // untouched, so dropping it out is no longer enough to delete it: every
+    // symbol the server still has a target for and `parsed` doesn't needs an
+    // explicit `null`, or its old target would silently outlive the edit.
+    const patch: TargetAllocationPatch = { ...parsed }
+    for (const symbol of Object.keys(targets ?? {})) {
+      if (!(symbol in parsed)) patch[symbol] = null
+    }
+    patchTargets.mutate(patch)
   }
 
   return (
