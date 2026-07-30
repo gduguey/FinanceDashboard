@@ -6,9 +6,9 @@ page's drag-and-drop), but it only ever touches its own table — never the
 fifteen others the old whole-store save swept up with it.
 
 `Goal` carries a `version` column that `PATCH /goals/{goal_id}` bumps
-through `db.base.check_and_bump_row_version`, so `replace_goals` upserts
-without ever writing that column: a reorder must not invalidate a version
-a client already has in hand for a row it isn't touching.
+through `db.base.check_and_bump_row_version`, so every other write to a
+goal row (see `_upsert_goal`) leaves that column alone: creating one goal
+must not invalidate a version a client already has in hand for another.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 import accounting.db as adb
 from accounting.models import Budget, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
-from db.base import any_text, check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
+from db.base import check_and_bump_row_version, ids_by_natural_key, natural_keys_by_id
 
 if TYPE_CHECKING:
     import uuid
@@ -257,7 +257,7 @@ def _upsert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
     omits `version` is what keeps `PATCH /goals/{goal_id}`'s per-row
     optimistic concurrency intact: an existing row keeps whatever version
     `check_and_bump_row_version` last left it at, no matter how many times
-    an unrelated create or reorder round-trips through here.
+    an unrelated create round-trips through here.
     """
     session.execute(
         text(
@@ -303,32 +303,6 @@ def insert_goal(session: Session, user_id: uuid.UUID, goal: Goal) -> None:
     """
     _upsert_goal(session, user_id, goal)
     session.commit()
-
-
-def replace_goals(session: Session, user_id: uuid.UUID, goals: Iterable[Goal]) -> None:
-    """Upsert every one of `goals` and delete this user's goals not among them — never touching `version`.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose goals these are.
-    goals
-        The complete desired set.
-    """
-    keep_natural_keys: set[str] = set()
-    for goal in goals:
-        keep_natural_keys.add(goal.goal_id)
-        _upsert_goal(session, user_id, goal)
-    session.flush()
-    existing_natural_keys = {row.natural_key for row in session.query(adb.Goal.natural_key).filter_by(user_id=user_id)}
-    removed_natural_keys = existing_natural_keys - keep_natural_keys
-    if removed_natural_keys:
-        session.query(adb.Goal).filter_by(user_id=user_id).filter(
-            any_text(adb.Goal.natural_key, removed_natural_keys)
-        ).delete(synchronize_session=False)
-    session.flush()
 
 
 def update_goal(session: Session, user_id: uuid.UUID, goal: Goal, expected_version: int | None) -> Goal | None:

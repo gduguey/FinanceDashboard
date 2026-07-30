@@ -1,4 +1,4 @@
-"""Budget endpoints — read, set, replace and remove the per-month and general spending targets for a category."""
+"""Budget endpoints — read, set and remove the per-month and general spending targets for a category."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from accounting.repositories.planning import (
     budget_row_key,
     load_budgets,
     remove_budget,
-    replace_budgets,
     upsert_budget,
 )
 from accounting.repositories.taxonomy import load_categories
@@ -31,25 +30,6 @@ from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
-
-
-@router.put("/budgets")
-def put_budgets(
-    budgets: list[Budget],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[Budget]:
-    """Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
-
-    Returns
-    -------
-    list[Budget]
-        The budgets just persisted.
-    """
-    seed_new_user_defaults(session, user_id)
-    replace_budgets(session, user_id, budgets)
-    session.commit()
-    return budgets
 
 
 @router.post("/budgets", status_code=201, responses=created_or_replaced(Budget))
@@ -66,10 +46,10 @@ def post_budget(
     and omitting it sets the general, every-month-alike one. The two are
     separate rows, so setting one never overwrites the other.
 
-    Unlike `PUT /budgets`, only the one budget in the request body is
-    sent or touched — every other month/category's target is left alone,
-    so editing one cell in the budget grid no longer means re-sending
-    every budget the user has ever set.
+    Only the one budget in the request body is sent or touched — every
+    other month/category's target is left alone, so editing one cell in
+    the budget grid no longer means re-sending every budget the user has
+    ever set, the way the retired whole-list `PUT /budgets` did.
 
     A genuine upsert, so the status distinguishes its two outcomes: `201`
     with a `Location` when this call brought the cell into existence,

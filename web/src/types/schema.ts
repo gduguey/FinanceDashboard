@@ -150,26 +150,16 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Categories
-     * @description Replace the whole category tree, enforcing the "Other" catch-all subcategory invariant.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Category]
-     *         The categories just persisted, keyed by `category_id` — may
-     *         include an "Other" subcategory the caller didn't submit, or omit
-     *         one it did (see `taxonomy.normalize_categories`).
-     */
-    put: operations['put_categories_api_v1_accounting_categories_put']
+    put?: never
     /**
      * Post Category
      * @description Create a new top-level category, refusing a same-classification, same-name duplicate.
      *
-     *     Unlike `put_categories` (a whole-tree replace, where a client-computed
-     *     id that happens to collide with an existing one silently overwrites
-     *     it), this only ever adds a category — a name collision is rejected
-     *     outright rather than clobbering the existing entry.
+     *     Only ever adds a category, which is the whole reason the retired
+     *     whole-tree `PUT /categories` is not missed: there, a client-computed
+     *     id that happened to collide with an existing one silently overwrote
+     *     it, and everything the request left out was pruned. Here a name
+     *     collision is rejected outright and no other row is touched.
      *
      *     A genuine `201`, not a hedge: the id is derived from the name
      *     (`{classification}:{slug}`), but the two 409s below mean this route
@@ -814,16 +804,7 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Budgets
-     * @description Replace the whole budget list — every month's targets plus the general, every-month-alike ones.
-     *
-     *     Returns
-     *     -------
-     *     list[Budget]
-     *         The budgets just persisted.
-     */
-    put: operations['put_budgets_api_v1_accounting_budgets_put']
+    put?: never
     /**
      * Post Budget
      * @description Set one spending target for one category (or subcategory), replacing any prior target for it.
@@ -832,10 +813,10 @@ export interface paths {
      *     and omitting it sets the general, every-month-alike one. The two are
      *     separate rows, so setting one never overwrites the other.
      *
-     *     Unlike `PUT /budgets`, only the one budget in the request body is
-     *     sent or touched — every other month/category's target is left alone,
-     *     so editing one cell in the budget grid no longer means re-sending
-     *     every budget the user has ever set.
+     *     Only the one budget in the request body is sent or touched — every
+     *     other month/category's target is left alone, so editing one cell in
+     *     the budget grid no longer means re-sending every budget the user has
+     *     ever set, the way the retired whole-list `PUT /budgets` did.
      *
      *     A genuine upsert, so the status distinguishes its two outcomes: `201`
      *     with a `Location` when this call brought the cell into existence,
@@ -2658,16 +2639,7 @@ export interface paths {
       cookie?: never
     }
     get?: never
-    /**
-     * Put Goals
-     * @description Replace the whole goal list.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, Goal]
-     *         The goals just persisted, keyed by `goal_id`.
-     */
-    put: operations['put_goals_api_v1_accounting_goals_put']
+    put?: never
     /**
      * Post Goal
      * @description Create one new goal, without touching any other goal already saved.
@@ -2753,48 +2725,6 @@ export interface paths {
     patch: operations['patch_goal_api_v1_accounting_goals__goal_id__patch']
     trace?: never
   }
-  '/api/v1/accounting/goal-contributions': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Goal Contributions
-     * @description Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
-     *
-     *     Returns
-     *     -------
-     *     dict[str, GoalContribution]
-     *         The contributions just persisted, keyed by `contribution_id`.
-     */
-    put: operations['put_goal_contributions_api_v1_accounting_goal_contributions_put']
-    /**
-     * Post Goal Contribution
-     * @description Record one new dated allocation, without touching any other contribution already recorded.
-     *
-     *     Unlike a budget's `(month, category_id)`, a contribution is an
-     *     arbitrary event with no natural key to derive an id from, so the
-     *     server generates an opaque one — two contributions with identical
-     *     fields (e.g. the same goal, date, and amount entered twice) are
-     *     distinct rows, not a collision. So the `201` is unconditional even
-     *     though the write below goes through an upsert: the id it upserts on
-     *     was minted moments earlier and cannot already exist.
-     *
-     *     Returns
-     *     -------
-     *     GoalContribution
-     *         The contribution just persisted.
-     */
-    post: operations['post_goal_contribution_api_v1_accounting_goal_contributions_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/accounting/goal-contributions/{contribution_id}': {
     parameters: {
       query?: never
@@ -2847,6 +2777,39 @@ export interface paths {
      *         404 if no contribution with this id exists.
      */
     delete: operations['delete_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/goal-contributions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Goal Contribution
+     * @description Record one new dated allocation, without touching any other contribution already recorded.
+     *
+     *     Unlike a budget's `(month, category_id)`, a contribution is an
+     *     arbitrary event with no natural key to derive an id from, so the
+     *     server generates an opaque one — two contributions with identical
+     *     fields (e.g. the same goal, date, and amount entered twice) are
+     *     distinct rows, not a collision. So the `201` is unconditional even
+     *     though the write below goes through an upsert: the id it upserts on
+     *     was minted moments earlier and cannot already exist.
+     *
+     *     Returns
+     *     -------
+     *     GoalContribution
+     *         The contribution just persisted.
+     */
+    post: operations['post_goal_contribution_api_v1_accounting_goal_contributions_post']
+    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -7580,43 +7543,6 @@ export interface operations {
       }
     }
   }
-  put_categories_api_v1_accounting_categories_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['Category']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['Category']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   post_category_api_v1_accounting_categories_post: {
     parameters: {
       query?: never
@@ -8311,39 +8237,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['OtherAsset']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  put_budgets_api_v1_accounting_budgets_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['Budget'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['Budget'][]
         }
       }
       /** @description Validation Error */
@@ -10344,43 +10237,6 @@ export interface operations {
       }
     }
   }
-  put_goals_api_v1_accounting_goals_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['Goal']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['Goal']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   post_goal_api_v1_accounting_goals_post: {
     parameters: {
       query?: never
@@ -10511,78 +10367,6 @@ export interface operations {
       }
     }
   }
-  put_goal_contributions_api_v1_accounting_goal_contributions_put: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': {
-          [key: string]: components['schemas']['GoalContribution']
-        }
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': {
-            [key: string]: components['schemas']['GoalContribution']
-          }
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_goal_contribution_api_v1_accounting_goal_contributions_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GoalContributionCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          /** @description URL of the resource this request created. */
-          Location?: string
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GoalContribution']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   get_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__get: {
     parameters: {
       query?: never
@@ -10666,6 +10450,41 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_goal_contribution_api_v1_accounting_goal_contributions_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GoalContributionCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalContribution']
+        }
       }
       /** @description Validation Error */
       422: {

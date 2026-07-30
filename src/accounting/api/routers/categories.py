@@ -38,7 +38,6 @@ from accounting.taxonomy import (
     normalize_categories,
     plan_category_rename,
     remap_category_ids,
-    seed_new_user_defaults,
     seeded_categories,
     slugify,
     uncategorize_category_ids,
@@ -103,10 +102,11 @@ def post_category(
 ) -> Category:
     """Create a new top-level category, refusing a same-classification, same-name duplicate.
 
-    Unlike `put_categories` (a whole-tree replace, where a client-computed
-    id that happens to collide with an existing one silently overwrites
-    it), this only ever adds a category — a name collision is rejected
-    outright rather than clobbering the existing entry.
+    Only ever adds a category, which is the whole reason the retired
+    whole-tree `PUT /categories` is not missed: there, a client-computed
+    id that happened to collide with an existing one silently overwrote
+    it, and everything the request left out was pruned. Here a name
+    collision is rejected outright and no other row is touched.
 
     A genuine `201`, not a hedge: the id is derived from the name
     (`{classification}:{slug}`), but the two 409s below mean this route
@@ -229,31 +229,6 @@ def post_subcategory(
     session.commit()
     location_of(http_request, response, "get_category", category_id=category_id)
     return new_category
-
-
-@router.put("/categories")
-def put_categories(
-    categories: dict[str, Category],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, Category]:
-    """Replace the whole category tree, enforcing the "Other" catch-all subcategory invariant.
-
-    Returns
-    -------
-    dict[str, Category]
-        The categories just persisted, keyed by `category_id` — may
-        include an "Other" subcategory the caller didn't submit, or omit
-        one it did (see `taxonomy.normalize_categories`).
-    """
-    # The placeholder accounts a brand-new user needs are seeded alongside the
-    # default category tree, and replacing the tree below would otherwise make
-    # `seed_new_user_defaults` a permanent no-op for them.
-    seed_new_user_defaults(session, user_id)
-    normalized = normalize_categories(categories)
-    replace_categories(session, user_id, normalized.values())
-    session.commit()
-    return normalized
 
 
 def _category_references(session: Session, user_id: uuid.UUID) -> CategoryReferences:

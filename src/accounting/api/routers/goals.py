@@ -42,8 +42,6 @@ from accounting.repositories.planning import (
     remove_goal_automation,
     remove_goal_contribution,
     replace_goal_automations,
-    replace_goal_contributions,
-    replace_goals,
     update_goal,
     upsert_goal_automation,
     upsert_goal_contribution,
@@ -91,24 +89,6 @@ def post_goal(
     insert_goal(session, user_id, goal)
     location_of(http_request, response, "get_goal", goal_id=goal.goal_id)
     return goal
-
-
-@router.put("/goals")
-def put_goals(
-    goals: dict[str, Goal],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, Goal]:
-    """Replace the whole goal list.
-
-    Returns
-    -------
-    dict[str, Goal]
-        The goals just persisted, keyed by `goal_id`.
-    """
-    replace_goals(session, user_id, goals.values())
-    session.commit()
-    return goals
 
 
 @router.patch("/goals/{goal_id}")
@@ -175,24 +155,6 @@ def delete_goal_route(
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
     session.commit()
-
-
-@router.put("/goal-contributions")
-def put_goal_contributions(
-    contributions: dict[str, GoalContribution],
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> dict[str, GoalContribution]:
-    """Replace the whole contribution ledger — every dated allocation into or withdrawal from every goal.
-
-    Returns
-    -------
-    dict[str, GoalContribution]
-        The contributions just persisted, keyed by `contribution_id`.
-    """
-    replace_goal_contributions(session, user_id, contributions.values())
-    session.commit()
-    return contributions
 
 
 def _reject_wrong_direction(automations: list[GoalAutomation], direction: GoalAutomationDirection) -> None:

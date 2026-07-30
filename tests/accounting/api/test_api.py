@@ -2269,57 +2269,25 @@ def test_creating_an_unrelated_rule_does_not_reset_another_rules_version(client)
     assert response.status_code == 200
 
 
-def test_put_categories_replaces_the_whole_tree(client) -> None:
-    response = client.put(
-        "/api/v1/accounting/categories",
-        json={
-            "expense:custom": {
-                "category_id": "expense:custom",
-                "name": "Custom",
-                "classification": "expense",
-                "color": "#000000",
-            }
-        },
+def test_post_subcategory_auto_creates_other_for_a_categorys_first_subcategory(client) -> None:
+    # The "Other" catch-all is an invariant of the tree, not of any one
+    # request: creating the first real subcategory mints it as a side effect,
+    # so a caller never has to remember to add one (see
+    # `taxonomy.normalize_categories`).
+    client.post(
+        "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
-    assert response.status_code == 200
+    response = client.post(
+        "/api/v1/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#000000"}
+    )
+    assert response.status_code == 201
     store = client.get("/api/v1/accounting/store").json()
-    assert list(store["categories"].keys()) == ["expense:custom"]
-
-
-def test_put_categories_auto_creates_other_for_a_categorys_first_subcategory(client) -> None:
-    response = client.put(
-        "/api/v1/accounting/categories",
-        json={
-            "expense:custom": {
-                "category_id": "expense:custom",
-                "name": "Custom",
-                "classification": "expense",
-                "color": "#000000",
-            },
-            "expense:custom:gadgets": {
-                "category_id": "expense:custom:gadgets",
-                "name": "Gadgets",
-                "classification": "expense",
-                "parent_category_id": "expense:custom",
-                "color": "#000000",
-            },
-        },
-    )
-    assert response.status_code == 200
-    assert "expense:custom:other" in response.json()
+    assert "expense:custom:other" in store["categories"]
 
 
 def test_category_rename_without_a_collision_just_renames(client) -> None:
-    client.put(
-        "/api/v1/accounting/categories",
-        json={
-            "expense:custom": {
-                "category_id": "expense:custom",
-                "name": "Custom",
-                "classification": "expense",
-                "color": "#000000",
-            }
-        },
+    client.post(
+        "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
     response = client.post("/api/v1/accounting/categories/expense:custom/rename", json={"name": "Renamed"})
     assert response.status_code == 200
@@ -2348,18 +2316,7 @@ def test_category_rename_merges_into_an_existing_category_and_repoints_postings(
     )
     store = client.get("/api/v1/accounting/store").json()
     nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
-    client.put(
-        "/api/v1/accounting/categories",
-        json={
-            **store["categories"],
-            "expense:food": {
-                "category_id": "expense:food",
-                "name": "Food",
-                "classification": "expense",
-                "color": "#111111",
-            },
-        },
-    )
+    client.post("/api/v1/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
 
     response = client.post(f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
     assert response.status_code == 200
@@ -2394,18 +2351,7 @@ def test_category_rename_merge_leaves_the_raw_ledger_carrying_the_imported_categ
     )
     store = client.get("/api/v1/accounting/store").json()
     nourriture = next(c for c in store["categories"].values() if c["name"] == "Nourriture")
-    client.put(
-        "/api/v1/accounting/categories",
-        json={
-            **store["categories"],
-            "expense:food": {
-                "category_id": "expense:food",
-                "name": "Food",
-                "classification": "expense",
-                "color": "#111111",
-            },
-        },
-    )
+    client.post("/api/v1/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
 
     client.post(f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
 
@@ -2439,18 +2385,7 @@ def test_category_rename_merge_repoints_a_manual_override(client) -> None:
         f"/api/v1/accounting/postings/{other_posting['posting_id']}/override",
         json={"category_id": nourriture["category_id"]},
     )
-    client.put(
-        "/api/v1/accounting/categories",
-        json={
-            **store["categories"],
-            "expense:food": {
-                "category_id": "expense:food",
-                "name": "Food",
-                "classification": "expense",
-                "color": "#111111",
-            },
-        },
-    )
+    client.post("/api/v1/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
 
     client.post(f"/api/v1/accounting/categories/{nourriture['category_id']}/rename", json={"name": "Food"})
 
@@ -2710,13 +2645,10 @@ def test_category_rename_preview_reports_a_budget_the_merge_would_delete(client)
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
     client.post("/api/v1/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[
-            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:custom", "amount": 100.0},
-            {"budget_id": "b2", "month": "2026-06", "category_id": "expense:food", "amount": 200.0},
-        ],
+    client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:custom", "amount": 100.0}
     )
+    client.post("/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food", "amount": 200.0})
     response = client.get("/api/v1/accounting/categories/expense:custom/rename-preview", params={"name": "Food"})
     assert response.status_code == 200
     body = response.json()
@@ -2729,9 +2661,8 @@ def test_category_rename_preview_reports_no_budgets_to_delete_without_a_collisio
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
     client.post("/api/v1/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:custom", "amount": 100.0}],
+    client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:custom", "amount": 100.0}
     )
     response = client.get("/api/v1/accounting/categories/expense:custom/rename-preview", params={"name": "Food"})
     assert response.status_code == 200
@@ -2743,13 +2674,10 @@ def test_category_rename_merge_drops_the_merged_away_budget_instead_of_failing(c
         "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
     client.post("/api/v1/accounting/categories", json={"name": "Food", "classification": "expense", "color": "#111111"})
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[
-            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:custom", "amount": 100.0},
-            {"budget_id": "b2", "month": "2026-06", "category_id": "expense:food", "amount": 200.0},
-        ],
+    client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:custom", "amount": 100.0}
     )
+    client.post("/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food", "amount": 200.0})
     response = client.post("/api/v1/accounting/categories/expense:custom/rename", json={"name": "Food"})
     assert response.status_code == 200
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
@@ -2918,44 +2846,23 @@ def test_tag_rename_preview_reports_merge_for_a_name_collision(client) -> None:
     assert body["target_name"] == "Vacation"
 
 
-def test_put_categories_removes_other_once_it_is_left_alone(client) -> None:
-    client.put(
-        "/api/v1/accounting/categories",
-        json={
-            "expense:custom": {
-                "category_id": "expense:custom",
-                "name": "Custom",
-                "classification": "expense",
-                "color": "#000000",
-            },
-            "expense:custom:gadgets": {
-                "category_id": "expense:custom:gadgets",
-                "name": "Gadgets",
-                "classification": "expense",
-                "parent_category_id": "expense:custom",
-                "color": "#000000",
-            },
-        },
+def test_deleting_the_last_real_subcategory_removes_the_other_catch_all_with_it(client) -> None:
+    # The other half of the "Other" invariant: alone under its parent it means
+    # nothing, so `normalize_categories` collapses it away — reached here by
+    # deleting the only real sibling it was minted alongside.
+    client.post(
+        "/api/v1/accounting/categories", json={"name": "Custom", "classification": "expense", "color": "#000000"}
     )
-    response = client.put(
-        "/api/v1/accounting/categories",
-        json={
-            "expense:custom": {
-                "category_id": "expense:custom",
-                "name": "Custom",
-                "classification": "expense",
-                "color": "#000000",
-            },
-            "expense:custom:other": {
-                "category_id": "expense:custom:other",
-                "name": "Other",
-                "classification": "expense",
-                "parent_category_id": "expense:custom",
-                "color": "#000000",
-            },
-        },
+    client.post(
+        "/api/v1/accounting/categories/expense:custom/subcategories", json={"name": "Gadgets", "color": "#000000"}
     )
-    assert "expense:custom:other" not in response.json()
+    assert "expense:custom:other" in client.get("/api/v1/accounting/store").json()["categories"]
+
+    response = client.delete("/api/v1/accounting/categories/expense:custom:gadgets")
+
+    assert response.status_code == 200
+    assert "expense:custom:other" not in response.json()["categories"]
+    assert "expense:custom:other" not in client.get("/api/v1/accounting/store").json()["categories"]
 
 
 def test_post_other_asset_creates_one_with_a_server_generated_id(client) -> None:
@@ -2991,7 +2898,7 @@ def test_post_other_asset_twice_with_identical_fields_creates_two_distinct_rows(
     assert len(client.get("/api/v1/accounting/store").json()["other_assets"]) == 2
 
 
-def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> None:
+def test_budget_comparison_reflects_actual_spend(client) -> None:
     _import_chase_checking(client)
     postings = _postings(client)
     # By amount, not "the first negative leg": the +1500 payroll row's
@@ -3001,11 +2908,10 @@ def test_put_budgets_persists_and_comparison_reflects_actual_spend(client) -> No
         f"/api/v1/accounting/postings/{payment['posting_id']}/override", json={"category_id": "expense:admin-fees"}
     )
 
-    response = client.put(
-        "/api/v1/accounting/budgets",
-        json=[{"budget_id": "b1", "month": "2026-06", "category_id": "expense:admin-fees", "amount": 100.0}],
+    response = client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:admin-fees", "amount": 100.0}
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert "expense:admin-fees" in [b["category_id"] for b in client.get("/api/v1/accounting/store").json()["budgets"]]
 
     comparison = client.get("/api/v1/accounting/budgets/comparison", params={"month": "2026-06"}).json()
@@ -3019,24 +2925,9 @@ def test_get_budget_comparison_rejects_a_malformed_month(client) -> None:
     assert response.status_code == 400
 
 
-def test_a_general_budget_persists_alongside_the_same_categorys_per_month_one(client) -> None:
-    # One table, one list — `month: null` is the general target and coexists
-    # with the month one for the same category rather than replacing it.
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[
-            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0},
-            {"budget_id": "b2", "month": None, "category_id": "expense:food-drink", "amount": 500.0},
-        ],
-    )
-    budgets = client.get("/api/v1/accounting/store").json()["budgets"]
-    assert {(b["month"], b["amount"]) for b in budgets} == {("2026-06", 100.0), (None, 500.0)}
-
-
 def test_post_budget_upserts_one_budget_without_touching_others(client) -> None:
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[{"budget_id": "existing", "month": "2026-05", "category_id": "expense:transport", "amount": 40.0}],
+    client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-05", "category_id": "expense:transport", "amount": 40.0}
     )
 
     response = client.post(
@@ -3053,7 +2944,7 @@ def test_post_budget_upserts_one_budget_without_touching_others(client) -> None:
     assert followed.json() == created
 
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
-    assert {b["budget_id"] for b in budgets} == {"existing", "2026-06:expense:food-drink"}
+    assert {b["budget_id"] for b in budgets} == {"2026-05:expense:transport", "2026-06:expense:food-drink"}
 
 
 def test_post_budget_with_a_subcategory_includes_it_in_the_derived_id(client) -> None:
@@ -3084,19 +2975,18 @@ def test_post_budget_twice_for_the_same_key_replaces_rather_than_duplicates(clie
 
 
 def test_delete_budget_removes_only_that_one(client) -> None:
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[
-            {"budget_id": "b1", "month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0},
-            {"budget_id": "b2", "month": "2026-06", "category_id": "expense:transport", "amount": 50.0},
-        ],
+    client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}
+    )
+    client.post(
+        "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:transport", "amount": 50.0}
     )
 
-    response = client.delete("/api/v1/accounting/budgets/b1")
+    response = client.delete("/api/v1/accounting/budgets/2026-06:expense:food-drink")
 
     assert response.status_code == 204
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
-    assert {b["budget_id"] for b in budgets} == {"b2"}
+    assert {b["budget_id"] for b in budgets} == {"2026-06:expense:transport"}
 
 
 def test_delete_budget_404s_for_an_unknown_id(client) -> None:
@@ -3126,6 +3016,9 @@ def test_post_general_budget_with_a_subcategory_includes_it_in_the_derived_id(cl
 
 
 def test_post_general_budget_does_not_overwrite_the_same_categorys_month_budget(client) -> None:
+    # One table, one list — `month: null` is the general target and coexists
+    # with the month one for the same category rather than replacing it, which
+    # is exactly what `budget_row_key` putting the month first encodes.
     client.post(
         "/api/v1/accounting/budgets", json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 100.0}
     )
@@ -3136,13 +3029,8 @@ def test_post_general_budget_does_not_overwrite_the_same_categorys_month_budget(
 
 
 def test_delete_general_budget_removes_only_that_one(client) -> None:
-    client.put(
-        "/api/v1/accounting/budgets",
-        json=[
-            {"budget_id": ":expense:food-drink", "month": None, "category_id": "expense:food-drink", "amount": 500.0},
-            {"budget_id": ":expense:transport", "month": None, "category_id": "expense:transport", "amount": 40.0},
-        ],
-    )
+    client.post("/api/v1/accounting/budgets", json={"category_id": "expense:food-drink", "amount": 500.0})
+    client.post("/api/v1/accounting/budgets", json={"category_id": "expense:transport", "amount": 40.0})
 
     response = client.delete("/api/v1/accounting/budgets/:expense:food-drink")
 

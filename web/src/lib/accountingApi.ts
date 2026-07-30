@@ -205,8 +205,6 @@ export const accountingApi = {
     request<CurrentExchangeRate>(`/exchange-rates/current${queryString({ currency })}`),
   exchangeRateHistory: (currency: string) =>
     request<ExchangeRateHistoryPoint[]>(`/exchange-rates/history${queryString({ currency })}`),
-  putCategories: (categories: Record<string, Category>) =>
-    request<Record<string, Category>>('/categories', jsonInit('PUT', categories)),
   createCategory: (category: CategoryCreate) => request<Category>('/categories', jsonInit('POST', category)),
   createSubcategory: (parentId: string, subcategory: SubcategoryCreate) =>
     request<Category>(`/categories/${encodeURIComponent(parentId)}/subcategories`, jsonInit('POST', subcategory)),
