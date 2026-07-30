@@ -28,19 +28,21 @@ So this is a deliberate, single, named boundary rather than a leak:
   goes back through `db.money.to_decimal`/`quantize_money`.
 
 The residual imprecision is therefore confined to aggregation, bounded by
-`NUMERIC(18, 4)` inputs, and re-quantized before it can be stored. That is
-"half of T1": the persistence and domain layers are exact today, the
-analytics layer is not yet.
+`NUMERIC(18, 4)` inputs, and re-quantized before it can be stored.
 
-TODO(PR4/PR5): the remaining half. Two follow-ups are gated on this
-boundary existing, and both should start here rather than at a call site:
-the money-safety work in the frontend (which consumes what these
-aggregations produce), and the property-based money tests that would pin
-down the aggregation error this boundary currently tolerates. The
-`_AMOUNT_TOLERANCE`/`_ZERO_SUM_TOLERANCE` constants that still exist in
-`ledger.transfers`, `ledger.duplicates`, and `ledger.replay` are float
-slack *for this projection specifically*, and they retire when it does —
-they are no longer masking imprecision anywhere money is stored.
+**Where T1 stands.** Its DB/domain half is closed: money is exact
+everywhere it is stored and modelled, and this module is the only sanctioned
+crossing. Its wire half is closed too, as a reasoned won't-do rather than as
+work outstanding — `db.money`'s own docstring records why serializing money
+as decimal strings was analysed and declined, and why an aggregate is
+honestly reported as the float it was computed as. What remains open is
+narrower than "the other half of T1" and belongs to neither: the
+property-based tests that would pin down the aggregation error this boundary
+tolerates rather than merely bounding it. The
+`_AMOUNT_TOLERANCE`/`_ZERO_SUM_TOLERANCE` constants in `ledger.transfers`,
+`ledger.duplicates` and `ledger.replay` are float slack *for this projection
+specifically*; they are not masking imprecision anywhere money is stored, and
+they retire with the projection, not with the wire format.
 """
 
 from __future__ import annotations

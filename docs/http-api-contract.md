@@ -171,11 +171,65 @@ so `len(items)` there is normally larger than `limit`, and a client that
 learned the shape from one endpoint and reused it on the other computed the
 wrong number of pages with nothing in the schema to warn it.
 
+`GET /ledger/export` is the one caller that legitimately walks every page. An
+export's caller wants the whole ledger by definition, and a backup silently
+truncated at the cap is worse than several requests — so the loop in
+`web/src/lib/accountingApi.ts` stays there deliberately, and is not an instance
+of the page-until-exhausted pattern any screen should copy.
+
 Paging is the same arithmetic on both: advance `offset` by the `limit` the
 **server** echoed back, never the one you asked for — a request above
 `PAGE_LIMIT_MAX` is clamped rather than rejected (see that constant), so
 striding by the requested size would step past records the server never sent
 and truncate silently. `len(items)` is never the stride.
+
+## Exact money and analytics money
+
+Every money field on the wire is a JSON `number`, and always will be — see
+`src/db/money.py` for why serializing decimals as strings was analysed and
+declined. What differs between endpoints is not the encoding but the **claim**:
+whether the number is the exact value something was stored at, or an aggregate
+computed over the ledger.
+
+**Exact.** An entity's own money field, returned by `GET /store`, by an item
+`GET`, and echoed back by the write that set it: `Budget.amount`,
+`OtherAsset.value`, `Goal.target_amount`, `GoalContribution.amount`,
+`OpeningBalance.amount`, `Posting.amount`, `PostingSplitLeg.amount`,
+`ManualTransfer.from_amount`/`to_amount`. Each is a `NUMERIC(18, 4)` column,
+exact in Postgres and exact as a Python `Decimal` all the way to the JSON
+encode. A client may round-trip one of these back to the server and get the
+same value; a split's legs are checked for exact equality against the posting
+they came from (`PUT /postings/{posting_id}/split`) on that basis.
+
+**Analytics.** Every figure summed, averaged, projected, or converted at a
+display currency's rate: the whole of `GET /net-worth` and its history,
+`/income-statement/*`, `/budgets/comparison`, `/budgets/suggested-amount`,
+`/goals/summary`, `/interest-summary`, `/simulator/project`. These are computed
+in Polars over a `Float64` column — the boundary
+`accounting.ledger.frame` declares as T1 — so they carry a bounded imprecision
+and are typed `float` to say so.
+
+**No response object mixes the two.** That is the rule the split is for, and it
+is enforced: `tests/api/test_response_models.py` walks every response model
+reachable from every route and fails if an analytics response reaches an exact
+`Decimal` field at any depth. Two responses used to.
+
+- `NetWorthSummary` reported four float totals and embedded the stored
+  `OtherAsset` — with its exact `value` — as one of the summands. It now
+  returns `NetWorthOtherAssetRow`, the same row with `value` converted at the
+  boundary. The exact value is still at `GET /store` and
+  `GET /other-assets/{asset_id}`, which is where a client editing an asset
+  reads it.
+- `BudgetComparisonRow` put an exact `budgeted` next to an approximate
+  `actual`, which invited subtracting one from the other and reading the
+  difference as exact. It is not: the answer is only ever as good as `actual`.
+  `budgeted` is now a float too. The exact target is `Budget.amount`.
+
+Be honest about what this buys. Making an analytics response coherent does not
+make it exact — the server computes those figures in floats as well, and
+nothing here changes that. What it buys is that a reader can tell, from the
+type alone, which numbers may be trusted to the cent and which may not, and
+cannot accidentally combine one with the other.
 
 ## Which models the wire is made of
 
@@ -243,3 +297,18 @@ stay as they are.
 **`GET /store` is not decomposed.** (API-audit F4.) Its stated defect names a
 class PR 1 deleted. What it warranted was the twelve collection GETs — adding
 those, not removing the composite read the SPA boots from.
+
+Re-examined in PR 4, which owned the boot path, and kept. Three things settled
+it. **There is nothing to split it into on the read side:** PR 3 added item-level
+GETs, not collection GETs, so decomposing this route would mean adding twelve
+routes first and then making the SPA issue twelve requests where it issues one.
+**The audit's real complaint was cache shape, not chattiness:** every write
+invalidated the whole `['accounting']` prefix, so one composite response going
+stale looked like a monolith problem. Scoping each mutation to the families it
+can actually move (`web/src/hooks/accounting/keys.ts`) fixes that without
+touching the route — a categorization click no longer refetches the store at
+all. **And the alternative is available whenever it earns its way in:** the
+response is already a router-level fan-out over twelve independent `load_*`
+calls with no type behind it (see `AccountingStoreResponse`), so splitting it
+into per-collection slices is a mechanical change to one function, not an
+architectural one. It is deliberately unused, not unavailable.

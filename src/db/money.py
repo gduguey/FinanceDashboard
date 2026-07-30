@@ -27,12 +27,28 @@ client, and do it as an accident of an internal refactor rather than as a
 decision. `PlainSerializer` + `WithJsonSchema` hold the wire exactly where
 it is today: `number` in, `number` out, unchanged OpenAPI.
 
-TODO(PR3): the API contract PR owns flipping this to exact decimal strings
-end to end — drop the two annotations below, regenerate the OpenAPI schema
-and the TS client, and let PR4's frontend work consume the strings. Until
-then a value is exact everywhere in Python and lossy only in the final JSON
-encode, which is strictly better than today (lossy from the moment it is
-read out of Postgres) and changes no contract.
+Flipping the wire to exact decimal *strings* was analysed and **declined**,
+not deferred. The argument for it is that `12.34` as a JSON number is an
+IEEE-754 double by the time any JavaScript client has parsed it. The
+argument against it is that `"12.34"` is too, one line later: without a
+decimal library in the browser the string is parsed straight back into the
+same double, so the change buys nothing but a contract churn and a
+generated client that now types every money field as `string`. Adding such
+a library is its own decision with its own cost, and nothing in the app
+today does arithmetic on a money value it received — it formats it.
+
+The second reason is worse than the first. Every aggregate the dashboard
+shows — balances, net worth, category totals, budget actuals — is already
+a float *server-side*, computed in Polars through the boundary
+`accounting.ledger.frame` declares. Serializing those as strings would
+render a float's binary error as an exact-looking decimal and freeze it
+into the contract, which is the opposite of honest. See
+`docs/http-api-contract.md`, "Exact money and analytics money", for which
+endpoint families are which.
+
+So the two annotations below stay, and money stays a JSON number. What is
+exact is exact in Python and in Postgres, which is where arithmetic on it
+happens.
 """
 
 from __future__ import annotations
@@ -205,7 +221,7 @@ _AS_JSON_NUMBER = (
     WithJsonSchema({"type": "number"}, mode="validation"),
     WithJsonSchema({"type": "number"}, mode="serialization"),
 )
-"""Hold a `Decimal` field's wire representation at `number`. See the module docstring's TODO(PR3)."""
+"""Hold a `Decimal` field's wire representation at `number`, which the module docstring argues is the honest one."""
 
 Money = Annotated[Decimal, *_AS_JSON_NUMBER]
 """A monetary amount: exact `Decimal` in Python, JSON `number` on the wire."""

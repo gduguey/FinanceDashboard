@@ -169,3 +169,58 @@ see `docs/app-stack/optimistic-concurrency-versioning.md`. PR 4 audited all
 eleven components that await a mutation and found every remaining case to be a
 genuine data dependency (create-then-set-opening-balance) or a deliberate
 rate limit (the LLM categorization loop), not a workaround for that rule.
+
+## 6. The transactions table filters, sorts and counts in the browser, over the whole ledger
+
+**Where:** `web/src/lib/accountingApi.ts`'s `postings()`, which pages
+`GET /postings` until the collection is exhausted, and
+`web/src/lib/transactionFilters.ts`, which applies the thirteen predicates and
+the count to whatever it returns.
+
+**What:** the screen is O(total history) rather than O(what is shown). On the
+`finance_speed` scratch database (170k transactions / 340k postings / 70k
+overrides) `postings()` is 34 sequential requests at ~1,750 ms each — about
+**59 s** before the first row renders. PR 4 scoped that cost to the one screen
+that needs it (the sidebar's onboarding check now asks for a one-row page, 67
+ms, and no write outside the Transactions page refetches the list any more),
+and made the client-side half cheap — one pass per posting instead of thirteen,
+a debounced search, and a virtualized table — but the fetch itself is unchanged.
+
+**Intended fix:** send the filter, the sort and the page to the server, and
+return the page plus two counts (transactions for the window, postings for the
+figure beside the table).
+
+**Why not taken in PR 4, which owned it.** It was attempted and the blocker is
+structural, not a matter of effort. The thirteen predicates read *resolved*
+values — the category a redirect or an override rewrote, the account a rule
+repointed, the description a merge rewrote, the amount a split changed, the
+`is_linked_transfer` a link set. Resolution is the Polars overlay pipeline in
+`accounting.precedence`/`accounting.ledger.*`, and `visible_transaction_page`
+already documents why filtering or ordering on a pre-pipeline column selects a
+different set than a client sees. That leaves two ways to filter server-side,
+and both were measured or costed:
+
+- **Mirror the pipeline in SQL.** Rule matching alone
+  (`ledger.categorization.rule_matches_by_transaction`: eligibility by leg
+  count, substring match per active rule, exclusions, lowest-priority-wins)
+  is a second implementation of the subtlest part of the app, which would then
+  have to agree with the first forever. The refactor's own standard — a
+  translation that is 95% right will look right — argues against it.
+- **Resolve the whole ledger per request and filter in Polars.** Measured on
+  `finance_speed`: `_resolve_postings` unpaged is **12.4 s** (6.7 s
+  `load_ledger`, 2.4 s `load_overrides`, 2.4 s the override stage). Better than
+  59 s and nowhere near a page load.
+
+The same wall blocks the two aggregates the screen derives. Distinct months is
+cheap and exact in SQL (**64 ms**, `posted_at` is the one column no overlay
+rewrites) and could land on its own; the needs-categorizing count is a resolved
+predicate and cannot.
+
+**Fix direction:** materialize the resolved projection — a table or matview of
+the resolved posting rows, maintained when an overlay changes — so SQL can
+filter and count the values the client actually sees, with one implementation
+of resolution rather than two. That is a database change with its own
+migration, backfill and invalidation design, which is why it is its own PR
+rather than the tail of a frontend one. Filter-shaped bulk actions
+(`validate-pending`, `pattern-suggest-category/bulk` resolving a filter instead
+of a list of ids) depend on it and are deferred with it.
