@@ -5,14 +5,16 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import SimulatorScenarioCreate
+from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import SimulatorScenario
 from accounting.repositories.taxonomy import (
     delete_simulator_scenario,
     insert_simulator_scenario,
+    load_simulator_scenarios,
     replace_simulator_scenarios,
 )
 from db.current_user import get_current_user_id
@@ -21,9 +23,34 @@ from db.session import get_db
 router = APIRouter()
 
 
-@router.post("/simulator/scenarios")
+@router.get("/simulator/scenarios/{scenario_id}")
+def get_simulator_scenario(
+    scenario_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> SimulatorScenario:
+    """Return one saved scenario by id — the address `post_simulator_scenario` advertises.
+
+    Returns
+    -------
+    SimulatorScenario
+
+    Raises
+    ------
+    HTTPException
+        404 if no scenario has this id.
+    """
+    scenario = next((s for s in load_simulator_scenarios(session, user_id) if s.scenario_id == scenario_id), None)
+    if scenario is None:
+        raise HTTPException(status_code=404, detail=f"Simulator scenario {scenario_id!r} not found")
+    return scenario
+
+
+@router.post("/simulator/scenarios", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_simulator_scenario(
     request: SimulatorScenarioCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> SimulatorScenario:
@@ -31,7 +58,8 @@ def post_simulator_scenario(
 
     `scenario_id` is server-minted — two scenarios can validly share
     every input field (comparing "what if I ran this exact case twice"),
-    so there's no natural key two "the same" scenario would collide on.
+    so there's no natural key two "the same" scenario would collide on,
+    and nothing this route could replace instead of creating.
 
     Returns
     -------
@@ -49,6 +77,7 @@ def post_simulator_scenario(
         currency=request.currency,
     )
     insert_simulator_scenario(session, user_id, scenario)
+    location_of(http_request, response, "get_simulator_scenario", scenario_id=scenario.scenario_id)
     return scenario
 
 

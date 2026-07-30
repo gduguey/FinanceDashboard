@@ -5,21 +5,52 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import OtherAssetCreate
+from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import OtherAsset
-from accounting.repositories.taxonomy import delete_other_asset, insert_other_asset, replace_other_assets
+from accounting.repositories.taxonomy import (
+    delete_other_asset,
+    insert_other_asset,
+    load_other_assets,
+    replace_other_assets,
+)
 from db.current_user import get_current_user_id
 from db.session import get_db
 
 router = APIRouter()
 
 
-@router.post("/other-assets")
+@router.get("/other-assets/{asset_id}")
+def get_other_asset(
+    asset_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> OtherAsset:
+    """Return one manually-entered asset by id — the address `post_other_asset` advertises.
+
+    Returns
+    -------
+    OtherAsset
+
+    Raises
+    ------
+    HTTPException
+        404 if no asset has this id.
+    """
+    asset = next((a for a in load_other_assets(session, user_id) if a.asset_id == asset_id), None)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"Other asset {asset_id!r} not found")
+    return asset
+
+
+@router.post("/other-assets", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_other_asset(
     request: OtherAssetCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> OtherAsset:
@@ -27,7 +58,9 @@ def post_other_asset(
 
     `asset_id` is server-minted — two assets can validly share every
     other field (e.g. two rental properties both named "Rental"), so
-    there's no natural key two "the same" asset would collide on.
+    there's no natural key two "the same" asset would collide on. That is
+    also why the `201` is unconditional: with no natural key there is
+    nothing this route could replace.
 
     Returns
     -------
@@ -42,6 +75,7 @@ def post_other_asset(
         note=request.note,
     )
     insert_other_asset(session, user_id, asset)
+    location_of(http_request, response, "get_other_asset", asset_id=asset.asset_id)
     return asset
 
 

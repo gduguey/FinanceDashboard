@@ -372,7 +372,7 @@ def test_canonical_import_returns_a_422_for_an_unparseable_file(client) -> None:
 def _create_account(client, **overrides) -> dict:
     payload = {"name": "Test Account", "kind": "checking", "institution": "Chase", "currency": "USD", **overrides}
     response = client.post("/api/v1/accounting/accounts", json=payload)
-    assert response.status_code == 200
+    assert response.status_code == 201
     return response.json()
 
 
@@ -2968,10 +2968,13 @@ def test_put_other_assets_persists(client) -> None:
 
 def test_post_other_asset_creates_one_with_a_server_generated_id(client) -> None:
     response = client.post("/api/v1/accounting/other-assets", json={"name": "Car", "value": 15000.0})
-    assert response.status_code == 200
+    assert response.status_code == 201
     asset = response.json()
     assert asset["asset_id"]
     assert asset["name"] == "Car"
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == asset
     body = client.get("/api/v1/accounting/net-worth").json()
     assert body["other_assets_total"] == pytest.approx(15000.0)
 
@@ -3232,9 +3235,12 @@ def test_post_account_creates_a_new_account(client) -> None:
         "/api/v1/accounting/accounts",
         json={"name": "BNP Checking", "kind": "checking", "institution": "BNP", "currency": "EUR"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     account_id = response.json()["account_id"]
     assert account_id
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json()["account_id"] == account_id
     assert account_id in client.get("/api/v1/accounting/store").json()["accounts"]
 
 
@@ -3336,7 +3342,7 @@ def test_post_account_accepts_an_external_investment_pulling_from_trades(client,
             "broker_connection_id": str(broker_connection_id),
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     account_id = response.json()["account_id"]
     created = client.get("/api/v1/accounting/store").json()["accounts"][account_id]
     assert created["broker_connection_id"] == str(broker_connection_id)
@@ -3347,7 +3353,7 @@ def test_post_account_accepts_a_manually_tracked_external_investment(client) -> 
         "/api/v1/accounting/accounts",
         json={"name": "Friend's Fund", "kind": "external_investment", "institution": "external", "currency": "USD"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     account_id = response.json()["account_id"]
     created = client.get("/api/v1/accounting/store").json()["accounts"][account_id]
     assert created["broker_connection_id"] is None
@@ -3711,10 +3717,13 @@ def test_post_simulator_scenario_creates_one_with_a_server_generated_id(client) 
             "annual_rate_pct": 6.0,
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     scenario = response.json()
     assert scenario["scenario_id"]
     assert scenario["name"] == "Base case"
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == scenario
 
 
 def test_post_simulator_scenario_twice_with_identical_fields_creates_two_distinct_rows(client) -> None:

@@ -706,6 +706,48 @@ export interface paths {
     patch: operations['patch_category_pattern_api_v1_accounting_category_patterns__pattern_id__patch']
     trace?: never
   }
+  '/api/v1/accounting/other-assets/{asset_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Other Asset
+     * @description Return one manually-entered asset by id — the address `post_other_asset` advertises.
+     *
+     *     Returns
+     *     -------
+     *     OtherAsset
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no asset has this id.
+     */
+    get: operations['get_other_asset_api_v1_accounting_other_assets__asset_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Other Asset Route
+     * @description Delete one manually-entered asset, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting an asset by re-sending the whole list minus one; see
+     *     `repositories.taxonomy.delete_other_asset`.
+     *
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no asset with `asset_id` exists.
+     */
+    delete: operations['delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/accounting/other-assets': {
     parameters: {
       query?: never
@@ -730,7 +772,9 @@ export interface paths {
      *
      *     `asset_id` is server-minted — two assets can validly share every
      *     other field (e.g. two rental properties both named "Rental"), so
-     *     there's no natural key two "the same" asset would collide on.
+     *     there's no natural key two "the same" asset would collide on. That is
+     *     also why the `201` is unconditional: with no natural key there is
+     *     nothing this route could replace.
      *
      *     Returns
      *     -------
@@ -739,35 +783,6 @@ export interface paths {
      */
     post: operations['post_other_asset_api_v1_accounting_other_assets_post']
     delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/v1/accounting/other-assets/{asset_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Other Asset Route
-     * @description Delete one manually-entered asset, without touching any other. Idempotent, no version check.
-     *
-     *     Replaces deleting an asset by re-sending the whole list minus one; see
-     *     `repositories.taxonomy.delete_other_asset`.
-     *
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no asset with `asset_id` exists.
-     */
-    delete: operations['delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -841,6 +856,48 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/accounting/simulator/scenarios/{scenario_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Simulator Scenario
+     * @description Return one saved scenario by id — the address `post_simulator_scenario` advertises.
+     *
+     *     Returns
+     *     -------
+     *     SimulatorScenario
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no scenario has this id.
+     */
+    get: operations['get_simulator_scenario_api_v1_accounting_simulator_scenarios__scenario_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Simulator Scenario Route
+     * @description Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
+     *
+     *     Replaces deleting a scenario by re-sending the whole list minus one;
+     *     see `repositories.taxonomy.delete_simulator_scenario`.
+     *
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no scenario with `scenario_id` exists.
+     */
+    delete: operations['delete_simulator_scenario_route_api_v1_accounting_simulator_scenarios__scenario_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/accounting/simulator/scenarios': {
     parameters: {
       query?: never
@@ -865,7 +922,8 @@ export interface paths {
      *
      *     `scenario_id` is server-minted — two scenarios can validly share
      *     every input field (comparing "what if I ran this exact case twice"),
-     *     so there's no natural key two "the same" scenario would collide on.
+     *     so there's no natural key two "the same" scenario would collide on,
+     *     and nothing this route could replace instead of creating.
      *
      *     Returns
      *     -------
@@ -879,67 +937,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/accounting/simulator/scenarios/{scenario_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Simulator Scenario Route
-     * @description Delete one saved simulator scenario, without touching any other. Idempotent, no version check.
-     *
-     *     Replaces deleting a scenario by re-sending the whole list minus one;
-     *     see `repositories.taxonomy.delete_simulator_scenario`.
-     *
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no scenario with `scenario_id` exists.
-     */
-    delete: operations['delete_simulator_scenario_route_api_v1_accounting_simulator_scenarios__scenario_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/v1/accounting/accounts': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Post Account
-     * @description Register a new account, generating its id.
-     *
-     *     Returns
-     *     -------
-     *     Account
-     *         The account just persisted, including its newly-generated `account_id`.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if `parent_account_id` is set but names an account that doesn't
-     *         exist, or if `broker_connection_id` names a connection that doesn't;
-     *         400 if a broker connection is named on a non-investment account.
-     */
-    post: operations['post_account_api_v1_accounting_accounts_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/accounting/accounts/{account_id}': {
     parameters: {
       query?: never
@@ -947,7 +944,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Account
+     * @description Return one account by id — the address `post_account` advertises.
+     *
+     *     Returns
+     *     -------
+     *     Account
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no account has this id.
+     */
+    get: operations['get_account_api_v1_accounting_accounts__account_id__get']
     /**
      * Put Account
      * @description Update an account — full edit if it has no postings yet, name/meta-only afterward.
@@ -977,6 +987,41 @@ export interface paths {
      *         404 if the account doesn't exist; 400 if it already has postings.
      */
     delete: operations['delete_account_api_v1_accounting_accounts__account_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/accounts': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Account
+     * @description Register a new account, generating its id.
+     *
+     *     A genuine `201`: the id is a fresh `uuid4`, so this route cannot
+     *     replace an existing account no matter what the body says.
+     *
+     *     Returns
+     *     -------
+     *     Account
+     *         The account just persisted, including its newly-generated `account_id`.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `parent_account_id` is set but names an account that doesn't
+     *         exist, or if `broker_connection_id` names a connection that doesn't;
+     *         400 if a broker connection is named on a non-investment account.
+     */
+    post: operations['post_account_api_v1_accounting_accounts_post']
+    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -8029,6 +8074,66 @@ export interface operations {
       }
     }
   }
+  get_other_asset_api_v1_accounting_other_assets__asset_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        asset_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OtherAsset']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        asset_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   put_other_assets_api_v1_accounting_other_assets_put: {
     parameters: {
       query?: never
@@ -8076,42 +8181,15 @@ export interface operations {
     }
     responses: {
       /** @description Successful Response */
-      200: {
+      201: {
         headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {
           'application/json': components['schemas']['OtherAsset']
         }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_other_asset_route_api_v1_accounting_other_assets__asset_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        asset_id: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      204: {
-        headers: {
-          [name: string]: unknown
-        }
-        content?: never
       }
       /** @description Validation Error */
       422: {
@@ -8219,51 +8297,16 @@ export interface operations {
       }
     }
   }
-  put_simulator_scenarios_api_v1_accounting_simulator_scenarios_put: {
+  get_simulator_scenario_api_v1_accounting_simulator_scenarios__scenario_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        scenario_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SimulatorScenario'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SimulatorScenario'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_simulator_scenario_api_v1_accounting_simulator_scenarios_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['SimulatorScenarioCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -8314,7 +8357,7 @@ export interface operations {
       }
     }
   }
-  post_account_api_v1_accounting_accounts_post: {
+  put_simulator_scenarios_api_v1_accounting_simulator_scenarios_put: {
     parameters: {
       query?: never
       header?: never
@@ -8323,9 +8366,75 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['AccountCreate']
+        'application/json': components['schemas']['SimulatorScenario'][]
       }
     }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SimulatorScenario'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_simulator_scenario_api_v1_accounting_simulator_scenarios_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SimulatorScenarioCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SimulatorScenario']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_account_api_v1_accounting_accounts__account_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        account_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -8399,6 +8508,41 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_account_api_v1_accounting_accounts_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AccountCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Account']
+        }
       }
       /** @description Validation Error */
       422: {

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
@@ -15,6 +15,7 @@ from accounting.api.api_models import (
     AccountUpdate,
 )
 from accounting.api.dependencies import _account_has_postings
+from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import Account, AccountKind, OpeningBalance
 from accounting.repositories.accounts import (
     broker_connection_exists,
@@ -74,13 +75,41 @@ def _check_broker_link(
         raise HTTPException(status_code=404, detail=f"Broker connection {broker_connection_id} does not exist")
 
 
-@router.post("/accounts")
+@router.get("/accounts/{account_id}")
+def get_account(
+    account_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Account:
+    """Return one account by id — the address `post_account` advertises.
+
+    Returns
+    -------
+    Account
+
+    Raises
+    ------
+    HTTPException
+        404 if no account has this id.
+    """
+    account = seeded_accounts(session, user_id).get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"Account {account_id!r} not found")
+    return account
+
+
+@router.post("/accounts", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_account(
     account: AccountCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Account:
     """Register a new account, generating its id.
+
+    A genuine `201`: the id is a fresh `uuid4`, so this route cannot
+    replace an existing account no matter what the body says.
 
     Returns
     -------
@@ -111,6 +140,7 @@ def post_account(
     )
     replace_accounts(session, user_id, [new_account], prune=False)
     session.commit()
+    location_of(http_request, response, "get_account", account_id=new_account.account_id)
     return new_account
 
 

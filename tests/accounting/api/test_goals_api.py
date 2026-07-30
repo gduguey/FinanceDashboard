@@ -65,7 +65,7 @@ def client():
 def _create_account(client, **overrides) -> dict:
     payload = {"name": "Test Account", "kind": "checking", "institution": "Chase", "currency": "USD", **overrides}
     response = client.post("/api/v1/accounting/accounts", json=payload)
-    assert response.status_code == 200
+    assert response.status_code == 201
     return response.json()
 
 
