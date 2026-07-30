@@ -25,7 +25,7 @@ import { useSortableRows } from '@/hooks/useSortableRows'
 import { ACCOUNT_KIND_LABELS } from '@/lib/accountKinds'
 import { formatCurrency, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import type { AccountKind, CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
+import type { AccountKind, CurrencyCode, NetWorthAccountRow, NetWorthOtherAssetRow } from '@/types/accounting'
 
 // Charts are the heaviest code the app ships. `lazyChart` keeps them off this
 // page's critical path and streams them in behind a skeleton.
@@ -131,7 +131,7 @@ function AccountsTable({
   onRemoveOtherAsset,
 }: {
   accounts: NetWorthAccountRow[]
-  otherAssets: OtherAsset[]
+  otherAssets: NetWorthOtherAssetRow[]
   onRemoveOtherAsset: (assetId: string) => void
 }) {
   const rows: DisplayRow[] = [

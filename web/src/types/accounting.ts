@@ -109,6 +109,11 @@ export type CategorizeFromFilePreview = components['schemas']['CategorizeFromFil
 export type CategorizeFromFileApplyResult = components['schemas']['CategorizeFromFileApplyResult']
 export type NetWorthAccountRow = components['schemas']['NetWorthAccountRow']
 export type NetWorthSummary = components['schemas']['NetWorthSummary']
+// The analytics view of an other asset, as `NetWorthSummary` embeds it — its
+// `value` is a converted float, not the exact `OtherAsset.value` the store
+// holds. Structurally assignable from `OtherAsset`, which is exactly why a
+// component that charts one should name this type rather than that one.
+export type NetWorthOtherAssetRow = components['schemas']['NetWorthOtherAssetRow']
 export type NetWorthHistoryPoint = components['schemas']['NetWorthHistoryPoint']
 export type NetWorthHistoryByAccountPoint = components['schemas']['NetWorthHistoryByAccountPoint']
 export type TransferSuggestion = components['schemas']['TransferSuggestion']

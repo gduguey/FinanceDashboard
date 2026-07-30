@@ -29,6 +29,7 @@ from accounting.repositories.planning import (
 from accounting.repositories.taxonomy import load_categories
 from accounting.taxonomy import seed_new_user_defaults, seeded_accounts
 from db.current_user import get_current_user_id
+from db.money import to_analytics_float
 from db.session import get_db
 
 router = APIRouter()
@@ -138,7 +139,10 @@ def get_budget_comparison(
         month,
         _display_currency(display_currency, _currencies_in_use(session, user_id)),
     )
-    return [BudgetComparisonRow(**vars(row)) for row in rows]
+    # `budgeted` crosses from the stored `Money` to an analytics float here,
+    # which is what makes the row internally coherent with `actual` — see
+    # `api_models.BudgetComparisonRow`.
+    return [BudgetComparisonRow(**{**vars(row), "budgeted": to_analytics_float(row.budgeted)}) for row in rows]
 
 
 @router.get("/budgets/suggested-amount")

@@ -1,7 +1,7 @@
 import { type AccountKindGroup, accountKindGroup } from '@/lib/accountKinds'
 import { convertCurrency } from '@/lib/currency'
 import { formatCurrency } from '@/lib/format'
-import type { CurrencyCode, NetWorthAccountRow, OtherAsset } from '@/types/accounting'
+import type { CurrencyCode, NetWorthAccountRow, NetWorthOtherAssetRow } from '@/types/accounting'
 
 const GROUP_COLORS: Record<AccountKindGroup, string> = {
   Cash: '#2563eb',
@@ -28,7 +28,7 @@ export function AccountCompositionBar({
   ratesToBase,
 }: {
   accounts: NetWorthAccountRow[]
-  otherAssets: OtherAsset[]
+  otherAssets: NetWorthOtherAssetRow[]
   displayCurrency: CurrencyCode
   ratesToBase: Record<string, number>
 }) {

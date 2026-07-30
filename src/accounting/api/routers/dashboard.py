@@ -24,6 +24,7 @@ from accounting.api.api_models import (
     NetWorthAccountRow,
     NetWorthHistoryByAccountPoint,
     NetWorthHistoryPoint,
+    NetWorthOtherAssetRow,
     NetWorthSummary,
     ProjectionPoint,
     SpendCurvePoint,
@@ -34,7 +35,6 @@ from accounting.api.dependencies import (
     _resolved_postings,
     _resolved_postings_for_aggregation,
 )
-from accounting.api.entities import OtherAsset
 from accounting.dashboard import income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import convert
@@ -45,6 +45,7 @@ from accounting.repositories.taxonomy import load_categories, load_other_assets
 from accounting.taxonomy import seeded_accounts
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
+from db.money import to_analytics_float
 from db.session import get_db
 
 router = APIRouter()
@@ -213,7 +214,19 @@ def get_net_worth(
         other_assets_total=summary.other_assets_total,
         net_worth=summary.net_worth,
         accounts=[NetWorthAccountRow(**vars(row)) for row in summary.accounts],
-        other_assets=[OtherAsset.from_domain(asset) for asset in summary.other_assets],
+        other_assets=[
+            NetWorthOtherAssetRow(
+                asset_id=asset.asset_id,
+                name=asset.name,
+                # The one Decimal -> float crossing in this response, made
+                # explicit rather than left to Pydantic's coercion: see
+                # `NetWorthOtherAssetRow` for why this row is analytics.
+                value=to_analytics_float(asset.value),
+                currency=asset.currency,
+                note=asset.note,
+            )
+            for asset in summary.other_assets
+        ],
     )
 
 

@@ -979,8 +979,37 @@ class NetWorthAccountRow(BaseModel):
     currency: CurrencyCode
 
 
+class NetWorthOtherAssetRow(BaseModel):
+    """One manually-entered net-worth line, as an analytics figure rather than as the stored entity.
+
+    A near-copy of `entities.OtherAsset` differing in exactly one field, and
+    the difference is the point: `value` is a `float` here where the entity
+    holds an exact `Money`. This response's four totals are floats — they are
+    summed and currency-converted through the analytics boundary (see
+    `ledger.frame`'s T1) — so embedding the exact entity as a summand made one
+    object claim both families at once, with no way for a reader to tell which
+    figure was safe to add to which.
+
+    The exact value has an address of its own: `GET /store` and
+    `GET /other-assets/{asset_id}` both return the entity. Read those to edit
+    an asset; read this to chart one.
+    """
+
+    asset_id: str
+    name: str
+    value: float
+    currency: CurrencyCode
+    note: str
+
+
 class NetWorthSummary(BaseModel):
-    """Assets, liabilities, and net worth as of one date — see `dashboard.net_worth.NetWorthSummary`."""
+    """Assets, liabilities, and net worth as of one date — see `dashboard.net_worth.NetWorthSummary`.
+
+    Every money field here is analytics: a `float`, summed and converted at
+    `display_currency`'s rate for the date. Nothing in this object is the exact
+    stored value of anything, `other_assets` included — see
+    `NetWorthOtherAssetRow`, and `docs/http-api-contract.md` for the split.
+    """
 
     as_of: date
     display_currency: CurrencyCode
@@ -989,7 +1018,7 @@ class NetWorthSummary(BaseModel):
     other_assets_total: float
     net_worth: float
     accounts: list[NetWorthAccountRow]
-    other_assets: list[OtherAsset]
+    other_assets: list[NetWorthOtherAssetRow]
 
 
 class NetWorthHistoryPoint(BaseModel):
@@ -1043,7 +1072,16 @@ class SpendCurvePoint(BaseModel):
 class BudgetComparisonRow(BaseModel):
     """One category (or subcategory)'s budget target next to its actual spend.
 
-    See `dashboard.budgets.BudgetComparisonRow`.
+    Both figures are analytics `float`s. `actual` cannot be anything else — it
+    is a converted sum over the resolved ledger — and `budgeted` used to be an
+    exact `Money` sitting right beside it, so the row invited a subtraction
+    between two numbers from different families and presented the difference
+    as if it meant something exact. It does not: the answer is only ever as
+    good as `actual`.
+
+    The exact target is `entities.Budget.amount`, returned by `GET /store` and
+    `GET /budgets/{budget_id}`. See `dashboard.budgets.BudgetComparisonRow` and
+    `docs/http-api-contract.md`.
     """
 
     category_id: str
@@ -1051,7 +1089,7 @@ class BudgetComparisonRow(BaseModel):
     subcategory_id: str | None
     subcategory_name: str | None
     color: str
-    budgeted: Money
+    budgeted: float
     actual: float
     currency: CurrencyCode
 
