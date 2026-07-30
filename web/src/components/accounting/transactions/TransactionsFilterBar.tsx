@@ -12,8 +12,8 @@ import {
   DATE_MODE_MONTH,
   DATE_MODE_RANGE,
   defaultFilterState,
-  type FilterState,
   PENDING_OPTIONS,
+  type PersistedFilters,
   TRANSFER_FLAG_OPTIONS,
 } from '@/lib/transactionFilters'
 
@@ -38,14 +38,18 @@ export interface FilterOption {
 export function TransactionsFilterBar({
   filters,
   setFilters,
+  search,
+  onSearchChange,
   monthItems,
   accountItems,
   categoryOptions,
   subcategoryOptions,
   tagFilterOptions,
 }: {
-  filters: FilterState
-  setFilters: (next: FilterState) => void
+  filters: PersistedFilters
+  setFilters: (next: PersistedFilters) => void
+  search: string
+  onSearchChange: (next: string) => void
   monthItems: Record<string, string>
   accountItems: Record<string, string>
   categoryOptions: FilterOption[]
@@ -64,8 +68,8 @@ export function TransactionsFilterBar({
       <Input
         className="w-48"
         placeholder="Search description…"
-        value={filters.search}
-        onChange={(event) => setFilters({ ...filters, search: event.target.value })}
+        value={search}
+        onChange={(event) => onSearchChange(event.target.value)}
       />
       <FilterPanel activeCount={activeFilterCount}>
         <FilterRow label="Date">

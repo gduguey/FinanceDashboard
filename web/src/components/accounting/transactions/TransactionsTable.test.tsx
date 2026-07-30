@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -118,8 +118,22 @@ describe('TransactionsTable', () => {
 
     await user.type(screen.getByPlaceholderText('Search description…'), 'rent')
 
-    expect(renderedDescriptions()).toEqual(['Rent'])
+    await waitFor(() => expect(renderedDescriptions()).toEqual(['Rent']))
     expect(screen.getByText('1 transaction')).toBeInTheDocument()
+  })
+
+  // The setter behind the persisted filters runs `JSON.stringify` plus
+  // `localStorage.setItem` and notifies every subscriber, synchronously, per
+  // call — which is why a half-typed query does not go through it.
+  it('never writes the search term to persisted state', async () => {
+    const user = userEvent.setup()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    renderTable([...expense('a', 'Corner Store'), ...expense('b', 'Rent')])
+
+    await user.type(screen.getByPlaceholderText('Search description…'), 'rent')
+
+    expect(setItem).not.toHaveBeenCalled()
+    setItem.mockRestore()
   })
 
   it('offers to reset once a filter is narrowing the table', async () => {

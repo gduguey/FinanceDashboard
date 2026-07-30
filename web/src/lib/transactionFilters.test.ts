@@ -12,6 +12,7 @@ import {
   normalizeFilterState,
   transferFlagsForPosting,
   UNCATEGORIZED,
+  withSearch,
 } from '@/lib/transactionFilters'
 import type { Posting } from '@/types/accounting'
 
@@ -44,7 +45,7 @@ function context(overrides: Partial<FilterContext> = {}): FilterContext {
 }
 
 function withFilters(overrides: Partial<FilterState>): FilterState {
-  return { ...defaultFilterState(), ...overrides }
+  return { ...withSearch(defaultFilterState(), ''), ...overrides }
 }
 
 function keptIds(postings: Posting[], filters: Partial<FilterState>, ctx = context()): string[] {
@@ -78,11 +79,11 @@ describe('normalizeFilterState', () => {
   })
 
   it('fills in a key an older persisted state never had', () => {
-    const normalized = normalizeFilterState({ search: 'coffee' })
+    const normalized = normalizeFilterState({ accountFilter: 'checking' })
 
     expect(normalized.transferFlagFilter).toEqual([])
     expect(normalized.incomeExpenseFilter).toBe(ALL)
-    expect(normalized.search).toBe('coffee')
+    expect(normalized.accountFilter).toBe('checking')
   })
 
   it('keeps a value that is already valid', () => {

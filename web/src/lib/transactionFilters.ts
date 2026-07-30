@@ -35,6 +35,7 @@ export const DATE_MODE_RANGE = 'range'
 export const ALL_MONTHS = '__all_months__'
 
 export interface FilterState {
+  /** The search box's current term. Never persisted — see `PersistedFilters`. */
   search: string
   accountFilter: string
   accountExclude: boolean
@@ -61,13 +62,24 @@ export interface FilterState {
 }
 
 /**
+ * Everything in the filter bar that survives a reload.
+ *
+ * The search term is deliberately not part of it. `usePersistedState`'s setter
+ * runs `JSON.stringify` plus `localStorage.setItem` and notifies every
+ * subscriber synchronously, so keeping the term there meant a serialize, a
+ * disk write and a re-render of the whole table on every keystroke — and a
+ * half-typed query is not a preference worth restoring anyway. The term lives
+ * in component state and reaches the filter through `withSearch`.
+ */
+export type PersistedFilters = Omit<FilterState, 'search'>
+
+/**
  * The filter bar as it reads before anything has been picked.
  *
- * @returns A fresh, fully-populated `FilterState`.
+ * @returns A fresh, fully-populated set of persisted filters.
  */
-export function defaultFilterState(): FilterState {
+export function defaultFilterState(): PersistedFilters {
   return {
-    search: '',
     accountFilter: ALL,
     accountExclude: false,
     categoryFilter: [],
@@ -106,9 +118,10 @@ export function defaultFilterState(): FilterState {
  * used to guard four of them and default three more inline.
  *
  * @param stored - What was read back from persisted state, of unknown vintage.
- * @returns A complete `FilterState`, every array really an array.
+ *   A `search` term left behind by a version that persisted one is dropped.
+ * @returns A complete set of persisted filters, every array really an array.
  */
-export function normalizeFilterState(stored: Partial<FilterState> | null | undefined): FilterState {
+export function normalizeFilterState(stored: Partial<PersistedFilters> | null | undefined): PersistedFilters {
   const defaults = defaultFilterState()
   if (!stored) return defaults
   const list = (value: unknown, fallback: string[]) => (Array.isArray(value) ? (value as string[]) : fallback)
@@ -127,6 +140,17 @@ export function normalizeFilterState(stored: Partial<FilterState> | null | undef
 }
 
 /**
+ * The persisted filters plus the term currently in the search box.
+ *
+ * @param persisted - What survives a reload.
+ * @param search - The search term, debounced by the caller.
+ * @returns The complete filter the table is showing.
+ */
+export function withSearch(persisted: PersistedFilters, search: string): FilterState {
+  return { ...persisted, search }
+}
+
+/**
  * How many filters are currently narrowing the table, for the bar's own badge.
  *
  * A multi-select counts once per picked value; the date row counts once
@@ -135,7 +159,7 @@ export function normalizeFilterState(stored: Partial<FilterState> | null | undef
  * @param filters - The current filter state.
  * @returns The badge's number. Zero hides the "Reset filters" button.
  */
-export function activeFilterCount(filters: FilterState): number {
+export function activeFilterCount(filters: PersistedFilters): number {
   let count = 0
   if (filters.accountFilter !== ALL) count++
   count +=

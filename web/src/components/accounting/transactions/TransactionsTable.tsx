@@ -11,6 +11,7 @@ import { useTransactionActions } from '@/components/accounting/transactions/useT
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Table, TableBody } from '@/components/ui/table'
+import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { FILTER_ALL as ALL } from '@/lib/filters'
@@ -21,12 +22,13 @@ import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
 import {
   ALL_MONTHS,
   defaultFilterState,
-  type FilterState,
   filterPostings,
   NO_SUBCATEGORY,
   normalizeFilterState,
+  type PersistedFilters,
   PLACEHOLDER_ACCOUNT_IDS,
   UNCATEGORIZED,
+  withSearch,
 } from '@/lib/transactionFilters'
 import { transferBadgeByPostingId as buildTransferBadges } from '@/lib/transferBadges'
 import type { Account, Category, Posting, Tag, TransferLink, TransferRule } from '@/types/accounting'
@@ -35,6 +37,9 @@ import type { Account, Category, Posting, Tag, TransferLink, TransferRule } from
 // real one — a table row with `p-2 text-sm` cells lands around here.
 const ESTIMATED_ROW_HEIGHT = 45
 const TABLE_COLUMN_COUNT = 9
+// Long enough that a burst of typing settles once, short enough that the table
+// still feels like it is tracking the box.
+const SEARCH_DEBOUNCE_MS = 200
 
 export function TransactionsTable({
   storageKey,
@@ -55,11 +60,19 @@ export function TransactionsTable({
   transferLinks: TransferLink[]
   onlyUncategorized: boolean
 }) {
-  const [stored, setFilters] = usePersistedState<FilterState>(storageKey, defaultFilterState())
+  const [stored, setFilters] = usePersistedState<PersistedFilters>(storageKey, defaultFilterState())
   // Whatever vintage of filter state `localStorage` holds is coerced into a
   // usable one in one place — see `normalizeFilterState` for what a stale
   // single-select value used to do to a `.includes` check.
-  const filters = useMemo(() => normalizeFilterState(stored), [stored])
+  const persisted = useMemo(() => normalizeFilterState(stored), [stored])
+  // The search term is component state rather than persisted state, and the
+  // filter reads it a beat behind the box. Typing then costs a controlled
+  // input's own re-render instead of a `JSON.stringify`, a `localStorage`
+  // write and a re-filter of the whole ledger per keystroke — see
+  // `PersistedFilters` and `useDebouncedValue`.
+  const [search, setSearch] = useState('')
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS)
+  const filters = useMemo(() => withSearch(persisted, debouncedSearch), [persisted, debouncedSearch])
   const [splitting, setSplitting] = useState<Posting | null>(null)
   const {
     suggestMessages,
@@ -247,8 +260,10 @@ export function TransactionsTable({
           onValidateSelection={handleValidateSelection}
         />
         <TransactionsFilterBar
-          filters={filters}
+          filters={persisted}
           setFilters={setFilters}
+          search={search}
+          onSearchChange={setSearch}
           monthItems={monthItems}
           accountItems={accountItems}
           categoryOptions={categoryOptions}
