@@ -30,7 +30,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import AccountingStoreResponse
-from accounting.api.entities import Account, Category, Currency, Tag
+from accounting.api.entities import (
+    Account,
+    Category,
+    CategoryPattern,
+    Currency,
+    Tag,
+    TransferLink,
+    TransferRule,
+)
 from accounting.models import SUPPORTED_CURRENCIES
 from accounting.repositories.interpretation import (
     load_category_patterns,
@@ -81,12 +89,15 @@ def get_store(
             for category_id, category in seeded_categories(session, user_id).items()
         },
         tags={tag_id: Tag.from_domain(tag) for tag_id, tag in load_tags(session, user_id).items()},
-        transfer_rules=load_transfer_rules(session, user_id),
+        transfer_rules=[TransferRule.from_domain(rule) for rule in load_transfer_rules(session, user_id)],
         other_assets=load_other_assets(session, user_id),
         budgets=load_budgets(session, user_id),
         simulator_scenarios=load_simulator_scenarios(session, user_id),
-        transfer_links=load_transfer_links(session, user_id),
-        category_patterns=load_category_patterns(session, user_id),
+        transfer_links=[TransferLink.from_domain(link) for link in load_transfer_links(session, user_id)],
+        category_patterns={
+            pattern_id: CategoryPattern.from_domain(pattern)
+            for pattern_id, pattern in load_category_patterns(session, user_id).items()
+        },
         goals=load_goals(session, user_id),
         goal_contributions=load_goal_contributions(session, user_id),
         goal_automations=load_goal_automations(session, user_id),

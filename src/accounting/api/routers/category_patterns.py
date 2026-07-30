@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import CategoryPatternCreate, CategoryPatternUpdate
+from accounting.api.entities import CategoryPattern
 from accounting.api.locations import created_or_replaced, location_of
 from accounting.importers.common import row_hash
-from accounting.models import CategoryPattern
+from accounting.models import CategoryPattern as DomainCategoryPattern
 from accounting.repositories.interpretation import (
     delete_category_pattern,
     load_category_patterns,
@@ -55,7 +56,7 @@ def get_category_pattern(
     pattern = load_category_patterns(session, user_id).get(pattern_id)
     if pattern is None:
         raise HTTPException(status_code=404, detail=f"Category pattern {pattern_id!r} not found")
-    return pattern
+    return CategoryPattern.from_domain(pattern)
 
 
 @router.post("/category-patterns", status_code=201, responses=created_or_replaced(CategoryPattern))
@@ -84,7 +85,7 @@ def post_category_pattern(
     CategoryPattern
         The pattern just persisted.
     """
-    pattern = CategoryPattern(
+    pattern = DomainCategoryPattern(
         pattern_id=_category_pattern_id(request.description_contains, request.category_id, request.subcategory_id),
         description_contains=request.description_contains,
         category_id=request.category_id,
@@ -104,7 +105,7 @@ def post_category_pattern(
         response.status_code = 200
     else:
         location_of(http_request, response, "get_category_pattern", pattern_id=pattern.pattern_id)
-    return pattern
+    return CategoryPattern.from_domain(pattern)
 
 
 @router.patch("/category-patterns/{pattern_id}")
@@ -129,7 +130,7 @@ def patch_category_pattern(
     HTTPException
         404 if no pattern with `pattern_id` exists.
     """
-    pattern = CategoryPattern(
+    pattern = DomainCategoryPattern(
         pattern_id=pattern_id,
         description_contains=request.description_contains,
         category_id=request.category_id,
@@ -141,7 +142,7 @@ def patch_category_pattern(
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Category pattern {pattern_id!r} not found")
     session.commit()
-    return updated
+    return CategoryPattern.from_domain(updated)
 
 
 @router.delete("/category-patterns/{pattern_id}", status_code=204)

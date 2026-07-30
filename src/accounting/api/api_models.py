@@ -20,12 +20,21 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from accounting.api.entities import Account, Category, ManualTransfer, Tag
+from accounting.api.entities import (
+    Account,
+    Category,
+    CategoryPattern,
+    ManualTransfer,
+    Posting,
+    PostingSplitLeg,
+    Tag,
+    TransferLink,
+    TransferRule,
+)
 from accounting.models import (
     AccountKind,
     Budget,
     CategoryClassification,
-    CategoryPattern,
     CompoundingFrequency,
     CurrencyCode,
     EarningsStatement,
@@ -37,12 +46,8 @@ from accounting.models import (
     GoalContributionOrigin,
     OtherAsset,
     PendingSuggestionSource,
-    Posting,
-    PostingSplitLeg,
     SimulatorScenario,
-    TransferLink,
     TransferLinkSource,
-    TransferRule,
 )
 from db.money import ZERO, Money, Rate
 

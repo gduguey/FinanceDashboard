@@ -4805,17 +4805,6 @@ export interface components {
     /**
      * CategoryPattern
      * @description A user-maintained description-match pattern that *suggests* a category — never applies one silently.
-     *
-     *     Deliberately distinct from `TransferRule`: a `TransferRule` resolves a
-     *     posting's counterparty/category automatically as part of every ledger
-     *     read, with no confirmation step. A `CategoryPattern` only ever produces a
-     *     suggestion the user must explicitly accept or reject (see
-     *     `ledger.pending`, `pending_source="pattern"` on `ManualOverride`) —
-     *     the same confirm-before-it-sticks flow an AI suggestion goes through,
-     *     just keyed off an explicit substring match instead of an LLM call.
-     *     `priority` breaks ties the same way `TransferRule.priority` does: the lowest
-     *     number wins. `active` lets a pattern be switched off without deleting
-     *     it — an inactive pattern is skipped by matching entirely.
      */
     CategoryPattern: {
       /** Pattern Id */
@@ -5137,15 +5126,6 @@ export interface components {
     /**
      * DismissedSuggestion
      * @description A user's decision that an auto-detected suggestion isn't relevant, archived rather than discarded.
-     *
-     *     `suggestion_id` is a stable key derived from the suggestion's own
-     *     content (see `api._transfer_suggestion_id`/`_duplicate_suggestion_id`),
-     *     not a random ID — the same real-world pair or group always dismisses
-     *     and restores under the same key, regardless of how many times the
-     *     detector recomputes it. Dismissing never edits a transfer rule, a
-     *     posting, or a merge; it only removes one entry from the list of things
-     *     still being proposed, so restoring it (deleting this record) is always
-     *     lossless.
      */
     DismissedSuggestion: {
       /** Suggestion Id */
@@ -6000,24 +5980,8 @@ export interface components {
      * ManualOverride
      * @description A user's direct edit to one posting, always winning over whatever a rule would have produced.
      *
-     *     Every field is optional independently — setting only `tag_ids` on a
-     *     posting a rule already categorized correctly doesn't touch its
-     *     category. Keyed by `posting_id` in `store.overrides_path`, applied
-     *     after `ledger.categorization.apply_rules` every time postings are read,
-     *     never baked into the ledger cache itself — so re-importing a statement
-     *     or editing a rule can never silently erase a manual correction.
-     *
-     *     `pending_source`/`pending_selected`/`pending_previous_*` track a
-     *     suggestion an automated categorizer applied but the user hasn't
-     *     confirmed yet (see `ledger.pending.resolve_pending_postings`): the
-     *     category/subcategory fields are already updated optimistically, but
-     *     the posting still renders as "temporary" until the user either accepts
-     *     it (clearing the `pending_*` fields, keeping the new category) or
-     *     rejects it (restoring `pending_previous_category_id`/
-     *     `pending_previous_subcategory_id` and clearing `pending_*`). Snapshotting
-     *     the previous category/subcategory here, rather than trying to recompute
-     *     "what a rule would have produced," is what makes rejection exact even
-     *     when the previous value came from a rule rather than a prior override.
+     *     A mirror a client also sends: `PUT /postings/{posting_id}/override` takes
+     *     the whole shape, field-merged against whatever is already stored.
      */
     ManualOverride: {
       /** Account Id */
@@ -6371,29 +6335,10 @@ export interface components {
     }
     /**
      * Posting
-     * @description One leg of one economic event — one row, like `trades.models.LedgerEvent`.
-     *
-     *     `category_id` is always a top-level category; `subcategory_id`, when
-     *     set, must be a child of that same category — never a leaf stored
-     *     without its parent. Both are `None` on a posting against a virtual
-     *     `income_source`/`expense_payee` counterparty until a rule or a manual
-     *     edit resolves it. `amount` is signed from this posting's own account's
-     *     point of view: positive means money arrived, negative means it left.
-     *     `meta` carries provenance and rare, importer-specific facts (a dedup
-     *     hash, which bank format produced this row) the same way
-     *     `LedgerEvent.meta` does for IBKR data — never a new typed column for
-     *     something only one source ever needs.
+     * @description One leg of one economic event.
      *
      *     `posted_at` and `description` are the *transaction's*, not this leg's —
-     *     they are stored once, on `db.core.Transaction`, and appear on every leg
-     *     here because this model is the row shape of the analytics projection
-     *     (`ledger.frame.LEDGER_FRAME_SCHEMA`), which is flat by design. An
-     *     importer building a pair sets the same value on both legs
-     *     (`importers.common.posting_pair`), and `importers.ingest.load_ledger`
-     *     joins the one stored value back onto each leg on the way out. Nothing
-     *     downstream can therefore observe two legs of one transaction disagreeing
-     *     about either, which is what the storage move made structural rather than
-     *     merely conventional.
+     *     every leg of one transaction carries the same value for both.
      */
     Posting: {
       /** Posting Id */
@@ -6434,15 +6379,7 @@ export interface components {
     }
     /**
      * PostingMerge
-     * @description A user's decision that two or more imported transactions are the same real-world event, recorded twice.
-     *
-     *     Every transaction in `duplicate_transaction_ids` is dropped entirely
-     *     (both its legs) from the resolved ledger; `kept_transaction_id`'s own
-     *     transaction is the one that survives, its description overridden by
-     *     `description` when given. Never baked into the ledger cache itself,
-     *     for the same reason `PostingSplit`/`ManualOverride` aren't —
-     *     re-importing a statement or rebuilding from raw archives can never
-     *     silently resurrect a duplicate a user already resolved.
+     * @description A user's decision that two or more imported transactions are the same real-world event.
      */
     PostingMerge: {
       /** Merge Id */
@@ -6577,12 +6514,8 @@ export interface components {
      * PostingSplit
      * @description A user's decision to break one posting into several legs, keyed by the original posting's id.
      *
-     *     `legs` must sum to exactly the original posting's `amount` — enforced
-     *     where a split is written (the ledger still has to balance), not here,
-     *     since validating that requires looking up the posting this describes.
-     *     Never baked into the ledger cache itself, for the same reason
-     *     `ManualOverride` isn't: re-importing a statement or rebuilding from
-     *     raw archives can never silently erase a split a user set up.
+     *     A mirror a client also sends: `PUT /postings/{posting_id}/split` takes the
+     *     legs, and the posting id comes from the path.
      */
     PostingSplit: {
       /** Posting Id */
@@ -6593,11 +6526,6 @@ export interface components {
     /**
      * PostingSplitLeg
      * @description One piece of a posting split into several independently-categorized legs.
-     *
-     *     A paycheck landing as one $3,200 bank deposit might really be $3,000
-     *     wage plus $200 expense reimbursement — two different things that
-     *     happen to have arrived in one transfer. `amount` keeps the sign
-     *     convention of the posting being split (same account, same direction).
      */
     PostingSplitLeg: {
       /** Amount */
@@ -7125,28 +7053,6 @@ export interface components {
     /**
      * TransferLink
      * @description A confirmed pairing of two transactions as the two sides of one real-world transfer.
-     *
-     *     Neither transaction's own postings are ever changed to create this —
-     *     each side's real leg (already on its own real account from import)
-     *     stays exactly as it was; the link only changes classification, via
-     *     `ledger.transfers.apply_transfer_links`: both transactions are excluded
-     *     from income/expense regardless of what account either placeholder leg
-     *     still points at. `link_id` is always derived from the two transaction
-     *     ids sorted once (see `ledger.transfers.make_transfer_link`) — the same
-     *     real-world pair links (and unlinks) under the same id no matter which
-     *     side a caller names first. `source` is `"manual"` for a user's own
-     *     "flag as transfer"/suggestion-panel pick, `"rule"` for one a
-     *     `TransferRule` found a safe, unique match for at write time (see
-     *     `ledger.transfers.reconcile_rule_links`) — display-only, never read by
-     *     resolution itself. `rule_id`, set only when `source == "rule"`, names
-     *     *which* rule found it. It used to be a plain historical label deliberately
-     *     left un-foreign-keyed, on the theory that a link should keep remembering
-     *     the rule that made it even after that rule is gone; it is a real foreign
-     *     key now (DB-audit D7's "Keyless Entry"), because a label naming a row
-     *     nobody can look up is not provenance. `ON DELETE SET NULL` keeps what was
-     *     actually worth keeping: the link survives its rule, `source` still records
-     *     that a rule rather than the user proposed it, and only the reference that
-     *     no longer resolves is cleared.
      */
     TransferLink: {
       /** Link Id */
@@ -7184,36 +7090,6 @@ export interface components {
     /**
      * TransferRule
      * @description A user-maintained trigger/action pair for automatically resolving a posting's counterparty.
-     *
-     *     Named specifically for what it's for — linking two of your own
-     *     accounts together as an internal transfer — to avoid reading as the
-     *     same thing as a `CategoryPattern` below, which only ever suggests a
-     *     category and never resolves a counterparty. Resolving a counterparty
-     *     into a real account you hold makes the transaction an internal
-     *     transfer, which is never categorizable in the first place (see
-     *     `dashboard.income_statement.real_income_expense_legs`) — so unlike
-     *     `CategoryPattern`, this has no category fields of its own to set.
-     *
-     *     Every field on the trigger side must match for the rule to apply
-     *     (`description_contains` is a case-insensitive substring check;
-     *     `account_id`, when set, restricts the rule to postings on that one
-     *     account). `counterparty_account_id`, when set, must name an *existing*
-     *     account (real or virtual) — a rule only ever repoints a posting's
-     *     placeholder counterparty at an account already known to the store,
-     *     never creates one; add the counterparty account first (see
-     *     `Account`), then reference it here. This applies to a vault the same
-     *     as anything else: create it as an ordinary `vault`-kind account
-     *     (parented at its savings account) first, then write one rule per
-     *     vault name. `priority` breaks ties when more than one rule matches;
-     *     the lowest number wins. `description` is a free-text note on what the
-     *     rule is actually for — purely for a human re-reading the rule list
-     *     later, never read by the matching logic. `active` lets a rule be
-     *     switched off without deleting it — an inactive rule is skipped by
-     *     matching entirely, as if it weren't in the list at all.
-     *     `excluded_transaction_ids` opts specific, otherwise-matching
-     *     transactions out of this one rule, without disabling it for anything
-     *     else it correctly resolves — the excluded transaction simply falls
-     *     back to whatever the next-matching rule (or no rule) would have done.
      */
     TransferRule: {
       /** Rule Id */

@@ -28,7 +28,7 @@ from accounting.api.api_models import (
     SyncStatus,
 )
 from accounting.api.dependencies import _resolved_postings, state
-from accounting.api.entities import Category
+from accounting.api.entities import Category, PostingSplitLeg
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
@@ -57,7 +57,7 @@ from accounting.importers.ingest import (
     supported_import_kinds,
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
-from accounting.models import CurrencyCode, PostingSplitLeg
+from accounting.models import CurrencyCode
 from accounting.repositories.taxonomy import replace_categories
 from accounting.taxonomy import seeded_accounts, seeded_categories
 from db.current_user import get_current_user_id

@@ -29,13 +29,7 @@ from accounting.api.api_models import (
     ValidatePendingResult,
 )
 from accounting.api.dependencies import _resolve_postings, _resolved_postings, state
-from accounting.api.locations import created_or_replaced, location_of
-from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
-from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
-from accounting.ledger.duplicates import find_duplicate_candidates
-from accounting.ledger.pending import resolve_pending_suggestion
-from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
-from accounting.models import (
+from accounting.api.entities import (
     DismissedSuggestion,
     ManualOverride,
     Posting,
@@ -44,6 +38,14 @@ from accounting.models import (
     PostingSplitLeg,
     TransferLink,
 )
+from accounting.api.locations import created_or_replaced, location_of
+from accounting.ledger.categorization import resolved_transfer_rule_ids_by_transaction
+from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
+from accounting.ledger.duplicates import find_duplicate_candidates
+from accounting.ledger.pending import resolve_pending_suggestion
+from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
+from accounting.models import DismissedSuggestion as DomainDismissedSuggestion
+from accounting.models import PostingMerge as DomainPostingMerge
 from accounting.repositories.interpretation import (
     delete_posting_split,
     dismiss_suggestion,
@@ -263,7 +265,7 @@ def put_posting_override(
         merged = existing.model_dump()
         merged.update(override.model_dump(include=override.model_fields_set))
         override = ManualOverride(**merged)
-    save_overrides_for_postings([posting_id], {posting_id: override}, session, user_id)
+    save_overrides_for_postings([posting_id], {posting_id: override.to_domain()}, session, user_id)
     return override
 
 
@@ -321,7 +323,7 @@ def put_posting_split(
             status_code=400, detail=f"Legs sum to {total}, not the posting's own amount of {current_amount}"
         )
     split = PostingSplit(posting_id=posting_id, legs=legs)
-    save_posting_split(split, session, user_id)
+    save_posting_split(split.to_domain(), session, user_id)
     return split
 
 
@@ -366,7 +368,7 @@ def get_posting_merge(
     merge = load_posting_merges(session, user_id).get(merge_id)
     if merge is None:
         raise HTTPException(status_code=404, detail=f"Posting merge {merge_id!r} not found")
-    return merge
+    return PostingMerge.from_domain(merge)
 
 
 @router.post("/posting-merges", status_code=201, responses=created_or_replaced(PostingMerge))
@@ -395,7 +397,7 @@ def post_posting_merge(
     PostingMerge
         The merge just persisted.
     """
-    merge = PostingMerge(
+    merge = DomainPostingMerge(
         merge_id=_merge_id(request.kept_transaction_id),
         kept_transaction_id=request.kept_transaction_id,
         duplicate_transaction_ids=request.duplicate_transaction_ids,
@@ -405,7 +407,7 @@ def post_posting_merge(
         location_of(http_request, response, "get_posting_merge", merge_id=merge.merge_id)
     else:
         response.status_code = 200
-    return merge
+    return PostingMerge.from_domain(merge)
 
 
 @router.delete("/posting-merges/{merge_id}", status_code=204)
@@ -446,7 +448,7 @@ def get_transfer_link(
     link = next((existing for existing in load_transfer_links(session, user_id) if existing.link_id == link_id), None)
     if link is None:
         raise HTTPException(status_code=404, detail=f"Transfer link {link_id!r} not found")
-    return link
+    return TransferLink.from_domain(link)
 
 
 @router.post("/transfer-links", status_code=201, responses=created_or_replaced(TransferLink))
@@ -498,7 +500,7 @@ def post_transfer_link(
     already_this_link = next((existing for existing in transfer_links if existing.link_id == link.link_id), None)
     if already_this_link is not None:
         response.status_code = 200
-        return already_this_link
+        return TransferLink.from_domain(already_this_link)
 
     linked_transaction_ids = {
         transaction_id
@@ -544,7 +546,7 @@ def post_transfer_link(
         detail = f"One of {link.transaction_id_a!r}, {link.transaction_id_b!r} is already part of another transfer link"
         raise HTTPException(status_code=409, detail=detail) from error
     location_of(http_request, response, "get_transfer_link", link_id=link.link_id)
-    return link
+    return TransferLink.from_domain(link)
 
 
 @router.delete("/transfer-links/{link_id}", status_code=204)
@@ -708,7 +710,7 @@ def get_dismissed_suggestions(
     -------
     list[DismissedSuggestion]
     """
-    return list_dismissed_suggestions(session, user_id)
+    return [DismissedSuggestion.from_domain(entry) for entry in list_dismissed_suggestions(session, user_id)]
 
 
 @router.get("/dismissed-suggestions/{suggestion_id}")
@@ -738,7 +740,7 @@ def get_dismissed_suggestion(
     )
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No dismissed suggestion {suggestion_id!r}")
-    return entry
+    return DismissedSuggestion.from_domain(entry)
 
 
 @router.put(
@@ -770,7 +772,7 @@ def put_dismissed_suggestion(
     DismissedSuggestion
         The archived entry just persisted.
     """
-    entry = DismissedSuggestion(
+    entry = DomainDismissedSuggestion(
         suggestion_id=suggestion_id,
         kind=request.kind,
         description=request.description,
@@ -780,7 +782,7 @@ def put_dismissed_suggestion(
         location_of(http_request, response, "get_dismissed_suggestion", suggestion_id=suggestion_id)
     else:
         response.status_code = 200
-    return entry
+    return DismissedSuggestion.from_domain(entry)
 
 
 @router.delete("/dismissed-suggestions/{suggestion_id}", status_code=204)

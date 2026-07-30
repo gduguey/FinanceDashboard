@@ -9,11 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import TransferRuleCreate, TransferRuleUpdate
+from accounting.api.entities import TransferRule
 from accounting.api.locations import created_or_replaced, location_of
 from accounting.importers.common import row_hash
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
-from accounting.models import TransferRule
+from accounting.models import TransferRule as DomainTransferRule
 from accounting.repositories.interpretation import (
     delete_transfer_rule,
     load_transfer_rules,
@@ -58,7 +59,7 @@ def get_transfer_rule(
     rule = next((r for r in load_transfer_rules(session, user_id) if r.rule_id == rule_id), None)
     if rule is None:
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
-    return rule
+    return TransferRule.from_domain(rule)
 
 
 @router.post("/transfer-rules", status_code=201, responses=created_or_replaced(TransferRule))
@@ -114,7 +115,7 @@ def post_transfer_rule(
     # and drop every exclusion the user built up. Only priority/description
     # come from the request.
     existing = next((r for r in load_transfer_rules(session, user_id) if r.rule_id == rule_id), None)
-    rule = TransferRule(
+    rule = DomainTransferRule(
         rule_id=rule_id,
         description_contains=request.description_contains,
         account_id=request.account_id,
@@ -131,7 +132,7 @@ def post_transfer_rule(
         location_of(http_request, response, "get_transfer_rule", rule_id=rule_id)
     else:
         response.status_code = 200
-    return rule
+    return TransferRule.from_domain(rule)
 
 
 @router.patch("/transfer-rules/{rule_id}")
@@ -161,7 +162,7 @@ def patch_transfer_rule(
         404 if no rule with `rule_id` exists.
     """
     raw_ledger = load_ledger(session, user_id)
-    rule = TransferRule(
+    rule = DomainTransferRule(
         rule_id=rule_id,
         description_contains=request.description_contains,
         account_id=request.account_id,
@@ -176,7 +177,7 @@ def patch_transfer_rule(
         raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
     session.commit()
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
-    return updated
+    return TransferRule.from_domain(updated)
 
 
 @router.delete("/transfer-rules/{rule_id}", status_code=204)

@@ -29,7 +29,14 @@ from typing import Self
 from pydantic import BaseModel, Field
 
 from accounting import models
-from accounting.models import AccountKind, CategoryClassification, CurrencyCode
+from accounting.models import (
+    AccountKind,
+    CategoryClassification,
+    CurrencyCode,
+    DismissedSuggestionKind,
+    PendingSuggestionSource,
+    TransferLinkSource,
+)
 from db.money import Money
 
 
@@ -153,3 +160,138 @@ class ManualTransfer(_WireModel[models.ManualTransfer]):
             The domain representation of this transfer.
         """
         return models.ManualTransfer(**self.model_dump())
+
+
+class TransferRule(_WireModel[models.TransferRule]):
+    """A user-maintained trigger/action pair for automatically resolving a posting's counterparty."""
+
+    rule_id: str = Field(min_length=1)
+    description_contains: str = Field(min_length=1)
+    account_id: str | None = None
+    counterparty_account_id: str | None = None
+    priority: int = 0
+    description: str = ""
+    active: bool = True
+    excluded_transaction_ids: list[str] = Field(default_factory=list)
+    version: int = 1
+
+
+class TransferLink(_WireModel[models.TransferLink]):
+    """A confirmed pairing of two transactions as the two sides of one real-world transfer."""
+
+    link_id: str = Field(min_length=1)
+    transaction_id_a: str = Field(min_length=1)
+    transaction_id_b: str = Field(min_length=1)
+    source: TransferLinkSource = "manual"
+    rule_id: str | None = None
+
+
+class CategoryPattern(_WireModel[models.CategoryPattern]):
+    """A user-maintained description-match pattern that *suggests* a category — never applies one silently."""
+
+    pattern_id: str = Field(min_length=1)
+    description_contains: str = Field(min_length=1)
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    priority: int = 0
+    active: bool = True
+    version: int = 1
+
+
+class ManualOverride(_WireModel[models.ManualOverride]):
+    """A user's direct edit to one posting, always winning over whatever a rule would have produced.
+
+    A mirror a client also sends: `PUT /postings/{posting_id}/override` takes
+    the whole shape, field-merged against whatever is already stored.
+    """
+
+    account_id: str | None = None
+    category_id: str | None = None
+    subcategory_id: str | None = None
+    tag_ids: list[str] | None = None
+    pending_source: PendingSuggestionSource | None = None
+    pending_selected: bool = True
+    pending_previous_category_id: str | None = None
+    pending_previous_subcategory_id: str | None = None
+
+    def to_domain(self) -> models.ManualOverride:
+        """Convert this request-body override into the domain model the repositories take.
+
+        Returns
+        -------
+        models.ManualOverride
+            The domain representation of this override.
+        """
+        return models.ManualOverride(**self.model_dump())
+
+
+class PostingSplitLeg(_WireModel[models.PostingSplitLeg]):
+    """One piece of a posting split into several independently-categorized legs."""
+
+    amount: Money
+    category_id: str | None = None
+    subcategory_id: str | None = None
+    description: str = ""
+
+
+class PostingSplit(_WireModel[models.PostingSplit]):
+    """A user's decision to break one posting into several legs, keyed by the original posting's id.
+
+    A mirror a client also sends: `PUT /postings/{posting_id}/split` takes the
+    legs, and the posting id comes from the path.
+    """
+
+    posting_id: str = Field(min_length=1)
+    legs: list[PostingSplitLeg] = Field(min_length=2)
+
+    def to_domain(self) -> models.PostingSplit:
+        """Convert this request-body split into the domain model the repositories take.
+
+        `model_dump` flattens the legs to dicts on the way, so the nested
+        `PostingSplitLeg` mirrors need no conversion of their own.
+
+        Returns
+        -------
+        models.PostingSplit
+            The domain representation of this split.
+        """
+        return models.PostingSplit(**self.model_dump())
+
+
+class PostingMerge(_WireModel[models.PostingMerge]):
+    """A user's decision that two or more imported transactions are the same real-world event."""
+
+    merge_id: str = Field(min_length=1)
+    kept_transaction_id: str = Field(min_length=1)
+    duplicate_transaction_ids: list[str] = Field(min_length=1)
+    description: str | None = None
+
+
+class DismissedSuggestion(_WireModel[models.DismissedSuggestion]):
+    """A user's decision that an auto-detected suggestion isn't relevant, archived rather than discarded."""
+
+    suggestion_id: str = Field(min_length=1)
+    kind: DismissedSuggestionKind
+    description: str
+    dismissed_at: datetime
+
+
+class Posting(_WireModel[models.Posting]):
+    """One leg of one economic event.
+
+    `posted_at` and `description` are the *transaction's*, not this leg's —
+    every leg of one transaction carries the same value for both.
+    """
+
+    posting_id: str = Field(min_length=1)
+    transaction_id: str = Field(min_length=1)
+    account_id: str = Field(min_length=1)
+    posted_at: datetime
+    amount: Money
+    currency: CurrencyCode
+    category_id: str | None = None
+    subcategory_id: str | None = None
+    budget_id: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
+    description: str = ""
+    meta: dict[str, str] = Field(default_factory=dict)
