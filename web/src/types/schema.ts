@@ -856,6 +856,64 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/accounting/budgets/comparison': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Budget Comparison
+     * @description Every category budgeted for one month, actual spend next to the target.
+     *
+     *     Returns
+     *     -------
+     *     list[BudgetComparisonRow]
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if `month` isn't `"YYYY-MM"`.
+     */
+    get: operations['get_budget_comparison_api_v1_accounting_budgets_comparison_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/budgets/suggested-amount': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Suggested Budget Amount
+     * @description Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
+     *
+     *     Returns
+     *     -------
+     *     SuggestedBudgetAmount
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         400 if `month` isn't `"YYYY-MM"`.
+     */
+    get: operations['get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/accounting/simulator/scenarios/{scenario_id}': {
     parameters: {
       query?: never
@@ -2491,64 +2549,6 @@ export interface paths {
      *     list[SpendCurvePoint]
      */
     get: operations['get_spend_curve_api_v1_accounting_income_statement_spend_curve_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/v1/accounting/budgets/comparison': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Budget Comparison
-     * @description Every category budgeted for one month, actual spend next to the target.
-     *
-     *     Returns
-     *     -------
-     *     list[BudgetComparisonRow]
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         400 if `month` isn't `"YYYY-MM"`.
-     */
-    get: operations['get_budget_comparison_api_v1_accounting_budgets_comparison_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/v1/accounting/budgets/suggested-amount': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Suggested Budget Amount
-     * @description Suggest a budget for a category (or one subcategory of it) from its trailing months' actual spend.
-     *
-     *     Returns
-     *     -------
-     *     SuggestedBudgetAmount
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         400 if `month` isn't `"YYYY-MM"`.
-     */
-    get: operations['get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get']
     put?: never
     post?: never
     delete?: never
@@ -8347,6 +8347,73 @@ export interface operations {
       }
     }
   }
+  get_budget_comparison_api_v1_accounting_budgets_comparison_get: {
+    parameters: {
+      query: {
+        month: string
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BudgetComparisonRow'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get: {
+    parameters: {
+      query: {
+        category_id: string
+        month: string
+        lookback_months?: number
+        subcategory_id?: string | null
+        display_currency?: 'USD' | 'EUR'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SuggestedBudgetAmount']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_simulator_scenario_api_v1_accounting_simulator_scenarios__scenario_id__get: {
     parameters: {
       query?: never
@@ -10092,73 +10159,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['SpendCurvePoint'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_budget_comparison_api_v1_accounting_budgets_comparison_get: {
-    parameters: {
-      query: {
-        month: string
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['BudgetComparisonRow'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_suggested_budget_amount_api_v1_accounting_budgets_suggested_amount_get: {
-    parameters: {
-      query: {
-        category_id: string
-        month: string
-        lookback_months?: number
-        subcategory_id?: string | null
-        display_currency?: 'USD' | 'EUR'
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['SuggestedBudgetAmount']
         }
       }
       /** @description Validation Error */
