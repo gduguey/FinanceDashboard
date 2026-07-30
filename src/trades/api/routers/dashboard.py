@@ -37,7 +37,7 @@ from trades.api.api_models import (
     WashSaleRow,
 )
 from trades.api.dependencies import _config, _first_event_date, _last_synced_iso, _load_ledger
-from trades.models import LedgerEvent
+from trades.api.entities import LedgerEvent
 
 if TYPE_CHECKING:
     import polars as pl

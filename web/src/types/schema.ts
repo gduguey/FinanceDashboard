@@ -5794,13 +5794,15 @@ export interface components {
     }
     /**
      * LedgerEvent
-     * @description One immutable row of the transaction ledger.
+     * @description One immutable row of the transaction ledger, as exported.
      *
-     *     Field names double as the ledger's column names. `shares`/`price` are
-     *     `None` for event types with no share count or per-share price
-     *     (everything except `BUY`/`SELL`). `amount` is always the non-negative
-     *     magnitude of the cash effect; direction comes from `event_type` alone,
-     *     never a sign.
+     *     Mirrors `trades.models.LedgerEvent`'s nine wire fields and none of its
+     *     machinery: not `polars_schema`, the Polars projection's column types,
+     *     which is a fact about the analytics frame rather than about the row a
+     *     client reads, and not the two validators, which police what may be
+     *     *written* to the ledger. This model only ever describes rows already
+     *     stored, so re-policing them here could only turn a backup export of an
+     *     already-persisted row into a 500.
      */
     LedgerEvent: {
       /** Event Id */
