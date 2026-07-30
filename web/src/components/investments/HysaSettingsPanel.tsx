@@ -111,8 +111,13 @@ export function HysaSettingsPanel() {
     // Only submit if the draft was actually edited to a valid number
     const trimmed = rateDraft.trim()
     if (!trimmed) return // Blur without edits — preserve existing rate
+    // A straight swap, not a behaviour change: the difference between the two
+    // is that `isNaN` coerces its argument first, and `parsed` is already the
+    // result of `Number(...)`, so there is nothing left to coerce. The
+    // coercion `Number` does on the raw string above is the load-bearing one,
+    // and it stays exactly where it was.
     const parsed = Number(trimmed)
-    if (!isNaN(parsed) && parsed >= 0) {
+    if (!Number.isNaN(parsed) && parsed >= 0) {
       setSettings.mutate({ bank_id: null, fixed_rate_pct: parsed })
     }
   }

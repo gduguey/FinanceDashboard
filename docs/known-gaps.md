@@ -224,3 +224,186 @@ migration, backfill and invalidation design, which is why it is its own PR
 rather than the tail of a frontend one. Filter-shaped bulk actions
 (`validate-pending`, `pattern-suggest-category/bulk` resolving a filter instead
 of a list of ids) depend on it and are deferred with it.
+
+## 7. Reordering an automation is drag-only, so a keyboard cannot do it
+
+The two reorderable lists in `web/src/components/goals/GoalAutomationsPanel.tsx`
+— "Recurring additions" and "Withdrawal priority" — are driven entirely by
+`draggable` plus `onDragStart`/`onDragOver`/`onDragEnd`. There is no move-up /
+move-down control and no keyboard path to the operation, in this file or any
+other: `onDragStart` appears nowhere else in `web/src`.
+
+PR 5 turned Biome's accessibility rules on, and this is the one place where the
+rule pointed at something a lint fix cannot close. The rows are now `<ol>`/`<li>`
+rather than `<div>`s, which is a real improvement — the order *is* the meaning
+in both lists, and a screen reader now announces the position of each row — but
+it does not make the reorder reachable. Nor is there a truthful ARIA role that
+would: `aria-grabbed` and `aria-dropeffect` were deprecated and removed in ARIA
+1.2, so nothing expresses "draggable region" any more.
+
+`role="none"` would have made the rule pass. It was declined: it asserts the
+interaction is presentational, and here the drag is the *only* means of
+performing a real operation, so it would have been a suppression wearing an
+attribute's clothes.
+
+**Fix direction:** move-up / move-down buttons beside the existing
+`GripVertical` handle, reusing `lib/reorder.ts`'s `moveItem` — the same function
+`onDragEnd` already calls, so the two paths cannot disagree. That is a UI change
+with its own design question (whether the buttons are always visible or appear
+on focus), which is why it is not bundled into a lint-gate PR.
+
+## 8. Two `pytest` runs against the same database destroy each other
+
+`tests/conftest.py`'s session-scoped `_db_engine` opens `DATABASE_URL_TEST`
+and, before yielding, runs `DROP SCHEMA IF EXISTS accounting CASCADE`,
+the same for `trades`, then `Base.metadata.drop_all` / `create_all`. That is
+correct for one run and destructive for two: a second session starting while
+the first is mid-suite drops the tables the first is still using, and the
+first then fails in whatever test happens to be executing.
+
+The failures do not look like a fixture problem. They surface as a scattered
+handful of unrelated assertion errors and `ProgrammingError`s — a different
+set each time, in whichever tests were in flight — so they read as a real
+regression in whatever change is being tested. This cost real time during
+PR 5: two concurrent runs produced first "5 failed, 4 errors" and then
+"4 failed, 7 errors" on a **different** set including a trades
+statements-export test, and both were artefacts. CI was green on the same
+commit throughout, because CI runs one suite against its own container.
+
+Nothing warns about it. There is no lock, and no check that the database is
+not already in use. `tests/db/test_rls_coverage.py` and
+`test_rls_isolation.py` are immune by construction — `tests/db/conftest.py`
+gives them a uuid-suffixed scratch database each — which is the shape the fix
+should take.
+
+**Fix direction:** derive the database name per run rather than taking it
+verbatim, the way the RLS conftest already does — suffix
+`DATABASE_URL_TEST`'s database with `os.environ.get("PYTEST_XDIST_WORKER",
+"")` plus a per-session token, create it, migrate or `create_all` into it,
+and drop it at the end. That fixes the human-runs-two-terminals case and the
+`pytest-xdist` case with one mechanism. A cheaper stopgap is a
+`pg_advisory_lock` taken in `_db_engine` so the second run blocks instead of
+corrupting, but that serialises rather than parallelises, and it still needs
+the lock to be released on a crashed run.
+
+## 9. Five numbers on screen do not mean what their labels say
+
+Measured against current code during PR 5 and deferred whole, because these
+are user-visible semantics and deserve review attention a lint PR would
+swamp. Each still reproduces unless noted.
+
+**Unallocated money conflates a cumulative flow with available cash.**
+`dashboard/goals.py:157` computes `net_income - float(total_contributed)`,
+where `net_income_expense_total` sums every real income/expense leg from the
+start of the ledger (`income_statement.py:280-311`). It ignores balances,
+opening balances and transfers, so it is a lifetime flow, not money you have.
+It is presented as spendable in `FinancialHealthStrip.tsx:107-112`
+("Not yet assigned to any goal") and `GoalsPage.tsx:337-344`, and it *gates a
+write* at `api/routers/goals.py:891-892`.
+
+**Historical foreign currency is converted at one rate for all history.**
+Narrower than first stated: net worth already threads an as-of date
+(`routers/dashboard.py:205,271,319`) and so does goals (`goals.py:680`). Only
+the income statement, budgets and the spend curve pass none
+(`routers/dashboard.py:366,394`, `routers/budgets.py:140,182`), so
+`dependencies.py:426` defaults them to today. Note the app never converts at a
+*spot* rate at all: `market_data/exchange_rates.py:111` returns a trailing
+30-day mean, deliberately, to suppress single-day noise. **Decided fix:**
+evaluate that same mean as of each posting's own date — not the report date,
+and not spot. Amend `docs/accounting/currency-handling.md` in the same change
+so the rationale survives and the change is not later mistaken for a
+regression back to spot rates. This one has a performance cost (a per-row rate
+join replacing a scalar multiply) and should land after a latency gate exists.
+
+**A card refund reads as income.** `income_statement.py:272-273` splits legs
+on `amount >= 0` with no account-kind test; `credit_card` is known only to
+`net_worth.py:34`. A refund to a credit card is therefore counted as income,
+which also inflates unallocated money above.
+
+**"A shortfall shows a green +" does not reproduce** and is not part of this
+gap. The Sankey shortfall is deliberately grey and dashed
+(`CashflowSankeyChart.tsx:92,130-134`), negative unallocated is rose, and
+budget overspend is `text-destructive`. The real adjacent defect is
+`web/src/lib/format.ts:95-98`: `signColor` returns emerald for `value >= 0`,
+so exactly zero reads as a gain, and every expense-like caller compensates by
+negating its argument (`signColor(-swing.delta)`). Fixing the helper means
+auditing those call sites, not just the helper.
+
+**The Overview hero cards have no tooltips.** `OverviewPage.tsx` imports none,
+and `FinancialHealthStrip`'s local `StatCard` (61-83) has no slot for one.
+`components/ui/info-tooltip.tsx` and `lib/glossary.ts` already exist and are
+used under `components/investments/` and `shared/ChartCard.tsx` — the whole
+money side of the app has none.
+
+**"Alpha vs HYSA" labels two different quantities, neither of which is
+alpha.** `trades/dashboard/overview.py:158` is `value - hysa_value`, a dollar
+difference in terminal values benchmarked against real published rates.
+`trades/dashboard/holdings.py:59-61` is an excess return benchmarked against
+`config.returns.hysa_annual_rate`, a flat `0.04` whose own docstring
+(`config.py:213-214`) calls it a placeholder. The two are measured against
+different rates under one label. `glossary.ts:55-58` already describes the
+computation correctly — only the word "alpha" is wrong.
+
+## 10. Nothing stops PR 2's and PR 4's performance gains from regressing
+
+There is no performance job in any workflow. The only gate that exists is the
+bundle budget (`web/tooling/budget.ts`, `LANDING_BUDGET = 200_000`,
+`CHUNK_BUDGET = 90_000`), which runs inside `npm run build` and covers bytes
+only — nothing measures latency, and nothing measures what the browser
+actually experiences.
+
+**Fix direction, in two parts.** A `PerformanceObserver` reporting INP, LCP
+and CLS, which is the only way to see the interaction cost PR 4 spent itself
+reducing. Note the landing budget currently has **3,053 B of headroom**
+(196,947 of 200,000), so the shim either fits or the budget is raised in the
+same commit with the reason in the message, as its own docstring sanctions.
+And a latency gate over the paginated read paths, seeded at a CI-affordable
+volume — roughly 10k transactions rather than the 170k of the `finance_speed`
+scratch database, since the failure mode worth catching is a complexity
+regression and that is visible at 10k. Document the chosen thresholds and
+their derivation in the test file rather than as bare constants, for the same
+reason the bundle budget documents its own: a number you can argue with beats
+one that just gets raised.
+
+## 11. A posting's identity embeds its description, so an enriched statement double-counts
+
+`row_hash(account_id, posting_date, str(amount), description)` — documented in
+`docs/accounting/adding-accounts.md` — is the natural key a re-imported row is
+recognised by. Because `description` is an *input*, a bank that posts
+`PENDING TESCO` and later enriches it to `TESCO STORES 1234` produces a
+different key for the same real transaction, and it is imported twice. In a
+money app that is a silent double-count.
+
+PR 1 named this when it closed D3: sequential primary keys fix insert
+locality but "do not fix orphaning on hash drift: that requires the natural
+key to stop embedding the drifting description". One of the three drift
+classes is already closed — PR 1 made all four importers hash
+`f"{row.amount:.4f}"`, so amount *formatting* drift no longer re-mints a key.
+Description drift and pending-to-posted drift remain.
+
+`docs/accounting/canonical-csv-import.md` documents parsing thoroughly and
+says nothing about identity at all, so there is no contract to test against
+yet. Deciding it comes first.
+
+**Fix direction:** a posting's identity is the bank-provided id where one
+exists, falling back to account, date, amount and a sequence discriminator,
+with description excluded. The discriminator is the hard part and the reason
+this is not a small change: two genuinely distinct same-day, same-amount
+transactions must not collapse into one, and losing a real transaction is
+worse than duplicating one. Write the contract into
+`canonical-csv-import.md`, then test it. This sits naturally alongside the
+materialized resolved projection of gap 6, since both change how a posting is
+identified and addressed.
+
+## 12. Known gap 4's lost updates are still open after the savepoint work
+
+PR 5 fixed `merge_by_natural_key`'s concurrent first insert (savepoint-scoped
+retry, bounded by `NATURAL_KEY_MERGE_ATTEMPTS`), which was the same concurrency
+theme, but did not reach the two read-modify-write paths of gap 4. They are
+unchanged and their fix directions still stand, with one refinement recorded
+during PR 5: `patch_target_allocation` should **not** be given a version
+column. `trades/db/models.py:173-175` deliberately records that this one row is
+last-write-wins, and a DB-side `jsonb` merge composes by construction — which
+is what `application/merge-patch+json` actually promises, and a stronger
+guarantee than versioning, since two PATCHes naming different symbols would
+both survive rather than one winning.

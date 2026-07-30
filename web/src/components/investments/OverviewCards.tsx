@@ -44,6 +44,14 @@ function StatCard({
   )
 }
 
+// The secondary row's four stats, in the order they are rendered below. The
+// loading state stands one skeleton in for each, so naming them here gives
+// every placeholder the identity of the card it is holding a space for —
+// rather than `Array.from({ length: 4 })`, whose items are four
+// indistinguishable `undefined`s with nothing to key on. Keep in step with
+// the four `StatCard`s at the bottom of `OverviewCards`.
+const SECONDARY_STATS = ['xirr', 'dollarAlpha', 'twr', 'maxDrawdown']
+
 function StatSkeleton({ big }: { big?: boolean }) {
   return (
     <Card>
@@ -73,8 +81,8 @@ export function OverviewCards() {
       <div className="space-y-4">
         <StatSkeleton big />
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <StatSkeleton key={i} />
+          {SECONDARY_STATS.map((stat) => (
+            <StatSkeleton key={stat} />
           ))}
         </div>
       </div>

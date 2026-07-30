@@ -1,14 +1,13 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
-
 from alembic import context
-from db.base import Base
-from db.settings import DatabaseSettings
+from sqlalchemy import engine_from_config, pool
 
 # Registers every table on `Base.metadata` — required before `target_metadata`
 # is read below, and before `--autogenerate` can see any of these tables.
 import db.models  # noqa: F401
+from db.base import Base
+from db.settings import DatabaseSettings
 
 
 def _import_optional_package(name: str) -> None:
@@ -21,6 +20,11 @@ def _import_optional_package(name: str) -> None:
     `ModuleNotFoundError` for a *different* module (a real broken import
     inside the package) is re-raised, so it can't silently register zero
     tables and make `--autogenerate` emit destructive DROPs.
+
+    Raises
+    ------
+    ModuleNotFoundError
+        If a module *inside* `name` is missing, rather than `name` itself.
     """
     try:
         __import__(name)

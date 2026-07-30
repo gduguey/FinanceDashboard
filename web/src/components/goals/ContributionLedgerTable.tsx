@@ -167,6 +167,7 @@ export function ContributionLedgerTable({
             onClick={addRow}
             disabled={goalList.length === 0 || createContribution.isPending}
             title="Add a contribution"
+            aria-label="Add a contribution"
           >
             <Plus className="size-4" />
           </Button>
@@ -289,7 +290,16 @@ export function ContributionLedgerTable({
                       : 'Manual'}
                   </TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="icon" onClick={() => remove(contribution.contribution_id)}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      // Every other cell in this row is an editable control,
+                      // so the row has no static text a screen reader could
+                      // fall back on to say which contribution is about to
+                      // go — the amount and goal have to be in the name.
+                      aria-label={`Delete the ${formatCurrency(contribution.amount, contribution.currency)} contribution to ${goals[contribution.goal_id]?.name ?? contribution.goal_id}`}
+                      onClick={() => remove(contribution.contribution_id)}
+                    >
                       <Trash2 className="size-3.5 text-muted-foreground" />
                     </Button>
                   </TableCell>

@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.ledger.frame import to_analytics_amount
 from db.money import ZERO, Money
+from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     from accounting.models import Account, EarningsDeposit, EarningsStatement

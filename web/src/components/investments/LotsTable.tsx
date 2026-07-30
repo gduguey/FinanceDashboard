@@ -3,6 +3,7 @@ import { aggregateClosedLotsByDay, aggregateOpenLotsByDay } from '@/components/i
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
@@ -43,10 +44,13 @@ export function LotsTable() {
                   <TabsTrigger value="open">Open lots ({data.open_lots.length})</TabsTrigger>
                   <TabsTrigger value="closed">Closed lots ({data.closed_lots.length})</TabsTrigger>
                 </TabsList>
-                <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                  Aggregate same symbol/day
-                  <Switch size="sm" checked={aggregateByDay} onCheckedChange={setAggregateByDay} />
-                </label>
+                <Field
+                  label="Aggregate same symbol/day"
+                  className="flex-row items-center gap-2"
+                  labelClassName="text-sm"
+                >
+                  {(id) => <Switch id={id} size="sm" checked={aggregateByDay} onCheckedChange={setAggregateByDay} />}
+                </Field>
               </div>
               <TabsContent value="open">
                 <OpenLotsTable

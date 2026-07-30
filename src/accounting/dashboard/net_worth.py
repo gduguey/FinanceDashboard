@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from accounting.ledger.currency import DisplayCurrency, convert
-from accounting.ledger.frame import to_analytics_amount
 from accounting.ledger.replay import account_balances
+from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     from datetime import date

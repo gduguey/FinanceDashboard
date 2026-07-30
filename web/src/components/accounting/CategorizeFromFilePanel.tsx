@@ -13,7 +13,10 @@ import type { CategorizationMatch } from '@/types/accounting'
 // together in one table would make it unclear which row came from which.
 function FileDropZone({ onFile }: { onFile: (file: File) => void }) {
   return (
+    // The drop target is pointer-only by nature; the "or browse" label below
+    // wraps a real file input, so keyboard users reach the same action there.
     <div
+      role="none"
       className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border px-6 py-14 text-center text-sm text-muted-foreground"
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -115,6 +118,7 @@ export function CategorizeFromFilePanel() {
             disabled={preview.isPending || apply.isPending}
             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
             title="Start over with a different file"
+            aria-label={`Start over — discard ${file.name}`}
           >
             <X className="size-3.5" />
           </button>

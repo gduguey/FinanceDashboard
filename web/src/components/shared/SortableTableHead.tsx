@@ -25,6 +25,7 @@ export function SortableTableHead({
     // content's natural width, so nothing here actually gets cut off.
     <TableHead className={cn('overflow-hidden', align === 'right' && 'text-right')}>
       <button
+        type="button"
         onClick={onClick}
         className={cn(
           'inline-flex w-full items-center gap-1 hover:text-foreground',

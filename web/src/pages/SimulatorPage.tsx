@@ -6,6 +6,7 @@ import { lazyChart } from '@/components/shared/lazyChart'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -126,14 +127,7 @@ export function SimulatorPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Simulator"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-      />
+      <PageHeader title="Simulator" actions={<DisplayCurrencyToggle />} />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
         <Card>
@@ -142,76 +136,86 @@ export function SimulatorPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap items-end gap-3">
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Default from account
-                <Select value={accountId} onValueChange={(value) => value && applyAccountDefault(value)}>
-                  <SelectTrigger size="sm" className="w-44">
-                    <SelectValue items={accountItems} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_ACCOUNT}>None</SelectItem>
-                    {(netWorth?.accounts ?? []).map((account) => (
-                      <SelectItem key={account.account_id} value={account.account_id}>
-                        {account.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Initial capital
-                <Input
-                  type="number"
-                  className="w-32"
-                  value={inputs.initialCapital}
-                  onChange={(e) => update({ initialCapital: e.target.value })}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Monthly contribution
-                <Input
-                  type="number"
-                  className="w-32"
-                  value={inputs.monthlyContribution}
-                  onChange={(e) => update({ monthlyContribution: e.target.value })}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Horizon (years)
-                <Input
-                  type="number"
-                  className="w-24"
-                  value={inputs.horizonYears}
-                  onChange={(e) => update({ horizonYears: e.target.value })}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Annual rate (%)
-                <Input
-                  type="number"
-                  className="w-24"
-                  value={inputs.annualRatePct}
-                  onChange={(e) => update({ annualRatePct: e.target.value })}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Compounding
-                <Select
-                  value={inputs.compoundingFrequency}
-                  onValueChange={(value) => value && update({ compoundingFrequency: value as CompoundingFrequency })}
-                >
-                  <SelectTrigger size="sm" className="w-32">
-                    <SelectValue items={FREQUENCY_ITEMS} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(FREQUENCY_ITEMS).map(([value, label]) => (
-                      <SelectItem key={value} value={value}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
+              <Field label="Default from account">
+                {(id) => (
+                  <Select value={accountId} onValueChange={(value) => value && applyAccountDefault(value)}>
+                    <SelectTrigger id={id} size="sm" className="w-44">
+                      <SelectValue items={accountItems} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NO_ACCOUNT}>None</SelectItem>
+                      {(netWorth?.accounts ?? []).map((account) => (
+                        <SelectItem key={account.account_id} value={account.account_id}>
+                          {account.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </Field>
+              <Field label="Initial capital">
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="number"
+                    className="w-32"
+                    value={inputs.initialCapital}
+                    onChange={(e) => update({ initialCapital: e.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="Monthly contribution">
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="number"
+                    className="w-32"
+                    value={inputs.monthlyContribution}
+                    onChange={(e) => update({ monthlyContribution: e.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="Horizon (years)">
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="number"
+                    className="w-24"
+                    value={inputs.horizonYears}
+                    onChange={(e) => update({ horizonYears: e.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="Annual rate (%)">
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="number"
+                    className="w-24"
+                    value={inputs.annualRatePct}
+                    onChange={(e) => update({ annualRatePct: e.target.value })}
+                  />
+                )}
+              </Field>
+              <Field label="Compounding">
+                {(id) => (
+                  <Select
+                    value={inputs.compoundingFrequency}
+                    onValueChange={(value) => value && update({ compoundingFrequency: value as CompoundingFrequency })}
+                  >
+                    <SelectTrigger id={id} size="sm" className="w-32">
+                      <SelectValue items={FREQUENCY_ITEMS} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(FREQUENCY_ITEMS).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </Field>
             </div>
 
             {isLoading || !points ? (
@@ -271,6 +275,7 @@ export function SimulatorPage() {
                     type="button"
                     onClick={() => deleteScenario(scenario.scenario_id)}
                     className="text-muted-foreground/60 hover:text-destructive"
+                    aria-label={`Delete the scenario ${scenario.name}`}
                   >
                     <Trash2 className="size-2.5" />
                   </button>

@@ -9,6 +9,7 @@ import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -188,25 +189,41 @@ function AccountsTable({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {displayRows.map(({ row, depth }) => (
-          <TableRow key={row.key}>
-            <TableCell style={{ paddingLeft: `${depth * 20 + 16}px` }} className="font-medium">
-              {row.name}
-            </TableCell>
-            <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[row.kind]}</TableCell>
-            <TableCell className="text-muted-foreground">{row.currency}</TableCell>
-            <TableCell className={`text-right tabular-nums ${signColor(row.balance)}`}>
-              {formatCurrency(row.balance, row.currency)}
-            </TableCell>
-            <TableCell>
-              {row.otherAssetId && (
-                <Button variant="ghost" size="icon" onClick={() => onRemoveOtherAsset(row.otherAssetId!)}>
-                  <Trash2 className="size-3.5 text-muted-foreground" />
-                </Button>
-              )}
-            </TableCell>
-          </TableRow>
-        ))}
+        {displayRows.map(({ row, depth }) => {
+          // Pulled into a local so the `otherAssetId &&` guard below narrows
+          // for the click handler too. TypeScript drops a narrowing on a
+          // property access as soon as a closure captures it — `row` is
+          // mutable, so nothing rules out `row.otherAssetId` having been
+          // cleared between the render and the click. A `const` cannot be
+          // reassigned, so the narrowing survives into the handler, and a
+          // row that somehow lost its id would fail to typecheck here rather
+          // than send `undefined` to the delete mutation.
+          const { otherAssetId } = row
+          return (
+            <TableRow key={row.key}>
+              <TableCell style={{ paddingLeft: `${depth * 20 + 16}px` }} className="font-medium">
+                {row.name}
+              </TableCell>
+              <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[row.kind]}</TableCell>
+              <TableCell className="text-muted-foreground">{row.currency}</TableCell>
+              <TableCell className={`text-right tabular-nums ${signColor(row.balance)}`}>
+                {formatCurrency(row.balance, row.currency)}
+              </TableCell>
+              <TableCell>
+                {otherAssetId && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete the other asset ${row.name}`}
+                    onClick={() => onRemoveOtherAsset(otherAssetId)}
+                  >
+                    <Trash2 className="size-3.5 text-muted-foreground" />
+                  </Button>
+                )}
+              </TableCell>
+            </TableRow>
+          )
+        })}
       </TableBody>
     </Table>
   )
@@ -240,47 +257,54 @@ function AddOtherAssetForm() {
       </CardHeader>
       <CardContent>
         <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Name
-            <Input
-              className="w-40"
-              value={draft.name}
-              onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="e.g. Car"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Value
-            <Input
-              className="w-28"
-              type="number"
-              value={draft.value}
-              onChange={(event) => setDraft((prev) => ({ ...prev, value: event.target.value }))}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Currency
-            <Select
-              value={draft.currency}
-              onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}
-            >
-              <SelectTrigger size="sm" className="w-20">
-                <SelectValue items={{ USD: 'USD', EUR: 'EUR' }} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="USD">USD</SelectItem>
-                <SelectItem value="EUR">EUR</SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Note
-            <Input
-              className="w-48"
-              value={draft.note}
-              onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
-            />
-          </label>
+          <Field label="Name">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-40"
+                value={draft.name}
+                onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
+                placeholder="e.g. Car"
+              />
+            )}
+          </Field>
+          <Field label="Value">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-28"
+                type="number"
+                value={draft.value}
+                onChange={(event) => setDraft((prev) => ({ ...prev, value: event.target.value }))}
+              />
+            )}
+          </Field>
+          <Field label="Currency">
+            {(id) => (
+              <Select
+                value={draft.currency}
+                onValueChange={(value) => value && setDraft((prev) => ({ ...prev, currency: value as CurrencyCode }))}
+              >
+                <SelectTrigger id={id} size="sm" className="w-20">
+                  <SelectValue items={{ USD: 'USD', EUR: 'EUR' }} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="USD">USD</SelectItem>
+                  <SelectItem value="EUR">EUR</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </Field>
+          <Field label="Note">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-48"
+                value={draft.note}
+                onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
+              />
+            )}
+          </Field>
           <Button size="sm" onClick={addAsset} disabled={createOtherAsset.isPending}>
             Add
           </Button>
@@ -329,15 +353,7 @@ export function NetWorthPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Net Worth"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-        sections={hasData ? SECTIONS : undefined}
-      />
+      <PageHeader title="Net Worth" actions={<DisplayCurrencyToggle />} sections={hasData ? SECTIONS : undefined} />
 
       <div className="mx-auto max-w-4xl space-y-6 px-8 py-8">
         {isLoading || !data ? (

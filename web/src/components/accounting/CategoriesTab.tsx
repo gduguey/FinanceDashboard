@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NumberInput } from '@/components/ui/number-input'
 import {
@@ -295,8 +296,10 @@ function ClassificationSection({
                   />
                 </span>
                 <button
+                  type="button"
                   onClick={() => removeCategory(category.category_id, category.name)}
                   className="text-muted-foreground/60 hover:text-destructive"
+                  aria-label={`Delete the category ${category.name}`}
                 >
                   <Trash2 className="size-3.5" />
                 </button>
@@ -323,8 +326,10 @@ function ClassificationSection({
                       )}
                       {!isOther && (
                         <button
+                          type="button"
                           onClick={() => removeCategory(child.category_id, child.name)}
                           className="text-muted-foreground/60 hover:text-destructive"
+                          aria-label={`Delete the subcategory ${child.name} of ${category.name}`}
                         >
                           <Trash2 className="size-2.5" />
                         </button>
@@ -448,10 +453,13 @@ function categoryName(categories: Record<string, Category>, categoryId: string) 
 // tied to one posting's sign the way categorizing a real transaction is,
 // so (unlike `CategorySelect`) it needs access to both sides at once.
 function AnyClassificationCategorySelect({
+  id,
   categories,
   value,
   onChange,
 }: {
+  /** Lands on the inner `SelectTrigger`, so a `<label htmlFor>` outside this component reaches the control. */
+  id?: string
   categories: Record<string, Category>
   value: string | null
   onChange: (categoryId: string) => void
@@ -467,7 +475,7 @@ function AnyClassificationCategorySelect({
 
   return (
     <Select value={value ?? undefined} onValueChange={(next) => next && onChange(next)}>
-      <SelectTrigger size="sm" className="min-w-44">
+      <SelectTrigger id={id} size="sm" className="min-w-44">
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>
@@ -493,11 +501,14 @@ function AnyClassificationCategorySelect({
 }
 
 function PatternSubcategorySelect({
+  id,
   categories,
   categoryId,
   value,
   onChange,
 }: {
+  /** Lands on the inner `SelectTrigger`, so a `<label htmlFor>` outside this component reaches the control. */
+  id?: string
   categories: Record<string, Category>
   categoryId: string | null
   value: string | null
@@ -510,7 +521,7 @@ function PatternSubcategorySelect({
   const items = Object.fromEntries(children.map((c) => [c.category_id, c.name]))
   return (
     <Select value={value ?? undefined} onValueChange={(next) => next && onChange(next)}>
-      <SelectTrigger size="sm" className="min-w-40">
+      <SelectTrigger id={id} size="sm" className="min-w-40">
         <SelectValue items={items} placeholder="Choose a subcategory" />
       </SelectTrigger>
       <SelectContent>
@@ -547,41 +558,49 @@ function PatternEditDialog({
           <DialogTitle>Edit category pattern</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            If description contains
-            <Input
-              value={draft.description_contains}
-              onChange={(event) => setDraft((prev) => ({ ...prev, description_contains: event.target.value }))}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Suggested category
-            <AnyClassificationCategorySelect
-              categories={categories}
-              value={draft.category_id}
-              onChange={(categoryId) =>
-                setDraft((prev) => ({ ...prev, category_id: categoryId, subcategory_id: null }))
-              }
-            />
-          </label>
-          {needsSubcategory && (
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Suggested subcategory (required — this category has subcategories)
-              <PatternSubcategorySelect
-                categories={categories}
-                categoryId={draft.category_id}
-                value={draft.subcategory_id ?? null}
-                onChange={(subcategoryId) => setDraft((prev) => ({ ...prev, subcategory_id: subcategoryId }))}
+          <Field label="If description contains">
+            {(id) => (
+              <Input
+                id={id}
+                value={draft.description_contains}
+                onChange={(event) => setDraft((prev) => ({ ...prev, description_contains: event.target.value }))}
               />
-            </label>
+            )}
+          </Field>
+          <Field label="Suggested category">
+            {(id) => (
+              <AnyClassificationCategorySelect
+                id={id}
+                categories={categories}
+                value={draft.category_id}
+                onChange={(categoryId) =>
+                  setDraft((prev) => ({ ...prev, category_id: categoryId, subcategory_id: null }))
+                }
+              />
+            )}
+          </Field>
+          {needsSubcategory && (
+            <Field label="Suggested subcategory (required — this category has subcategories)">
+              {(id) => (
+                <PatternSubcategorySelect
+                  id={id}
+                  categories={categories}
+                  categoryId={draft.category_id}
+                  value={draft.subcategory_id ?? null}
+                  onChange={(subcategoryId) => setDraft((prev) => ({ ...prev, subcategory_id: subcategoryId }))}
+                />
+              )}
+            </Field>
           )}
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Priority (lower wins ties)
-            <NumberInput
-              value={draft.priority}
-              onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? 0 }))}
-            />
-          </label>
+          <Field label="Priority (lower wins ties)">
+            {(id) => (
+              <NumberInput
+                id={id}
+                value={draft.priority}
+                onCommit={(priority) => setDraft((prev) => ({ ...prev, priority: priority ?? 0 }))}
+              />
+            )}
+          </Field>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
@@ -737,10 +756,20 @@ function CategoryPatternsSection({
                   />
                 </TableCell>
                 <TableCell className="flex gap-1">
-                  <Button variant="ghost" size="icon" onClick={() => setEditing(pattern)}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Edit the pattern matching "${pattern.description_contains}"`}
+                    onClick={() => setEditing(pattern)}
+                  >
                     <Pencil className="size-3.5 text-muted-foreground" />
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => removePattern(pattern.pattern_id)}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete the pattern matching "${pattern.description_contains}"`}
+                    onClick={() => removePattern(pattern.pattern_id)}
+                  >
                     <Trash2 className="size-3.5 text-muted-foreground" />
                   </Button>
                 </TableCell>
@@ -749,33 +778,39 @@ function CategoryPatternsSection({
           </TableBody>
         </Table>
         <div className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Description contains
-            <Input
-              className="w-56"
-              value={draft.descriptionContains}
-              onChange={(event) => setDraft((prev) => ({ ...prev, descriptionContains: event.target.value }))}
-              placeholder="e.g. TRADER JOE"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Suggested category
-            <AnyClassificationCategorySelect
-              categories={categories}
-              value={draft.categoryId}
-              onChange={(categoryId) => setDraft((prev) => ({ ...prev, categoryId, subcategoryId: null }))}
-            />
-          </label>
-          {draftNeedsSubcategory && (
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-              Subcategory (required)
-              <PatternSubcategorySelect
-                categories={categories}
-                categoryId={draft.categoryId}
-                value={draft.subcategoryId}
-                onChange={(subcategoryId) => setDraft((prev) => ({ ...prev, subcategoryId }))}
+          <Field label="Description contains">
+            {(id) => (
+              <Input
+                id={id}
+                className="w-56"
+                value={draft.descriptionContains}
+                onChange={(event) => setDraft((prev) => ({ ...prev, descriptionContains: event.target.value }))}
+                placeholder="e.g. TRADER JOE"
               />
-            </label>
+            )}
+          </Field>
+          <Field label="Suggested category">
+            {(id) => (
+              <AnyClassificationCategorySelect
+                id={id}
+                categories={categories}
+                value={draft.categoryId}
+                onChange={(categoryId) => setDraft((prev) => ({ ...prev, categoryId, subcategoryId: null }))}
+              />
+            )}
+          </Field>
+          {draftNeedsSubcategory && (
+            <Field label="Subcategory (required)">
+              {(id) => (
+                <PatternSubcategorySelect
+                  id={id}
+                  categories={categories}
+                  categoryId={draft.categoryId}
+                  value={draft.subcategoryId}
+                  onChange={(subcategoryId) => setDraft((prev) => ({ ...prev, subcategoryId }))}
+                />
+              )}
+            </Field>
           )}
           <Button size="sm" onClick={addPattern} disabled={!canAdd}>
             Add pattern

@@ -159,6 +159,11 @@ export const TransactionRow = memo(function TransactionRow({
                 type="button"
                 className="-mr-0.5 inline-flex size-4 items-center justify-center rounded-sm hover:bg-background hover:text-foreground"
                 title={`Exclude this one transaction from "${resolvedByRuleLabel}" — it'll fall back to the next-matching rule, or stay uncategorized if none matches`}
+                // A "×" glyph is an icon that happens to be a character: it
+                // is non-empty, so it satisfies "has a name", but the name it
+                // gives is "times". The label states the action and which
+                // rule it detaches this row from.
+                aria-label={`Exclude "${posting.description}" from the rule ${resolvedByRuleLabel}`}
                 onClick={() =>
                   posting.resolved_by_transfer_rule_id &&
                   onExcludeFromRule([posting.transaction_id], posting.resolved_by_transfer_rule_id)
@@ -228,7 +233,13 @@ export const TransactionRow = memo(function TransactionRow({
       <TableCell>
         <div className="flex items-center gap-0.5">
           {isRealIncomeExpense && (
-            <Button variant="ghost" size="icon" title="Mark as transfer" onClick={openFlagAsTransfer}>
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Mark as transfer"
+              aria-label={`Mark "${posting.description}" as a transfer`}
+              onClick={openFlagAsTransfer}
+            >
               <ArrowRightLeft className="size-3.5 text-muted-foreground" />
             </Button>
           )}
@@ -237,6 +248,13 @@ export const TransactionRow = memo(function TransactionRow({
               variant="ghost"
               size="icon"
               title={aiMessage || (aiAvailable ? 'AI suggestion' : 'No AI provider configured — add a key in Settings')}
+              // Deliberately not the `title` above: that string carries the
+              // per-row result/why-disabled message and changes as the
+              // request runs, which would make the same control announce
+              // itself under a different name on every pass. The name states
+              // the action and the row it acts on; `disabled` and the
+              // rendered `aiMessage` below carry the rest.
+              aria-label={`Suggest a category for "${posting.description}" with AI`}
               disabled={aiPending || !aiAvailable}
               onClick={() => onAiSuggest(posting)}
             >
@@ -244,11 +262,23 @@ export const TransactionRow = memo(function TransactionRow({
             </Button>
           )}
           {originalId ? (
-            <Button variant="ghost" size="icon" title="Undo split" onClick={() => onUndoSplit(originalId)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Undo split"
+              aria-label={`Undo the split of "${posting.description}"`}
+              onClick={() => onUndoSplit(originalId)}
+            >
               <Undo2 className="size-3.5 text-muted-foreground" />
             </Button>
           ) : (
-            <Button variant="ghost" size="icon" title="Split transaction" onClick={() => onSplit(posting)}>
+            <Button
+              variant="ghost"
+              size="icon"
+              title="Split transaction"
+              aria-label={`Split "${posting.description}"`}
+              onClick={() => onSplit(posting)}
+            >
               <Scissors className="size-3.5 text-muted-foreground" />
             </Button>
           )}

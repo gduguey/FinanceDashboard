@@ -20,9 +20,9 @@ So this is a deliberate, single, named boundary rather than a leak:
   it is written (`db.money.quantize_money`), so what Postgres holds is
   exactly what the domain layer decided.
 - **Float only inside the projection.** `db.money.to_analytics_float` is
-  the only sanctioned `Decimal -> float` conversion, re-exported here as
-  `to_analytics_amount`. Every frame is built through
-  `LEDGER_FRAME_SCHEMA`, so no other shape can appear.
+  the only sanctioned `Decimal -> float` conversion, and callers import it
+  from there. Every frame is built through `LEDGER_FRAME_SCHEMA`, so no
+  other shape can appear.
 - **Exact again on the way out.** Anything read out of a frame and then
   persisted, compared for equality, or returned as an authoritative balance
   goes back through `db.money.to_decimal`/`quantize_money`.
@@ -47,16 +47,7 @@ they retire with the projection, not with the wire format.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import polars as pl
-
-from db.money import to_analytics_float as to_analytics_amount
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-    from accounting.models import Posting
 
 LEDGER_FRAME_SCHEMA: dict[str, type[pl.DataType] | pl.DataType] = {
     "posting_id": pl.Utf8,
@@ -99,29 +90,3 @@ def empty_ledger_frame() -> pl.DataFrame:
         Zero rows, `LEDGER_FRAME_SCHEMA` columns.
     """
     return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)
-
-
-def postings_to_ledger_frame(postings: Sequence[Posting]) -> pl.DataFrame:
-    """Project validated `Posting` models into the analytics frame.
-
-    Crosses the boundary this module documents: `Posting.amount` is an
-    exact `Decimal`, and the frame's `amount` column is `Float64`.
-
-    Parameters
-    ----------
-    postings
-        Already-validated postings.
-
-    Returns
-    -------
-    polars.DataFrame
-        `LEDGER_FRAME_SCHEMA`-shaped, sorted by date then posting id.
-    """
-    if not postings:
-        return empty_ledger_frame()
-    rows = []
-    for posting in postings:
-        row = posting.model_dump()
-        row["amount"] = to_analytics_amount(posting.amount)
-        rows.append(row)
-    return pl.DataFrame(rows, schema=LEDGER_FRAME_SCHEMA).sort("posted_at", "posting_id")

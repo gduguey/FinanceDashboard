@@ -302,6 +302,7 @@ export function CategoryDrilldownPie({
             <span key={crumb.label} className="flex items-center gap-1">
               {index > 0 && <ChevronRight className="size-3" />}
               <button
+                type="button"
                 onClick={crumb.onClick}
                 className={
                   index === breadcrumb.length - 1
@@ -320,6 +321,7 @@ export function CategoryDrilldownPie({
         ) : selected ? (
           <div className="space-y-2">
             <button
+              type="button"
               onClick={() => setSelected(null)}
               className="text-xs text-muted-foreground hover:text-foreground hover:underline"
             >

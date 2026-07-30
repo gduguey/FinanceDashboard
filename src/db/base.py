@@ -32,6 +32,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 if TYPE_CHECKING:
@@ -497,6 +498,46 @@ def ids_by_natural_key(
     return _NaturalKeyIds(rows, table)
 
 
+NATURAL_KEY_MERGE_ATTEMPTS = 4
+"""How many times `merge_by_natural_key` may flush one batch before it gives up.
+
+A single lost race needs exactly one retry: the writer that won has
+*committed* by the time the loser's `INSERT` is rejected, so the loser's
+re-lookup finds the winner's id and the second attempt is an `UPDATE` that
+cannot conflict with anything. The budget is bigger than one only because a
+batch can lose to a *different* writer on each pass — three imports starting
+at the same instant, each inserting a different new key of the same batch —
+and each of those is a genuinely new conflict rather than the same one
+repeating.
+
+Four rather than "retry until it works", because `merge_by_natural_key`
+only spends an attempt when the re-lookup *proves* the batch moved forward
+(some natural key that had no row now has one). Anything that survives four
+attempts is therefore not contention resolving slowly, it is a batch racing
+a writer that keeps inventing new rows underneath it — a pathological
+situation, and one a request should surface as a named failure rather than
+disappear into. Hence `ConcurrentNaturalKeyInsertError` when it runs out,
+never a silent partial write and never an unbounded loop holding a
+connection open.
+"""
+
+
+class ConcurrentNaturalKeyInsertError(RuntimeError):
+    """`merge_by_natural_key` kept losing the insert race, `NATURAL_KEY_MERGE_ATTEMPTS` times over.
+
+    Not the ordinary lost race — that one is retried and succeeds, and no
+    caller ever hears about it. This is the bound being exhausted: every
+    attempt collided with a *newly committed* row for one of this batch's
+    own natural keys, which no realistic amount of concurrency produces.
+
+    Deliberately unmapped to an HTTP status, unlike `VersionConflictError`'s
+    409. A version conflict is a normal thing for two browser tabs to do and
+    the user can act on it ("reload before saving again"); this is not
+    something the caller did or can fix, so it stays a 500 and shows up in
+    the logs naming the table and the batch involved.
+    """
+
+
 def merge_by_natural_key(
     session: Session,
     model: Any,  # noqa: ANN401 — generic helper shared across every model with an id/natural_key/user_id shape
@@ -522,7 +563,46 @@ def merge_by_natural_key(
     `GENERATED ALWAYS AS ... STORED` columns (`depth`/`parent_depth`) that no
     statement may write, and both tables' `updated_at` is maintained by the
     mapper's `onupdate`. Going through the mapper keeps both facts in one
-    place instead of restating them in SQL here.
+    place instead of restating them in SQL here. It is also what lets this
+    hand back live ORM instances' ids, which `ON CONFLICT ... RETURNING`
+    would not.
+
+    **The lookup and the flush are two statements, so they race.** Two
+    requests upserting the same *new* `(user_id, natural_key)` both resolve
+    it to "no row yet", both `merge()` a transient row, and the one that
+    flushes second is rejected by `UNIQUE (user_id, natural_key)` — a 500 on
+    a write that should simply have become an update. Never corruption (the
+    constraint is doing its job), but never acceptable either: it is exactly
+    the concurrency an import running while the person edits the same
+    account produces.
+
+    So the flush — and **only** the flush — runs inside a SAVEPOINT
+    (`session.begin_nested()`). When the `IntegrityError` lands, rolling back
+    to that savepoint undoes this function's own merges and nothing else; the
+    natural keys are resolved again (the winner has committed, so its id is
+    visible now — every statement reads a fresh snapshot under READ
+    COMMITTED, Postgres's default and this application's); and the batch is
+    merged a second time against the id the winner just created. What was an
+    insert becomes the update it always meant to be.
+
+    A savepoint rather than letting the caller retry the whole transaction,
+    because five of this function's six call sites are already inside a
+    larger unit of work — `replace_accounts` has flushed its parent accounts,
+    `trades.brokers.ibkr.main._write_ledger` has deleted the old events — and
+    a plain retry loop would have to throw that away and change what a
+    failure here means for every one of them. A savepoint changes nothing
+    outside these few statements: the caller's earlier writes are still
+    there, still uncommitted, still theirs to commit.
+
+    Not every `IntegrityError` is this race, and the ones that aren't must
+    stay as loud as they were: a real foreign-key or check violation is a bug
+    that retrying would only bury under `NATURAL_KEY_MERGE_ATTEMPTS`
+    identical failures. So the re-lookup doubles as the test of *which*
+    failure this was — if no natural key that had no row now has one, nothing
+    changed underneath us, a retry would fail identically, and the original
+    error is re-raised untouched. That is a sturdier check than matching on
+    the constraint's name or on a SQLSTATE, and it needs no per-table
+    knowledge here.
 
     Parameters
     ----------
@@ -544,17 +624,53 @@ def merge_by_natural_key(
         two-pass caller (see
         `accounting.repositories.accounts.replace_accounts`) point a child
         row's `parent_*_id` at a parent this call just inserted.
+
+    Raises
+    ------
+    sqlalchemy.exc.IntegrityError
+        Re-raised untouched whenever the flush's failure was *not* a lost
+        natural-key race — a foreign key, a check constraint, a different
+        unique index. Retrying those would only repeat them, so they stay as
+        loud here as they were before this function retried anything.
+    ConcurrentNaturalKeyInsertError
+        If every one of `NATURAL_KEY_MERGE_ATTEMPTS` flushes collided with a
+        newly committed row for one of this batch's own natural keys. See
+        that constant for why exhausting it means something pathological
+        rather than something merely busy.
     """
     rows = list(rows)
     if not rows:
         return {}
-    existing_ids = ids_by_natural_key(session, model, user_id, [row.natural_key for row in rows])
-    merged = []
-    for row in rows:
-        row.id = existing_ids.get(row.natural_key)
-        merged.append(session.merge(row))
-    session.flush()
-    return {row.natural_key: row.id for row in merged}
+    natural_keys = [row.natural_key for row in rows]
+    # Outside the savepoint on purpose. This query's autoflush is what writes
+    # out whatever the *caller* still had pending, and that work must land in
+    # the enclosing transaction rather than inside a savepoint this function
+    # may later roll back out from under it.
+    existing_ids = ids_by_natural_key(session, model, user_id, natural_keys)
+    for _attempt in range(NATURAL_KEY_MERGE_ATTEMPTS):
+        try:
+            with session.begin_nested():
+                merged: list[Any] = []
+                for row in rows:
+                    row.id = existing_ids.get(row.natural_key)
+                    merged.append(session.merge(row))
+                session.flush()
+        except IntegrityError:
+            # The savepoint is already rolled back — SQLAlchemy unwinds it as
+            # the failed flush propagates — so the session is usable again and
+            # this SELECT sees whatever the winner committed.
+            resolved_ids = ids_by_natural_key(session, model, user_id, natural_keys)
+            if not set(resolved_ids) - set(existing_ids):
+                raise
+            existing_ids = resolved_ids
+        else:
+            return {row.natural_key: row.id for row in merged}
+    message = (
+        f"{model.__table__} lost the insert race on (user_id, natural_key) {NATURAL_KEY_MERGE_ATTEMPTS} times running "
+        f"for a batch of {len(rows)} rows (first key {natural_keys[0]!r}) — something is committing these keys "
+        "faster than this batch can merge against them."
+    )
+    raise ConcurrentNaturalKeyInsertError(message)
 
 
 def ensure_reference_rows(

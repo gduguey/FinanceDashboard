@@ -204,7 +204,7 @@ export function AccountsManagementTable({
       <CardHeader>
         <CardTitle>Institutions and accounts</CardTitle>
         <CardAction>
-          <Button variant="outline" size="icon" onClick={() => setAdding(true)}>
+          <Button variant="outline" size="icon" aria-label="Add an account" onClick={() => setAdding(true)}>
             <Plus className="size-4" />
           </Button>
         </CardAction>
@@ -262,7 +262,12 @@ export function AccountsManagementTable({
                     <TableCell className="text-muted-foreground">{ACCOUNT_KIND_LABELS[account.kind]}</TableCell>
                     <TableCell className="text-muted-foreground">{account.currency}</TableCell>
                     <TableCell className="flex gap-1">
-                      <Button variant="ghost" size="icon" onClick={() => setEditing(account)}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Edit ${account.name}`}
+                        onClick={() => setEditing(account)}
+                      >
                         <Pencil className="size-3.5 text-muted-foreground" />
                       </Button>
                       {closeable &&
@@ -271,6 +276,7 @@ export function AccountsManagementTable({
                             variant="ghost"
                             size="icon"
                             title="Reopen"
+                            aria-label={`Reopen ${account.name}`}
                             onClick={() => handleReopen(account.account_id)}
                           >
                             <Unlock className="size-3.5 text-muted-foreground" />
@@ -280,6 +286,14 @@ export function AccountsManagementTable({
                             variant="ghost"
                             size="icon"
                             title={netWorth ? 'Close' : 'Loading balances…'}
+                            // The tooltip doubles as a "why is this disabled"
+                            // hint, so it swaps to the loading text. The
+                            // accessible name must not: a name that changes
+                            // out from under a screen reader makes the control
+                            // sound like a different button between passes, so
+                            // it always states the action, and `disabled`
+                            // already conveys the unavailability.
+                            aria-label={`Close ${account.name}`}
                             disabled={!netWorth}
                             onClick={() => setClosing(account)}
                           >
@@ -287,7 +301,12 @@ export function AccountsManagementTable({
                           </Button>
                         ))}
                       {!locked && !account.closed && (
-                        <Button variant="ghost" size="icon" onClick={() => handleDelete(account.account_id)}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Delete ${account.name}`}
+                          onClick={() => handleDelete(account.account_id)}
+                        >
                           <Trash2 className="size-3.5 text-muted-foreground" />
                         </Button>
                       )}

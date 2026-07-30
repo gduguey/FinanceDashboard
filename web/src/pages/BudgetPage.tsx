@@ -141,6 +141,8 @@ function BudgetRow({
               expandable.onToggle()
             }}
             className="text-muted-foreground hover:text-foreground"
+            aria-label={`${expandable.expanded ? 'Collapse' : 'Expand'} ${category.name}`}
+            aria-expanded={expandable.expanded}
           >
             <ChevronRight className={`size-3.5 transition-transform ${expandable.expanded ? 'rotate-90' : ''}`} />
           </button>
@@ -350,14 +352,7 @@ export function BudgetPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Budget"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-      />
+      <PageHeader title="Budget" actions={<DisplayCurrencyToggle />} />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
         {!storeLoading && store && !hasAnyRealAccount(Object.values(store.accounts)) && <NoAccountsYetBanner />}
@@ -375,6 +370,16 @@ export function BudgetPage() {
                     )
                   }
                   title={expandedIds.size < expandableCategoryIds.length ? 'Expand all' : 'Collapse all'}
+                  // Icon-only despite not being `size="icon"`, so it needs the
+                  // same treatment. The name tracks the tooltip here rather
+                  // than staying fixed, because this is a toggle whose action
+                  // genuinely flips: announcing "Collapse all" while it would
+                  // expand would be worse than the name changing.
+                  aria-label={
+                    expandedIds.size < expandableCategoryIds.length
+                      ? 'Expand all categories'
+                      : 'Collapse all categories'
+                  }
                 >
                   {expandedIds.size < expandableCategoryIds.length ? (
                     <ChevronsUpDown className="size-3.5" />

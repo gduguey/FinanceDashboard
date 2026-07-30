@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { InstitutionCombobox } from '@/components/accounting/InstitutionCombobox'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCurrencies } from '@/hooks/useAccountingData'
@@ -105,114 +106,125 @@ export function AccountForm({
 
   return (
     <div className="flex flex-wrap items-end gap-3">
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Institution
-        {locked ? (
-          <Input className="w-40" value={value.institution} disabled />
-        ) : (
-          <InstitutionCombobox
-            value={value.institution}
-            onChange={(institution) => updateIdentity({ institution })}
-            knownInstitutions={knownInstitutions}
-          />
-        )}
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Account kind
-        <Select
-          value={value.kind}
-          onValueChange={(next) => next && updateIdentity({ kind: next as AccountKind })}
-          disabled={locked}
-        >
-          <SelectTrigger size="sm" className="w-32">
-            <SelectValue items={ACCOUNT_KIND_ITEMS} />
-          </SelectTrigger>
-          <SelectContent>
-            {ACCOUNT_KINDS.map((kind) => (
-              <SelectItem key={kind} value={kind}>
-                {ACCOUNT_KIND_LABELS[kind]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Currency
-        <Select
-          value={value.currency}
-          onValueChange={(next) => next && onChange({ ...value, currency: next as CurrencyCode })}
-          disabled={locked}
-        >
-          <SelectTrigger size="sm" className="w-20">
-            <SelectValue items={currencyItems} />
-          </SelectTrigger>
-          <SelectContent>
-            {(currencies ?? []).map((currency) => (
-              <SelectItem key={currency.code} value={currency.code}>
-                {currency.code}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </label>
-      {value.kind === 'external_investment' ? (
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Label
-          <Input
-            className="w-24"
-            value={value.last4}
-            maxLength={16}
-            onChange={(event) => updateIdentity({ last4: event.target.value })}
-            disabled={locked}
-            placeholder="main"
-          />
-        </label>
-      ) : (
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Last 4 digits
-          <Input
-            className="w-24"
-            value={value.last4}
-            maxLength={4}
-            onChange={(event) => updateIdentity({ last4: event.target.value.replace(/\D/g, '').slice(0, 4) })}
-            disabled={locked}
-            placeholder="1234"
-          />
-        </label>
-      )}
-      {value.kind === 'vault' && showOpeningBalance && (
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Parent account (optional)
+      <Field label="Institution">
+        {(id) =>
+          locked ? (
+            <Input id={id} className="w-40" value={value.institution} disabled />
+          ) : (
+            <InstitutionCombobox
+              id={id}
+              value={value.institution}
+              onChange={(institution) => updateIdentity({ institution })}
+              knownInstitutions={knownInstitutions}
+            />
+          )
+        }
+      </Field>
+      <Field label="Account kind">
+        {(id) => (
           <Select
-            value={value.parentAccountId ?? NO_PARENT}
-            onValueChange={(next) => onChange({ ...value, parentAccountId: next === NO_PARENT ? null : next })}
-            disabled={institutionParentOptions.length === 0}
+            value={value.kind}
+            onValueChange={(next) => next && updateIdentity({ kind: next as AccountKind })}
+            disabled={locked}
           >
-            <SelectTrigger size="sm" className="w-44">
-              <SelectValue items={parentAccountItems} />
+            <SelectTrigger id={id} size="sm" className="w-32">
+              <SelectValue items={ACCOUNT_KIND_ITEMS} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={NO_PARENT}>None</SelectItem>
-              {institutionParentOptions.map((account) => (
-                <SelectItem key={account.account_id} value={account.account_id}>
-                  {account.name}
+              {ACCOUNT_KINDS.map((kind) => (
+                <SelectItem key={kind} value={kind}>
+                  {ACCOUNT_KIND_LABELS[kind]}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-        </label>
+        )}
+      </Field>
+      <Field label="Currency">
+        {(id) => (
+          <Select
+            value={value.currency}
+            onValueChange={(next) => next && onChange({ ...value, currency: next as CurrencyCode })}
+            disabled={locked}
+          >
+            <SelectTrigger id={id} size="sm" className="w-20">
+              <SelectValue items={currencyItems} />
+            </SelectTrigger>
+            <SelectContent>
+              {(currencies ?? []).map((currency) => (
+                <SelectItem key={currency.code} value={currency.code}>
+                  {currency.code}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </Field>
+      {value.kind === 'external_investment' ? (
+        <Field label="Label">
+          {(id) => (
+            <Input
+              id={id}
+              className="w-24"
+              value={value.last4}
+              maxLength={16}
+              onChange={(event) => updateIdentity({ last4: event.target.value })}
+              disabled={locked}
+              placeholder="main"
+            />
+          )}
+        </Field>
+      ) : (
+        <Field label="Last 4 digits">
+          {(id) => (
+            <Input
+              id={id}
+              className="w-24"
+              value={value.last4}
+              maxLength={4}
+              onChange={(event) => updateIdentity({ last4: event.target.value.replace(/\D/g, '').slice(0, 4) })}
+              disabled={locked}
+              placeholder="1234"
+            />
+          )}
+        </Field>
       )}
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Display name
-        <Input
-          className="w-52"
-          value={value.name}
-          onChange={(event) => {
-            setNameEdited(true)
-            onChange({ ...value, name: event.target.value })
-          }}
-        />
-      </label>
+      {value.kind === 'vault' && showOpeningBalance && (
+        <Field label="Parent account (optional)">
+          {(id) => (
+            <Select
+              value={value.parentAccountId ?? NO_PARENT}
+              onValueChange={(next) => onChange({ ...value, parentAccountId: next === NO_PARENT ? null : next })}
+              disabled={institutionParentOptions.length === 0}
+            >
+              <SelectTrigger id={id} size="sm" className="w-44">
+                <SelectValue items={parentAccountItems} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PARENT}>None</SelectItem>
+                {institutionParentOptions.map((account) => (
+                  <SelectItem key={account.account_id} value={account.account_id}>
+                    {account.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </Field>
+      )}
+      <Field label="Display name">
+        {(id) => (
+          <Input
+            id={id}
+            className="w-52"
+            value={value.name}
+            onChange={(event) => {
+              setNameEdited(true)
+              onChange({ ...value, name: event.target.value })
+            }}
+          />
+        )}
+      </Field>
       {value.kind === 'external_investment' && (
         <ExternalInvestmentSourceToggle
           value={value.brokerConnectionId}
@@ -220,17 +232,19 @@ export function AccountForm({
         />
       )}
       {showOpeningBalance && !(value.kind === 'external_investment' && value.brokerConnectionId !== null) && (
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Opening balance (optional)
-          <Input
-            className="w-32"
-            type="number"
-            inputMode="decimal"
-            value={value.openingBalance}
-            onChange={(event) => onChange({ ...value, openingBalance: event.target.value })}
-            placeholder="0.00"
-          />
-        </label>
+        <Field label="Opening balance (optional)">
+          {(id) => (
+            <Input
+              id={id}
+              className="w-32"
+              type="number"
+              inputMode="decimal"
+              value={value.openingBalance}
+              onChange={(event) => onChange({ ...value, openingBalance: event.target.value })}
+              placeholder="0.00"
+            />
+          )}
+        </Field>
       )}
     </div>
   )

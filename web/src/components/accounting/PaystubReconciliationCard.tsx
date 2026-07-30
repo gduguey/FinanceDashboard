@@ -12,26 +12,23 @@ import {
   useSetPostingOverride,
   useSetPostingSplit,
 } from '@/hooks/useAccountingData'
+import type { DraftLeg } from '@/lib/draftLegs'
+import { newDraftLeg } from '@/lib/draftLegs'
 import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PaystubReconciliationResult, ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
 
-interface DraftLeg {
-  amount: string
-  categoryId: string | null
-  subcategoryId: string | null
-  description: string
-}
-
 function toDraftLegs(legs: ProposedSplitLeg[]): DraftLeg[] {
-  return legs.map((leg) => ({
-    amount: String(leg.amount),
-    categoryId: leg.category_id ?? null,
-    subcategoryId: leg.subcategory_id ?? null,
-    description: leg.description,
-  }))
+  return legs.map((leg) =>
+    newDraftLeg({
+      amount: String(leg.amount),
+      categoryId: leg.category_id ?? null,
+      subcategoryId: leg.subcategory_id ?? null,
+      description: leg.description,
+    }),
+  )
 }
 
 // Renders one matched deposit's proposed split (salary vs. reimbursement
@@ -56,7 +53,10 @@ function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
   }
 
   function addLeg() {
-    setLegs([...legs, { amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }])
+    setLegs([
+      ...legs,
+      newDraftLeg({ amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }),
+    ])
   }
 
   function removeLeg(index: number) {
@@ -90,7 +90,7 @@ function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
     <div className="space-y-2 rounded-md border p-3">
       <div className="space-y-2">
         {legs.map((leg, index) => (
-          <div key={index} className="flex items-end gap-2">
+          <div key={leg.id} className="flex items-end gap-2">
             <Input
               type="number"
               className="w-24"
@@ -118,7 +118,12 @@ function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
               onChange={(event) => updateLeg(index, { description: event.target.value })}
             />
             {legs.length > 1 && !applied && (
-              <Button variant="ghost" size="icon" onClick={() => removeLeg(index)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove leg ${index + 1}`}
+                onClick={() => removeLeg(index)}
+              >
                 <Trash2 className="size-3.5 text-muted-foreground" />
               </Button>
             )}
@@ -164,8 +169,36 @@ function ReconciliationResultView({ result }: { result: PaystubReconciliationRes
         {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net {formatCurrency(result.statement.net_pay, 'USD')}
       </p>
       <ul className="space-y-1 text-sm">
+        {/* A `DepositMatch` carries no id — it is a line lifted off the
+            statement, not a stored row. (`posting_id` is not one either: it is
+            null for every deposit that failed to match, so several rows can
+            share it.) Its natural key is the deposit it describes: the label
+            the payroll provider printed, the account it landed in, and the
+            amount. A statement can genuinely repeat a label ("Direct Deposit"
+            into two different accounts), so all three are needed to tell two
+            of its lines apart.
+
+            Even all three can collide, though: one paystub paying two truly
+            identical deposits (same label, same account, same amount) is
+            possible, and any of the fields could itself contain the `|` we
+            join on, so distinct triples can flatten to the same string. The
+            index breaks that tie. Appending it — rather than using it alone —
+            keeps the natural key doing the work whenever it is unique.
+
+            An index in a key is only safe if the list can't be reordered
+            underneath it, and this one can't. `matches` is derived read-only
+            from a reconciliation result: the server returns it in the
+            statement's own deposit order, it is stored once on the upload
+            entry when the import resolves, and nothing here sorts, filters,
+            splices, or edits it. A re-upload replaces the whole result object
+            wholesale rather than rearranging this array, so a given position
+            always holds the same deposit for as long as the list is mounted. */}
         {result.matches.map((match, index) => (
-          <li key={index} className="flex items-center gap-2">
+          <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: tiebreaker only, appended after a natural key — see above, this list is read-only and never reordered
+            key={`${match.label}|${match.account_last4 ?? ''}|${match.amount}|${index}`}
+            className="flex items-center gap-2"
+          >
             {match.posting_id ? (
               <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
             ) : (
@@ -256,7 +289,11 @@ export function PaystubReconciliationCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* The drop target is pointer-only by nature; the "choose files" label
+            below wraps a real file input, so keyboard users reach the same
+            action there. */}
         <div
+          role="none"
           className={cn(
             'flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-6 text-center transition-colors',
             isDragging ? 'border-primary bg-primary/5' : 'border-muted-foreground/25',

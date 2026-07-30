@@ -13,14 +13,28 @@ import { formatCurrency, formatDate } from '@/lib/format'
 import type { LinkedPairRow } from '@/lib/transferRowInfo'
 
 const ESTIMATED_ROW_HEIGHT = 45
-const COLUMN_COUNT = 8
 
-// Percentage widths for the 8 columns below, in order — always summing to
-// 100 so the table (rendered `table-fixed`) never needs a horizontal
-// scrollbar to show every column, regardless of container width. Content
-// that doesn't fit is truncated with an ellipsis (see `Truncate`) rather
-// than growing the column.
-const COLUMN_WIDTHS = ['8%', '14%', '18%', '10%', '8%', '14%', '18%', '10%']
+// The 8 columns below, each paired with the field it shows — percentage
+// widths always summing to 100 so the table (rendered `table-fixed`) never
+// needs a horizontal scrollbar to show every column, regardless of container
+// width. Content that doesn't fit is truncated with an ellipsis (see
+// `Truncate`) rather than growing the column.
+//
+// The field name is carried alongside the width purely so each `<col>` has
+// something to be keyed by other than its position: several columns share a
+// width (`14%`, `18%` and `10%` each appear twice), so the width alone cannot
+// tell two of them apart.
+const COLUMNS = [
+  { field: 'fromPostedAt', width: '8%' },
+  { field: 'fromAccountName', width: '14%' },
+  { field: 'fromDescription', width: '18%' },
+  { field: 'fromAmount', width: '10%' },
+  { field: 'toPostedAt', width: '8%' },
+  { field: 'toAccountName', width: '14%' },
+  { field: 'toDescription', width: '18%' },
+  { field: 'toAmount', width: '10%' },
+]
+const COLUMN_COUNT = COLUMNS.length
 
 // A "from" transactions / "to" transactions table for a set of confirmed
 // (or reconstructed) transfer pairs — virtualized and sortable-by-column-click
@@ -79,8 +93,8 @@ export function LinkedTransactionsTable({
       <div ref={scrollParentRef} className="max-h-[50vh] overflow-y-auto rounded-md border">
         <Table className="table-fixed">
           <colgroup>
-            {COLUMN_WIDTHS.map((width, index) => (
-              <col key={index} style={{ width }} />
+            {COLUMNS.map((column) => (
+              <col key={column.field} style={{ width: column.width }} />
             ))}
           </colgroup>
           <TableHeader>
@@ -199,7 +213,11 @@ export function LinkedTransactionsTable({
                           />
                         </div>
                         {renderRowAction && (
+                          // Pure event containment — it keeps the row's own
+                          // handlers off the action control it wraps, and adds
+                          // no behaviour of its own to expose.
                           <div
+                            role="none"
                             onClick={(event) => event.stopPropagation()}
                             onKeyDown={(event) => event.stopPropagation()}
                           >

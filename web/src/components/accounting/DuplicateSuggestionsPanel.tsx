@@ -9,6 +9,7 @@ import { SortableTableHead } from '@/components/shared/SortableTableHead'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useCreatePostingMerge, useDismissSuggestion, useDuplicateSuggestions } from '@/hooks/useAccountingData'
@@ -154,6 +155,7 @@ function MergeReviewDialog({
             type="button"
             onClick={onPrevious}
             title="Previous suggestion (←)"
+            aria-label="Previous duplicate suggestion"
             className="absolute top-1/2 -left-12 hidden -translate-y-1/2 rounded-full border border-border bg-popover p-2 text-muted-foreground hover:text-foreground sm:flex"
           >
             <ChevronLeft className="size-4" />
@@ -164,6 +166,7 @@ function MergeReviewDialog({
             type="button"
             onClick={onNext}
             title="Next suggestion (→)"
+            aria-label="Next duplicate suggestion"
             className="absolute top-1/2 -right-12 hidden -translate-y-1/2 rounded-full border border-border bg-popover p-2 text-muted-foreground hover:text-foreground sm:flex"
           >
             <ChevronRight className="size-4" />
@@ -397,18 +400,24 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
       <CardHeader className="flex flex-row flex-wrap items-end justify-between gap-3">
         <div className="flex items-center gap-3">
           <CardTitle>Possible duplicate transactions</CardTitle>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            Search within
-            <Input
-              type="number"
-              min={1}
-              className="w-16"
-              value={windowDaysDraft}
-              onChange={(event) => handleWindowDaysChange(event.target.value)}
-              onBlur={handleWindowDaysBlur}
-            />
-            days
-          </label>
+          {/* `text-xs text-muted-foreground` sits on the wrapper, not just the
+              label, because the trailing "days" is outside the caption. */}
+          <Field label="Search within" className="flex-row items-center gap-2 text-xs text-muted-foreground">
+            {(id) => (
+              <>
+                <Input
+                  id={id}
+                  type="number"
+                  min={1}
+                  className="w-16"
+                  value={windowDaysDraft}
+                  onChange={(event) => handleWindowDaysChange(event.target.value)}
+                  onBlur={handleWindowDaysBlur}
+                />
+                days
+              </>
+            )}
+          </Field>
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <FilterSelect
@@ -563,7 +572,13 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
                         {Math.round(row.certainty * 100)}%
                       </TableCell>
                       <TableCell onClick={(event) => event.stopPropagation()}>
-                        <Button variant="ghost" size="icon" title="Not a duplicate" onClick={() => dismiss(row)}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Not a duplicate"
+                          aria-label={`Dismiss the duplicate suggestion for "${row.descriptionsPreview}"`}
+                          onClick={() => dismiss(row)}
+                        >
                           <Archive className="size-3.5 text-muted-foreground" />
                         </Button>
                       </TableCell>

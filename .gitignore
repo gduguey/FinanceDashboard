@@ -26,6 +26,7 @@ data/
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+.hypothesis/
 .claude/
 .ipynb_checkpoints/
 

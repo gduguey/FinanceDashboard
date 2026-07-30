@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useMutation } from '@tanstack/react-query'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -140,5 +140,24 @@ describe('useOptimisticStoreMutation', () => {
 
     expect(edit).not.toHaveBeenCalled()
     expect(store()).toBeUndefined()
+  })
+
+  // `GoalsPage` lists `mutateAsync` in the dependency array of the effect that
+  // catches up its recurring-addition and withdrawal automations, and that
+  // effect must run once per mount and not once per render — it fires two
+  // write requests every time it runs. The array is only correct because
+  // react-query hands back the same `mutateAsync` reference on every render
+  // (it binds the function to a `MutationObserver` that lives in a `useState`
+  // initializer). That is a property of the library rather than of our code,
+  // so it is pinned here: if an upgrade ever makes the reference unstable,
+  // this fails loudly instead of the page quietly looping on two endpoints.
+  it('hands back the same mutateAsync reference across re-renders', () => {
+    const { result, rerender } = renderHook(() => useMutation({ mutationFn: async () => undefined }), { wrapper })
+    const first = result.current.mutateAsync
+
+    rerender()
+    rerender()
+
+    expect(result.current.mutateAsync).toBe(first)
   })
 })

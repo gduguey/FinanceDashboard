@@ -103,14 +103,7 @@ export function OverviewPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Overview"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-      />
+      <PageHeader title="Overview" actions={<DisplayCurrencyToggle />} />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
         <SyncStatusBar />

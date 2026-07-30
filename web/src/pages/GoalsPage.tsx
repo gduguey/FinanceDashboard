@@ -8,6 +8,7 @@ import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle
 import { lazyChart } from '@/components/shared/lazyChart'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NumberInput } from '@/components/ui/number-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -113,7 +114,14 @@ function GoalListSection({
       <CardHeader>
         <CardTitle>Goals</CardTitle>
         <CardAction>
-          <Button variant="outline" size="icon" onClick={add} disabled={createGoal.isPending} title="Add goal">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={add}
+            disabled={createGoal.isPending}
+            title="Add goal"
+            aria-label="Add a goal"
+          >
             <Plus className="size-4" />
           </Button>
         </CardAction>
@@ -162,6 +170,7 @@ function GoalListSection({
                         <Button
                           variant="ghost"
                           size="icon"
+                          aria-label={`Delete the goal ${goal.name}`}
                           onClick={(event) => {
                             event.stopPropagation()
                             remove(goal.goal_id)
@@ -174,59 +183,71 @@ function GoalListSection({
                     {expanded && (
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
                         <TableCell colSpan={5}>
+                          {/* Pure event containment — it keeps the row's expand
+                              toggle off the fields it wraps, and adds no
+                              behaviour of its own to expose. */}
                           <div
+                            role="none"
                             className="flex flex-wrap items-end gap-3 py-1"
                             onClick={(event) => event.stopPropagation()}
                           >
-                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                              Name
-                              <Input
-                                className="h-7 w-40 text-sm"
-                                defaultValue={goal.name}
-                                onBlur={(event) =>
-                                  event.target.value !== goal.name && update(goal.goal_id, { name: event.target.value })
-                                }
-                              />
-                            </label>
-                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                              Target amount
-                              <NumberInput
-                                className="h-7 w-28 text-xs"
-                                value={goal.target_amount}
-                                onCommit={(value) => update(goal.goal_id, { target_amount: value ?? 0 })}
-                              />
-                            </label>
-                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                              Currency
-                              <Select
-                                value={goal.target_currency}
-                                onValueChange={(value) =>
-                                  value && update(goal.goal_id, { target_currency: value as CurrencyCode })
-                                }
-                              >
-                                <SelectTrigger size="sm" className="h-7 w-20 text-xs">
-                                  <SelectValue items={currencyItems} />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {(currencies ?? []).map((currency) => (
-                                    <SelectItem key={currency.code} value={currency.code}>
-                                      {currency.code}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </label>
-                            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                              Target date
-                              <Input
-                                type="date"
-                                className="h-7 w-36 text-xs"
-                                defaultValue={goal.target_date.slice(0, 10)}
-                                onBlur={(event) =>
-                                  update(goal.goal_id, { target_date: new Date(event.target.value).toISOString() })
-                                }
-                              />
-                            </label>
+                            <Field label="Name">
+                              {(id) => (
+                                <Input
+                                  id={id}
+                                  className="h-7 w-40 text-sm"
+                                  defaultValue={goal.name}
+                                  onBlur={(event) =>
+                                    event.target.value !== goal.name &&
+                                    update(goal.goal_id, { name: event.target.value })
+                                  }
+                                />
+                              )}
+                            </Field>
+                            <Field label="Target amount">
+                              {(id) => (
+                                <NumberInput
+                                  id={id}
+                                  className="h-7 w-28 text-xs"
+                                  value={goal.target_amount}
+                                  onCommit={(value) => update(goal.goal_id, { target_amount: value ?? 0 })}
+                                />
+                              )}
+                            </Field>
+                            <Field label="Currency">
+                              {(id) => (
+                                <Select
+                                  value={goal.target_currency}
+                                  onValueChange={(value) =>
+                                    value && update(goal.goal_id, { target_currency: value as CurrencyCode })
+                                  }
+                                >
+                                  <SelectTrigger id={id} size="sm" className="h-7 w-20 text-xs">
+                                    <SelectValue items={currencyItems} />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {(currencies ?? []).map((currency) => (
+                                      <SelectItem key={currency.code} value={currency.code}>
+                                        {currency.code}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              )}
+                            </Field>
+                            <Field label="Target date">
+                              {(id) => (
+                                <Input
+                                  id={id}
+                                  type="date"
+                                  className="h-7 w-36 text-xs"
+                                  defaultValue={goal.target_date.slice(0, 10)}
+                                  onBlur={(event) =>
+                                    update(goal.goal_id, { target_date: new Date(event.target.value).toISOString() })
+                                  }
+                                />
+                              )}
+                            </Field>
                             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                               Color
                               <input
@@ -270,14 +291,22 @@ export function GoalsPage() {
   // contributed, not a stale pre-addition balance. Nothing about
   // versioning requires this ordering — the two calls could not conflict
   // with each other — but the ordering itself is load-bearing.
+  //
+  // Both `mutateAsync` functions are listed as dependencies even though this
+  // is a once-per-mount effect, and listing them costs nothing: react-query
+  // binds `mutate` to the observer once in its constructor and hands back
+  // that same reference in every result, and the observer itself is created
+  // inside a `useState` initializer, so neither identity changes for the life
+  // of this component. The effect still runs exactly once per mount — the
+  // dependency list is now simply honest about what it closes over, instead
+  // of an empty array that only happened to be right.
   useEffect(() => {
     async function catchUpAutomations() {
       await runRecurringAdditions.mutateAsync(undefined)
       await runWithdrawalAutomation.mutateAsync(undefined)
     }
     catchUpAutomations()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [runRecurringAdditions.mutateAsync, runWithdrawalAutomation.mutateAsync])
 
   const { end, dayBeforeStart } = monthBounds(month)
   const allTimeSummary = useGoalsSummary(undefined, displayCurrency)

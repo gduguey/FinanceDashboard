@@ -15,14 +15,7 @@ export function InsightsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <PageHeader
-        title="Insights"
-        actions={
-          <>
-            <DisplayCurrencyToggle />
-          </>
-        }
-      />
+      <PageHeader title="Insights" actions={<DisplayCurrencyToggle />} />
 
       <div className="mx-auto max-w-5xl space-y-6 px-8 py-8">
         {isLoading || !store ? (

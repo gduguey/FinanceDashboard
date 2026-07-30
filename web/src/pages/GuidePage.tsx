@@ -1,6 +1,6 @@
 import {
   ArrowRightLeft,
-  BookOpen,
+  type BookOpen,
   Compass,
   CopyCheck,
   FolderTree,
@@ -78,11 +78,15 @@ function ExampleTable({ caption, columns, rows }: { caption: string; columns: st
             ))}
           </tr>
         </thead>
+        {/* Every table on this page puts its identifier in the first column —
+            a posting_id, an account_id, an account kind — so `row[0]` is the
+            row's natural key, and the column heading is the natural key of a
+            cell within its row. Neither needs an index. */}
         <tbody className="font-mono">
-          {rows.map((row, index) => (
-            <tr key={index} className="border-b border-border/60 last:border-0">
+          {rows.map((row) => (
+            <tr key={String(row[0])} className="border-b border-border/60 last:border-0">
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="px-3 py-1.5 whitespace-nowrap">
+                <td key={columns[cellIndex]} className="px-3 py-1.5 whitespace-nowrap">
                   {cell}
                 </td>
               ))}
