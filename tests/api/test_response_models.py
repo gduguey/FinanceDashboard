@@ -138,27 +138,51 @@ def test_no_route_answers_with_a_domain_model(route: APIRoute) -> None:
     )
 
 
+def _models_reachable_from(annotation: object) -> set[type[BaseModel]]:
+    """Collect every Pydantic model reachable from `annotation`, at any depth.
+
+    Parameters
+    ----------
+    annotation
+        A response-model annotation.
+
+    Returns
+    -------
+    set[type[BaseModel]]
+        Every model the wire format is made of, the outermost one included.
+    """
+    found: set[type[BaseModel]] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, type) and issubclass(node, BaseModel):
+            if node in found:
+                return
+            found.add(node)
+            for field in node.model_fields.values():
+                walk(field.annotation)
+        for argument in typing.get_args(node):
+            walk(argument)
+
+    walk(annotation)
+    return found
+
+
 @pytest.mark.parametrize("route", _routes(), ids=_route_id)
 def test_every_response_model_is_declared_in_an_api_module(route: APIRoute) -> None:
-    """The positive half of the rule: a response *model* is one this layer owns.
+    """The positive half of the rule: every model the response is made of is one this layer owns.
 
-    Catches a model declared anywhere the test above does not name — a router
-    file, a `dashboard` module, a third-party base — which would be just as
-    undeclared a contract as a domain model is. A route answering with a plain
-    scalar or a mapping of them (`dict[str, Rate]`) declares no shape at all
-    and has nothing to leak.
+    Checked at every depth, not only on the outermost type — a wire model
+    holding a field typed from a router file or a `dashboard` module would be
+    just as undeclared a contract as a domain model is, and the test above
+    would not name it because it only rejects the two domain modules.
+
+    A route answering with a plain scalar or a mapping of them
+    (`dict[str, Rate]`) reaches no model at all and has nothing to declare.
     """
-    model = route.response_model
-    while True:
-        if hasattr(model, "__metadata__"):  # `Annotated[Decimal, WithJsonSchema(...)]`, i.e. `db.money.Rate`
-            model = typing.get_args(model)[0]
-            continue
-        contained = [argument for argument in typing.get_args(model) if argument is not type(None)]
-        if not contained:  # `list[...]`, `dict[str, ...]`, `X | None`
-            break
-        model = contained[-1]
-    is_model = isinstance(model, type) and issubclass(model, BaseModel)
-    module = getattr(model, "__module__", None)
-    assert not (is_model and module not in _WIRE_MODULES), (
-        f"{_route_id(route)} answers with a model declared in {module}, which is not one of {sorted(_WIRE_MODULES)}."
+    misplaced = {
+        model for model in _models_reachable_from(route.response_model) if model.__module__ not in _WIRE_MODULES
+    }
+    assert not misplaced, (
+        f"{_route_id(route)} is made of {sorted(f'{model.__module__}.{model.__name__}' for model in misplaced)}, "
+        f"declared outside {sorted(_WIRE_MODULES)}."
     )

@@ -179,14 +179,23 @@ and truncate silently. `len(items)` is never the stride.
 
 ## Which models the wire is made of
 
-Every route answers with a model declared in `api.api_models` or
-`api.entities` — never with one from `accounting.models`/`trades.models`.
-The return annotation *is* the response contract (neither package uses
-`response_model=` anywhere), so an annotation naming a domain model makes the
-wire format a projection of internal state: a field added there for internal
-reasons ships to every client and into `web/src/types/schema.ts` with nobody
-deciding it should. Before PR 3, 46 routes named a domain model directly and
-14 more reached one through a wrapper field.
+Every route in `routers/` that answers with a *model* answers with one
+declared in `api.api_models` or `api.entities` — never with one from
+`accounting.models`/`trades.models`, and never with one declared in a router
+file or a `dashboard` module. The return annotation *is* the response contract
+(neither package uses `response_model=` anywhere), so an annotation naming a
+domain model makes the wire format a projection of internal state: a field
+added there for internal reasons ships to every client and into
+`web/src/types/schema.ts` with nobody deciding it should. Before PR 3, 46
+routes named a domain model directly and 14 more reached one through a wrapper
+field.
+
+The rule is about models, and about the routers. A handful of routes answer
+with a bare scalar or a mapping of them (`GET /settings/target-allocation` is
+`dict[str, Rate]`) and so declare no shape to own. `/health`, `/openapi.json`,
+`/docs` and `/redoc` are not in `routers/` at all, are `include_in_schema=False`
+or serve a `JSONResponse`/`HTMLResponse` directly, and are not part of the
+contract a client codes against (see "Versioning and namespaces").
 
 `api.entities` holds one mirror per entity a client reads, each restating the
 fields it puts on the wire, with `from_domain` as the single copying seam. The
@@ -208,8 +217,10 @@ Two things are deliberately **not** mirrored:
   constraints, not `model_validator`s that police what may be *written*
   (`GoalAutomation`'s schedule check, `LedgerEvent`'s event-type invariants)
   nor `polars_schema`, which is a fact about the analytics frame.
-  `tests/api/test_response_models.py` pins the rule against the real routing
-  table, walking into type arguments and model fields alike, so a route added
+  `tests/api/test_response_models.py` pins both halves of the rule against
+  every router module in both packages — no domain model reachable from a
+  response, and every model that *is* reachable declared in an API module —
+  walking into type arguments and model fields at any depth, so a route added
   later either follows it or fails.
 
 ## Deliberate non-goals
