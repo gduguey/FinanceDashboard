@@ -1,0 +1,130 @@
+import { useQuery } from '@tanstack/react-query'
+import { keys } from '@/hooks/accounting/keys'
+import { useAccountingMutation, useOptimisticStoreMutation } from '@/hooks/accounting/mutations'
+import { accountingApi } from '@/lib/accountingApi'
+import type {
+  DismissSuggestionRequest,
+  ManualOverride,
+  PostingMergeUpsert,
+  PostingSplitLeg,
+  TransferLinkCreate,
+} from '@/types/accounting'
+
+export const usePostings = () => useQuery({ queryKey: keys.postings, queryFn: accountingApi.postings })
+
+/**
+ * How many transactions the user has, without fetching any of them.
+ *
+ * For callers that only need to know whether the ledger is empty. Reading that
+ * off `usePostings` costs the whole history; this costs one page of one.
+ */
+export const usePostingCount = () => useQuery({ queryKey: keys.postingCount, queryFn: accountingApi.postingCount })
+
+export const useTransferSuggestions = (windowDays?: number) =>
+  useQuery({
+    queryKey: [...keys.transferSuggestions, windowDays ?? {}],
+    queryFn: () => accountingApi.transferSuggestions(windowDays),
+  })
+
+export const useDuplicateSuggestions = (windowDays?: number) =>
+  useQuery({
+    queryKey: [...keys.duplicateSuggestions, windowDays ?? {}],
+    queryFn: () => accountingApi.duplicateSuggestions(windowDays),
+  })
+
+export const useDismissedSuggestions = () =>
+  useQuery({ queryKey: keys.dismissedSuggestions, queryFn: accountingApi.dismissedSuggestions })
+
+export const useDismissSuggestion = () =>
+  useAccountingMutation({
+    mutationFn: ({ suggestionId, ...body }: DismissSuggestionRequest & { suggestionId: string }) =>
+      accountingApi.dismissSuggestion(suggestionId, body),
+    changes: ['suggestions'],
+  })
+
+export const useRestoreSuggestion = () =>
+  useAccountingMutation({
+    mutationFn: (suggestionId: string) => accountingApi.restoreSuggestion(suggestionId),
+    changes: ['suggestions'],
+  })
+
+export const useCreatePostingMerge = () =>
+  useAccountingMutation({
+    mutationFn: (merge: PostingMergeUpsert) => accountingApi.createPostingMerge(merge),
+    changes: ['ledger'],
+  })
+
+export const useRemovePostingMerge = () =>
+  useAccountingMutation({
+    mutationFn: (mergeId: string) => accountingApi.removePostingMerge(mergeId),
+    changes: ['ledger'],
+  })
+
+export const useCreateTransferLink = () =>
+  useAccountingMutation({
+    mutationFn: (link: TransferLinkCreate) => accountingApi.createTransferLink(link),
+    changes: ['store', 'ledger'],
+  })
+
+// Drops the link from the cached store the instant "unmark as transfer" /
+// "exclude this transfer" fires, so the badge disappears without waiting on
+// the round trip.
+export const useRemoveTransferLink = () =>
+  useOptimisticStoreMutation({
+    mutationFn: (linkId: string) => accountingApi.removeTransferLink(linkId),
+    changes: ['store', 'ledger'],
+    edit: (store, linkId) => ({
+      ...store,
+      transfer_links: store.transfer_links.filter((link) => link.link_id !== linkId),
+    }),
+  })
+
+export const useSetPostingOverride = () =>
+  useAccountingMutation({
+    mutationFn: ({ postingId, override }: { postingId: string; override: Partial<ManualOverride> }) =>
+      accountingApi.putPostingOverride(postingId, override),
+    changes: ['ledger'],
+  })
+
+export const useSetPostingSplit = () =>
+  useAccountingMutation({
+    mutationFn: ({ postingId, legs }: { postingId: string; legs: PostingSplitLeg[] }) =>
+      accountingApi.putPostingSplit(postingId, legs),
+    changes: ['ledger'],
+  })
+
+export const useDeletePostingSplit = () =>
+  useAccountingMutation({
+    mutationFn: (postingId: string) => accountingApi.deletePostingSplit(postingId),
+    changes: ['ledger'],
+  })
+
+// The suggestion lands as a *pending* override, which every dashboard
+// aggregation deliberately ignores until it is validated (see
+// `api.dependencies._resolved_postings_for_aggregation`) — so nothing but the
+// posting list and, for the AI path, the provider's own call counter moves.
+export const useAiSuggestCategory = () =>
+  useAccountingMutation({
+    mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
+      accountingApi.aiSuggestCategory(postingId, lockCategoryId),
+    changes: ['ledger', 'llm'],
+  })
+
+export const usePatternSuggestCategory = () =>
+  useAccountingMutation({
+    mutationFn: ({ postingId, lockCategoryId }: { postingId: string; lockCategoryId?: string | null }) =>
+      accountingApi.patternSuggestCategory(postingId, lockCategoryId),
+    changes: ['ledger'],
+  })
+
+export const usePatternSuggestCategoryBulk = () =>
+  useAccountingMutation({
+    mutationFn: (postingIds: string[]) => accountingApi.patternSuggestCategoryBulk(postingIds),
+    changes: ['ledger'],
+  })
+
+export const useValidatePending = () =>
+  useAccountingMutation({
+    mutationFn: (postingIds: string[]) => accountingApi.validatePending(postingIds),
+    changes: ['ledger'],
+  })
