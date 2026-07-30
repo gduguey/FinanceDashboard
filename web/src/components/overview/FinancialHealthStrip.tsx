@@ -1,9 +1,20 @@
-import { NetWorthHistoryChart } from '@/components/accounting/NetWorthHistoryChart'
+import type { ComponentProps } from 'react'
+import type { NetWorthHistoryChart as NetWorthHistoryChartComponent } from '@/components/accounting/NetWorthHistoryChart'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useBudgetComparison, useGoalsSummary } from '@/hooks/useAccountingData'
 import { formatCurrency } from '@/lib/format'
 import type { CurrencyCode } from '@/types/accounting'
+
+// The fourth chart on the overview route, and the one least obviously a chart
+// — a compact sparkline inside a stat card. Left static it alone would have
+// kept all of recharts on the landing's critical path, undoing the other
+// three. See `lazyChart`.
+const NetWorthHistoryChart = lazyChart<ComponentProps<typeof NetWorthHistoryChartComponent>>(
+  () => import('@/components/accounting/NetWorthHistoryChart').then((m) => m.NetWorthHistoryChart),
+  'h-28 w-full',
+)
 
 function currentMonth(): string {
   const now = new Date()

@@ -1,13 +1,17 @@
-import { useMemo } from 'react'
-import { CashflowSankeyChart, type GoalFlow } from '@/components/accounting/CashflowSankeyChart'
-import { NetWorthAllocationPie } from '@/components/accounting/NetWorthAllocationPie'
-import { GoalsBalanceBarChart } from '@/components/goals/GoalsOverviewCharts'
+import { type ComponentProps, useMemo } from 'react'
+import type {
+  CashflowSankeyChart as CashflowSankeyChartComponent,
+  GoalFlow,
+} from '@/components/accounting/CashflowSankeyChart'
+import type { NetWorthAllocationPie as NetWorthAllocationPieComponent } from '@/components/accounting/NetWorthAllocationPie'
+import type { GoalsBalanceBarChart as GoalsBalanceBarChartComponent } from '@/components/goals/GoalsOverviewCharts'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { AlertsPanel } from '@/components/overview/AlertsPanel'
 import { FinancialHealthStrip } from '@/components/overview/FinancialHealthStrip'
 import { SyncStatusBar } from '@/components/overview/SyncStatusBar'
 import { WhatChangedCard } from '@/components/overview/WhatChangedCard'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
+import { lazyChart } from '@/components/shared/lazyChart'
 import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -21,6 +25,20 @@ import {
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { useMonthlyPnl } from '@/hooks/usePortfolioData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
+
+// This is the one route every signed-in user lands on, and these three are the
+// app's only entry points into recharts from it. Deferring them keeps ~109 kB
+// brotli of charting code off the landing's critical path — see `lazyChart`.
+const CashflowSankeyChart = lazyChart<ComponentProps<typeof CashflowSankeyChartComponent>>(
+  () => import('@/components/accounting/CashflowSankeyChart').then((m) => m.CashflowSankeyChart),
+  'h-80 w-full',
+)
+const NetWorthAllocationPie = lazyChart<ComponentProps<typeof NetWorthAllocationPieComponent>>(() =>
+  import('@/components/accounting/NetWorthAllocationPie').then((m) => m.NetWorthAllocationPie),
+)
+const GoalsBalanceBarChart = lazyChart<ComponentProps<typeof GoalsBalanceBarChartComponent>>(() =>
+  import('@/components/goals/GoalsOverviewCharts').then((m) => m.GoalsBalanceBarChart),
+)
 
 // A color of its own — distinct from every goal's own color, from "Saved"
 // (emerald), and from "Unallocated" (pale green) — so money that left

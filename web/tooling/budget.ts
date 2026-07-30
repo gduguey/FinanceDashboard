@@ -37,6 +37,30 @@ const LANDING_BUDGET = 200_000
  */
 const CHUNK_BUDGET = 90_000
 
+/**
+ * What one route may add on top of the landing, brotli-compressed.
+ *
+ * Measures each lazily-loaded route's *static* closure — the chunks the
+ * browser must have before that page renders at all — minus whatever the
+ * landing already preloaded. Anything the page pulls in through a further
+ * `import()`, a chart above all, is deliberately not counted: it streams in
+ * behind a skeleton rather than blocking the page.
+ *
+ * This is the check that keeps recharts off page critical paths. Every chart
+ * goes through `lazyChart`, but one ordinary `import` of a chart component
+ * anywhere in a page's static graph silently undoes that for the whole route
+ * — which is exactly how `FinancialHealthStrip`'s compact sparkline kept all
+ * ~109 kB of recharts on the landing until it was found by measurement. With
+ * this budget in place that mistake fails the build instead.
+ *
+ * Set to the current worst route, not to a target. The overview came down from
+ * 137,276 B to 19,253 B when its four charts were deferred; seven routes
+ * (allocation, budget, goals, insights, investments, net-worth, simulator)
+ * still import their charts directly and sit between 101 kB and 146 kB. Each
+ * one deferred lowers this number, and it should be lowered with them.
+ */
+const ROUTE_BUDGET = 150_000
+
 async function* walk(dir: string): AsyncGenerator<string> {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name)
@@ -88,7 +112,60 @@ export function budget(): Plugin {
         if (size > CHUNK_BUDGET) oversized.push(`${relative} is ${size} B`)
       }
 
-      this.info(`cold landing ${landing} B brotli across ${preloaded.length} file(s), budget ${LANDING_BUDGET} B`)
+      // Static imports are `from"./chunk.js"`; a dynamic one is
+      // ``import(`./chunk.js`)``. Only the former puts a chunk on the
+      // importer's critical path, which is the whole distinction this budget
+      // rests on.
+      const assetsDir = path.join(outDir, 'assets')
+      const sources = new Map<string, string>()
+      for (const file of await readdir(assetsDir)) {
+        if (path.extname(file) === '.js') sources.set(file, await readFile(path.join(assetsDir, file), 'utf8'))
+      }
+      const staticImports = (chunk: string) => [
+        ...new Set([...(sources.get(chunk) ?? '').matchAll(/(?:from|import)"\.\/([^"]+\.js)"/g)].map((m) => m[1])),
+      ]
+      const staticClosure = (entry: string) => {
+        const seen = new Set<string>()
+        const queue = [entry]
+        while (queue.length > 0) {
+          const chunk = queue.pop()
+          if (chunk === undefined || seen.has(chunk)) continue
+          seen.add(chunk)
+          queue.push(...staticImports(chunk))
+        }
+        return seen
+      }
+
+      const entry = preloaded.find((f) => f.endsWith('.js'))
+      if (entry === undefined) this.error('bundle-budget found no entry script in index.html')
+      const entryName = path.basename(entry as string)
+      const alreadyLoaded = new Set(preloaded.map((f) => path.basename(f)))
+      // The entry's dynamic imports are exactly the lazy routes.
+      const routeChunks = [
+        ...new Set([...(sources.get(entryName) ?? '').matchAll(/import\(`\.\/([^`]+\.js)`\)/g)].map((m) => m[1])),
+      ].sort()
+
+      const overBudget: string[] = []
+      for (const route of routeChunks) {
+        const extra = [...staticClosure(route)].filter((chunk) => !alreadyLoaded.has(chunk))
+        const cost = (await Promise.all(extra.map((c) => servedSize(path.join(assetsDir, c))))).reduce(
+          (a, b) => a + b,
+          0,
+        )
+        if (cost > ROUTE_BUDGET) overBudget.push(`${route} needs ${cost} B beyond the landing`)
+      }
+      if (overBudget.length > 0) {
+        this.error(
+          `${overBudget.length} route(s) over the ${ROUTE_BUDGET} B route budget:\n  ${overBudget.join('\n  ')}\n` +
+            'A chart imported directly instead of through `lazyChart` is the usual cause. ' +
+            'Otherwise raise ROUTE_BUDGET in web/tooling/budget.ts and say why in the commit.',
+        )
+      }
+
+      this.info(
+        `cold landing ${landing} B brotli across ${preloaded.length} file(s), budget ${LANDING_BUDGET} B; ` +
+          `${routeChunks.length} route(s) within ${ROUTE_BUDGET} B each`,
+      )
       if (landing > LANDING_BUDGET) {
         this.error(
           `cold landing is ${landing} B brotli, over the ${LANDING_BUDGET} B budget by ${landing - LANDING_BUDGET} B.\n` +
