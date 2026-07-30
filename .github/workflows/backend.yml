@@ -127,14 +127,16 @@ jobs:
           DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/migrations
         run: uv run alembic check
 
-      # Proves the isolation guarantee is actually installed by the migrations,
-      # against its own migrated scratch database (see tests/db/test_rls_coverage.py).
-      - name: Row-Level Security coverage
+      # Two halves of the same guarantee, against a migrated scratch database:
+      # coverage proves every tenant table *has* a forced policy, isolation
+      # proves those policies work — as the restricted `app_runtime` role, for
+      # reads and writes both (see tests/db/test_rls_isolation.py).
+      - name: Row-Level Security coverage and isolation
         env:
           DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
           DATABASE_URL_APP: postgresql+psycopg://app_runtime:ci-app-runtime-password@localhost:5432/migrations
           DATABASE_URL_TEST: postgresql+psycopg://postgres:postgres@localhost:5432/migrations
-        run: uv run pytest tests/db/test_rls_coverage.py -v
+        run: uv run pytest tests/db/test_rls_coverage.py tests/db/test_rls_isolation.py -v
 
       - name: Migrations are reversible
         env:

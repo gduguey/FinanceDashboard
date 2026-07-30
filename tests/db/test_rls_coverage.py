@@ -16,116 +16,25 @@ migrations, for two reasons the main suite's fixture cannot satisfy:
   every other Postgres-backed test, since they connect as the table owner
   without setting `app.current_user_id`.
 
-So this module provisions a scratch database, migrates it, introspects
-`pg_policies`, and drops it. The broader `app_runtime` isolation suite
-(proving one tenant genuinely cannot read another's rows through the
-restricted role) is PR5's.
+So this module introspects `pg_policies` on the migrated scratch database
+built by `conftest.migrated_engine`. That every policy *works* — that one
+tenant genuinely cannot read or write another's rows through the restricted
+`app_runtime` role — is `test_rls_isolation.py`.
 """
 
 from __future__ import annotations
 
-import os
-import uuid
 from typing import TYPE_CHECKING, NamedTuple
 
-import pytest
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 
 import accounting.db  # noqa: F401 — registers the accounting tables on Base.metadata
 import trades.db  # noqa: F401 — registers the trades tables on Base.metadata
 from db.base import Base
-from db.session import create_one_shot_engine
-from db.settings import TestDatabaseSettings
 from db.tenant import POLICY_NAME, RLS_EXEMPT, is_reference_table, tenant_tables
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from sqlalchemy import Engine
-
-
-def _test_database_url() -> str | None:
-    """The configured test database URL, or `None` if it is unset or unreachable.
-
-    Returns
-    -------
-    str or None
-    """
-    try:
-        url = TestDatabaseSettings().database_url  # type: ignore[call-arg]
-    except Exception:  # noqa: BLE001 — any settings failure means "not configured"
-        return None
-    return url
-
-
-_TEST_DATABASE_URL = _test_database_url()
-
-pytestmark = pytest.mark.skipif(
-    _TEST_DATABASE_URL is None,
-    reason="DATABASE_URL_TEST is not configured",
-)
-
-
-@pytest.fixture(scope="module")
-def migrated_engine() -> Iterator[Engine]:
-    """A scratch database with the real migrations applied, dropped afterwards.
-
-    Separate from the session-wide `_db_engine` on purpose — see this
-    module's docstring.
-
-    Yields
-    ------
-    Engine
-        Connected to the migrated scratch database.
-    """
-    assert _TEST_DATABASE_URL is not None
-    base_url = make_url(_TEST_DATABASE_URL)
-    scratch_name = f"rls_coverage_{uuid.uuid4().hex[:12]}"
-    maintenance = create_one_shot_engine(base_url.set(database="postgres"), autocommit=True)
-    try:
-        with maintenance.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{scratch_name}"'))
-    finally:
-        maintenance.dispose()
-
-    scratch_url = base_url.set(database=scratch_name)
-    try:
-        # Alembic reads DATABASE_URL through `db.settings`, so point it at the
-        # scratch database for the duration of this upgrade.
-        from alembic import command  # noqa: PLC0415 — only needed for this fixture
-        from alembic.config import Config  # noqa: PLC0415
-
-        previous = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = scratch_url.render_as_string(hide_password=False)
-        try:
-            config = Config(str(_repo_root() / "alembic.ini"))
-            command.upgrade(config, "head")
-        finally:
-            if previous is None:
-                os.environ.pop("DATABASE_URL", None)
-            else:
-                os.environ["DATABASE_URL"] = previous
-
-        engine = create_one_shot_engine(scratch_url)
-        try:
-            yield engine
-        finally:
-            engine.dispose()
-    finally:
-        maintenance = create_one_shot_engine(base_url.set(database="postgres"), autocommit=True)
-        try:
-            with maintenance.connect() as connection:
-                connection.execute(text(f'DROP DATABASE IF EXISTS "{scratch_name}" WITH (FORCE)'))
-        finally:
-            maintenance.dispose()
-
-
-def _repo_root():
-    """Locate the repo root, where `alembic.ini` lives."""
-    from pathlib import Path  # noqa: PLC0415
-
-    return Path(__file__).resolve().parents[2]
 
 
 class Predicates(NamedTuple):
@@ -160,14 +69,18 @@ def _policies(engine: Engine) -> dict[tuple[str, str], str]:
             text("SELECT schemaname, tablename, qual, with_check FROM pg_policies WHERE policyname = :name"),
             {"name": POLICY_NAME},
         ).all()
-    # `with_check` is NULL when the policy omits it, in which case Postgres
-    # applies `USING` to writes as well — so falling back to `qual` reflects
-    # what the engine actually enforces rather than inventing a hole.
-    return {
-        (row.schemaname, row.tablename): Predicates(
-            using=row.qual or "", with_check=row.with_check if row.with_check is not None else (row.qual or "")
+    # No fallback to `qual` when `with_check` is NULL. Postgres would reuse
+    # `USING` for writes in that case, so the fallback was not wrong about the
+    # engine — but it made a policy with no `WITH CHECK` clause indistinguishable
+    # from one that has it, and this module's whole job is telling those apart.
+    # `enable_rls_statements` always emits both, so a NULL here is a policy
+    # someone wrote by hand.
+    for row in rows:
+        assert row.with_check is not None, (
+            f"{row.schemaname}.{row.tablename}'s {POLICY_NAME} policy has no WITH CHECK clause"
         )
-        for row in rows
+    return {
+        (row.schemaname, row.tablename): Predicates(using=row.qual or "", with_check=row.with_check) for row in rows
     }
 
 
