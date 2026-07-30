@@ -6,7 +6,7 @@ import re
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import BudgetComparisonRow, BudgetUpsert, SuggestedBudgetAmount
@@ -15,6 +15,7 @@ from accounting.api.dependencies import (
     _display_currency,
     _resolved_postings_for_aggregation,
 )
+from accounting.api.locations import created_or_replaced, location_of
 from accounting.dashboard import budgets
 from accounting.models import Budget, CurrencyCode
 from accounting.repositories.planning import (
@@ -51,9 +52,11 @@ def put_budgets(
     return budgets
 
 
-@router.post("/budgets")
+@router.post("/budgets", status_code=201, responses=created_or_replaced(Budget))
 def post_budget(
     request: BudgetUpsert,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Budget:
@@ -67,6 +70,19 @@ def post_budget(
     sent or touched — every other month/category's target is left alone,
     so editing one cell in the budget grid no longer means re-sending
     every budget the user has ever set.
+
+    A genuine upsert, so the status distinguishes its two outcomes: `201`
+    with a `Location` when this call brought the cell into existence,
+    `200` when it replaced a target already set. `upsert_budget` reports
+    which happened out of the `INSERT ... ON CONFLICT` itself.
+
+    Stays a `POST` on the collection rather than becoming
+    `PUT /budgets/{budget_id}`, even though the id *is* derived from the
+    body's `(month, category_id, subcategory_id)`: that derivation is
+    `repositories.planning.budget_row_key`, server code. Addressing the
+    cell directly would mean every client reimplementing that key format
+    and breaking silently the day it changes, which is a worse contract
+    than a `POST` that reports honestly which of the two things it did.
 
     Returns
     -------
@@ -84,7 +100,10 @@ def post_budget(
         amount=request.amount,
         currency=request.currency,
     )
-    upsert_budget(budget, session, user_id)
+    if upsert_budget(budget, session, user_id):
+        location_of(http_request, response, "get_budget", budget_id=budget.budget_id)
+    else:
+        response.status_code = 200
     return budget
 
 
@@ -177,3 +196,31 @@ def get_suggested_budget_amount(
         _display_currency(display_currency, _currencies_in_use(session, user_id)),
     )
     return SuggestedBudgetAmount(suggested_amount=amount)
+
+
+# Last in this module on purpose, and the two routes above are why: Starlette
+# matches in registration order, and `/budgets/comparison` and
+# `/budgets/suggested-amount` both match `/budgets/{budget_id}` on a GET.
+# Declared before them, this route would answer 404 for both. Any future
+# `GET /budgets/<literal>` has to go above here too.
+@router.get("/budgets/{budget_id}")
+def get_budget(
+    budget_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Budget:
+    """Return one spending target by id — the address `post_budget` advertises when it creates one.
+
+    Returns
+    -------
+    Budget
+
+    Raises
+    ------
+    HTTPException
+        404 if no budget has this id.
+    """
+    budget = next((b for b in load_budgets(session, user_id) if b.budget_id == budget_id), None)
+    if budget is None:
+        raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
+    return budget

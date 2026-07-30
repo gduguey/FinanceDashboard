@@ -141,7 +141,7 @@ def replace_budgets(session: Session, user_id: uuid.UUID, budgets: Iterable[Budg
     session.flush()
 
 
-def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
+def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> bool:
     """Insert-or-update one budget cell — per-month or general — touching no other.
 
     Keyed by `budget.budget_id` (derived from month+category+subcategory,
@@ -157,10 +157,23 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
         An open database session; `session.commit()` is called on success.
     user_id
         Whose budget this is.
+
+    Returns
+    -------
+    bool
+        `True` if this call brought the row into existence, `False` if it
+        replaced one already there. `POST /budgets` needs the difference to
+        answer `201` versus `200` honestly, and it has to come from the
+        write itself: a separate `SELECT` first would be a second round
+        trip whose answer a concurrent writer could invalidate before the
+        `INSERT` below ran. `xmax = 0` is Postgres' own record of which
+        branch of `ON CONFLICT` this row took — zero on a fresh insert, the
+        updating transaction's id on a conflict — so it is read out of the
+        same statement that decided it.
     """
     category_ids = ids_by_natural_key(session, adb.Category, user_id, [budget.category_id, budget.subcategory_id])
     subcategory_id = _optional_id(category_ids, budget.subcategory_id)
-    session.execute(
+    created = session.execute(
         text(
             """
             INSERT INTO accounting.budgets
@@ -173,6 +186,7 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
                 subcategory_id = EXCLUDED.subcategory_id,
                 amount = EXCLUDED.amount,
                 currency = EXCLUDED.currency
+            RETURNING xmax = 0 AS created
             """
         ),
         {
@@ -184,8 +198,9 @@ def upsert_budget(budget: Budget, session: Session, user_id: uuid.UUID) -> None:
             "amount": budget.amount,
             "currency": budget.currency,
         },
-    )
+    ).scalar_one()
     session.commit()
+    return bool(created)
 
 
 def remove_budget(session: Session, user_id: uuid.UUID, budget_id: str) -> bool:

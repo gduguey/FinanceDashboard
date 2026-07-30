@@ -5,10 +5,11 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import TransferRuleCreate, TransferRuleUpdate
+from accounting.api.locations import created_or_replaced, location_of
 from accounting.importers.common import row_hash
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
@@ -37,9 +38,34 @@ def _transfer_rule_id(description_contains: str, account_id: str | None, counter
     return f"rule:{row_hash(description_contains, account_id or '', counterparty_account_id or '')}"
 
 
-@router.post("/transfer-rules")
+@router.get("/transfer-rules/{rule_id}")
+def get_transfer_rule(
+    rule_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> TransferRule:
+    """Return one transfer rule by id — the address `post_transfer_rule` advertises on a create.
+
+    Returns
+    -------
+    TransferRule
+
+    Raises
+    ------
+    HTTPException
+        404 if no rule has this id.
+    """
+    rule = next((r for r in load_transfer_rules(session, user_id) if r.rule_id == rule_id), None)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"Transfer rule {rule_id!r} not found")
+    return rule
+
+
+@router.post("/transfer-rules", status_code=201, responses=created_or_replaced(TransferRule))
 def post_transfer_rule(
     request: TransferRuleCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> TransferRule:
@@ -51,6 +77,15 @@ def post_transfer_rule(
     `active` toggle and accumulated exclusions are preserved) rather than
     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
     for editing an existing rule by id, which never risks that ambiguity.
+    The status reports which of the two this call did: `201` with a
+    `Location` on a create, `200` on a replace. The answer costs nothing
+    extra — it is the same `existing` lookup the carry-forward below
+    already needs, in the same transaction as the write.
+
+    Stays a `POST` on the collection rather than becoming
+    `PUT /transfer-rules/{rule_id}`: the id is derived from the request's
+    content, but through `importers.common.row_hash`, which no client can
+    compute, so there is no address a caller could name up front.
 
     Returns
     -------
@@ -92,6 +127,10 @@ def post_transfer_rule(
     raw_ledger = load_ledger(session, user_id)
     upsert_transfer_rule(rule, session, user_id)
     reconcile_and_persist_rule_links(raw_ledger, session, user_id)
+    if existing is None:
+        location_of(http_request, response, "get_transfer_rule", rule_id=rule_id)
+    else:
+        response.status_code = 200
     return rule
 
 

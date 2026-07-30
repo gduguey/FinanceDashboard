@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fastapi import Request, Response
+    from pydantic import BaseModel
 
 # What a `201` promises, spelled out in the schema rather than left as an
 # undocumented convention. FastAPI derives a response's body from the return
@@ -29,6 +30,37 @@ CREATED_WITH_LOCATION: dict[int | str, dict[str, Any]] = {
         }
     }
 }
+
+
+def created_or_replaced(model: type[BaseModel]) -> dict[int | str, dict[str, Any]]:
+    """Declare both statuses a create-or-replace route can answer with.
+
+    An upsert whose id comes from the request's own content has two honest
+    outcomes, and a blanket `201` would report a replace as a creation.
+    These routes declare `status_code=201` as their default and drop to
+    `200` in the handler when the row was already there, so the schema has
+    to carry both — FastAPI only generates a response entry for the status
+    on the decorator, and an undeclared `200` is a status the generated
+    client believes cannot happen.
+
+    The `200` body is the same model as the `201` body: the caller gets the
+    persisted row either way, and only the status and the absence of a
+    `Location` distinguish them.
+
+    Parameters
+    ----------
+    model
+        The route's response model, restated for the `200` entry.
+
+    Returns
+    -------
+    dict[int | str, dict[str, Any]]
+        A `responses=` value covering `201` (with `Location`) and `200`.
+    """
+    return {
+        **CREATED_WITH_LOCATION,
+        200: {"model": model, "description": "The request replaced a resource that already existed."},
+    }
 
 
 def location_of(request: Request, response: Response, route: str, **path_params: str) -> None:

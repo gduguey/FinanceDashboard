@@ -986,12 +986,15 @@ def test_post_category_pattern_mints_a_content_derived_id(client) -> None:
         "/api/v1/accounting/category-patterns",
         json={"description_contains": "NETFLIX", "category_id": "expense:subscriptions"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     pattern = response.json()
     assert pattern["pattern_id"]
     assert pattern["description_contains"] == "NETFLIX"
     assert pattern["priority"] == 100
     assert pattern["active"] is True
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == pattern
 
 
 def test_post_category_pattern_twice_with_the_same_criteria_replaces_rather_than_duplicates(client) -> None:
@@ -1884,12 +1887,15 @@ def test_post_transfer_rule_mints_a_content_derived_id(client) -> None:
         "/api/v1/accounting/transfer-rules",
         json={"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     rule = response.json()
     assert rule["rule_id"]
     assert rule["description_contains"] == "PAYROLL"
     assert rule["active"] is True
     assert rule["priority"] == 100
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == rule
 
 
 def test_post_transfer_rule_twice_with_the_same_criteria_replaces_rather_than_duplicates(client) -> None:
@@ -3052,10 +3058,13 @@ def test_post_budget_upserts_one_budget_without_touching_others(client) -> None:
         json={"month": "2026-06", "category_id": "expense:food-drink", "amount": 300.0, "currency": "USD"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     created = response.json()
     assert created["budget_id"] == "2026-06:expense:food-drink"
     assert created["amount"] == pytest.approx(300.0)
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == created
 
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
     assert {b["budget_id"] for b in budgets} == {"existing", "2026-06:expense:food-drink"}
@@ -3114,7 +3123,7 @@ def test_post_general_budget_upserts_one_without_touching_others(client) -> None
 
     response = client.post("/api/v1/accounting/budgets", json={"category_id": "expense:food-drink", "amount": 500.0})
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["amount"] == pytest.approx(500.0)
     assert response.json()["month"] is None
     budgets = client.get("/api/v1/accounting/store").json()["budgets"]
@@ -3126,7 +3135,7 @@ def test_post_general_budget_with_a_subcategory_includes_it_in_the_derived_id(cl
         "/api/v1/accounting/budgets",
         json={"category_id": "expense:food-drink", "subcategory_id": "expense:food-drink:groceries", "amount": 200.0},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["budget_id"] == ":expense:food-drink:expense:food-drink:groceries"
 
 
@@ -3826,3 +3835,36 @@ def test_two_unrelated_writes_both_land_without_conflicting(client) -> None:
     )
     assert response.status_code == 201
     assert {"expense:custom", "expense:other"} <= set(client.get("/api/v1/accounting/store").json()["categories"])
+
+
+def test_posting_the_same_upsert_twice_reports_created_then_replaced(client) -> None:
+    """The one distinction a blanket `201` would erase, on all three content-derived-id upserts.
+
+    Each of these routes creates on the first call and replaces on the
+    second, at the same server-derived id. A `201` on the second would
+    claim a row came into existence that was already there — and would
+    carry a `Location` for a resource this call did not create.
+    """
+    pattern_body = {"description_contains": "NETFLIX", "category_id": "expense:subscriptions"}
+    first = client.post("/api/v1/accounting/category-patterns", json=pattern_body)
+    second = client.post("/api/v1/accounting/category-patterns", json=pattern_body)
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert "Location" in first.headers
+    assert "Location" not in second.headers
+    assert second.json()["pattern_id"] == first.json()["pattern_id"]
+
+    employer = _create_account(client, name="EQORE", kind="income_source", institution="internal")
+    rule_body = {"description_contains": "PAYROLL", "counterparty_account_id": employer["account_id"]}
+    first = client.post("/api/v1/accounting/transfer-rules", json=rule_body)
+    second = client.post("/api/v1/accounting/transfer-rules", json=rule_body)
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert "Location" in first.headers
+    assert "Location" not in second.headers
+
+    budget_body = {"month": "2026-06", "category_id": "expense:food-drink", "amount": 300.0, "currency": "USD"}
+    first = client.post("/api/v1/accounting/budgets", json=budget_body)
+    second = client.post("/api/v1/accounting/budgets", json={**budget_body, "amount": 400.0})
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert "Location" in first.headers
+    assert "Location" not in second.headers
+    assert second.json()["amount"] == pytest.approx(400.0)

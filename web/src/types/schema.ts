@@ -529,43 +529,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/accounting/transfer-rules': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Post Transfer Rule
-     * @description Create one new transfer rule, without touching any other rule already saved.
-     *
-     *     Posting this again for the same
-     *     `(description_contains, account_id, counterparty_account_id)` replaces
-     *     that rule (its `priority`/`description` update in place, while its
-     *     `active` toggle and accumulated exclusions are preserved) rather than
-     *     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
-     *     for editing an existing rule by id, which never risks that ambiguity.
-     *
-     *     Returns
-     *     -------
-     *     TransferRule
-     *         The rule just persisted.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
-     */
-    post: operations['post_transfer_rule_api_v1_accounting_transfer_rules_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/accounting/transfer-rules/{rule_id}': {
     parameters: {
       query?: never
@@ -573,7 +536,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Transfer Rule
+     * @description Return one transfer rule by id — the address `post_transfer_rule` advertises on a create.
+     *
+     *     Returns
+     *     -------
+     *     TransferRule
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no rule has this id.
+     */
+    get: operations['get_transfer_rule_api_v1_accounting_transfer_rules__rule_id__get']
     put?: never
     post?: never
     /**
@@ -624,7 +600,7 @@ export interface paths {
     patch: operations['patch_transfer_rule_api_v1_accounting_transfer_rules__rule_id__patch']
     trace?: never
   }
-  '/api/v1/accounting/category-patterns': {
+  '/api/v1/accounting/transfer-rules': {
     parameters: {
       query?: never
       header?: never
@@ -632,29 +608,38 @@ export interface paths {
       cookie?: never
     }
     get?: never
+    put?: never
     /**
-     * Put Category Patterns
-     * @description Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
+     * Post Transfer Rule
+     * @description Create one new transfer rule, without touching any other rule already saved.
+     *
+     *     Posting this again for the same
+     *     `(description_contains, account_id, counterparty_account_id)` replaces
+     *     that rule (its `priority`/`description` update in place, while its
+     *     `active` toggle and accumulated exclusions are preserved) rather than
+     *     creating a duplicate — see `PATCH /transfer-rules/{rule_id}` instead
+     *     for editing an existing rule by id, which never risks that ambiguity.
+     *     The status reports which of the two this call did: `201` with a
+     *     `Location` on a create, `200` on a replace. The answer costs nothing
+     *     extra — it is the same `existing` lookup the carry-forward below
+     *     already needs, in the same transaction as the write.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /transfer-rules/{rule_id}`: the id is derived from the request's
+     *     content, but through `importers.common.row_hash`, which no client can
+     *     compute, so there is no address a caller could name up front.
      *
      *     Returns
      *     -------
-     *     dict[str, CategoryPattern]
-     *         The patterns just persisted, keyed by `pattern_id`.
-     */
-    put: operations['put_category_patterns_api_v1_accounting_category_patterns_put']
-    /**
-     * Post Category Pattern
-     * @description Create one new category pattern, without touching any other pattern already saved.
+     *     TransferRule
+     *         The rule just persisted.
      *
-     *     Posting this again for the same `(description_contains, category_id,
-     *     subcategory_id)` replaces that pattern rather than creating a duplicate.
-     *
-     *     Returns
-     *     -------
-     *     CategoryPattern
-     *         The pattern just persisted.
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if `account_id` or `counterparty_account_id` names an account that doesn't exist.
      */
-    post: operations['post_category_pattern_api_v1_accounting_category_patterns_post']
+    post: operations['post_transfer_rule_api_v1_accounting_transfer_rules_post']
     delete?: never
     options?: never
     head?: never
@@ -668,7 +653,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Category Pattern
+     * @description Return one category pattern by id — the address `post_category_pattern` advertises on a create.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPattern
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no pattern has this id.
+     */
+    get: operations['get_category_pattern_api_v1_accounting_category_patterns__pattern_id__get']
     put?: never
     post?: never
     /**
@@ -704,6 +702,51 @@ export interface paths {
      *         404 if no pattern with `pattern_id` exists.
      */
     patch: operations['patch_category_pattern_api_v1_accounting_category_patterns__pattern_id__patch']
+    trace?: never
+  }
+  '/api/v1/accounting/category-patterns': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /**
+     * Put Category Patterns
+     * @description Replace the whole category-pattern list — the description-match suggestion source, distinct from `TransferRule`.
+     *
+     *     Returns
+     *     -------
+     *     dict[str, CategoryPattern]
+     *         The patterns just persisted, keyed by `pattern_id`.
+     */
+    put: operations['put_category_patterns_api_v1_accounting_category_patterns_put']
+    /**
+     * Post Category Pattern
+     * @description Create one new category pattern, without touching any other pattern already saved.
+     *
+     *     Posting this again for the same `(description_contains, category_id,
+     *     subcategory_id)` replaces that pattern rather than creating a duplicate.
+     *     The status says which of the two happened: `201` with a `Location` on a
+     *     create, `200` on a replace.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /category-patterns/{pattern_id}`. The id is derived from the
+     *     request's content, but through `importers.common.row_hash` — a hash no
+     *     client can compute, so there is no address a caller could `PUT` to
+     *     without the server telling it first.
+     *
+     *     Returns
+     *     -------
+     *     CategoryPattern
+     *         The pattern just persisted.
+     */
+    post: operations['post_category_pattern_api_v1_accounting_category_patterns_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
     trace?: never
   }
   '/api/v1/accounting/other-assets/{asset_id}': {
@@ -819,6 +862,19 @@ export interface paths {
      *     so editing one cell in the budget grid no longer means re-sending
      *     every budget the user has ever set.
      *
+     *     A genuine upsert, so the status distinguishes its two outcomes: `201`
+     *     with a `Location` when this call brought the cell into existence,
+     *     `200` when it replaced a target already set. `upsert_budget` reports
+     *     which happened out of the `INSERT ... ON CONFLICT` itself.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /budgets/{budget_id}`, even though the id *is* derived from the
+     *     body's `(month, category_id, subcategory_id)`: that derivation is
+     *     `repositories.planning.budget_row_key`, server code. Addressing the
+     *     cell directly would mean every client reimplementing that key format
+     *     and breaking silently the day it changes, which is a worse contract
+     *     than a `POST` that reports honestly which of the two things it did.
+     *
      *     Returns
      *     -------
      *     Budget
@@ -838,7 +894,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Budget
+     * @description Return one spending target by id — the address `post_budget` advertises when it creates one.
+     *
+     *     Returns
+     *     -------
+     *     Budget
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no budget has this id.
+     */
+    get: operations['get_budget_api_v1_accounting_budgets__budget_id__get']
     put?: never
     post?: never
     /**
@@ -7893,18 +7962,16 @@ export interface operations {
       }
     }
   }
-  post_transfer_rule_api_v1_accounting_transfer_rules_post: {
+  get_transfer_rule_api_v1_accounting_transfer_rules__rule_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        rule_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TransferRuleCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -7990,7 +8057,7 @@ export interface operations {
       }
     }
   }
-  put_category_patterns_api_v1_accounting_category_patterns_put: {
+  post_transfer_rule_api_v1_accounting_transfer_rules_post: {
     parameters: {
       query?: never
       header?: never
@@ -7999,21 +8066,28 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': {
-          [key: string]: components['schemas']['CategoryPattern']
-        }
+        'application/json': components['schemas']['TransferRuleCreate']
       }
     }
     responses: {
-      /** @description Successful Response */
+      /** @description The request replaced a resource that already existed. */
       200: {
         headers: {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: components['schemas']['CategoryPattern']
-          }
+          'application/json': components['schemas']['TransferRule']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferRule']
         }
       }
       /** @description Validation Error */
@@ -8027,18 +8101,16 @@ export interface operations {
       }
     }
   }
-  post_category_pattern_api_v1_accounting_category_patterns_post: {
+  get_category_pattern_api_v1_accounting_category_patterns__pattern_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        pattern_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CategoryPatternCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -8107,6 +8179,87 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPattern']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_category_patterns_api_v1_accounting_category_patterns_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': {
+          [key: string]: components['schemas']['CategoryPattern']
+        }
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            [key: string]: components['schemas']['CategoryPattern']
+          }
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_category_pattern_api_v1_accounting_category_patterns_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CategoryPatternCreate']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CategoryPattern']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {
@@ -8297,6 +8450,48 @@ export interface operations {
         'application/json': components['schemas']['BudgetUpsert']
       }
     }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Budget']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Budget']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_budget_api_v1_accounting_budgets__budget_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        budget_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
