@@ -21,6 +21,7 @@
         "noUselessFragments": "error"
       },
       "correctness": {
+        "useExhaustiveDependencies": "error",
         "useHookAtTopLevel": "error"
       },
       "style": {
@@ -34,7 +35,8 @@
         }
       },
       "suspicious": {
-        "noArrayIndexKey": "error"
+        "noArrayIndexKey": "error",
+        "noGlobalIsNan": "error"
       },
       "a11y": {
         "noLabelWithoutControl": "error",

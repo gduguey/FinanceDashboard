@@ -283,14 +283,22 @@ export function GoalsPage() {
   // contributed, not a stale pre-addition balance. Nothing about
   // versioning requires this ordering — the two calls could not conflict
   // with each other — but the ordering itself is load-bearing.
+  //
+  // Both `mutateAsync` functions are listed as dependencies even though this
+  // is a once-per-mount effect, and listing them costs nothing: react-query
+  // binds `mutate` to the observer once in its constructor and hands back
+  // that same reference in every result, and the observer itself is created
+  // inside a `useState` initializer, so neither identity changes for the life
+  // of this component. The effect still runs exactly once per mount — the
+  // dependency list is now simply honest about what it closes over, instead
+  // of an empty array that only happened to be right.
   useEffect(() => {
     async function catchUpAutomations() {
       await runRecurringAdditions.mutateAsync(undefined)
       await runWithdrawalAutomation.mutateAsync(undefined)
     }
     catchUpAutomations()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [runRecurringAdditions.mutateAsync, runWithdrawalAutomation.mutateAsync])
 
   const { end, dayBeforeStart } = monthBounds(month)
   const allTimeSummary = useGoalsSummary(undefined, displayCurrency)
