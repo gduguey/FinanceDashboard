@@ -255,13 +255,19 @@ export function BergeriePastoralLanding() {
       {/* ---- Footer ---- */}
       <footer className="footer">
         <div className="construction">⚠ PRAIRIE EN CONSTRUCTION DEPUIS 1997 ⚠</div>
+        {/* Written out rather than looped over `'001337'.split('')`: this is a
+            fixed six-place odometer, not a list. The cells never reorder and
+            never change what they show, and the digits repeat ('0' and '3'
+            each appear twice) so no digit could identify its own cell anyway.
+            As literal children, position is exactly what React should key on. */}
         <div className="counter">
           VISITEURS&nbsp;:
-          {'001337'.split('').map((d, i) => (
-            <span key={i} className="digit">
-              {d}
-            </span>
-          ))}
+          <span className="digit">0</span>
+          <span className="digit">0</span>
+          <span className="digit">1</span>
+          <span className="digit">3</span>
+          <span className="digit">3</span>
+          <span className="digit">7</span>
         </div>
         <div className="badge">Optimisé pour Netscape Navigator 4.0 — 800×600</div>
       </footer>

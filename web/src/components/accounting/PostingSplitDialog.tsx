@@ -5,17 +5,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useSetPostingSplit } from '@/hooks/useAccountingData'
+import type { DraftLeg } from '@/lib/draftLegs'
+import { newDraftLeg } from '@/lib/draftLegs'
 import { formatCurrency } from '@/lib/format'
 import type { Category, Posting } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
-
-interface DraftLeg {
-  amount: string
-  categoryId: string | null
-  subcategoryId: string | null
-  description: string
-}
 
 // A paycheck-shaped deposit landing as one bank posting can really be wage
 // plus a reimbursement — two different things that happen to have arrived
@@ -30,14 +25,17 @@ export function PostingSplitDialog({
   categories: Record<string, Category>
   onClose: () => void
 }) {
-  const [legs, setLegs] = useState<DraftLeg[]>([
-    {
+  // Lazy initializer, not a bare array literal: `newDraftLeg` advances a
+  // module counter, and an inline literal would mint (and discard) a fresh
+  // pair of ids on every single render of an open dialog.
+  const [legs, setLegs] = useState<DraftLeg[]>(() => [
+    newDraftLeg({
       amount: String(posting.amount),
       categoryId: posting.category_id ?? null,
       subcategoryId: posting.subcategory_id ?? null,
       description: posting.description,
-    },
-    { amount: '0', categoryId: null, subcategoryId: null, description: '' },
+    }),
+    newDraftLeg({ amount: '0', categoryId: null, subcategoryId: null, description: '' }),
   ])
   const setSplit = useSetPostingSplit()
   const classification = posting.amount >= 0 ? 'income' : 'expense'
@@ -51,7 +49,10 @@ export function PostingSplitDialog({
   }
 
   function addLeg() {
-    setLegs([...legs, { amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }])
+    setLegs([
+      ...legs,
+      newDraftLeg({ amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }),
+    ])
   }
 
   function removeLeg(index: number) {
@@ -88,7 +89,7 @@ export function PostingSplitDialog({
         </p>
         <div className="space-y-2">
           {legs.map((leg, index) => (
-            <div key={index} className="flex items-end gap-2">
+            <div key={leg.id} className="flex items-end gap-2">
               <Input
                 type="number"
                 className="w-24"

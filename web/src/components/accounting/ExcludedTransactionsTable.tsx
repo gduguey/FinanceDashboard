@@ -12,11 +12,20 @@ import { formatCurrency, formatDate } from '@/lib/format'
 import type { TransferRowInfo } from '@/lib/transferRowInfo'
 
 const ESTIMATED_ROW_HEIGHT = 45
-const COLUMN_COUNT = 4
-// Always summing to 100 so the table (rendered `table-fixed`) never needs a
-// horizontal scrollbar to show every column — see `LinkedTransactionsTable`'s
-// own `COLUMN_WIDTHS` for the same convention.
-const COLUMN_WIDTHS = ['15%', '25%', '40%', '20%']
+
+// Each column paired with the field it shows, rather than left as a bare list
+// of widths, so every `<col>` can be keyed by the column it describes instead
+// of by where it happens to sit — see `LinkedTransactionsTable`'s own
+// `COLUMNS` for the same convention. Widths always sum to 100 so the table
+// (rendered `table-fixed`) never needs a horizontal scrollbar to show every
+// column.
+const COLUMNS = [
+  { field: 'postedAt', width: '15%' },
+  { field: 'accountName', width: '25%' },
+  { field: 'description', width: '40%' },
+  { field: 'amount', width: '20%' },
+]
+const COLUMN_COUNT = COLUMNS.length
 
 // A rule's excluded transactions, one per row (unlike `LinkedTransactionsTable`,
 // there's no "other side" — exclusion means this rule specifically never
@@ -64,8 +73,8 @@ export function ExcludedTransactionsTable({
       <div ref={scrollParentRef} className="max-h-[50vh] overflow-y-auto rounded-md border">
         <Table className="table-fixed">
           <colgroup>
-            {COLUMN_WIDTHS.map((width, index) => (
-              <col key={index} style={{ width }} />
+            {COLUMNS.map((column) => (
+              <col key={column.field} style={{ width: column.width }} />
             ))}
           </colgroup>
           <TableHeader>

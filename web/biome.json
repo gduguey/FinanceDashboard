@@ -28,6 +28,9 @@
           }
         }
       },
+      "suspicious": {
+        "noArrayIndexKey": "error"
+      },
       "a11y": {
         "noLabelWithoutControl": "error",
         "useSemanticElements": "error",

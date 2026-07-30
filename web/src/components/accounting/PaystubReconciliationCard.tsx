@@ -12,26 +12,23 @@ import {
   useSetPostingOverride,
   useSetPostingSplit,
 } from '@/hooks/useAccountingData'
+import type { DraftLeg } from '@/lib/draftLegs'
+import { newDraftLeg } from '@/lib/draftLegs'
 import { formatCurrency } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PaystubReconciliationResult, ProposedSplit, ProposedSplitLeg } from '@/types/accounting'
 
 const AMOUNT_TOLERANCE = 0.005
 
-interface DraftLeg {
-  amount: string
-  categoryId: string | null
-  subcategoryId: string | null
-  description: string
-}
-
 function toDraftLegs(legs: ProposedSplitLeg[]): DraftLeg[] {
-  return legs.map((leg) => ({
-    amount: String(leg.amount),
-    categoryId: leg.category_id ?? null,
-    subcategoryId: leg.subcategory_id ?? null,
-    description: leg.description,
-  }))
+  return legs.map((leg) =>
+    newDraftLeg({
+      amount: String(leg.amount),
+      categoryId: leg.category_id ?? null,
+      subcategoryId: leg.subcategory_id ?? null,
+      description: leg.description,
+    }),
+  )
 }
 
 // Renders one matched deposit's proposed split (salary vs. reimbursement
@@ -56,7 +53,10 @@ function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
   }
 
   function addLeg() {
-    setLegs([...legs, { amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }])
+    setLegs([
+      ...legs,
+      newDraftLeg({ amount: remaining.toFixed(2), categoryId: null, subcategoryId: null, description: '' }),
+    ])
   }
 
   function removeLeg(index: number) {
@@ -90,7 +90,7 @@ function ProposedSplitEditor({ proposal }: { proposal: ProposedSplit }) {
     <div className="space-y-2 rounded-md border p-3">
       <div className="space-y-2">
         {legs.map((leg, index) => (
-          <div key={index} className="flex items-end gap-2">
+          <div key={leg.id} className="flex items-end gap-2">
             <Input
               type="number"
               className="w-24"
@@ -164,8 +164,14 @@ function ReconciliationResultView({ result }: { result: PaystubReconciliationRes
         {formatCurrency(result.statement.taxes_withheld, 'USD')} · Net {formatCurrency(result.statement.net_pay, 'USD')}
       </p>
       <ul className="space-y-1 text-sm">
-        {result.matches.map((match, index) => (
-          <li key={index} className="flex items-center gap-2">
+        {/* A `DepositMatch` carries no id — it is a line lifted off the
+            statement, not a stored row. Its natural key is the deposit it
+            describes: the label the payroll provider printed, the account it
+            landed in, and the amount. A statement can genuinely repeat a
+            label ("Direct Deposit" into two different accounts), so all three
+            are needed to tell two of its lines apart. */}
+        {result.matches.map((match) => (
+          <li key={`${match.label}|${match.account_last4 ?? ''}|${match.amount}`} className="flex items-center gap-2">
             {match.posting_id ? (
               <CheckCircle2 className="size-3.5 shrink-0 text-emerald-600" />
             ) : (

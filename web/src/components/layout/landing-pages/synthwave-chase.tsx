@@ -5,6 +5,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const NEON = ['#ff2079', '#00f0ff', '#ffe600', '#7cff00', '#ff6b00', '#b967ff']
 const MAX_ESCAPES = 7
 
+// A burst throws its sparks out along evenly spaced rays, at one of three
+// staggered distances so the shape reads as a firecracker rather than a
+// perfect ring. Precomputed at module scope because the geometry is identical
+// for every burst — and because it gives each spark the one thing that tells
+// it apart from its nine siblings: the direction it flies. The sparks are
+// otherwise interchangeable (same size, same colour, same animation), so the
+// ray's angle is their only real identity.
+const SPARK_COUNT = 10
+const SPARK_RAYS = Array.from({ length: SPARK_COUNT }, (_, i) => {
+  const angle = (i / SPARK_COUNT) * Math.PI * 2
+  const distance = 38 + (i % 3) * 16
+  return { angle, dx: Math.cos(angle) * distance, dy: Math.sin(angle) * distance }
+})
+
 const FLEE_LABELS = [
   'SE CONNECTER',
   'TROP LENT !',
@@ -168,23 +182,19 @@ export function SynthwaveChaseLanding() {
       {/* Firecracker bursts */}
       {bursts.map((b) => (
         <div key={b.id} className="burst" style={{ left: `${b.x}%`, top: `${b.y}%` }}>
-          {Array.from({ length: 10 }, (_, i) => {
-            const a = (i / 10) * Math.PI * 2
-            const d = 38 + (i % 3) * 16
-            return (
-              <span
-                key={i}
-                className="spark"
-                style={
-                  {
-                    background: b.color,
-                    '--dx': `${Math.cos(a) * d}px`,
-                    '--dy': `${Math.sin(a) * d}px`,
-                  } as CSSProperties
-                }
-              />
-            )
-          })}
+          {SPARK_RAYS.map((ray) => (
+            <span
+              key={ray.angle}
+              className="spark"
+              style={
+                {
+                  background: b.color,
+                  '--dx': `${ray.dx}px`,
+                  '--dy': `${ray.dy}px`,
+                } as CSSProperties
+              }
+            />
+          ))}
         </div>
       ))}
 
@@ -210,13 +220,19 @@ export function SynthwaveChaseLanding() {
       {/* Retro footer */}
       <footer className="footer">
         <div className="construction">⚠ EN CONSTRUCTION DEPUIS 1997 ⚠</div>
+        {/* Written out rather than looped over `'001337'.split('')`: this is a
+            fixed six-place odometer, not a list. The cells never reorder and
+            never change what they show, and the digits repeat ('0' and '3'
+            each appear twice) so no digit could identify its own cell anyway.
+            As literal children, position is exactly what React should key on. */}
         <div className="counter">
           VISITEURS&nbsp;:
-          {'001337'.split('').map((d, i) => (
-            <span key={i} className="digit">
-              {d}
-            </span>
-          ))}
+          <span className="digit">0</span>
+          <span className="digit">0</span>
+          <span className="digit">1</span>
+          <span className="digit">3</span>
+          <span className="digit">3</span>
+          <span className="digit">7</span>
         </div>
         <div className="badge">Optimisé pour Netscape Navigator 4.0 — 800×600</div>
       </footer>
