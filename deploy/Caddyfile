@@ -1,3 +1,11 @@
 {$PUBLIC_DOMAIN} {
+	# Compresses the API's JSON on the way out. Static assets arrive from
+	# upstream already carrying `Content-Encoding` (the app serves the `.br`
+	# and `.gz` variants that `web/build/precompress.ts` writes at build
+	# time), and `encode` leaves an already-encoded response alone — so the
+	# two do not fight, and the expensive brotli-11 pass stays off the
+	# request path. zstd first because Caddy's standard build has no brotli
+	# encoder; gzip is the fallback for clients that do not speak zstd.
+	encode zstd gzip
 	reverse_proxy api:8000
 }

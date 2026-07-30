@@ -12,5 +12,8 @@
 	tls {
 		dns duckdns {env.DUCKDNS_API_TOKEN}
 	}
+	# See deploy/Caddyfile for why this is zstd+gzip rather than brotli, and
+	# why it does not double-compress the precompressed static assets.
+	encode zstd gzip
 	reverse_proxy api:8000
 }
