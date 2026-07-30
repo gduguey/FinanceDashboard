@@ -430,8 +430,12 @@ export const accountingApi = {
   duplicateSuggestions: (windowDays?: number) =>
     request<DuplicateGroup[]>(`/duplicate-suggestions${queryString({ window_days: windowDays })}`),
   dismissedSuggestions: () => request<DismissedSuggestion[]>('/dismissed-suggestions'),
-  dismissSuggestion: (body: DismissSuggestionRequest) =>
-    request<DismissedSuggestion>('/dismissed-suggestions', jsonInit('POST', body)),
+  // A `PUT` at the suggestion's own id, not a `POST` to the collection: the
+  // archive entry is keyed by the id this caller already holds, so dismissing
+  // the same suggestion twice is one idempotent write to one address rather
+  // than two submissions the server has to reconcile.
+  dismissSuggestion: (suggestionId: string, body: DismissSuggestionRequest) =>
+    request<DismissedSuggestion>(`/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, jsonInit('PUT', body)),
   restoreSuggestion: (suggestionId: string) =>
     request<void>(`/dismissed-suggestions/${encodeURIComponent(suggestionId)}`, {
       method: 'DELETE',

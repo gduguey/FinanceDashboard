@@ -888,9 +888,13 @@ class DuplicateGroup(BaseModel):
 
 
 class DismissSuggestionRequest(BaseModel):
-    """Request body for `POST /api/v1/accounting/dismissed-suggestions`."""
+    """Request body for `PUT /api/v1/accounting/dismissed-suggestions/{suggestion_id}`.
 
-    suggestion_id: str
+    No `suggestion_id`: the path carries it. Keeping a copy in the body
+    would give one request two places to name the same thing, and the
+    handler would have to decide which wins when they disagree.
+    """
+
     kind: Literal["transfer", "duplicate"]
     description: str
 

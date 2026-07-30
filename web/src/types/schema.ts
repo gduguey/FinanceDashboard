@@ -1905,6 +1905,17 @@ export interface paths {
      * Post Posting Merge
      * @description Upsert one duplicate-resolution decision, without touching any other merge already recorded.
      *
+     *     A real upsert keyed on the kept transaction, so the status says which
+     *     of the two things happened: `201` with a `Location` when this recorded
+     *     a new decision, `200` when it replaced the decision already recorded
+     *     for that transaction.
+     *
+     *     Stays a `POST` on the collection rather than becoming
+     *     `PUT /posting-merges/{merge_id}`. The id is `merge:{kept_transaction_id}`
+     *     — derivable in principle, but `_merge_id`'s prefix is this module's
+     *     private key format, and making every client build it would export that
+     *     format as part of the contract.
+     *
      *     Returns
      *     -------
      *     PostingMerge
@@ -1924,7 +1935,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Posting Merge
+     * @description Return one duplicate-resolution decision by id — the address `post_posting_merge` advertises.
+     *
+     *     Returns
+     *     -------
+     *     PostingMerge
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no merge has this id.
+     */
+    get: operations['get_posting_merge_api_v1_accounting_posting_merges__merge_id__get']
     put?: never
     post?: never
     /**
@@ -1937,6 +1961,44 @@ export interface paths {
      *         404 if no merge with this id exists.
      */
     delete: operations['delete_posting_merge_api_v1_accounting_posting_merges__merge_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/transfer-links/{link_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Transfer Link
+     * @description Return one confirmed transfer link by id — the address `post_transfer_link` advertises.
+     *
+     *     Returns
+     *     -------
+     *     TransferLink
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no link has this id.
+     */
+    get: operations['get_transfer_link_api_v1_accounting_transfer_links__link_id__get']
+    put?: never
+    post?: never
+    /**
+     * Delete Transfer Link
+     * @description Undo a confirmed transfer link, restoring both transactions to their prior classification.
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no link with this id exists.
+     */
+    delete: operations['delete_transfer_link_api_v1_accounting_transfer_links__link_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -1960,6 +2022,12 @@ export interface paths {
      *     classification instead. Re-confirming the exact same pair (from
      *     either side) is a no-op, returning the existing link.
      *
+     *     That no-op is why the status is conditional: `201` with a `Location`
+     *     when this call confirmed the pair, `200` when the identical link was
+     *     already there. Not strictly an upsert — nothing is overwritten on the
+     *     second call — but the same distinction, read from the `already_this_link`
+     *     lookup below, in the transaction that writes.
+     *
      *     Returns
      *     -------
      *     TransferLink
@@ -1981,31 +2049,6 @@ export interface paths {
      */
     post: operations['post_transfer_link_api_v1_accounting_transfer_links_post']
     delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/v1/accounting/transfer-links/{link_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /**
-     * Delete Transfer Link
-     * @description Undo a confirmed transfer link, restoring both transactions to their prior classification.
-     *
-     *     Raises
-     *     ------
-     *     HTTPException
-     *         404 if no link with this id exists.
-     */
-    delete: operations['delete_transfer_link_api_v1_accounting_transfer_links__link_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -2125,16 +2168,7 @@ export interface paths {
      */
     get: operations['get_dismissed_suggestions_api_v1_accounting_dismissed_suggestions_get']
     put?: never
-    /**
-     * Post Dismissed Suggestion
-     * @description Archive a suggestion so it stops being proposed, without discarding it.
-     *
-     *     Returns
-     *     -------
-     *     DismissedSuggestion
-     *         The archived entry just persisted.
-     */
-    post: operations['post_dismissed_suggestion_api_v1_accounting_dismissed_suggestions_post']
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -2148,8 +2182,41 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
-    put?: never
+    /**
+     * Get Dismissed Suggestion
+     * @description Return one archived suggestion by id — the address `put_dismissed_suggestion` advertises.
+     *
+     *     Returns
+     *     -------
+     *     DismissedSuggestion
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no archived entry has this id.
+     */
+    get: operations['get_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__get']
+    /**
+     * Put Dismissed Suggestion
+     * @description Archive a suggestion so it stops being proposed, without discarding it.
+     *
+     *     A `PUT` at the id, not a `POST` to the collection, and the only upsert
+     *     in this API that could honestly become one: the archive entry's id is
+     *     the suggestion's own id, which the client already holds — it is reading
+     *     it off `GET /transfer-suggestions` or `GET /duplicate-suggestions` and
+     *     used to send it in the request body. Nothing is derived server-side, so
+     *     the caller can name the address, which is what makes this an idempotent
+     *     replace at a known URL rather than a submission to a collection.
+     *
+     *     `201` with a `Location` when this created the archive entry, `200` when
+     *     it replaced one already there — RFC 9110's own answer for `PUT`.
+     *
+     *     Returns
+     *     -------
+     *     DismissedSuggestion
+     *         The archived entry just persisted.
+     */
+    put: operations['put_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__put']
     post?: never
     /**
      * Delete Dismissed Suggestion
@@ -5072,11 +5139,13 @@ export interface components {
     }
     /**
      * DismissSuggestionRequest
-     * @description Request body for `POST /api/v1/accounting/dismissed-suggestions`.
+     * @description Request body for `PUT /api/v1/accounting/dismissed-suggestions/{suggestion_id}`.
+     *
+     *     No `suggestion_id`: the path carries it. Keeping a copy in the body
+     *     would give one request two places to name the same thing, and the
+     *     handler would have to decide which wins when they disagree.
      */
     DismissSuggestionRequest: {
-      /** Suggestion Id */
-      suggestion_id: string
       /**
        * Kind
        * @enum {string}
@@ -9587,6 +9656,48 @@ export interface operations {
       }
     }
     responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PostingMerge']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_posting_merge_api_v1_accounting_posting_merges__merge_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        merge_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
       /** @description Successful Response */
       200: {
         headers: {
@@ -9636,18 +9747,16 @@ export interface operations {
       }
     }
   }
-  post_transfer_link_api_v1_accounting_transfer_links_post: {
+  get_transfer_link_api_v1_accounting_transfer_links__link_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        link_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['TransferLinkCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -9686,6 +9795,50 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_transfer_link_api_v1_accounting_transfer_links_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TransferLinkCreate']
+      }
+    }
+    responses: {
+      /** @description The request replaced a resource that already existed. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferLink']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['TransferLink']
+        }
       }
       /** @description Validation Error */
       422: {
@@ -9813,11 +9966,44 @@ export interface operations {
       }
     }
   }
-  post_dismissed_suggestion_api_v1_accounting_dismissed_suggestions_post: {
+  get_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        suggestion_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_dismissed_suggestion_api_v1_accounting_dismissed_suggestions__suggestion_id__put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: string
+      }
       cookie?: never
     }
     requestBody: {
@@ -9826,9 +10012,20 @@ export interface operations {
       }
     }
     responses: {
-      /** @description Successful Response */
+      /** @description The request replaced a resource that already existed. */
       200: {
         headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DismissedSuggestion']
+        }
+      }
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {

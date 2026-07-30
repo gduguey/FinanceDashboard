@@ -168,7 +168,7 @@ def test_a_page_still_holds_the_transactions_asked_for_after_a_merge(client) -> 
         "/api/v1/accounting/posting-merges",
         json={"kept_transaction_id": kept, "duplicate_transaction_ids": [duplicate]},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
 
     page = _page(client, limit=3)
     assert page["total"] == 11

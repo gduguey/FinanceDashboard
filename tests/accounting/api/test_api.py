@@ -1439,10 +1439,13 @@ def test_post_posting_merge_creates_one_and_resolves_the_duplicate(client) -> No
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     merge = response.json()
     assert merge["merge_id"] == f"merge:{kept_id}"
     assert merge["kept_transaction_id"] == kept_id
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == merge
     assert client.get("/api/v1/accounting/duplicate-suggestions").json() == []
 
 
@@ -1468,6 +1471,7 @@ def test_post_posting_merge_twice_for_the_same_kept_transaction_replaces_rather_
     )
 
     assert response.status_code == 200
+    assert "Location" not in response.headers
     merges = load_posting_merges(db_session, DEFAULT_USER_ID)
     assert list(merges.keys()) == [f"merge:{kept_id}"]
     assert merges[f"merge:{kept_id}"].description == "updated"
@@ -1515,20 +1519,23 @@ def test_dismissing_a_transfer_suggestion_removes_it_from_the_proposed_list(clie
     _seed_chase_transfer_suggestion(client)
     suggestion_id = client.get("/api/v1/accounting/transfer-suggestions").json()[0]["suggestion_id"]
 
-    response = client.post(
-        "/api/v1/accounting/dismissed-suggestions",
-        json={"suggestion_id": suggestion_id, "kind": "transfer", "description": "Chase checking <-> credit card"},
+    response = client.put(
+        f"/api/v1/accounting/dismissed-suggestions/{suggestion_id}",
+        json={"kind": "transfer", "description": "Chase checking <-> credit card"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json()["suggestion_id"] == suggestion_id
     assert client.get("/api/v1/accounting/transfer-suggestions").json() == []
 
 
 def test_dismissed_suggestion_shows_up_in_the_archive(client) -> None:
     _seed_chase_transfer_suggestion(client)
     suggestion_id = client.get("/api/v1/accounting/transfer-suggestions").json()[0]["suggestion_id"]
-    client.post(
-        "/api/v1/accounting/dismissed-suggestions",
-        json={"suggestion_id": suggestion_id, "kind": "transfer", "description": "Chase checking <-> credit card"},
+    client.put(
+        f"/api/v1/accounting/dismissed-suggestions/{suggestion_id}",
+        json={"kind": "transfer", "description": "Chase checking <-> credit card"},
     )
 
     archive = client.get("/api/v1/accounting/dismissed-suggestions").json()
@@ -1541,9 +1548,9 @@ def test_dismissed_suggestion_shows_up_in_the_archive(client) -> None:
 def test_restoring_a_dismissed_suggestion_brings_it_back(client) -> None:
     _seed_chase_transfer_suggestion(client)
     suggestion_id = client.get("/api/v1/accounting/transfer-suggestions").json()[0]["suggestion_id"]
-    client.post(
-        "/api/v1/accounting/dismissed-suggestions",
-        json={"suggestion_id": suggestion_id, "kind": "transfer", "description": "desc"},
+    client.put(
+        f"/api/v1/accounting/dismissed-suggestions/{suggestion_id}",
+        json={"kind": "transfer", "description": "desc"},
     )
     assert client.get("/api/v1/accounting/transfer-suggestions").json() == []
 
@@ -1592,9 +1599,12 @@ def test_post_transfer_link_confirms_a_pair_and_excludes_it_from_income_statemen
         "/api/v1/accounting/transfer-links",
         json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     link = response.json()
     assert {link["transaction_id_a"], link["transaction_id_b"]} == {checking_transaction_id, card_transaction_id}
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == link
     assert link["source"] == "manual"
 
     updated = _postings(client)
@@ -1693,7 +1703,7 @@ def test_post_transfer_link_409s_when_the_transaction_was_linked_concurrently(cl
             "/api/v1/accounting/transfer-links",
             json={"transaction_id_a": checking_transaction_id, "transaction_id_b": card_transaction_id},
         ).status_code
-        == 200
+        == 201
     )
 
     monkeypatch.setattr(postings_router, "load_transfer_links", lambda *_args, **_kwargs: [])
@@ -1722,7 +1732,8 @@ def test_post_transfer_link_is_idempotent_for_the_same_pair(client) -> None:
         "/api/v1/accounting/transfer-links",
         json={"transaction_id_a": card_transaction_id, "transaction_id_b": checking_transaction_id},
     )
-    assert second.status_code == 200
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert "Location" not in second.headers
     assert second.json()["link_id"] == first.json()["link_id"]
     assert len(client.get("/api/v1/accounting/store").json()["transfer_links"]) == 1
 
@@ -1803,11 +1814,11 @@ def test_dismissing_a_duplicate_suggestion_removes_it_from_the_proposed_list(cli
     assert len(suggestions) == 1
     suggestion_id = suggestions[0]["suggestion_id"]
 
-    response = client.post(
-        "/api/v1/accounting/dismissed-suggestions",
-        json={"suggestion_id": suggestion_id, "kind": "duplicate", "description": "Whole Foods x2"},
+    response = client.put(
+        f"/api/v1/accounting/dismissed-suggestions/{suggestion_id}",
+        json={"kind": "duplicate", "description": "Whole Foods x2"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert client.get("/api/v1/accounting/duplicate-suggestions").json() == []
 
 

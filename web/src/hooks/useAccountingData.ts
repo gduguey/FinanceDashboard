@@ -254,7 +254,8 @@ export const useDismissedSuggestions = () =>
 export function useDismissSuggestion() {
   const invalidate = useInvalidateAccounting()
   return useMutation({
-    mutationFn: (body: DismissSuggestionRequest) => accountingApi.dismissSuggestion(body),
+    mutationFn: ({ suggestionId, ...body }: DismissSuggestionRequest & { suggestionId: string }) =>
+      accountingApi.dismissSuggestion(suggestionId, body),
     onSuccess: invalidate,
   })
 }

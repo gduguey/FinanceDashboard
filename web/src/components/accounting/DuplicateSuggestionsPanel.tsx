@@ -251,7 +251,7 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
 
   function dismiss(row: DuplicateGroupRow) {
     dismissSuggestion.mutate({
-      suggestion_id: row.suggestion_id,
+      suggestionId: row.suggestion_id,
       kind: 'duplicate',
       description: row.descriptionsPreview,
     })
