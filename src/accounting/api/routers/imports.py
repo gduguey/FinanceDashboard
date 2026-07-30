@@ -28,7 +28,7 @@ from accounting.api.api_models import (
     SyncStatus,
 )
 from accounting.api.dependencies import _resolved_postings, state
-from accounting.api.entities import Category, PostingSplitLeg
+from accounting.api.entities import Category, EarningsStatement, PostingSplitLeg
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.canonical.csv import (
     CanonicalCsvError,
@@ -584,7 +584,7 @@ async def post_paystub_reconciliation(
     result = reconcile_earnings_statement(statement, postings, seeded_accounts(session, user_id))
     proposed_splits = propose_posting_splits(statement, result.matches)
     return PaystubReconciliationResult(
-        statement=statement,
+        statement=EarningsStatement.from_domain(statement),
         matches=[
             DepositMatch(
                 label=match.deposit.label,

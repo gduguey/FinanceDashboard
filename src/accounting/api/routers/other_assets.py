@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import OtherAssetCreate
+from accounting.api.entities import OtherAsset
 from accounting.api.locations import CREATED_WITH_LOCATION, location_of
-from accounting.models import OtherAsset
+from accounting.models import OtherAsset as DomainOtherAsset
 from accounting.repositories.taxonomy import (
     delete_other_asset,
     insert_other_asset,
@@ -42,7 +43,7 @@ def get_other_asset(
     asset = next((a for a in load_other_assets(session, user_id) if a.asset_id == asset_id), None)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"Other asset {asset_id!r} not found")
-    return asset
+    return OtherAsset.from_domain(asset)
 
 
 @router.post("/other-assets", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -68,7 +69,7 @@ def post_other_asset(
     OtherAsset
         The asset just persisted.
     """
-    asset = OtherAsset(
+    asset = DomainOtherAsset(
         asset_id=f"asset:{uuid.uuid4().hex}",
         name=request.name,
         value=request.value,
@@ -77,7 +78,7 @@ def post_other_asset(
     )
     insert_other_asset(session, user_id, asset)
     location_of(http_request, response, "get_other_asset", asset_id=asset.asset_id)
-    return asset
+    return OtherAsset.from_domain(asset)
 
 
 @router.delete("/other-assets/{asset_id}", status_code=204)

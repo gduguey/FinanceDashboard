@@ -24,6 +24,7 @@ from accounting.api.api_models import (
     WithdrawalAutomationResult,
 )
 from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
+from accounting.api.entities import Goal, GoalAutomation, GoalContribution
 from accounting.api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
@@ -31,7 +32,10 @@ from accounting.ledger.goal_automations import (
     run_recurring_additions,
     run_withdrawal_automation,
 )
-from accounting.models import CurrencyCode, Goal, GoalAutomation, GoalAutomationDirection, GoalContribution
+from accounting.models import CurrencyCode, GoalAutomationDirection
+from accounting.models import Goal as DomainGoal
+from accounting.models import GoalAutomation as DomainGoalAutomation
+from accounting.models import GoalContribution as DomainGoalContribution
 from accounting.repositories.planning import (
     delete_goal,
     goal_automation_exists,
@@ -80,7 +84,7 @@ def post_goal(
         The goal just persisted.
     """
     existing = load_goals(session, user_id)
-    goal = Goal(
+    goal = DomainGoal(
         goal_id=f"goal:{uuid.uuid4().hex}",
         name=request.name,
         target_amount=request.target_amount,
@@ -91,7 +95,7 @@ def post_goal(
     )
     insert_goal(session, user_id, goal)
     location_of(http_request, response, "get_goal", goal_id=goal.goal_id)
-    return goal
+    return Goal.from_domain(goal)
 
 
 @router.patch("/goals/{goal_id}")
@@ -120,7 +124,7 @@ def patch_goal(
     """
     # `created_at` is a required field on `Goal` but `update_goal` never
     # touches it — it always returns the row's real, untouched value.
-    goal = Goal(
+    goal = DomainGoal(
         goal_id=goal_id,
         name=request.name,
         target_amount=request.target_amount,
@@ -133,7 +137,7 @@ def patch_goal(
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
     session.commit()
-    return updated
+    return Goal.from_domain(updated)
 
 
 @router.delete("/goals/{goal_id}", status_code=204)
@@ -162,7 +166,7 @@ def delete_goal_route(
 
 def _reorder_automations(
     session: Session, user_id: uuid.UUID, automation_ids: list[str], direction: GoalAutomationDirection
-) -> list[GoalAutomation]:
+) -> list[DomainGoalAutomation]:
     """Renumber one direction's automations into `automation_ids`' order, changing nothing else about them.
 
     The submitted id set must equal the persisted one exactly — not a
@@ -189,7 +193,7 @@ def _reorder_automations(
 
     Returns
     -------
-    list[GoalAutomation]
+    list[DomainGoalAutomation]
         The same automations, renumbered, in the submitted order.
 
     Raises
@@ -228,7 +232,7 @@ def _reorder_automations(
     return reordered
 
 
-def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
+def _validate_remainder_invariant(automations: list[DomainGoalAutomation]) -> None:
     """Enforce the `remainder` rules against a full contribution-automation set.
 
     Shared by the reorder and the single-row `PATCH` so both reject the
@@ -277,7 +281,7 @@ def get_goal_contribution(
     contribution = load_goal_contributions(session, user_id).get(contribution_id)
     if contribution is None:
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
-    return contribution
+    return GoalContribution.from_domain(contribution)
 
 
 @router.post("/goal-contributions", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -303,7 +307,7 @@ def post_goal_contribution(
     GoalContribution
         The contribution just persisted.
     """
-    contribution = GoalContribution(
+    contribution = DomainGoalContribution(
         contribution_id=f"manual:{uuid.uuid4().hex}",
         goal_id=request.goal_id,
         date=request.date,
@@ -317,7 +321,7 @@ def post_goal_contribution(
     )
     upsert_goal_contribution(contribution, session, user_id)
     location_of(http_request, response, "get_goal_contribution", contribution_id=contribution.contribution_id)
-    return contribution
+    return GoalContribution.from_domain(contribution)
 
 
 @router.put("/goal-contributions/{contribution_id}")
@@ -346,7 +350,7 @@ def put_goal_contribution(
     """
     if not goal_contribution_exists(session, user_id, contribution_id):
         raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
-    contribution = GoalContribution(
+    contribution = DomainGoalContribution(
         contribution_id=contribution_id,
         goal_id=request.goal_id,
         date=request.date,
@@ -359,7 +363,7 @@ def put_goal_contribution(
         edited=request.edited,
     )
     upsert_goal_contribution(contribution, session, user_id)
-    return contribution
+    return GoalContribution.from_domain(contribution)
 
 
 @router.delete("/goal-contributions/{contribution_id}", status_code=204)
@@ -407,7 +411,7 @@ def get_goal_automation(
     )
     if automation is None:
         raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
-    return automation
+    return GoalAutomation.from_domain(automation)
 
 
 @router.post("/goal-automations/contributions", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -439,7 +443,7 @@ def post_goal_automation(
     existing = [
         automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"
     ]
-    automation = GoalAutomation(
+    automation = DomainGoalAutomation(
         automation_id=f"addition:{uuid.uuid4().hex}",
         goal_id=request.goal_id,
         direction="contribution",
@@ -453,7 +457,7 @@ def post_goal_automation(
     )
     upsert_goal_automation(automation, session, user_id)
     location_of(http_request, response, "get_goal_automation", automation_id=automation.automation_id)
-    return automation
+    return GoalAutomation.from_domain(automation)
 
 
 @router.put("/goal-automations/contributions/order")
@@ -482,7 +486,10 @@ def put_goal_contribution_automation_order(
         aren't exactly the persisted contribution automations, or if the
         order would leave a `mode="remainder"` rule anywhere but last.
     """
-    return _reorder_automations(session, user_id, order.automation_ids, "contribution")
+    return [
+        GoalAutomation.from_domain(automation)
+        for automation in _reorder_automations(session, user_id, order.automation_ids, "contribution")
+    ]
 
 
 @router.patch("/goal-automations/{automation_id}")
@@ -519,7 +526,7 @@ def patch_goal_automation(
     # honest answer.
     if not goal_automation_exists(session, user_id, automation_id, direction="contribution"):
         raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
-    automation = GoalAutomation(
+    automation = DomainGoalAutomation(
         automation_id=automation_id,
         goal_id=request.goal_id,
         direction="contribution",
@@ -541,7 +548,7 @@ def patch_goal_automation(
     ]
     _validate_remainder_invariant(effective)
     upsert_goal_automation(automation, session, user_id)
-    return automation
+    return GoalAutomation.from_domain(automation)
 
 
 @router.delete("/goal-automations/{automation_id}", status_code=204)
@@ -595,7 +602,7 @@ def post_withdrawal_automation(
     ]
     automation_id = withdrawal_automation_id(request.goal_id)
     already_ordered = next((a for a in existing if a.automation_id == automation_id), None)
-    automation = GoalAutomation(
+    automation = DomainGoalAutomation(
         automation_id=automation_id,
         goal_id=request.goal_id,
         direction="withdrawal",
@@ -606,7 +613,7 @@ def post_withdrawal_automation(
         location_of(http_request, response, "get_goal_automation", automation_id=automation_id)
     else:
         response.status_code = 200
-    return automation
+    return GoalAutomation.from_domain(automation)
 
 
 @router.put("/goal-automations/withdrawals/order")
@@ -634,7 +641,10 @@ def put_goal_withdrawal_automation_order(
         400 (from `_reorder_automations`) if the submitted ids aren't
         exactly the persisted withdrawal automations.
     """
-    return _reorder_automations(session, user_id, order.automation_ids, "withdrawal")
+    return [
+        GoalAutomation.from_domain(automation)
+        for automation in _reorder_automations(session, user_id, order.automation_ids, "withdrawal")
+    ]
 
 
 @router.get("/goals/summary")
@@ -689,7 +699,7 @@ def get_goal(
     goal = load_goals(session, user_id).get(goal_id)
     if goal is None:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
-    return goal
+    return Goal.from_domain(goal)
 
 
 def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
@@ -763,12 +773,12 @@ def post_run_recurring_additions(
     # second silently overwrote the first here — while `run_recurring_additions`
     # had already counted both against unallocated.
     by_automation_id = {automation.automation_id: automation for automation in due}
-    new_contributions: dict[str, GoalContribution] = {}
+    new_contributions: dict[str, DomainGoalContribution] = {}
     for automation_id, amount in funded:
         automation = by_automation_id[automation_id]
         occurrence = occurrences[automation.automation_id]
         contribution_id = f"auto:{automation.automation_id}:{occurrence.isoformat()}"
-        new_contributions[contribution_id] = GoalContribution(
+        new_contributions[contribution_id] = DomainGoalContribution(
             contribution_id=contribution_id,
             goal_id=automation.goal_id,
             date=datetime.combine(occurrence, datetime.min.time()),
@@ -781,7 +791,7 @@ def post_run_recurring_additions(
         )
 
     insert_goal_contributions(session, user_id, new_contributions.values())
-    return list(new_contributions.values())
+    return [GoalContribution.from_domain(contribution) for contribution in new_contributions.values()]
 
 
 @router.post("/goals/run-withdrawal-automation")
@@ -822,11 +832,11 @@ def post_run_withdrawal_automation(
     drawn = run_withdrawal_automation(withdrawals, balances, shortfall)
 
     existing_ids = set(contributions.keys())
-    new_contributions: dict[str, GoalContribution] = {}
+    new_contributions: dict[str, DomainGoalContribution] = {}
     for goal_id, amount in drawn:
         contribution_id = _next_contribution_id(existing_ids, f"auto-withdrawal:{goal_id}:{as_of_date.isoformat()}")
         existing_ids.add(contribution_id)
-        new_contributions[contribution_id] = GoalContribution(
+        new_contributions[contribution_id] = DomainGoalContribution(
             contribution_id=contribution_id,
             goal_id=goal_id,
             date=datetime(as_of_date.year, as_of_date.month, as_of_date.day),  # noqa: DTZ001  (ledger dates are naive)
@@ -839,7 +849,8 @@ def post_run_withdrawal_automation(
     insert_goal_contributions(session, user_id, new_contributions.values())
     remaining_shortfall = max(0.0, shortfall - sum(-amount for _, amount in drawn))
     return WithdrawalAutomationResult(
-        withdrawals=list(new_contributions.values()), remaining_shortfall=remaining_shortfall
+        withdrawals=[GoalContribution.from_domain(contribution) for contribution in new_contributions.values()],
+        remaining_shortfall=remaining_shortfall,
     )
 
 

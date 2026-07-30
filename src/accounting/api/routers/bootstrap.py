@@ -32,9 +32,15 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import AccountingStoreResponse
 from accounting.api.entities import (
     Account,
+    Budget,
     Category,
     CategoryPattern,
     Currency,
+    Goal,
+    GoalAutomation,
+    GoalContribution,
+    OtherAsset,
+    SimulatorScenario,
     Tag,
     TransferLink,
     TransferRule,
@@ -90,17 +96,24 @@ def get_store(
         },
         tags={tag_id: Tag.from_domain(tag) for tag_id, tag in load_tags(session, user_id).items()},
         transfer_rules=[TransferRule.from_domain(rule) for rule in load_transfer_rules(session, user_id)],
-        other_assets=load_other_assets(session, user_id),
-        budgets=load_budgets(session, user_id),
-        simulator_scenarios=load_simulator_scenarios(session, user_id),
+        other_assets=[OtherAsset.from_domain(asset) for asset in load_other_assets(session, user_id)],
+        budgets=[Budget.from_domain(budget) for budget in load_budgets(session, user_id)],
+        simulator_scenarios=[
+            SimulatorScenario.from_domain(scenario) for scenario in load_simulator_scenarios(session, user_id)
+        ],
         transfer_links=[TransferLink.from_domain(link) for link in load_transfer_links(session, user_id)],
         category_patterns={
             pattern_id: CategoryPattern.from_domain(pattern)
             for pattern_id, pattern in load_category_patterns(session, user_id).items()
         },
-        goals=load_goals(session, user_id),
-        goal_contributions=load_goal_contributions(session, user_id),
-        goal_automations=load_goal_automations(session, user_id),
+        goals={goal_id: Goal.from_domain(goal) for goal_id, goal in load_goals(session, user_id).items()},
+        goal_contributions={
+            contribution_id: GoalContribution.from_domain(contribution)
+            for contribution_id, contribution in load_goal_contributions(session, user_id).items()
+        },
+        goal_automations=[
+            GoalAutomation.from_domain(automation) for automation in load_goal_automations(session, user_id)
+        ],
     )
 
 

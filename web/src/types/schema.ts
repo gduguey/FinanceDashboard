@@ -4485,29 +4485,6 @@ export interface components {
     /**
      * Budget
      * @description One spending target for one top-level expense category, or one of its subcategories.
-     *
-     *     `month` is what scopes the target: a `"YYYY-MM"` string targets that
-     *     one month, and `None` is the *general* target — the standing amount
-     *     that applies to every month alike, which the Budget page's "General"
-     *     mode edits. Both live in the same list (and the same `budgets` table):
-     *     a month target and a general target for the same category coexist as
-     *     two rows, and neither falls back to or overwrites the other, so
-     *     switching the page's mode never silently rewrites the other one.
-     *
-     *     `category_id` is always the top-level category, matching
-     *     `Posting.category_id`. `subcategory_id`, when set, scopes the target to
-     *     that one subcategory's actual spend alone rather than the whole
-     *     category's — matching `Posting.subcategory_id` — so a category and one
-     *     of its subcategories can each carry their own independent target for
-     *     the same month.
-     *
-     *     Actual spend against a budget is never stored here or on the postings
-     *     it covers — a posting's own `category_id`/`subcategory_id` already
-     *     determines which budget it counts against for whichever month it
-     *     landed in, so "actual" is always computed fresh from
-     *     `dashboard.income_statement.category_totals`, the same on-demand way
-     *     an account's balance comes from summing its postings rather than a
-     *     cached figure that could drift out of sync.
      */
     Budget: {
       /** Budget Id */
@@ -5212,10 +5189,6 @@ export interface components {
     /**
      * EarningsDeposit
      * @description One destination a paystub's pay actually lands in — a wage deposit, or a separate reimbursement.
-     *
-     *     `account_last4` is the bank account digits the paystub itself prints
-     *     next to a deposit line, when it prints one at all — used to match
-     *     against a real `Account.last_four` during reconciliation.
      */
     EarningsDeposit: {
       /** Label */
@@ -5228,11 +5201,6 @@ export interface components {
     /**
      * EarningsLineItem
      * @description One named line under a paystub's reimbursements section, for one pay period.
-     *
-     *     Unlike `EarningsDeposit`, this isn't tied to a bank account — it's a
-     *     paystub's own breakdown of *why* money was paid out (a specific
-     *     reimbursement), used to propose splitting a matched deposit into
-     *     named legs (see `dashboard.paystub.propose_posting_splits`).
      */
     EarningsLineItem: {
       /** Label */
@@ -5243,14 +5211,6 @@ export interface components {
     /**
      * EarningsStatement
      * @description A parsed paystub: gross pay, taxes withheld, and where the net pay actually landed.
-     *
-     *     Deliberately doesn't try to capture every line item a paystub has —
-     *     only what `dashboard.paystub.reconcile_earnings_statement` and
-     *     `propose_posting_splits` need: the totals, the per-destination-account
-     *     split (one paycheck can land in more than one account), and the
-     *     reimbursement breakdown, since a paycheck-shaped deposit is often wage
-     *     plus one or more separate reimbursements arriving together — the case
-     *     that motivates splitting one bank posting into several (`PostingSplit`).
      */
     EarningsStatement: {
       /**
@@ -5286,13 +5246,7 @@ export interface components {
     }
     /**
      * Goal
-     * @description A savings target — its balance is never stored here, only derived from its `GoalContribution`s.
-     *
-     *     See `dashboard.goals.all_goal_balances`: the balance at any point in time
-     *     is always the running sum of contributions up to that date, computed
-     *     fresh, the same way an account's balance is never a cached figure
-     *     (see `Budget`'s own docstring for the same reasoning applied to
-     *     spending).
+     * @description A savings target — its balance is never here, only derived from its contributions.
      */
     Goal: {
       /** Goal Id */
@@ -5329,33 +5283,11 @@ export interface components {
      * GoalAutomation
      * @description One ordered rule for automatically moving money into — or out of — a goal.
      *
-     *     `direction` is the discriminator, and it decides which of the fields
-     *     below are set (enforced here *and* by the `goal_automations` table's
-     *     own `schedule_matches_direction` CHECK, so neither layer can drift):
-     *
-     *     - `direction="contribution"` carries the whole schedule —
-     *       `start_date` + `frequency`, optionally bounded by `end_date`; see
-     *       `ledger.goal_automations.next_recurring_occurrence` for how a due
-     *       date is derived from those. For `frequency="monthly"`, the day of
-     *       month is `start_date`'s own day, capped at 28 so every month
-     *       actually has that day rather than silently skipping February on a
-     *       day-30 schedule. `mode`/`value`/`currency` say how much it wants.
-     *     - `direction="withdrawal"` carries none of them. The withdrawal
-     *       automation (`ledger.goal_automations.run_withdrawal_automation`) is
-     *       event-driven — triggered whenever unallocated money dips below zero
-     *       — not scheduled, so a withdrawal row is nothing but its goal and
-     *       its place in the drawdown order.
-     *
-     *     `priority` is the manually-set execution order (lowest first) the
-     *     Goals page's drag-and-drop reorders, and means the corresponding
-     *     thing in each direction: which contribution gets funded first (a
-     *     `fixed_amount` row funded first can leave less, or nothing, for a
-     *     lower-priority one when unallocated money runs out — see
-     *     `ledger.goal_automations.run_recurring_additions`), and which goal
-     *     gets drawn down first. `mode="remainder"` ("whatever's left after all
-     *     the others") is only ever valid on the single lowest-priority
-     *     contribution — enforced by the API that persists the list, not by
-     *     this model.
+     *     `direction` decides which of the schedule fields are set. The domain
+     *     model's `model_validator` is deliberately not mirrored: nothing is ever
+     *     parsed *into* this shape from a client — the request bodies are
+     *     `api_models.GoalAutomationCreate`/`GoalAutomationUpdate`, and each
+     *     carries its own rule.
      */
     GoalAutomation: {
       /** Automation Id */
@@ -5483,26 +5415,7 @@ export interface components {
     }
     /**
      * GoalContribution
-     * @description One dated, signed allocation into (or withdrawal from) a goal — the only thing a goal's balance derives from.
-     *
-     *     `date` is the real day the allocation happened — never a month
-     *     bucket; "this month's contributions" is always a display-time filter
-     *     over these rows, never a separately-stored monthly figure (see
-     *     `dashboard.goals`). A positive `amount` is money going into the goal,
-     *     negative is a withdrawal (see `ledger.goal_automations` for the
-     *     withdrawal-automation trigger). `source_posting_id`, when set, links
-     *     to the real bank transfer this corresponds to, purely for
-     *     traceability — never read by any balance or unallocated computation,
-     *     per the user's own spec: "Never used in math." `origin` distinguishes
-     *     a manually-entered contribution from one an automation wrote; `edited`
-     *     flags an automation-written contribution the user has since hand-edited,
-     *     so the ledger table can show it's no longer purely automatic.
-     *
-     *     `account_id` names the account the allocated money actually sits in
-     *     ("envelope over balance"). It is plumbing only for now: nothing in
-     *     `dashboard.goals` reads it, so no goal balance, net-worth figure, or
-     *     unallocated-money computation changes because it is set — a later
-     *     change makes the unallocated arithmetic account-aware.
+     * @description One dated, signed allocation into (or withdrawal from) a goal.
      */
     GoalContribution: {
       /** Contribution Id */
@@ -6216,13 +6129,6 @@ export interface components {
     /**
      * OtherAsset
      * @description A manually-entered net-worth line with no transaction history — property, a car, etc.
-     *
-     *     Unlike everything else in this module, this is a preference-like
-     *     record a user types in directly rather than something derived from a
-     *     posting; it lives in the same store for convenience, not because it's a
-     *     fact about what happened. `value` is in `currency`, not necessarily
-     *     the display currency any given page is showing totals in — conversion
-     *     happens where it's aggregated, in `dashboard.net_worth`.
      */
     OtherAsset: {
       /** Asset Id */
@@ -6649,11 +6555,7 @@ export interface components {
     }
     /**
      * SimulatorScenario
-     * @description A saved set of inputs to the compound-interest projector (see `dashboard.simulator.project`).
-     *
-     *     Every field here is one of the projector's five inputs, plus a name to
-     *     tell saved scenarios apart — nothing here is itself computed; the
-     *     projection is always run fresh from these inputs, never cached.
+     * @description A saved set of inputs to the compound-interest projector.
      */
     SimulatorScenario: {
       /** Scenario Id */

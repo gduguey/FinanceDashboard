@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import SimulatorScenarioCreate
+from accounting.api.entities import SimulatorScenario
 from accounting.api.locations import CREATED_WITH_LOCATION, location_of
-from accounting.models import SimulatorScenario
+from accounting.models import SimulatorScenario as DomainSimulatorScenario
 from accounting.repositories.taxonomy import (
     delete_simulator_scenario,
     insert_simulator_scenario,
@@ -42,7 +43,7 @@ def get_simulator_scenario(
     scenario = next((s for s in load_simulator_scenarios(session, user_id) if s.scenario_id == scenario_id), None)
     if scenario is None:
         raise HTTPException(status_code=404, detail=f"Simulator scenario {scenario_id!r} not found")
-    return scenario
+    return SimulatorScenario.from_domain(scenario)
 
 
 @router.post("/simulator/scenarios", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -65,7 +66,7 @@ def post_simulator_scenario(
     SimulatorScenario
         The scenario just persisted.
     """
-    scenario = SimulatorScenario(
+    scenario = DomainSimulatorScenario(
         scenario_id=f"scenario:{uuid.uuid4().hex}",
         name=request.name,
         initial_capital=request.initial_capital,
@@ -77,7 +78,7 @@ def post_simulator_scenario(
     )
     insert_simulator_scenario(session, user_id, scenario)
     location_of(http_request, response, "get_simulator_scenario", scenario_id=scenario.scenario_id)
-    return scenario
+    return SimulatorScenario.from_domain(scenario)
 
 
 @router.delete("/simulator/scenarios/{scenario_id}", status_code=204)

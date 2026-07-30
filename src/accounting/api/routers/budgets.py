@@ -15,9 +15,11 @@ from accounting.api.dependencies import (
     _display_currency,
     _resolved_postings_for_aggregation,
 )
+from accounting.api.entities import Budget
 from accounting.api.locations import created_or_replaced, location_of
 from accounting.dashboard import budgets
-from accounting.models import Budget, CurrencyCode
+from accounting.models import Budget as DomainBudget
+from accounting.models import CurrencyCode
 from accounting.repositories.planning import (
     budget_row_key,
     load_budgets,
@@ -72,7 +74,7 @@ def post_budget(
     # The default category tree this budget's `category_id` foreign-keys into has to exist first;
     # a no-op read for everyone but a brand-new user.
     seed_new_user_defaults(session, user_id)
-    budget = Budget(
+    budget = DomainBudget(
         budget_id=budget_row_key(request.month, request.category_id, request.subcategory_id),
         month=request.month,
         category_id=request.category_id,
@@ -84,7 +86,7 @@ def post_budget(
         location_of(http_request, response, "get_budget", budget_id=budget.budget_id)
     else:
         response.status_code = 200
-    return budget
+    return Budget.from_domain(budget)
 
 
 @router.delete("/budgets/{budget_id}", status_code=204)
@@ -203,4 +205,4 @@ def get_budget(
     budget = next((b for b in load_budgets(session, user_id) if b.budget_id == budget_id), None)
     if budget is None:
         raise HTTPException(status_code=404, detail=f"Budget {budget_id!r} not found")
-    return budget
+    return Budget.from_domain(budget)

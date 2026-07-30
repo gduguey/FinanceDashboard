@@ -23,8 +23,8 @@ shape as the entity it creates (`AccountCreate` has no `account_id`).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import Self
+from datetime import date, datetime
+from typing import Annotated, Self
 
 from pydantic import BaseModel, Field
 
@@ -32,12 +32,17 @@ from accounting import models
 from accounting.models import (
     AccountKind,
     CategoryClassification,
+    CompoundingFrequency,
     CurrencyCode,
     DismissedSuggestionKind,
+    GoalAutomationDirection,
+    GoalAutomationFrequency,
+    GoalAutomationMode,
+    GoalContributionOrigin,
     PendingSuggestionSource,
     TransferLinkSource,
 )
-from db.money import Money
+from db.money import Money, Rate
 
 
 class _WireModel[DomainT: BaseModel](BaseModel):
@@ -295,3 +300,113 @@ class Posting(_WireModel[models.Posting]):
     tag_ids: list[str] = Field(default_factory=list)
     description: str = ""
     meta: dict[str, str] = Field(default_factory=dict)
+
+
+class OtherAsset(_WireModel[models.OtherAsset]):
+    """A manually-entered net-worth line with no transaction history — property, a car, etc."""
+
+    asset_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    value: Money
+    currency: CurrencyCode = "USD"
+    note: str = ""
+
+
+class Budget(_WireModel[models.Budget]):
+    """One spending target for one top-level expense category, or one of its subcategories."""
+
+    budget_id: str = Field(min_length=1)
+    month: Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")] | None = None
+    category_id: str = Field(min_length=1)
+    subcategory_id: str | None = None
+    amount: Money
+    currency: CurrencyCode = "USD"
+
+
+class SimulatorScenario(_WireModel[models.SimulatorScenario]):
+    """A saved set of inputs to the compound-interest projector."""
+
+    scenario_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    initial_capital: Money
+    monthly_contribution: Money
+    horizon_years: Rate
+    annual_rate_pct: Rate
+    compounding_frequency: CompoundingFrequency = "monthly"
+    currency: CurrencyCode = "USD"
+
+
+class Goal(_WireModel[models.Goal]):
+    """A savings target — its balance is never here, only derived from its contributions."""
+
+    goal_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    target_amount: Money
+    target_currency: CurrencyCode = "USD"
+    target_date: datetime
+    color: str = Field(min_length=1)
+    created_at: datetime
+    version: int = 1
+
+
+class GoalContribution(_WireModel[models.GoalContribution]):
+    """One dated, signed allocation into (or withdrawal from) a goal."""
+
+    contribution_id: str = Field(min_length=1)
+    goal_id: str = Field(min_length=1)
+    date: datetime
+    amount: Money
+    currency: CurrencyCode = "USD"
+    note: str = ""
+    account_id: str | None = None
+    source_posting_id: str | None = None
+    origin: GoalContributionOrigin = "manual"
+    edited: bool = False
+
+
+class GoalAutomation(_WireModel[models.GoalAutomation]):
+    """One ordered rule for automatically moving money into — or out of — a goal.
+
+    `direction` decides which of the schedule fields are set. The domain
+    model's `model_validator` is deliberately not mirrored: nothing is ever
+    parsed *into* this shape from a client — the request bodies are
+    `api_models.GoalAutomationCreate`/`GoalAutomationUpdate`, and each
+    carries its own rule.
+    """
+
+    automation_id: str = Field(min_length=1)
+    goal_id: str = Field(min_length=1)
+    direction: GoalAutomationDirection
+    priority: int = 0
+    start_date: date | None = None
+    frequency: GoalAutomationFrequency | None = None
+    end_date: date | None = None
+    mode: GoalAutomationMode | None = None
+    value: Money | None = Field(default=None, json_schema_extra={"default": None})
+    currency: CurrencyCode | None = None
+
+
+class EarningsDeposit(_WireModel[models.EarningsDeposit]):
+    """One destination a paystub's pay actually lands in — a wage deposit, or a separate reimbursement."""
+
+    label: str = Field(min_length=1)
+    account_last4: str | None = None
+    amount: Money
+
+
+class EarningsLineItem(_WireModel[models.EarningsLineItem]):
+    """One named line under a paystub's reimbursements section, for one pay period."""
+
+    label: str = Field(min_length=1)
+    amount: Money
+
+
+class EarningsStatement(_WireModel[models.EarningsStatement]):
+    """A parsed paystub: gross pay, taxes withheld, and where the net pay actually landed."""
+
+    pay_date: datetime
+    gross_pay: Money
+    taxes_withheld: Money
+    net_pay: Money
+    deposits: list[EarningsDeposit] = Field(min_length=1)
+    reimbursement_lines: list[EarningsLineItem] = Field(default_factory=list)

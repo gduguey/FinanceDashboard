@@ -34,6 +34,7 @@ from accounting.api.dependencies import (
     _resolved_postings,
     _resolved_postings_for_aggregation,
 )
+from accounting.api.entities import OtherAsset
 from accounting.dashboard import income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import convert
@@ -212,7 +213,7 @@ def get_net_worth(
         other_assets_total=summary.other_assets_total,
         net_worth=summary.net_worth,
         accounts=[NetWorthAccountRow(**vars(row)) for row in summary.accounts],
-        other_assets=summary.other_assets,
+        other_assets=[OtherAsset.from_domain(asset) for asset in summary.other_assets],
     )
 
 
