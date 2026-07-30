@@ -109,17 +109,34 @@ def test_put_goals_persists_and_is_returned_by_store(client) -> None:
     assert store["goals"]["emergency-fund"]["name"] == "Emergency Fund"
 
 
+def test_the_goal_item_route_does_not_shadow_the_summary_route(client) -> None:
+    """`/goals/summary` matches `/goals/{goal_id}` on a GET, so registration order decides which wins.
+
+    Nothing in FastAPI enforces the order that makes this correct — only the
+    comment above `get_goal`. This fails if the item route is ever moved
+    above `get_goals_summary`, which would answer 404 for a goal named
+    "summary" instead of returning the summary.
+    """
+    summary = client.get("/api/v1/accounting/goals/summary")
+    assert summary.status_code == 200
+    assert "unallocated" in summary.json()
+    assert client.get("/api/v1/accounting/goals/goal:nope").status_code == 404
+
+
 def test_post_goal_creates_one_with_a_server_generated_id(client) -> None:
     response = client.post(
         "/api/v1/accounting/goals",
         json={"name": "Emergency fund", "target_amount": 10000.0, "target_date": "2027-01-01T00:00:00"},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     goal = response.json()
     assert goal["goal_id"]
     assert goal["name"] == "Emergency fund"
     assert goal["color"]
     assert goal["created_at"]
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == goal
 
 
 def test_post_goal_twice_with_the_same_name_creates_two_distinct_goals(client) -> None:
@@ -350,11 +367,14 @@ def test_post_goal_contribution_creates_one_with_a_server_generated_id(client) -
         json={"goal_id": "emergency-fund", "date": "2026-06-10T00:00:00", "amount": 500.0, "currency": "USD"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 201
     created = response.json()
     assert created["contribution_id"]
     assert created["amount"] == pytest.approx(500.0)
     assert created["origin"] == "manual"
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == created
 
     contributions = client.get("/api/v1/accounting/store").json()["goal_contributions"]
     assert set(contributions.keys()) == {created["contribution_id"]}
@@ -726,11 +746,17 @@ def test_post_goal_automation_creates_one_with_a_server_generated_id(client) -> 
             "currency": "USD",
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     automation = response.json()
     assert automation["automation_id"]
     assert automation["goal_id"] == "emergency-fund"
     assert automation["priority"] == 0
+    # The `Location` drops the `contributions` segment the create posted to:
+    # direction is a field on the automation, not part of its address.
+    assert response.headers["Location"].endswith(f"/goal-automations/{automation['automation_id']}")
+    followed = client.get(response.headers["Location"])
+    assert followed.status_code == 200
+    assert followed.json() == automation
 
 
 def test_post_goal_automation_appends_after_existing_ones_by_priority(client) -> None:

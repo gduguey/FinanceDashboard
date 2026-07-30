@@ -2580,7 +2580,8 @@ export interface paths {
      * @description Create one new goal, without touching any other goal already saved.
      *
      *     `goal_id` is server-minted — two goals can validly share a name, so
-     *     there's no natural key two "the same" goal would collide on. `color`
+     *     there's no natural key two "the same" goal would collide on, which is
+     *     why the `201` is unconditional. `color`
      *     is picked to be distinct from every color already assigned to an
      *     existing goal, the same `taxonomy.next_available_color` helper
      *     categories already use for the same purpose.
@@ -2604,7 +2605,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Goal
+     * @description Return one goal by id — the address `post_goal` advertises.
+     *
+     *     Returns
+     *     -------
+     *     Goal
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no goal has this id.
+     */
+    get: operations['get_goal_api_v1_accounting_goals__goal_id__get']
     put?: never
     post?: never
     /**
@@ -2672,7 +2686,9 @@ export interface paths {
      *     arbitrary event with no natural key to derive an id from, so the
      *     server generates an opaque one — two contributions with identical
      *     fields (e.g. the same goal, date, and amount entered twice) are
-     *     distinct rows, not a collision.
+     *     distinct rows, not a collision. So the `201` is unconditional even
+     *     though the write below goes through an upsert: the id it upserts on
+     *     was minted moments earlier and cannot already exist.
      *
      *     Returns
      *     -------
@@ -2693,7 +2709,20 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Goal Contribution
+     * @description Return one dated allocation by id — the address `post_goal_contribution` advertises.
+     *
+     *     Returns
+     *     -------
+     *     GoalContribution
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no contribution has this id.
+     */
+    get: operations['get_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__get']
     /**
      * Put Goal Contribution
      * @description Replace one contribution's fields, without touching any other contribution.
@@ -2730,56 +2759,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/v1/accounting/goal-automations/contributions': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    /**
-     * Put Goal Contribution Automations
-     * @description Replace the whole contribution-automation list — the priority-ordered allocation rules.
-     *
-     *     Scoped to `direction="contribution"`: the withdrawal ordering lives in
-     *     the same table now but is replaced by its own endpoint, so neither
-     *     list can wipe the other.
-     *
-     *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
-     *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
-     *     lowest priority) — the same check the single-row `PATCH` enforces.
-     *
-     *     Returns
-     *     -------
-     *     list[GoalAutomation]
-     *         The automations just persisted. Answers 400 if any entry is not a
-     *         `contribution`, or if the `remainder` invariant is broken.
-     */
-    put: operations['put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put']
-    /**
-     * Post Goal Automation
-     * @description Create one new scheduled contribution automation, appended after every one already saved.
-     *
-     *     `automation_id` is server-minted — two rules can validly share every
-     *     other field. `priority` is never taken from the client: this always
-     *     goes after the current lowest-priority contribution, matching the
-     *     Goals page's own "append at the end of the ordered list" behavior.
-     *     Drag-and-drop reordering still goes through
-     *     `PUT /goal-automations/contributions`.
-     *
-     *     Returns
-     *     -------
-     *     GoalAutomation
-     *         The automation just persisted.
-     */
-    post: operations['post_goal_automation_api_v1_accounting_goal_automations_contributions_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/v1/accounting/goal-automations/{automation_id}': {
     parameters: {
       query?: never
@@ -2787,7 +2766,24 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    get?: never
+    /**
+     * Get Goal Automation
+     * @description Return one automation by id, either direction — the address `post_goal_automation` advertises.
+     *
+     *     Not direction-scoped, matching `PATCH` and `DELETE` on this same path:
+     *     an automation is addressed by its id alone, and `contribution` versus
+     *     `withdrawal` is a field on it, not part of its address.
+     *
+     *     Returns
+     *     -------
+     *     GoalAutomation
+     *
+     *     Raises
+     *     ------
+     *     HTTPException
+     *         404 if no automation has this id.
+     */
+    get: operations['get_goal_automation_api_v1_accounting_goal_automations__automation_id__get']
     put?: never
     post?: never
     /**
@@ -2821,6 +2817,60 @@ export interface paths {
      *         404 if no *contribution* automation with `automation_id` exists.
      */
     patch: operations['patch_goal_automation_api_v1_accounting_goal_automations__automation_id__patch']
+    trace?: never
+  }
+  '/api/v1/accounting/goal-automations/contributions': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /**
+     * Put Goal Contribution Automations
+     * @description Replace the whole contribution-automation list — the priority-ordered allocation rules.
+     *
+     *     Scoped to `direction="contribution"`: the withdrawal ordering lives in
+     *     the same table now but is replaced by its own endpoint, so neither
+     *     list can wipe the other.
+     *
+     *     Rejects an illegal list with a 400 via `_validate_remainder_invariant`
+     *     (more than one `mode="remainder"`, or a `remainder` row that isn't the
+     *     lowest priority) — the same check the single-row `PATCH` enforces.
+     *
+     *     Returns
+     *     -------
+     *     list[GoalAutomation]
+     *         The automations just persisted. Answers 400 if any entry is not a
+     *         `contribution`, or if the `remainder` invariant is broken.
+     */
+    put: operations['put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put']
+    /**
+     * Post Goal Automation
+     * @description Create one new scheduled contribution automation, appended after every one already saved.
+     *
+     *     `automation_id` is server-minted, so the `201` is unconditional — two
+     *     rules can validly share every other field. Its `Location` points at
+     *     `GET /goal-automations/{automation_id}`, dropping the `contributions`
+     *     segment: the direction picks which collection this posts *to*, and is
+     *     not part of the created row's own address. `priority` is never taken
+     *     from the client: this always
+     *     goes after the current lowest-priority contribution, matching the
+     *     Goals page's own "append at the end of the ordered list" behavior.
+     *     Drag-and-drop reordering still goes through
+     *     `PUT /goal-automations/contributions`.
+     *
+     *     Returns
+     *     -------
+     *     GoalAutomation
+     *         The automation just persisted.
+     */
+    post: operations['post_goal_automation_api_v1_accounting_goal_automations_contributions_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
     trace?: never
   }
   '/api/v1/accounting/goal-automations/withdrawals': {
@@ -10173,6 +10223,39 @@ export interface operations {
     }
     responses: {
       /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['Goal']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_goal_api_v1_accounting_goals__goal_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        goal_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown
@@ -10307,6 +10390,39 @@ export interface operations {
     }
     responses: {
       /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalContribution']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_goal_contribution_api_v1_accounting_goal_contributions__contribution_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        contribution_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown
@@ -10390,51 +10506,16 @@ export interface operations {
       }
     }
   }
-  put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put: {
+  get_goal_automation_api_v1_accounting_goal_automations__automation_id__get: {
     parameters: {
       query?: never
       header?: never
-      path?: never
+      path: {
+        automation_id: string
+      }
       cookie?: never
     }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GoalAutomation'][]
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['GoalAutomation'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  post_goal_automation_api_v1_accounting_goal_automations_contributions_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['GoalAutomationCreate']
-      }
-    }
+    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -10503,6 +10584,74 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  put_goal_contribution_automations_api_v1_accounting_goal_automations_contributions_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GoalAutomation'][]
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['GoalAutomation'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_goal_automation_api_v1_accounting_goal_automations_contributions_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['GoalAutomationCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description URL of the resource this request created. */
+          Location?: string
           [name: string]: unknown
         }
         content: {

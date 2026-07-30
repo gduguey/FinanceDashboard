@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import (
@@ -22,6 +22,7 @@ from accounting.api.api_models import (
     WithdrawalAutomationResult,
 )
 from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
+from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
@@ -55,16 +56,19 @@ from db.session import get_db
 router = APIRouter()
 
 
-@router.post("/goals")
+@router.post("/goals", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_goal(
     request: GoalCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> Goal:
     """Create one new goal, without touching any other goal already saved.
 
     `goal_id` is server-minted — two goals can validly share a name, so
-    there's no natural key two "the same" goal would collide on. `color`
+    there's no natural key two "the same" goal would collide on, which is
+    why the `201` is unconditional. `color`
     is picked to be distinct from every color already assigned to an
     existing goal, the same `taxonomy.next_available_color` helper
     categories already use for the same purpose.
@@ -85,6 +89,7 @@ def post_goal(
         created_at=datetime.now(tz=UTC),
     )
     insert_goal(session, user_id, goal)
+    location_of(http_request, response, "get_goal", goal_id=goal.goal_id)
     return goal
 
 
@@ -239,9 +244,34 @@ def _validate_remainder_invariant(automations: list[GoalAutomation]) -> None:
         raise HTTPException(status_code=400, detail="A 'remainder' automation must be the lowest-priority row")
 
 
-@router.post("/goal-contributions")
+@router.get("/goal-contributions/{contribution_id}")
+def get_goal_contribution(
+    contribution_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalContribution:
+    """Return one dated allocation by id — the address `post_goal_contribution` advertises.
+
+    Returns
+    -------
+    GoalContribution
+
+    Raises
+    ------
+    HTTPException
+        404 if no contribution has this id.
+    """
+    contribution = load_goal_contributions(session, user_id).get(contribution_id)
+    if contribution is None:
+        raise HTTPException(status_code=404, detail=f"Goal contribution {contribution_id!r} not found")
+    return contribution
+
+
+@router.post("/goal-contributions", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_goal_contribution(
     request: GoalContributionCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> GoalContribution:
@@ -251,7 +281,9 @@ def post_goal_contribution(
     arbitrary event with no natural key to derive an id from, so the
     server generates an opaque one — two contributions with identical
     fields (e.g. the same goal, date, and amount entered twice) are
-    distinct rows, not a collision.
+    distinct rows, not a collision. So the `201` is unconditional even
+    though the write below goes through an upsert: the id it upserts on
+    was minted moments earlier and cannot already exist.
 
     Returns
     -------
@@ -271,6 +303,7 @@ def post_goal_contribution(
         edited=request.edited,
     )
     upsert_goal_contribution(contribution, session, user_id)
+    location_of(http_request, response, "get_goal_contribution", contribution_id=contribution.contribution_id)
     return contribution
 
 
@@ -334,16 +367,52 @@ def delete_goal_contribution(
     session.commit()
 
 
-@router.post("/goal-automations/contributions")
+@router.get("/goal-automations/{automation_id}")
+def get_goal_automation(
+    automation_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> GoalAutomation:
+    """Return one automation by id, either direction — the address `post_goal_automation` advertises.
+
+    Not direction-scoped, matching `PATCH` and `DELETE` on this same path:
+    an automation is addressed by its id alone, and `contribution` versus
+    `withdrawal` is a field on it, not part of its address.
+
+    Returns
+    -------
+    GoalAutomation
+
+    Raises
+    ------
+    HTTPException
+        404 if no automation has this id.
+    """
+    automation = next(
+        (a for a in load_goal_automations(session, user_id) if a.automation_id == automation_id),
+        None,
+    )
+    if automation is None:
+        raise HTTPException(status_code=404, detail=f"Goal automation {automation_id!r} not found")
+    return automation
+
+
+@router.post("/goal-automations/contributions", status_code=201, responses=CREATED_WITH_LOCATION)
 def post_goal_automation(
     request: GoalAutomationCreate,
+    http_request: Request,
+    response: Response,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> GoalAutomation:
     """Create one new scheduled contribution automation, appended after every one already saved.
 
-    `automation_id` is server-minted — two rules can validly share every
-    other field. `priority` is never taken from the client: this always
+    `automation_id` is server-minted, so the `201` is unconditional — two
+    rules can validly share every other field. Its `Location` points at
+    `GET /goal-automations/{automation_id}`, dropping the `contributions`
+    segment: the direction picks which collection this posts *to*, and is
+    not part of the created row's own address. `priority` is never taken
+    from the client: this always
     goes after the current lowest-priority contribution, matching the
     Goals page's own "append at the end of the ordered list" behavior.
     Drag-and-drop reordering still goes through
@@ -370,6 +439,7 @@ def post_goal_automation(
         currency=request.currency,
     )
     upsert_goal_automation(automation, session, user_id)
+    location_of(http_request, response, "get_goal_automation", automation_id=automation.automation_id)
     return automation
 
 
@@ -527,6 +597,35 @@ def get_goals_summary(
     balances = all_goal_balances(contributions, list(load_goals(session, user_id).keys()), as_of_date, display)
     unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions, as_of_date, display)
     return GoalsSummary(balances=balances, unallocated=unallocated)
+
+
+# Registered *after* `GET /goals/summary`, and that ordering is load-bearing:
+# Starlette matches routes in registration order, and `/goals/summary` matches
+# `/goals/{goal_id}` on a GET just as well as a real goal id does. Declared
+# first, this route would swallow the summary endpoint and answer 404 for
+# `goal_id="summary"`. Nothing enforces the order but this comment, so a
+# future `GET /goals/<literal>` has to go above here too.
+@router.get("/goals/{goal_id}")
+def get_goal(
+    goal_id: str,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> Goal:
+    """Return one goal by id — the address `post_goal` advertises.
+
+    Returns
+    -------
+    Goal
+
+    Raises
+    ------
+    HTTPException
+        404 if no goal has this id.
+    """
+    goal = load_goals(session, user_id).get(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail=f"Goal {goal_id!r} not found")
+    return goal
 
 
 def _next_contribution_id(existing_ids: set[str], prefix: str) -> str:
