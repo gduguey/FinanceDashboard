@@ -165,7 +165,13 @@ def get_postings(
         row["resolved_by_transfer_rule_id"] = (
             None if manual_override_posting_id is not None else resolved_by_rule.get(row["transaction_id"])
         )
-    return PostingPage(items=[PostingRow(**row) for row in rows], total=resolution.total, limit=limit, offset=offset)
+    return PostingPage(
+        items=[PostingRow(**row) for row in rows],
+        window_unit="transaction",
+        total=resolution.total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/ledger/export")
@@ -208,6 +214,7 @@ def get_ledger_export(
     page = load_ledger_page(session, user_id, limit=limit, offset=offset)
     return LedgerExportPage(
         items=[Posting(**row) for row in page.to_dicts()],
+        window_unit="posting",
         total=ledger_posting_count(session, user_id),
         limit=limit,
         offset=offset,

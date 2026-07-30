@@ -104,28 +104,3 @@ the auth path.
 **Why deferred:** it adds a live external call to the most security-sensitive code
 path (every request's auth check), so it deserves careful, isolated implementation
 and tests — not a quick bolt-on.
-
-## 4. `PostingPage` and `LedgerExportPage` give identical field names different units
-
-**Where:** `PostingPage` and `LedgerExportPage` in
-`src/accounting/api/api_models.py`, served by `GET /api/v1/accounting/postings`
-and `GET /api/v1/accounting/ledger/export`.
-
-**What:** both carry `items`, `total`, `limit` and `offset`, and the names mean
-different things. On `PostingPage`, `total` and `limit` count **transactions**
-while `items` holds **postings** — one transaction contributes every leg, so
-`len(items)` is normally larger than `limit`. On `LedgerExportPage` all four
-count postings. A client that learns the shape from one endpoint and applies
-it to the other computes the wrong number of pages, and nothing in the schema
-says so. Both paging loops in `web/src/lib/accountingApi.ts` are correct today
-only because each carries a comment stating its own unit.
-
-**Intended fix:** one generic `Page[T]` envelope shared by both, with the unit
-named in the field or in the type — `total_transactions` versus
-`total_postings`, or two envelope types — so the difference is impossible to
-miss rather than documented in a comment.
-
-**Why deferred:** the fix is the easy half; auditing every consumer of both
-envelopes for an assumption about the unit is the real work, and it belongs
-with the paging changes rather than with the status-code and `Location`
-contract.

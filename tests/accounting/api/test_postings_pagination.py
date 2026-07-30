@@ -216,3 +216,49 @@ def test_every_leg_of_a_transaction_lands_on_the_same_page(client) -> None:
         transaction_ids = {posting["transaction_id"] for posting in items}
         assert len(transaction_ids) == 1
         assert len(items) == legs_per_transaction[transaction_ids.pop()]
+
+
+def test_both_paged_reads_share_one_envelope_and_each_names_its_own_window_unit() -> None:
+    """The two pages carried the same four field names meaning different things in each.
+
+    `total`/`limit`/`offset` counted transactions on `PostingPage` and
+    postings on `LedgerExportPage`, with nothing in the schema saying so — a
+    client that learned the shape from one endpoint and reused it on the other
+    computed the wrong number of pages. They are one generic `Page` now, and
+    the unit is a required field pinned to a `const` per endpoint, so it is
+    part of the contract rather than a docstring.
+    """
+    schemas = trades_api.app.openapi()["components"]["schemas"]
+    postings_page, export_page = schemas["PostingPage"], schemas["LedgerExportPage"]
+
+    window_fields = {"window_unit", "total", "limit", "offset"}
+    assert window_fields <= set(postings_page["properties"])
+    assert set(postings_page["properties"]) == set(export_page["properties"])
+    assert window_fields <= set(postings_page["required"])
+    assert window_fields <= set(export_page["required"])
+
+    assert postings_page["properties"]["window_unit"]["const"] == "transaction"
+    assert export_page["properties"]["window_unit"]["const"] == "posting"
+
+
+def test_a_posting_page_reports_the_transaction_window_it_was_cut_by(client) -> None:
+    """The unit is on every response, not only in the schema — `items` is longer than `limit` here."""
+    _seed_transactions(client, 4)
+
+    page = _page(client, limit=2)
+    assert page["window_unit"] == "transaction"
+    assert page["limit"] == 2
+    assert len(page["items"]) == 4  # two legs per transaction: `items` is in postings, `limit` is not
+
+
+def test_a_ledger_export_page_reports_the_posting_window_it_was_cut_by(client) -> None:
+    """The export's window is postings, so there `len(items)` and `limit` do line up."""
+    _seed_transactions(client, 4)
+
+    response = client.get("/api/v1/accounting/ledger/export", params={"limit": 3})
+    assert response.status_code == 200
+    page = response.json()
+    assert page["window_unit"] == "posting"
+    assert page["total"] == 8  # two legs per transaction
+    assert page["limit"] == 3
+    assert len(page["items"]) == 3

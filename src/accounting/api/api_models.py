@@ -709,46 +709,58 @@ class PostingRow(Posting):
     transfer_link_source: TransferLinkSource | None = None
 
 
-class PostingPage(BaseModel):
-    """One page of resolved postings, with what a client needs to ask for the next one.
+class Page[ItemT, WindowUnitT: str](BaseModel):
+    """One page of a collection, plus what a client needs to ask for the next one.
 
-    Pages are cut by *transaction*, so `items` holds every leg of every
-    transaction on the page and its length is not `limit` — `limit` counts
-    transactions, `items` counts postings, and a split transaction
+    `total`, `limit` and `offset` all count **`window_unit`s**, which is not
+    always the unit `items` is in: `GET /postings` cuts its window by
+    transaction and answers with every leg of every transaction in it, so
+    `len(items)` there is normally larger than `limit`. The two paged reads
+    used to be two hand-written envelopes with the same four field names
+    meaning different things in each, and nothing but a docstring saying so —
+    which is exactly the mistake a client makes by reading one endpoint and
+    reusing the shape. `window_unit` is a required field, not a default, so
+    every page states its own unit on the wire and the schema pins it to one
+    `const` per endpoint.
+
+    Paging is therefore always the same arithmetic regardless of endpoint:
+    advance `offset` by the `limit` the *server* echoed back (never the one
+    you asked for, which is clamped to `PAGE_LIMIT_MAX`) until it reaches
+    `total`. `len(items)` is never the stride.
+    """
+
+    items: list[ItemT]
+    window_unit: WindowUnitT
+    """What `total`, `limit` and `offset` count — never necessarily an `items` entry."""
+    total: int
+    """How many `window_unit`s match, ignoring this page's window."""
+    limit: int
+    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
+    offset: int
+    """How many `window_unit`s were skipped."""
+
+
+class PostingPage(Page[PostingRow, Literal["transaction"]]):
+    """One page of resolved postings, cut by transaction.
+
+    `items` holds every leg of every transaction on the page, ordered by
+    `posted_at` descending then posting id — the same order the window is cut
+    in, so concatenating consecutive pages yields one correctly sorted list
+    rather than ascending runs in descending order. A split transaction
     contributes more rows than legs it was imported with. See
-    `repositories.ledger.visible_transaction_page` for why the cut is there.
+    `repositories.ledger.visible_transaction_page` for why the cut is by
+    transaction rather than by posting.
     """
 
-    items: list[PostingRow]
-    """The page's postings, every leg of every transaction it covers, newest first.
 
-    Ordered by `posted_at` descending then posting id, the same order the
-    page window is cut in — so concatenating consecutive pages yields one
-    correctly sorted list rather than ascending runs in descending order."""
-    total: int
-    """How many transactions match, ignoring this page's window — not how many `items` there are."""
-    limit: int
-    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
-    offset: int
-    """How many transactions were skipped."""
+class LedgerExportPage(Page[Posting, Literal["posting"]]):
+    """One page of the raw ledger, as exported, cut by posting.
 
-
-class LedgerExportPage(BaseModel):
-    """One page of the raw ledger, as exported.
-
-    Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
-    export applies no overlay, so nothing here needs a transaction's legs
-    kept together. See `repositories.ledger.load_ledger_page`.
+    `items` is oldest first, exactly as imported. The raw export applies no
+    overlay, so nothing here needs a transaction's legs kept together — which
+    is the whole reason its window unit differs from `PostingPage`'s. See
+    `repositories.ledger.load_ledger_page`.
     """
-
-    items: list[Posting]
-    """The page's postings, oldest first, exactly as imported."""
-    total: int
-    """How many postings the user has in total."""
-    limit: int
-    """The page size actually applied, after clamping to `PAGE_LIMIT_MAX`."""
-    offset: int
-    """How many postings were skipped."""
 
 
 class PostingMergeUpsert(BaseModel):

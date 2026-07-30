@@ -157,6 +157,26 @@ load-bearing and commented at each site:
 A future `GET /<collection>/<literal>` has to go above the item route in the
 same module.
 
+### Paged reads
+
+The two collection reads too large to answer in one response —
+`GET /postings` and `GET /ledger/export` — share one envelope, the generic
+`api_models.Page`. Its `total`, `limit` and `offset` all count
+**`window_unit`s**, a required field pinned to one `const` per endpoint:
+`"transaction"` for `GET /postings`, `"posting"` for the export. That field
+exists because the two used to be separate hand-written envelopes whose four
+identically-named fields meant different things — `GET /postings` cuts its
+window by transaction and answers with every leg of every transaction in it,
+so `len(items)` there is normally larger than `limit`, and a client that
+learned the shape from one endpoint and reused it on the other computed the
+wrong number of pages with nothing in the schema to warn it.
+
+Paging is the same arithmetic on both: advance `offset` by the `limit` the
+**server** echoed back, never the one you asked for — a request above
+`PAGE_LIMIT_MAX` is clamped rather than rejected (see that constant), so
+striding by the requested size would step past records the server never sent
+and truncate silently. `len(items)` is never the stride.
+
 ## Which models the wire is made of
 
 Every route answers with a model declared in `api.api_models` or

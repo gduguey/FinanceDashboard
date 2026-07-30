@@ -5834,15 +5834,21 @@ export interface components {
     }
     /**
      * LedgerExportPage
-     * @description One page of the raw ledger, as exported.
+     * @description One page of the raw ledger, as exported, cut by posting.
      *
-     *     Unlike `PostingPage`, `total` and `limit` count **postings** — the raw
-     *     export applies no overlay, so nothing here needs a transaction's legs
-     *     kept together. See `repositories.ledger.load_ledger_page`.
+     *     `items` is oldest first, exactly as imported. The raw export applies no
+     *     overlay, so nothing here needs a transaction's legs kept together — which
+     *     is the whole reason its window unit differs from `PostingPage`'s. See
+     *     `repositories.ledger.load_ledger_page`.
      */
     LedgerExportPage: {
       /** Items */
       items: components['schemas']['Posting'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'posting'
       /** Total */
       total: number
       /** Limit */
@@ -6318,17 +6324,24 @@ export interface components {
     }
     /**
      * PostingPage
-     * @description One page of resolved postings, with what a client needs to ask for the next one.
+     * @description One page of resolved postings, cut by transaction.
      *
-     *     Pages are cut by *transaction*, so `items` holds every leg of every
-     *     transaction on the page and its length is not `limit` — `limit` counts
-     *     transactions, `items` counts postings, and a split transaction
+     *     `items` holds every leg of every transaction on the page, ordered by
+     *     `posted_at` descending then posting id — the same order the window is cut
+     *     in, so concatenating consecutive pages yields one correctly sorted list
+     *     rather than ascending runs in descending order. A split transaction
      *     contributes more rows than legs it was imported with. See
-     *     `repositories.ledger.visible_transaction_page` for why the cut is there.
+     *     `repositories.ledger.visible_transaction_page` for why the cut is by
+     *     transaction rather than by posting.
      */
     PostingPage: {
       /** Items */
       items: components['schemas']['PostingRow'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'transaction'
       /** Total */
       total: number
       /** Limit */

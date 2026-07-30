@@ -342,14 +342,15 @@ export const accountingApi = {
   // replaces this loop with real pagination in the Transactions table; until
   // then every consumer still receives the complete list it expects.
   //
-  // `total` counts *transactions* and `limit` is in transactions too, so the
-  // loop advances by the page's own size and stops once `offset` covers
-  // `total`. It advances by `page.limit`, the size the server actually
-  // applied after clamping, never by the size we asked for: if this
-  // constant is ever above the server's cap — mid-deploy, say — advancing
-  // by the request would step past records the server never sent and
-  // truncate the ledger silently, which is the exact failure paging exists
-  // to avoid.
+  // `total`, `limit` and `offset` are all in the page's own `window_unit`
+  // (`"transaction"` here, `"posting"` for the export below), so the same
+  // arithmetic is correct for both without either loop knowing which unit it
+  // is in — `page.items.length` is what differs, and it is never the stride.
+  // The stride is `page.limit`, the size the server actually applied after
+  // clamping, never the size we asked for: if this constant is ever above the
+  // server's cap — mid-deploy, say — advancing by the request would step past
+  // records the server never sent and truncate the ledger silently, which is
+  // the exact failure paging exists to avoid.
   postings: async () => {
     const limit = POSTINGS_PAGE_LIMIT
     const items: Posting[] = []
@@ -365,8 +366,8 @@ export const accountingApi = {
   },
   // Same paging loop as `postings` above, and for the same reason — an
   // export that silently stopped at the cap would write a partial backup to
-  // a file the user believes is complete. `total` and `limit` count postings
-  // here, not transactions.
+  // a file the user believes is complete. Its `window_unit` is `"posting"`
+  // rather than `"transaction"`, which changes none of the arithmetic.
   ledgerExport: async () => {
     const limit = POSTINGS_PAGE_LIMIT
     const items: RawPosting[] = []
