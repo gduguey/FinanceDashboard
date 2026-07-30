@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from accounting.ledger.frame import to_analytics_amount
+from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     from accounting.models import GoalAutomation

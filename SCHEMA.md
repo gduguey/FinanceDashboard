@@ -1515,14 +1515,6 @@ left alone.
 
 ### Tooling and dead code
 
-- **`src/migration/` is excluded from lint.** `pyproject.toml`'s
-  `[tool.ruff] exclude = ["examples/", "*.ipynb", "src/migration/"]`. The
-  baseline migration and `app_role.py` are not linted or type-checked to the
-  standard the rest of `src/` is.
-- **`postings_to_ledger_frame` is dead code.** In
-  `src/accounting/ledger/frame.py`, with no caller anywhere in `src/`, `tests/`
-  or `web/`. It duplicates the frame construction that
-  `importers.ingest.load_ledger` performs directly.
 - **`statement_archive` is duplicated.** `accounting.utils.statement_archive`
   and `trades.utils.statement_archive` are two copies of the same module. Not a
   schema problem — but the accounting one is the provenance mechanism §4.10

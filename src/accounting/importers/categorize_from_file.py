@@ -28,12 +28,12 @@ from accounting.importers.canonical.csv import (
     read_tabular_rows,
     resolve_categorization_rows,
 )
-from accounting.ledger.frame import to_analytics_amount
 from accounting.models import ManualOverride
 from accounting.repositories.interpretation import (
     load_overrides_for_postings,
     save_overrides_for_postings,
 )
+from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
     import uuid
