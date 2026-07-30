@@ -255,7 +255,12 @@ function RecurringAdditionsList({ additions, goals }: { additions: GoalAutomatio
                     onCommit={(value) => update(addition.automation_id, { value: value ?? 0 })}
                   />
                 )}
-                <Button variant="ghost" size="icon" onClick={() => remove(addition.automation_id)}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Delete the automation for ${goalName(goals, addition.goal_id)}`}
+                  onClick={() => remove(addition.automation_id)}
+                >
                   <Trash2 className="size-3.5 text-muted-foreground" />
                 </Button>
               </li>
@@ -328,7 +333,12 @@ function WithdrawalPrioritiesList({
             >
               <GripVertical className="size-4 shrink-0 cursor-grab text-muted-foreground" />
               <span className="flex-1 text-sm">{goalName(goals, entry.goal_id)}</span>
-              <Button variant="ghost" size="icon" onClick={() => remove(entry.automation_id)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${goalName(goals, entry.goal_id)} from the drawdown order`}
+                onClick={() => remove(entry.automation_id)}
+              >
                 <Trash2 className="size-3.5 text-muted-foreground" />
               </Button>
             </li>

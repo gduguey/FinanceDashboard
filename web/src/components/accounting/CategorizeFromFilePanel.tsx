@@ -118,6 +118,7 @@ export function CategorizeFromFilePanel() {
             disabled={preview.isPending || apply.isPending}
             className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
             title="Start over with a different file"
+            aria-label={`Start over — discard ${file.name}`}
           >
             <X className="size-3.5" />
           </button>

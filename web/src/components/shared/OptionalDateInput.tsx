@@ -47,6 +47,10 @@ export function OptionalDateInput({
           onClick={() => onChange('')}
           className="text-muted-foreground hover:text-foreground"
           title="Clear date"
+          // `placeholder` is what the field is *for* ("No end date", "Until…"),
+          // so it is the only thing in scope that distinguishes one of these
+          // from another when two optional dates sit side by side in a form.
+          aria-label={`Clear ${placeholder.toLowerCase()}`}
         >
           <X className="size-3.5" />
         </button>

@@ -211,7 +211,12 @@ function AccountsTable({
               </TableCell>
               <TableCell>
                 {otherAssetId && (
-                  <Button variant="ghost" size="icon" onClick={() => onRemoveOtherAsset(otherAssetId)}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete the other asset ${row.name}`}
+                    onClick={() => onRemoveOtherAsset(otherAssetId)}
+                  >
                     <Trash2 className="size-3.5 text-muted-foreground" />
                   </Button>
                 )}

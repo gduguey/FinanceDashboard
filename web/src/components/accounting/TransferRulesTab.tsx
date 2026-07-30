@@ -291,10 +291,20 @@ export function TransferRulesTab({
                       {linkedRows.length > 0 ? `${linkedRows.length} linked` : '—'}
                     </TableCell>
                     <TableCell className="flex gap-1" onClick={(event) => event.stopPropagation()}>
-                      <Button variant="ghost" size="icon" onClick={() => setEditing(rule)}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Edit the rule matching "${rule.description_contains}"`}
+                        onClick={() => setEditing(rule)}
+                      >
                         <Pencil className="size-3.5 text-muted-foreground" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => removeRule(rule.rule_id)}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Delete the rule matching "${rule.description_contains}"`}
+                        onClick={() => removeRule(rule.rule_id)}
+                      >
                         <Trash2 className="size-3.5 text-muted-foreground" />
                       </Button>
                     </TableCell>

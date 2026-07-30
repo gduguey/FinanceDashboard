@@ -206,7 +206,17 @@ export function CloseAccountDialog({
                         )}
                       </Field>
                     )}
-                    <Button variant="ghost" size="icon" onClick={() => removeRow(row.key)} title="Remove this split">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => removeRow(row.key)}
+                      title="Remove this split"
+                      // The row's own identity is whichever account it points
+                      // at, which the user may not have chosen yet — so the
+                      // name falls back to the position in the list rather
+                      // than saying nothing at all.
+                      aria-label={other ? `Remove the split to ${other.name}` : `Remove split ${rows.indexOf(row) + 1}`}
+                    >
                       <Trash2 className="size-3.5 text-muted-foreground" />
                     </Button>
                   </div>

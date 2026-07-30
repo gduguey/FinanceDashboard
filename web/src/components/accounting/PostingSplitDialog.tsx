@@ -115,7 +115,12 @@ export function PostingSplitDialog({
                 onChange={(event) => updateLeg(index, { description: event.target.value })}
               />
               {legs.length > 2 && (
-                <Button variant="ghost" size="icon" onClick={() => removeLeg(index)}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`Remove leg ${index + 1}`}
+                  onClick={() => removeLeg(index)}
+                >
                   <Trash2 className="size-3.5 text-muted-foreground" />
                 </Button>
               )}

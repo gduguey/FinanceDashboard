@@ -25,6 +25,7 @@ export function TagsCell({
             type="button"
             onClick={() => onChange(tagIds.filter((id) => id !== tagId))}
             className="text-muted-foreground/60 hover:text-destructive"
+            aria-label={`Remove the tag ${tags[tagId]?.name ?? tagId}`}
           >
             <X className="size-2.5" />
           </button>

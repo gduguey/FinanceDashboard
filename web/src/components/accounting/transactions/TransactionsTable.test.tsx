@@ -287,7 +287,7 @@ describe('TransactionsTable', () => {
       const user = userEvent.setup()
       renderTable(postings)
 
-      await user.click(screen.getAllByRole('button', { name: 'Mark as transfer' })[0])
+      await user.click(screen.getAllByRole('button', { name: /Mark .* as a transfer/ })[0])
 
       expect(screen.getByText(/Pick the transaction that matches/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
@@ -297,7 +297,7 @@ describe('TransactionsTable', () => {
       const user = userEvent.setup()
       renderTable([...postings, ...expense('mismatch', 'Nowhere near', { amount: -3 })])
 
-      await user.click(screen.getAllByRole('button', { name: 'Mark as transfer' })[0])
+      await user.click(screen.getAllByRole('button', { name: /Mark .* as a transfer/ })[0])
 
       const row = screen.getByText('Nowhere near').closest('tr')
       expect(row).toHaveAttribute('title', expect.stringContaining("Amounts don't match"))
@@ -306,11 +306,51 @@ describe('TransactionsTable', () => {
     it('leaves pick mode on Cancel', async () => {
       const user = userEvent.setup()
       renderTable(postings)
-      await user.click(screen.getAllByRole('button', { name: 'Mark as transfer' })[0])
+      await user.click(screen.getAllByRole('button', { name: /Mark .* as a transfer/ })[0])
 
       await user.click(screen.getByRole('button', { name: 'Cancel' }))
 
       expect(screen.queryByText(/Pick the transaction that matches/)).not.toBeInTheDocument()
+    })
+  })
+
+  // This table is where the app packs the most icon-only controls into the
+  // least space — a row can carry mark-as-transfer, AI-suggest, split/undo,
+  // a per-tag remove and a rule-exclusion, all of them a bare glyph. Every
+  // one of those was shipped nameless at some point, which is a screen
+  // reader hearing "button, button, button" down a column of thousands.
+  //
+  // Asserted generically rather than label by label on purpose. A test that
+  // pinned each expected string would pass a brand-new unnamed button
+  // straight through, which is the exact regression worth catching; this one
+  // fails the moment any button reachable in this table has nothing to
+  // announce, including buttons nobody has written yet.
+  describe('accessible names', () => {
+    it('gives every button in a fully-loaded row something to announce', () => {
+      renderTable(
+        [
+          // Uncategorized and tagged: renders mark-as-transfer, AI-suggest,
+          // split, and one remove button per tag.
+          ...expense('a', 'Corner Store', { tag_ids: ['travel'] }),
+          // A split leg — its id is what makes the row offer undo-split
+          // instead of split (see `splitOriginalId`).
+          ...expense('b:split:1', 'Rent, half'),
+          // Resolved by a rule, which adds the exclude-from-rule control.
+          ...expense('c', 'Gym', { resolved_by_transfer_rule_id: 'rule-1' }),
+        ],
+        { rules: [{ rule_id: 'rule-1', description_contains: 'GYM' } as TransferRule] },
+      )
+
+      const buttons = screen.getAllByRole('button')
+      // Guards the assertion below against quietly passing on an empty
+      // table: if the fixtures ever stop rendering rows, this fails loudly
+      // instead of vacuously succeeding over zero buttons.
+      expect(buttons.length).toBeGreaterThan(5)
+      for (const button of buttons) {
+        // `expect.soft` so one nameless button doesn't hide the rest —
+        // the failure output lists every offender in a single run.
+        expect.soft(button, `button with no accessible name: ${button.outerHTML}`).toHaveAccessibleName()
+      }
     })
   })
 })

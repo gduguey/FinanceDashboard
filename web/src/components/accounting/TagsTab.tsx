@@ -96,7 +96,12 @@ export function TagsTab({ tags }: { tags: Record<string, Tag> }) {
                     />
                   </TableCell>
                   <TableCell>
-                    <Button variant="ghost" size="icon" onClick={() => removeTag(tag.tag_id)}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`Delete the tag ${tag.name}`}
+                      onClick={() => removeTag(tag.tag_id)}
+                    >
                       <Trash2 className="size-3.5 text-muted-foreground" />
                     </Button>
                   </TableCell>

@@ -275,6 +275,7 @@ export function SimulatorPage() {
                     type="button"
                     onClick={() => deleteScenario(scenario.scenario_id)}
                     className="text-muted-foreground/60 hover:text-destructive"
+                    aria-label={`Delete the scenario ${scenario.name}`}
                   >
                     <Trash2 className="size-2.5" />
                   </button>

@@ -155,6 +155,7 @@ function MergeReviewDialog({
             type="button"
             onClick={onPrevious}
             title="Previous suggestion (←)"
+            aria-label="Previous duplicate suggestion"
             className="absolute top-1/2 -left-12 hidden -translate-y-1/2 rounded-full border border-border bg-popover p-2 text-muted-foreground hover:text-foreground sm:flex"
           >
             <ChevronLeft className="size-4" />
@@ -165,6 +166,7 @@ function MergeReviewDialog({
             type="button"
             onClick={onNext}
             title="Next suggestion (→)"
+            aria-label="Next duplicate suggestion"
             className="absolute top-1/2 -right-12 hidden -translate-y-1/2 rounded-full border border-border bg-popover p-2 text-muted-foreground hover:text-foreground sm:flex"
           >
             <ChevronRight className="size-4" />
@@ -570,7 +572,13 @@ export function DuplicateSuggestionsPanel({ accounts }: { accounts: Record<strin
                         {Math.round(row.certainty * 100)}%
                       </TableCell>
                       <TableCell onClick={(event) => event.stopPropagation()}>
-                        <Button variant="ghost" size="icon" title="Not a duplicate" onClick={() => dismiss(row)}>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Not a duplicate"
+                          aria-label={`Dismiss the duplicate suggestion for "${row.descriptionsPreview}"`}
+                          onClick={() => dismiss(row)}
+                        >
                           <Archive className="size-3.5 text-muted-foreground" />
                         </Button>
                       </TableCell>

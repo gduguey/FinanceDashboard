@@ -299,6 +299,7 @@ function ClassificationSection({
                   type="button"
                   onClick={() => removeCategory(category.category_id, category.name)}
                   className="text-muted-foreground/60 hover:text-destructive"
+                  aria-label={`Delete the category ${category.name}`}
                 >
                   <Trash2 className="size-3.5" />
                 </button>
@@ -328,6 +329,7 @@ function ClassificationSection({
                           type="button"
                           onClick={() => removeCategory(child.category_id, child.name)}
                           className="text-muted-foreground/60 hover:text-destructive"
+                          aria-label={`Delete the subcategory ${child.name} of ${category.name}`}
                         >
                           <Trash2 className="size-2.5" />
                         </button>
@@ -754,10 +756,20 @@ function CategoryPatternsSection({
                   />
                 </TableCell>
                 <TableCell className="flex gap-1">
-                  <Button variant="ghost" size="icon" onClick={() => setEditing(pattern)}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Edit the pattern matching "${pattern.description_contains}"`}
+                    onClick={() => setEditing(pattern)}
+                  >
                     <Pencil className="size-3.5 text-muted-foreground" />
                   </Button>
-                  <Button variant="ghost" size="icon" onClick={() => removePattern(pattern.pattern_id)}>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Delete the pattern matching "${pattern.description_contains}"`}
+                    onClick={() => removePattern(pattern.pattern_id)}
+                  >
                     <Trash2 className="size-3.5 text-muted-foreground" />
                   </Button>
                 </TableCell>

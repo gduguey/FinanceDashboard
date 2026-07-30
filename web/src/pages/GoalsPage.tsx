@@ -114,7 +114,14 @@ function GoalListSection({
       <CardHeader>
         <CardTitle>Goals</CardTitle>
         <CardAction>
-          <Button variant="outline" size="icon" onClick={add} disabled={createGoal.isPending} title="Add goal">
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={add}
+            disabled={createGoal.isPending}
+            title="Add goal"
+            aria-label="Add a goal"
+          >
             <Plus className="size-4" />
           </Button>
         </CardAction>
@@ -163,6 +170,7 @@ function GoalListSection({
                         <Button
                           variant="ghost"
                           size="icon"
+                          aria-label={`Delete the goal ${goal.name}`}
                           onClick={(event) => {
                             event.stopPropagation()
                             remove(goal.goal_id)

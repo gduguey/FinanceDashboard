@@ -535,6 +535,7 @@ export function ImportPage() {
                   disabled={entry.status === 'importing'}
                   className="absolute top-2 right-2 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
                   title="Abandon this import"
+                  aria-label={`Abandon the import of ${entry.file.name}`}
                 >
                   <X className="size-3.5" />
                 </button>
