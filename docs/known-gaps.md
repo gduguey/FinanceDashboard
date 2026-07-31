@@ -406,9 +406,9 @@ drifted.)
 
 ## 11. A posting's identity embeds its description, so an enriched statement double-counts
 
-`row_hash(account_id, posting_date, str(amount), description)` — documented in
-`docs/accounting/adding-accounts.md` — is the natural key a re-imported row is
-recognised by. Because `description` is an *input*, a bank that posts
+`row_hash(account_id, posting_date, f"{amount:.4f}", description)` — documented
+in `docs/accounting/adding-accounts.md` — is the natural key a re-imported row
+is recognised by. Because `description` is an *input*, a bank that posts
 `PENDING TESCO` and later enriches it to `TESCO STORES 1234` produces a
 different key for the same real transaction, and it is imported twice. In a
 money app that is a silent double-count.
