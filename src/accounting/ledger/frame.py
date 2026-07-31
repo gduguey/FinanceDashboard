@@ -79,14 +79,3 @@ this module documents at one place — every ledger, dashboard, and API module
 reads one flat row shape, and none of them has to know, or re-derive, which
 of these columns is a fact about the event rather than about the leg.
 """
-
-
-def empty_ledger_frame() -> pl.DataFrame:
-    """Build the empty frame, correctly typed.
-
-    Returns
-    -------
-    polars.DataFrame
-        Zero rows, `LEDGER_FRAME_SCHEMA` columns.
-    """
-    return pl.DataFrame(schema=LEDGER_FRAME_SCHEMA)

@@ -338,20 +338,6 @@ def replace_rule_exclusions(session: Session, user_id: uuid.UUID, rules: Iterabl
     session.flush()
 
 
-def clear_rule_exclusions(session: Session, user_id: uuid.UUID) -> None:
-    """Drop every rule exclusion this user has, so `replace_rule_exclusions` can rewrite them.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose exclusions to clear.
-    """
-    session.query(adb.CategorizationRuleExclusion).filter_by(user_id=user_id).delete()
-    session.flush()
-
-
 def replace_transfer_rules(
     session: Session, user_id: uuid.UUID, rules: Iterable[TransferRule], *, prune: bool = True
 ) -> dict[str, uuid.UUID]:
@@ -1334,24 +1320,6 @@ def insert_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: 
         for transaction_id in (link.transaction_id_a, link.transaction_id_b)
     )
     session.flush()
-
-
-def replace_transfer_links(session: Session, user_id: uuid.UUID, transfer_links: Iterable[TransferLink]) -> None:
-    """Replace every confirmed transfer link this user has, touching no other table.
-
-    Parameters
-    ----------
-    session
-        An open database session; the caller commits.
-    user_id
-        Whose links these are.
-    transfer_links
-        The complete desired set.
-    """
-    session.query(adb.TransferLinkedTransaction).filter_by(user_id=user_id).delete()
-    session.query(adb.TransferLink).filter_by(user_id=user_id).delete()
-    session.flush()
-    insert_transfer_links(session, user_id, transfer_links)
 
 
 def remove_transfer_link(session: Session, user_id: uuid.UUID, link_id: str) -> bool:
