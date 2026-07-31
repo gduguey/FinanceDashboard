@@ -45,25 +45,44 @@ Both are measured as a median of repeated calls, not a single one, because
 the first request through a fresh process pays for imports, Polars' thread
 pool and the connection handshake, and none of that is what regresses.
 
+Every figure here was re-measured after B5
+------------------------------------------
+The numbers this module used to quote were taken while its own `ANALYZE`
+was silently doing nothing (see `conftest._analyze_as_owner`), so they
+described a query planned from absent statistics rather than the one the
+application issues. They are not adjusted here, they are replaced: the old
+values are not a baseline this can be compared against.
+
 What this gate does not catch, stated plainly
 ---------------------------------------------
-A constant-factor slowdown of roughly 2x or less. This was measured rather
-than assumed: deliberately breaking `get_postings` to resolve the whole
-ledger per request (`limit=None`) moved the 10k page from 275 ms to 526 ms
-and the scaling ratio from 2.6x to 3.6x — a real regression that neither
-assertion below rejects. It cannot: 3.6x is too close to the healthy 2.6x
-to separate on a shared runner, and no CI-safe wall clock distinguishes
-275 ms from 526 ms.
+A constant-factor slowdown of roughly 2x or less, and — for now — a page
+that stops being a page at all.
 
-That is a consequence of the read path's real shape rather than a gap in
-the gate. Even healthy, `GET /postings` is mostly proportional to total
-ledger size, not page size — fitting the two measured volumes gives about
-61 ms fixed and 0.021 ms per transaction, so at 10k roughly three quarters
-of the page's cost is already ledger-proportional. `load_overrides`, the
-rules and the merges are each loaded in full regardless of the page; known
-gap 6 is the entry that owns that, and closing it is what would make a
-tighter ratio possible here. Until then this gate catches complexity
-changes and collapses, which is what it claims and no more.
+The second half is measured rather than assumed. Deliberately breaking
+`get_postings` to resolve the whole ledger per request (`limit=None`) moves
+the 10k page from 68 ms to 471 ms and the scaling ratio from 1.0x to 3.7x.
+That is a much larger separation than the same experiment produced before
+C6 was fixed, when healthy was 2.6x and broken was 3.6x and the two could
+not be told apart. It is nonetheless still under `MAX_SCALING_FACTOR`, so
+the assertion below does not reject it. Tightening the bound to catch it is
+a real option now and deliberately not taken here: local healthy runs sit
+at 1.0-1.8x, CI has historically measured roughly twice the local ratio
+(see `MAX_INCOME_STATEMENT_SCALING_FACTOR`), and a bound derived from a
+quiet laptop is how a gate starts flapping. Item C8 owns tightening it once
+post-B5 CI figures exist to derive it from.
+
+What changed with C6, and why the ratios above are so much lower than the
+ones this module used to quote: the page's SQL read is now genuinely
+proportional to the page rather than to the ledger. Matching the page's
+transaction array against `Transaction.id` made the planner reach `postings`
+with a sequential scan of every row the tenant owns; matching it against
+the indexed `Posting.transaction_id` reaches them through
+`ix_postings_transaction_id_user_id`. Fitting the two measured volumes now
+gives about **65 ms fixed and 0.0005 ms per transaction**, against the
+61 ms and 0.021 ms recorded before — so the claim that "at 10k roughly
+three quarters of the page's cost is already ledger-proportional" no longer
+holds, and the whole-collection loads that remain (rules, accounts, merges,
+links) are the small constant they were always described as.
 """
 
 from __future__ import annotations
@@ -94,6 +113,17 @@ _LEDGER_WINDOW = {"start": "2019-01-01", "end": "2030-01-01"}
 _PAGE_SIZE = 200
 """The default page the Transactions screen asks for (`api_models.PAGE_LIMIT_DEFAULT`)."""
 
+_ABOVE_THE_CLIFF_PAGE_SIZES = (400, 1_000, PAGE_LIMIT_MAX)
+"""Page sizes `GET /postings` used to 500 on, and the cap it advertises.
+
+400 is the size C6 was reported at. 1,000 and `PAGE_LIMIT_MAX` are there
+because the reported size was not the cause: the failure was a plan chosen
+from absent statistics, and the boundary it produced moved between runs
+(between 300 and 400 on one, between 200 and 300 on another). Pinning the
+regression test to 400 alone would re-test the coincidence rather than the
+defect, so this walks the range up to the largest page the contract permits.
+"""
+
 _REPEATS = 5
 """Calls per measurement. The median of five is stable enough to compare and cheap enough to run."""
 
@@ -107,16 +137,17 @@ MAX_SCALING_FACTOR = 8.0
 """How much slower the big tenant's page may be than the small tenant's.
 
 Three reference points, all for a 5x difference in ledger size. Linear in
-the ledger would be 5.0. Quadratic would be 25.0. Measured healthy over six
-local runs: **2.4-2.7x** for `GET /postings` and **1.5-1.8x** for the
-export, plus one anomalous run at 0.8x where the larger tenant came back
-faster than the smaller one — noise here moves the ratio down, towards
-passing, not up.
+the ledger would be 5.0. Quadratic would be 25.0. Measured healthy over
+five local runs after B5 and C6: **1.0-1.8x** for `GET /postings` and
+**1.2-1.4x** for the export. Both are far below the 2.4-2.7x and 1.5-1.8x
+this constant used to quote, because those were measured against a plan
+chosen from absent statistics and, for the postings page, one that scanned
+every posting the tenant owned.
 
-Eight is chosen to sit above the first and far below the third: three times
-the measured figure, so runner noise and a legitimate n-log-n term cannot
-reach it, and a third of quadratic, so the regression it exists for cannot
-hide under it.
+Eight is left where it is rather than re-derived from those figures. It
+still sits far below quadratic, so the regression it exists for cannot hide
+under it, and the case for tightening it is real but needs CI numbers
+rather than local ones — see this module's docstring and item C8.
 """
 
 MAX_INCOME_STATEMENT_SCALING_FACTOR = 12.0
@@ -139,27 +170,52 @@ having a bad minute.
 MAX_DEEP_OFFSET_FACTOR = 4.0
 """How much more the last page of an export may cost than the first.
 
-Measured at 1.1-1.2x. `OFFSET` is O(offset) in Postgres by nature, so this
-is not asserting it is free; it is asserting that walking to the end of the
-collection stays a small constant multiple rather than becoming the
-dominant cost of a backup.
+Measured at 1.1-1.3x over five local runs after B5. `OFFSET` is O(offset)
+in Postgres by nature, so this is not asserting it is free; it is asserting
+that walking to the end of the collection stays a small constant multiple
+rather than becoming the dominant cost of a backup.
 """
 
 MAX_POSTINGS_PAGE_SECONDS = 3.0
 """Wall-clock ceiling for one 200-transaction page of `GET /postings` over a 10k-transaction ledger.
 
-Measured locally at 0.28 s. The ceiling is roughly 10x that. That multiple
-is not timidity: the GitHub runners this executes on are two-core
-containers with no I/O isolation, and the honest spread between a quiet one
-and a loaded one is several-fold. A gate that flaps gets deleted, which
-would leave less protection than a loose one. The scaling assertion above
-is the sensitive instrument; this one catches a collapse.
+Measured locally at 0.065-0.070 s over five runs after B5 and C6, against
+the 0.28 s this constant used to quote. The ceiling is left at 3.0 s, which
+is now roughly 45x rather than 10x — loose, and kept that way for the same
+reason as `MAX_SCALING_FACTOR`: the honest re-derivation needs CI figures
+(item C8), and a wall clock is the coarse backstop here rather than the
+sensitive instrument.
+
+Neither multiple is timidity: the GitHub runners this executes on are
+two-core containers with no I/O isolation, and the honest spread between a
+quiet one and a loaded one is several-fold. A gate that flaps gets deleted,
+which would leave less protection than a loose one. The scaling assertion
+above is the sensitive instrument; this one catches a collapse.
+"""
+
+MAX_LARGE_POSTINGS_PAGE_SECONDS = 4.0
+"""Wall-clock ceiling for the largest page `GET /postings` advertises, over a 10k-transaction ledger.
+
+Looser than `MAX_POSTINGS_PAGE_SECONDS` on purpose, and measuring a
+different thing. A `PAGE_LIMIT_MAX` page returns every transaction the big
+tenant has, so it is allowed to cost roughly what the whole ledger costs;
+what it is not allowed to do is fail. The failure this guards against
+produced a 500 at the 15 s `statement_timeout`, not a slow answer, so any
+ceiling comfortably under that bound catches it.
+
+Measured locally over the 10k ledger, with statistics present: **86 ms at
+400, 132 ms at 1,000 and 427 ms at 5,000**. Four seconds is roughly 9x the
+largest of those, the same headroom `MAX_POSTINGS_PAGE_SECONDS` carries, and
+well under the 15 s bound whose breach is the actual regression.
 """
 
 MAX_EXPORT_PAGE_SECONDS = 2.0
 """Wall-clock ceiling for one 5,000-posting page of `GET /ledger/export`.
 
-Measured locally at 0.17 s, same runner reasoning. The export is the
+Measured locally at 0.119-0.137 s over five runs after B5, against the
+0.17 s this constant used to quote — the export's plan did not depend on
+C6's predicate, so it moved only by the amount real statistics were worth.
+Same runner reasoning as `MAX_POSTINGS_PAGE_SECONDS`. The export is the
 cheaper of the two by construction — it applies no overlay — so its ceiling
 is lower even though its page covers more rows.
 """
@@ -178,16 +234,21 @@ now converted at its own date's trailing-30-day mean instead of one scalar
 rate for the report, against a rate table built per request. The harness
 seeds daily rates back to 2019 — well past the two years
 `exchange_rates.DEFAULT_HISTORY_YEARS` keeps in production — so the
-rolling window this measures is the pessimistic one, not the real one. Four local runs over the 10k ledger, two-currency (the
-expensive path — a single-currency tenant skips the join entirely):
-**343, 344, 372 and 388 ms with the join**, against **378 and 398 ms** with
-the same fixtures and the join disabled. The join does not separate from
-run-to-run noise at this volume; the cost of this endpoint is reading and
-resolving the ledger, which C5 owns.
+rolling window this measures is the pessimistic one, not the real one.
+Five local runs over the 10k ledger, two-currency (the expensive path — a
+single-currency tenant skips the join entirely), after B5: **305, 307, 313,
+315 and 323 ms**, against the 343-388 ms measured before real statistics
+existed. The A3b comparison that established the join costs nothing
+measurable was made under those same absent statistics and has not been
+repeated; what it concluded still holds for the reason it gave — the cost
+of this endpoint is reading and resolving the ledger, which C5 owns — and
+its scaling ratio is 3.0-3.2x here, well inside linear.
 
-Six seconds is roughly 9x the 656 ms a CI runner measured, matching the
-headroom the postings ceiling actually has there (3.0 s against 305 ms)
-rather than a multiple of the faster local figure.
+Six seconds is roughly 9x the 656 ms a CI runner measured. That CI figure
+predates B5 and so is itself a pre-statistics number; it is kept as the
+basis for this ceiling because it is the only CI measurement that exists,
+and because keeping a bound derived from the slower of two regimes is the
+safe direction to be wrong in. Item C8 covers replacing it.
 """
 
 
@@ -301,6 +362,38 @@ def test_the_postings_page_stays_within_its_wall_clock_budget(request_as: Callab
         f"one {_PAGE_SIZE}-transaction page took {elapsed:.2f} s over a "
         f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_POSTINGS_PAGE_SECONDS} s"
     )
+
+
+def test_a_page_above_the_old_cliff_is_served_at_all(request_as: Callable[[str], TestClient]) -> None:
+    """Every page size the contract permits must answer, not time out (C6).
+
+    This is a correctness assertion wearing a stopwatch. `GET /postings`
+    returned 500 for any `limit` above roughly 300 on a 10k-transaction
+    ledger, because the page's transaction array was matched against
+    `Transaction.id` — the side of the join with no index to drive from — and
+    the planner, with no statistics, costed the inner side as running once
+    when it ran twenty thousand times. `PAGE_LIMIT_MAX` is 5,000, so those
+    were legal requests that the advertised contract could not serve.
+
+    Separate from the wall-clock test below rather than folded into it
+    because what is being defended is different: not that a large page is
+    fast, but that it exists. The budget here is deliberately loose — a
+    5,000-transaction page is a large answer and is allowed to cost
+    something. What it is not allowed to do is hit `statement_timeout`.
+    """
+    client = request_as("big")
+
+    for limit in _ABOVE_THE_CLIFF_PAGE_SIZES:
+        response = client.get(_POSTINGS, params={"limit": limit})
+        assert response.status_code == 200, (
+            f"GET /postings?limit={limit} returned {response.status_code} over a "
+            f"{BIG_TENANT_TRANSACTIONS}-transaction ledger; every limit up to "
+            f"{PAGE_LIMIT_MAX} is a legal request (C6)"
+        )
+        elapsed = _median_seconds(client, _POSTINGS, limit=limit)
+        assert elapsed < MAX_LARGE_POSTINGS_PAGE_SECONDS, (
+            f"one {limit}-transaction page took {elapsed:.2f} s, budget {MAX_LARGE_POSTINGS_PAGE_SECONDS} s"
+        )
 
 
 def test_the_ledger_export_page_stays_within_its_wall_clock_budget(request_as: Callable[[str], TestClient]) -> None:
