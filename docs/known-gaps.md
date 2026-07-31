@@ -296,13 +296,21 @@ and drop it at the end. That fixes the human-runs-two-terminals case and the
 corrupting, but that serialises rather than parallelises, and it still needs
 the lock to be released on a crashed run.
 
-## 9. Five numbers on screen do not mean what their labels say
+## 9. Five numbers on screen do not mean what their labels say — MOSTLY FIXED
 
 Measured against current code during PR 5 and deferred whole, because these
 are user-visible semantics and deserve review attention a lint PR would
-swamp. Each still reproduces unless noted.
+swamp. PR B closed four of them (`remaining-work.md`'s A3a, A3b, A3d, A3e),
+plus one it found on the way (A3f). Each entry below records what it said
+and what happened to it; the Overview tooltips remain open.
 
-**Unallocated money conflates a cumulative flow with available cash.**
+**Unallocated money conflates a cumulative flow with available cash — FIXED
+in part (A3a).** The narrow defect was fixed: opening balances now count.
+The broader framing here was declined — the computation matched its own
+docstring and its own label, so it was not a mislabelling. Two related
+findings closed with it: the figure that gates a contribution silently
+dropped every non-USD row (A3f), and it now converts dated flows per date
+along with everything else (A3b). What follows is what the gap said.
 `dashboard/goals.py:157` computes `net_income - float(total_contributed)`,
 where `net_income_expense_total` sums every real income/expense leg from the
 start of the ledger (`income_statement.py:280-311`). It ignores balances,
@@ -311,7 +319,13 @@ It is presented as spendable in `FinancialHealthStrip.tsx:107-112`
 ("Not yet assigned to any goal") and `GoalsPage.tsx:337-344`, and it *gates a
 write* at `api/routers/goals.py:891-892`.
 
-**Historical foreign currency is converted at one rate for all history.**
+**Historical foreign currency is converted at one rate for all history —
+FIXED (A3b).** The decided fix shipped as decided: the trailing 30-day mean
+is evaluated as of each posting's own date, the income statement, budgets,
+the spend curve and goals all thread it, and `currency-handling.md` carries
+the rationale. A posting older than the two-year cache clamps to the oldest
+rate on file; making that visible on screen is now A5. The latency cost was
+measured and did not separate from noise. What follows is what the gap said.
 Narrower than first stated: net worth already threads an as-of date
 (`routers/dashboard.py:205,271,319`) and so does goals (`goals.py:680`). Only
 the income statement, budgets and the spend curve pass none
@@ -337,7 +351,8 @@ budget overspend is `text-destructive`. The real adjacent defect is
 `web/src/lib/format.ts:95-98`: `signColor` returns emerald for `value >= 0`,
 so exactly zero reads as a gain, and every expense-like caller compensates by
 negating its argument (`signColor(-swing.delta)`). Fixing the helper means
-auditing those call sites, not just the helper.
+auditing those call sites, not just the helper. **Fixed (A3d)**, call sites
+audited; `-0` stays neutral, which is what those negating callers hand it.
 
 **The Overview hero cards have no tooltips.** `OverviewPage.tsx` imports none,
 and `FinancialHealthStrip`'s local `StatCard` (61-83) has no slot for one.
@@ -346,7 +361,13 @@ used under `components/investments/` and `shared/ChartCard.tsx` — the whole
 money side of the app has none.
 
 **"Alpha vs HYSA" labels two different quantities, neither of which is
-alpha.** `trades/dashboard/overview.py:158` is `value - hysa_value`, a dollar
+alpha — FIXED (A3e).** Both renamed to what they compute, through the API
+and the generated client, and the closed-lot figure now reads the same
+published-rate lookup the overview card does, so the two are no longer
+measured against different rates. One correction to the entry below: the
+`0.04` was never a dead placeholder — `raw_hysa_rate_lookup` uses it as the
+fallback for days the selected bank published nothing. Its docstring was the
+stale part. What follows is what the gap said. `trades/dashboard/overview.py:158` is `value - hysa_value`, a dollar
 difference in terminal values benchmarked against real published rates.
 `trades/dashboard/holdings.py:59-61` is an excess return benchmarked against
 `config.returns.hysa_annual_rate`, a flat `0.04` whose own docstring
