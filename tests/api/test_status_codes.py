@@ -210,3 +210,71 @@ def test_a_literal_read_is_registered_before_the_item_route_that_would_shadow_it
     assert literal_path in order, f"GET {literal_path} is not registered in {module.__name__}"
     assert item_path in order, f"GET {item_path} is not registered in {module.__name__}"
     assert order.index(literal_path) < order.index(item_path)
+
+
+# Every read that answers with the shared `http_api.pagination.Page` envelope.
+# Listed rather than derived for the same reason `_CREATES` is: a read that
+# quietly *loses* its pagination should fail here, which a rule computed from
+# whatever the schema currently says could never catch. `GET /trades/ledger/export`
+# was unbounded until C3 and is the reason these assertions exist — the
+# contract document claimed this file enforced them, and it asserted nothing
+# about pagination at all.
+_PAGED_READS = {
+    "/api/v1/accounting/ledger/export": "posting",
+    "/api/v1/accounting/postings": "transaction",
+    "/api/v1/trades/ledger/export": "event",
+}
+
+
+def _response_schema_name(operation: dict[str, Any]) -> str:
+    """Return the component name a 200 response is a reference to.
+
+    Returns
+    -------
+    str
+        The bare component name, or `""` if the response is not a `$ref`.
+    """
+    content = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    return str(content.get("$ref", "")).rsplit("/", 1)[-1]
+
+
+@pytest.mark.parametrize(("path", "window_unit"), sorted(_PAGED_READS.items()))
+def test_every_paged_read_answers_with_the_shared_envelope(paths, path: str, window_unit: str) -> None:
+    """One envelope, four fields, and a `window_unit` that says what the other three count.
+
+    The fields are asserted by name because that is the whole contract a
+    client codes against: `docs/http-api-contract.md` tells it to advance
+    `offset` by the echoed `limit` until it reaches `total`, and that
+    arithmetic is wrong the moment one of them is missing or renamed.
+    """
+    schemas = app.openapi()["components"]["schemas"]
+    operation = paths[path]["get"]
+    envelope = schemas[_response_schema_name(operation)]
+
+    assert set(envelope["required"]) >= {"items", "window_unit", "total", "limit", "offset"}, (
+        f"GET {path} does not answer with the shared page envelope"
+    )
+    assert envelope["properties"]["window_unit"]["const"] == window_unit, (
+        f"GET {path} must pin its window unit to {window_unit!r} rather than leave it open"
+    )
+
+
+@pytest.mark.parametrize("path", sorted(_PAGED_READS))
+def test_every_paged_read_takes_an_optional_limit_and_offset(paths, path: str) -> None:
+    """Both are optional and both are bounded, so an unparameterised call is a valid first page.
+
+    `limit` carries `minimum: 1` and `offset` `minimum: 0` from their
+    `Query(ge=...)` declarations. Neither declares a `maximum`: the cap is
+    applied by clamping in the handler rather than by rejecting, so a schema
+    maximum here would turn "as much as possible" into a 422 — see
+    `PAGE_LIMIT_MAX`.
+    """
+    parameters = {parameter["name"]: parameter for parameter in paths[path]["get"].get("parameters", [])}
+
+    for name, minimum in (("limit", 1), ("offset", 0)):
+        assert name in parameters, f"GET {path} takes no {name}"
+        assert parameters[name]["required"] is False, f"GET {path}'s {name} must be optional"
+        assert parameters[name]["schema"]["minimum"] == minimum
+        assert "maximum" not in parameters[name]["schema"], (
+            f"GET {path}'s {name} declares a maximum; the cap is clamped in the handler, not rejected"
+        )

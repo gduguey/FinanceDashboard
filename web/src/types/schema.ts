@@ -3533,12 +3533,32 @@ export interface paths {
     }
     /**
      * Get Ledger Export
-     * @description Export the full ledger, for the user's own backup.
+     * @description Export one page of the event ledger, for the user's own backup.
+     *
+     *     An export's caller wants the whole ledger by definition, so this is
+     *     bounded rather than filtered: a page is capped at `PAGE_LIMIT_MAX` and
+     *     the client walks `offset` until it has `total` events. That is
+     *     deliberately not the same as returning a truncated file — a partial
+     *     backup presented as a complete one is worse than several requests. This
+     *     endpoint used to return every event in one unbounded response, which is
+     *     the same shape its accounting counterpart was given a page for (C3).
+     *
+     *     `limit` counts events, which for this ledger is also what `items` counts:
+     *     unlike `GET /postings`, nothing here groups rows that have to stay
+     *     together on one page.
+     *
+     *     Parameters
+     *     ----------
+     *     limit
+     *         How many events to return, oldest first. Clamped to `PAGE_LIMIT_MAX`.
+     *     offset
+     *         How many events to skip.
      *
      *     Returns
      *     -------
-     *     list[LedgerEvent]
-     *         Every ledger row.
+     *     LedgerEventPage
+     *         The page's events, plus the total a client needs in order to ask for
+     *         the next one.
      */
     get: operations['get_ledger_export_api_v1_trades_ledger_export_get']
     put?: never
@@ -5845,6 +5865,41 @@ export interface components {
       meta?: {
         [key: string]: string
       }
+    }
+    /**
+     * LedgerEventPage
+     * @description One page of the raw event ledger, as exported, cut by event.
+     *
+     *     `items` is oldest first, in `brokers.ibkr.main._ledger_query`'s order —
+     *     the same order a full `load_ledger` returns — so concatenating
+     *     consecutive pages reconstructs the ledger exactly.
+     *
+     *     Its window unit is `event` rather than `accounting`'s `posting` or
+     *     `transaction` because the two ledgers are separate domains that happen
+     *     to share an envelope, not one collection behind two paths. `Page` exists
+     *     to make that sharing explicit; `window_unit` is what keeps it honest.
+     *
+     *     Named for its rows rather than for the endpoint, unlike
+     *     `accounting`'s `LedgerExportPage`, because two classes of that one name
+     *     made FastAPI disambiguate both of them by module path — every client
+     *     then addressed `accounting__api__api_models__LedgerExportPage`. Distinct
+     *     names are also the more accurate description: these are two collections,
+     *     not one behind two paths.
+     */
+    LedgerEventPage: {
+      /** Items */
+      items: components['schemas']['LedgerEvent'][]
+      /**
+       * Window Unit
+       * @constant
+       */
+      window_unit: 'event'
+      /** Total */
+      total: number
+      /** Limit */
+      limit: number
+      /** Offset */
+      offset: number
     }
     /**
      * LedgerExportPage
@@ -11107,7 +11162,12 @@ export interface operations {
   }
   get_ledger_export_api_v1_trades_ledger_export_get: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description How many events to return, oldest first. */
+        limit?: number
+        /** @description How many events to skip. */
+        offset?: number
+      }
       header?: never
       path?: never
       cookie?: never
@@ -11120,7 +11180,16 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['LedgerEvent'][]
+          'application/json': components['schemas']['LedgerEventPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
+from sqlalchemy import func
 
 import trades.db as tdb
 from db.base import ensure_reference_rows, merge_by_natural_key
@@ -18,10 +19,11 @@ from trades.utils.statement_archive import StatementArchive
 
 if TYPE_CHECKING:
     import uuid
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import date
 
     from sqlalchemy.orm import Session
+    from sqlalchemy.orm.query import RowReturningQuery
 
     from trades.brokers.ibkr.api import ParsedStatement
     from trades.config import AppConfig, IbkrFlexCredentials
@@ -70,30 +72,60 @@ id chosen at connection-creation time instead of a constant.
 """
 
 
-def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
-    """Load the full event ledger.
+def _ledger_query(
+    session: Session, user_id: uuid.UUID
+) -> RowReturningQuery[tuple[tdb.LedgerEvent, tdb.LedgerEventTradeDetails]]:
+    """Build the user's ledger read, in the one order every caller sees it in.
+
+    The order lives here rather than in each caller because
+    `load_ledger_page` has to cut the same sequence `load_ledger` returns
+    whole: `GET /ledger/export` walks the collection page by page, so any
+    disagreement between the two would skip or repeat an event at a page
+    boundary rather than merely reorder one. It used to be a Polars `.sort`
+    applied after the rows arrived, which a windowed read cannot reproduce —
+    a `LIMIT` sorts what it already fetched, not what it should have.
+
+    `(event_datetime, symbol, natural_key)` is the same key that sort used.
+    `natural_key` is unique per user, so the order is total and no tie is
+    left for the database to break arbitrarily.
 
     Parameters
     ----------
     session
         An open database session.
     user_id
-        Whose ledger to load.
+        Whose ledger to read.
 
     Returns
     -------
-    polars.DataFrame
-        Shaped exactly like `LedgerEvent.polars_schema` — every other
-        ledger and dashboard module depends on that shape, not on how it's
-        actually stored. An empty frame if it has never been synced.
+    sqlalchemy.orm.RowReturningQuery
+        Rows of `(LedgerEvent, LedgerEventTradeDetails | None)` — the join is
+        an outer one, so the second element is `None` for a non-trade event
+        however the ORM's own annotation reads.
     """
-    rows = (
+    return (
         session
         .query(tdb.LedgerEvent, tdb.LedgerEventTradeDetails)
         .outerjoin(tdb.LedgerEventTradeDetails, tdb.LedgerEventTradeDetails.ledger_event_id == tdb.LedgerEvent.id)
         .filter(tdb.LedgerEvent.user_id == user_id)
-        .all()
+        .order_by(tdb.LedgerEvent.event_datetime, tdb.LedgerEvent.symbol, tdb.LedgerEvent.natural_key)
     )
+
+
+def _ledger_rows_to_frame(rows: Sequence[Any]) -> pl.DataFrame:
+    """Project `_ledger_query`'s rows into a `LedgerEvent.polars_schema` frame, preserving their order.
+
+    Parameters
+    ----------
+    rows
+        `(LedgerEvent, LedgerEventTradeDetails | None)` pairs.
+
+    Returns
+    -------
+    polars.DataFrame
+        Shaped exactly like `LedgerEvent.polars_schema`. Empty (but correctly
+        shaped) for no rows.
+    """
     if not rows:
         return pl.DataFrame(schema=LedgerEvent.polars_schema)
     records = [
@@ -111,7 +143,75 @@ def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
         }
         for event, details in rows
     ]
-    return pl.DataFrame(records, schema=LedgerEvent.polars_schema).sort("event_datetime", "symbol", "event_id")
+    return pl.DataFrame(records, schema=LedgerEvent.polars_schema)
+
+
+def load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:
+    """Load the full event ledger.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose ledger to load.
+
+    Returns
+    -------
+    polars.DataFrame
+        Shaped exactly like `LedgerEvent.polars_schema` — every other
+        ledger and dashboard module depends on that shape, not on how it's
+        actually stored. An empty frame if it has never been synced.
+        Ordered by `_ledger_query`, which is also what `load_ledger_page`
+        cuts, so a page of the export is a window on exactly this sequence.
+    """
+    return _ledger_rows_to_frame(_ledger_query(session, user_id).all())
+
+
+def load_ledger_page(session: Session, user_id: uuid.UUID, *, limit: int, offset: int) -> pl.DataFrame:
+    """Load one window of the event ledger — what `GET /ledger/export` returns.
+
+    Separate from `load_ledger` rather than two more parameters on it: every
+    other caller in `trades` replays the ledger and needs all of it (see
+    `ledger.replay`), so a windowed read would be a footgun on the function
+    they all call. This one exists for the export, which is the only caller
+    that reads the collection to hand it back rather than to compute over it.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose ledger to load.
+    limit, offset
+        The window, in `_ledger_query`'s order. Validated by the caller.
+
+    Returns
+    -------
+    polars.DataFrame
+        `LedgerEvent.polars_schema`-shaped, at most `limit` rows.
+    """
+    return _ledger_rows_to_frame(_ledger_query(session, user_id).limit(limit).offset(offset).all())
+
+
+def ledger_event_count(session: Session, user_id: uuid.UUID) -> int:
+    """Count the user's ledger events, for a paged caller that has to report a total.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose events to count.
+
+    Returns
+    -------
+    int
+    """
+    return (
+        session.query(func.count()).select_from(tdb.LedgerEvent).filter(tdb.LedgerEvent.user_id == user_id).scalar()
+        or 0
+    )
 
 
 def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) -> None:

@@ -7,11 +7,12 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX
 from trades import dashboard
 from trades.api.api_models import (
     AllocationRow,
@@ -23,6 +24,7 @@ from trades.api.api_models import (
     DollarChart,
     DollarChartPoint,
     GrowthOf100Point,
+    LedgerEventPage,
     LotsTable,
     MonthlyPnlBySymbolRow,
     MonthlyPnlRow,
@@ -38,6 +40,7 @@ from trades.api.api_models import (
 )
 from trades.api.dependencies import _config, _first_event_date, _last_synced_iso, _load_ledger
 from trades.api.entities import LedgerEvent
+from trades.brokers.ibkr import main
 
 if TYPE_CHECKING:
     import polars as pl
@@ -436,13 +439,48 @@ def get_data_quality(
 
 @router.get("/ledger/export")
 def get_ledger_export(
-    session: Annotated[Session, Depends(get_db)], user_id: Annotated[uuid.UUID, Depends(get_current_user_id)]
-) -> list[LedgerEvent]:
-    """Export the full ledger, for the user's own backup.
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+    limit: Annotated[int, Query(ge=1, description="How many events to return, oldest first.")] = PAGE_LIMIT_DEFAULT,
+    offset: Annotated[int, Query(ge=0, description="How many events to skip.")] = 0,
+) -> LedgerEventPage:
+    """Export one page of the event ledger, for the user's own backup.
+
+    An export's caller wants the whole ledger by definition, so this is
+    bounded rather than filtered: a page is capped at `PAGE_LIMIT_MAX` and
+    the client walks `offset` until it has `total` events. That is
+    deliberately not the same as returning a truncated file — a partial
+    backup presented as a complete one is worse than several requests. This
+    endpoint used to return every event in one unbounded response, which is
+    the same shape its accounting counterpart was given a page for (C3).
+
+    `limit` counts events, which for this ledger is also what `items` counts:
+    unlike `GET /postings`, nothing here groups rows that have to stay
+    together on one page.
+
+    Parameters
+    ----------
+    limit
+        How many events to return, oldest first. Clamped to `PAGE_LIMIT_MAX`.
+    offset
+        How many events to skip.
 
     Returns
     -------
-    list[LedgerEvent]
-        Every ledger row.
+    LedgerEventPage
+        The page's events, plus the total a client needs in order to ask for
+        the next one.
     """
-    return [LedgerEvent(**row) for row in _load_ledger(session, user_id).to_dicts()]
+    limit = min(limit, PAGE_LIMIT_MAX)
+    # Not `_load_ledger`: that one raises 404 for an empty ledger, which is
+    # the right answer for a dashboard with nothing to draw and the wrong one
+    # for a paged collection, where "no rows" is an empty page with a total
+    # of zero. The 404 stays on every other route in this module.
+    page = main.load_ledger_page(session, user_id, limit=limit, offset=offset)
+    return LedgerEventPage(
+        items=[LedgerEvent(**row) for row in page.to_dicts()],
+        window_unit="event",
+        total=main.ledger_event_count(session, user_id),
+        limit=limit,
+        offset=offset,
+    )

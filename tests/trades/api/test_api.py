@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import db.models as dbm
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.pagination import PAGE_LIMIT_MAX
 from tests.conftest import DEFAULT_USER_ID
 from trades import api as trades_api
 from trades.brokers.ibkr.credentials import save_ibkr_credentials
@@ -539,7 +540,48 @@ def test_data_quality_includes_held_and_benchmark_symbols(client) -> None:
 
 def test_ledger_export_returns_every_row(client) -> None:
     body = client.get("/api/v1/trades/ledger/export").json()
-    assert len(body) == len(LEDGER_ROWS)
+
+    assert len(body["items"]) == len(LEDGER_ROWS)
+    assert body["total"] == len(LEDGER_ROWS)
+    assert body["window_unit"] == "event"
+    assert body["offset"] == 0
+
+
+def test_ledger_export_pages_compose_into_the_whole_ledger(client) -> None:
+    """Walking the pages must reconstruct the export exactly — the property a backup depends on.
+
+    Asserted as an ordered list rather than a set: an export whose pages
+    each hold the right rows but in a shuffled order is still a corrupt
+    backup, and a page boundary is exactly where a disagreement between the
+    windowed read's `ORDER BY` and the full read's would show up.
+    """
+    whole = client.get("/api/v1/trades/ledger/export", params={"limit": PAGE_LIMIT_MAX}).json()["items"]
+
+    walked = []
+    offset = 0
+    while True:
+        page = client.get("/api/v1/trades/ledger/export", params={"limit": 1, "offset": offset}).json()
+        walked.extend(page["items"])
+        offset += page["limit"]
+        if offset >= page["total"]:
+            break
+
+    assert walked == whole
+    assert [event["event_id"] for event in walked] == [row["event_id"] for row in LEDGER_ROWS]
+
+
+def test_ledger_export_clamps_an_oversized_limit_rather_than_rejecting_it(client) -> None:
+    body = client.get("/api/v1/trades/ledger/export", params={"limit": PAGE_LIMIT_MAX + 1}).json()
+
+    assert body["limit"] == PAGE_LIMIT_MAX
+
+
+def test_ledger_export_past_the_end_is_an_empty_page_not_an_error(client) -> None:
+    """`total` still has to be the real total, or a client cannot tell it has finished from an error."""
+    body = client.get("/api/v1/trades/ledger/export", params={"offset": len(LEDGER_ROWS)}).json()
+
+    assert body["items"] == []
+    assert body["total"] == len(LEDGER_ROWS)
 
 
 def test_sync_calls_ibkr_and_never_touches_price_cpi_hysa_caches(client, db_session, monkeypatch) -> None:

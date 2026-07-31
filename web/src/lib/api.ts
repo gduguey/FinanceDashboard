@@ -1,3 +1,4 @@
+import { fetchAllPages } from '@/lib/paging'
 import type {
   AllocationRow,
   BenchmarkSetting,
@@ -14,6 +15,7 @@ import type {
   IbkrSettings,
   IbkrSettingsUpdate,
   LedgerEvent,
+  LedgerEventPage,
   LotsTable,
   MonthlyPnl,
   MonthlyPnlBySymbol,
@@ -116,7 +118,15 @@ export const api = {
   cashHistory: (range?: DateRange) => request<CashHistoryPoint[]>(withRange('/chart/cash-history', range)),
   cashSitting: () => request<CashSitting>('/cash-sitting'),
   dataQuality: () => request<DataQualityRow[]>('/data-quality'),
-  ledgerExport: () => request<LedgerEvent[]>('/ledger/export'),
+  // Pages through the whole ledger rather than asking for one page: this is
+  // a backup, so a response that silently stopped at the server's cap would
+  // write a partial file the user believes is complete. Shares
+  // `fetchAllPages` with the accounting client because both ledgers answer
+  // with the same envelope — this one's `window_unit` is `"event"` (C3).
+  ledgerExport: () =>
+    fetchAllPages<LedgerEvent>(({ limit, offset }) =>
+      request<LedgerEventPage>(`/ledger/export?limit=${limit}&offset=${offset}`),
+    ),
   sync: () => request<SyncResult>('/sync', { method: 'POST' }),
   syncProgress: () => request<SyncProgress>('/sync/progress'),
   hysaRates: () => request<HysaRates>('/hysa-rates'),
