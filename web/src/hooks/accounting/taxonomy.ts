@@ -83,7 +83,7 @@ export const useTagRenamePreview = () =>
   usePreviewMutation(({ tagId, name }: { tagId: string; name: string }) => accountingApi.tagRenamePreview(tagId, name))
 
 // Renaming to an existing tag's name merges into it — repointing
-// `posting_tags` rows and `tag_ids_override` arrays — so this moves the ledger
+// `posting_tags` and `posting_override_tags` rows — so this moves the ledger
 // too, not just the tag list.
 export const useRenameTag = () =>
   useOptimisticStoreMutation({
