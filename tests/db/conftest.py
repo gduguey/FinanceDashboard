@@ -8,21 +8,21 @@ the session-wide `_db_engine` cannot serve either of them.
 
 Migrating is the slow part, so the fixture is session-scoped and both modules
 share one scratch database.
+
+The database's lifecycle is `tests.support.scratch_db`'s, which every suite
+in this repo that needs a real database now goes through — this one first,
+and `tests/conftest.py` since.
 """
 
 from __future__ import annotations
 
-import os
-import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
 
 from db.session import create_one_shot_engine
 from db.settings import AppRuntimeDatabaseSettings, TestDatabaseSettings
+from tests.support.scratch_db import apply_migrations, scratch_database
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -75,41 +75,9 @@ def migrated_url() -> Iterator[URL]:
     if configured is None:
         pytest.skip("DATABASE_URL_TEST is not configured")
 
-    base_url = make_url(configured)
-    scratch_name = f"rls_{uuid.uuid4().hex[:12]}"
-    maintenance = create_one_shot_engine(base_url.set(database="postgres"), autocommit=True)
-    try:
-        with maintenance.connect() as connection:
-            connection.execute(text(f'CREATE DATABASE "{scratch_name}"'))
-    finally:
-        maintenance.dispose()
-
-    scratch_url = base_url.set(database=scratch_name)
-    try:
-        # Alembic reads DATABASE_URL through `db.settings`, so point it at the
-        # scratch database for the duration of this upgrade.
-        from alembic import command  # noqa: PLC0415 — only needed for this fixture
-        from alembic.config import Config  # noqa: PLC0415
-
-        previous = os.environ.get("DATABASE_URL")
-        os.environ["DATABASE_URL"] = scratch_url.render_as_string(hide_password=False)
-        try:
-            config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-            command.upgrade(config, "head")
-        finally:
-            if previous is None:
-                os.environ.pop("DATABASE_URL", None)
-            else:
-                os.environ["DATABASE_URL"] = previous
-
+    with scratch_database(configured, prefix="rls") as scratch_url:
+        apply_migrations(scratch_url)
         yield scratch_url
-    finally:
-        maintenance = create_one_shot_engine(base_url.set(database="postgres"), autocommit=True)
-        try:
-            with maintenance.connect() as connection:
-                connection.execute(text(f'DROP DATABASE IF EXISTS "{scratch_name}" WITH (FORCE)'))
-        finally:
-            maintenance.dispose()
 
 
 @pytest.fixture(scope="session")
