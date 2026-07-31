@@ -65,13 +65,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/trades", "src/accounting", "src/db"]
+packages = ["src/trades", "src/accounting", "src/db", "src/http_api"]
 
 [tool.mypy]
 python_version = "3.14"
 mypy_path = "src"
 explicit_package_bases = true
-packages = ["trades", "accounting", "db"]
+packages = ["trades", "accounting", "db", "http_api"]
 check_untyped_defs = true
 disallow_any_generics = true
 disallow_incomplete_defs = true

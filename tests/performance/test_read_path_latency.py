@@ -93,7 +93,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from accounting.api.api_models import PAGE_LIMIT_MAX
+from http_api.pagination import PAGE_LIMIT_MAX
 from tests.performance.conftest import BIG_TENANT_TRANSACTIONS, SMALL_TENANT_TRANSACTIONS
 
 if TYPE_CHECKING:
@@ -111,7 +111,7 @@ _LEDGER_WINDOW = {"start": "2019-01-01", "end": "2030-01-01"}
 """Wider than the seeded ledger, so the measurement covers every posting rather than a slice of them."""
 
 _PAGE_SIZE = 200
-"""The default page the Transactions screen asks for (`api_models.PAGE_LIMIT_DEFAULT`)."""
+"""The default page the Transactions screen asks for (`http_api.pagination.PAGE_LIMIT_DEFAULT`)."""
 
 _ABOVE_THE_CLIFF_PAGE_SIZES = (400, 1_000, PAGE_LIMIT_MAX)
 """Page sizes `GET /postings` used to 500 on, and the cap it advertises.
