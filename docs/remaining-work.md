@@ -43,10 +43,10 @@ and did not.
 
 | id | item | status |
 |----|------|--------|
-| B1 | The tenant-isolation CI job is not a required check | **KEPT** — the job running `alembic check`, the RLS coverage test and the isolation suite cannot block a merge, and the release job is `needs: test` alone. Add it to the ruleset's required contexts and to the release job's dependencies. |
-| B2 | Lint warnings do not fail the build | **KEPT** — `biome lint` exits 0 on warnings; four rules are pinned to `error` as a workaround, so any new warn-level rule is unenforced. Fail on warnings, with a documented exception for the rule intentionally left as a warning. |
-| B3 | Nothing protects the performance gains | **KEPT** — no latency gate, no web-vitals instrumentation. The bundle budget exists and is real. |
-| B4 | Two `pytest` runs destroy each other | **KEPT** — the suite drops and recreates one shared database at session start. Give each run its own. |
+| B1 | The tenant-isolation CI job is not a required check | **DONE** (PR A) — `Migrations apply and match the models` and `Read-path latency` added to the `protect-main` ruleset's required contexts; the tag job is `needs: [test, migrations, performance]`. |
+| B2 | Lint warnings do not fail the build | **DONE** (PR A) — `lint` and `check` pass `--error-on-warnings`. Three of the four pins were redundant and are gone; `noUselessFragments` stays, because the preset gives it `info` and failing on warnings does not promote info. The intentional exception, `useComponentExportOnlyModules`, moved to `info` so it keeps a non-failing level. |
+| B3 | Nothing protects the performance gains | **DONE, with the web-vitals half dropped** (PR A) — the latency gate over the paginated read paths ships as its own required job (`tests/performance/`). The `PerformanceObserver` shim was declined: no sink, no consumer, and it duplicates what DevTools and Lighthouse report natively for landing-path bytes. It returns as a new item only if a real destination exists. |
+| B4 | Two `pytest` runs destroy each other | **DONE** (PR A) — every run creates and drops its own database, through the same `tests/support/scratch_db.py` the RLS suites now use. |
 
 ## C — speed
 
@@ -57,6 +57,7 @@ and did not.
 | C3 | `trades`' `GET /ledger/export` is unbounded | **KEPT** — its accounting twin is paged and clamped, and `http-api-contract.md` claims both are. The one bounded-reads asymmetry left between the ledgers. |
 | C4 | `GET /api/lots` is unbounded | **KEPT** — closed lots are FIFO-matched by replaying the whole trades ledger, so a `LIMIT` would bound the payload and not the work. Persist matched lots first. |
 | C5 | Dashboards read full history inside their date window | **DROPPED** — owner's call. |
+| C6 | `GET /postings` falls off a cliff between `limit=300` and `limit=400` | **KEPT** — found by PR A's latency gate while calibrating it. On a 10k-transaction ledger, `limit=300` answers in 362 ms and `limit=400` exceeds the 15 s `statement_timeout` and returns a 500. `PAGE_LIMIT_MAX` is 5,000, so this is a legal request, and the discontinuity is far too sharp to be volume — it reads like a planner flip on the `transactions.id = ANY(:uuid[])` array in `ledger_statement`. The default page is 200, which is why nothing has hit it. Diagnose the plan first; the fix may be an index, a `LIMIT`-side rewrite, or lowering `PAGE_LIMIT_MAX` to a size the query can actually serve. Sits with C1, which rewrites this read path anyway. |
 
 ## D — reliability
 
@@ -98,7 +99,7 @@ Every one of these was made stale by the refactor itself.
 | G3 | Three dead helpers: `ledger.frame.empty_ledger_frame`, `repositories.interpretation.clear_rule_exclusions`, `repositories.interpretation.replace_transfer_links` | **KEPT** |
 | G4 | Unused and duplicated dependencies, six `DB_*` env vars absent from `.env.example`, two undeclared imports | **KEPT** |
 | G5 | `npm ci` fails on eight commits inside PR 4's history | **KEPT** — lowest value here; only a bisect hits it. |
-| G6 | `known-gaps.md`'s own figures have drifted (gap 1 says 40 commits, it is 30; gap 10 omits a third budget) | **KEPT** |
+| G6 | `known-gaps.md`'s own figures have drifted (gap 1 says 40 commits, it is 30; gap 10 omits a third budget) | **DONE** (PR A) — gap 1 corrected to 30, gap 10 now lists `ROUTE_BUDGET` and carries the current landing headroom, and gaps 8 and 10 are marked closed. |
 | G7 | Automation reorder is drag-only, with no keyboard path | **DROPPED** — owner's call. |
 | G8 | `docs/server-setup/versioning.md` is gitignored, and CI's version-bump gate enforces the policy it holds | **KEPT** — same shape as F4: the rule a gate enforces should not live outside the repo. Move the policy into tracked `docs/`. |
 

@@ -8,7 +8,7 @@ and why it was not taken in the PR that found it.
 
 ## 1. The transaction boundary lives in the HTTP layer
 
-**Where:** 40 `session.commit()` calls in route bodies across
+**Where:** 30 `session.commit()` calls in route bodies across
 `src/accounting/api/routers/` (11 of the 15 modules). Worst-case handlers:
 `delete_category` / `post_category_rename` in
 `src/accounting/api/routers/categories.py`.
@@ -252,7 +252,17 @@ attribute's clothes.
 with its own design question (whether the buttons are always visible or appear
 on focus), which is why it is not bundled into a lint-gate PR.
 
-## 8. Two `pytest` runs against the same database destroy each other
+## 8. Two `pytest` runs against the same database destroy each other — FIXED
+
+**Fixed in PR A.** Every run now creates a uniquely-named scratch database,
+builds the schema into it and drops it at the end; `DATABASE_URL_TEST` is
+read for its host, port and credentials and the database it names is never
+written to. The lifecycle lives in `tests/support/scratch_db.py`, which
+`tests/db/conftest.py` also calls — the fix took the shape the entry below
+proposed, and consolidated the two mechanisms into one rather than adding a
+second. Verified by running two suites concurrently, which both pass.
+
+The original entry follows.
 
 `tests/conftest.py`'s session-scoped `_db_engine` opens `DATABASE_URL_TEST`
 and, before yielding, runs `DROP SCHEMA IF EXISTS accounting CASCADE`,
@@ -344,26 +354,34 @@ difference in terminal values benchmarked against real published rates.
 different rates under one label. `glossary.ts:55-58` already describes the
 computation correctly — only the word "alpha" is wrong.
 
-## 10. Nothing stops PR 2's and PR 4's performance gains from regressing
+## 10. Nothing stops PR 2's and PR 4's performance gains from regressing — FIXED, with one half dropped
 
-There is no performance job in any workflow. The only gate that exists is the
-bundle budget (`web/tooling/budget.ts`, `LANDING_BUDGET = 200_000`,
-`CHUNK_BUDGET = 90_000`), which runs inside `npm run build` and covers bytes
-only — nothing measures latency, and nothing measures what the browser
-actually experiences.
+**What it said.** There was no performance job in any workflow. The only gate
+was the bundle budget (`web/tooling/budget.ts`), which runs inside
+`npm run build` and covers bytes only. That budget is three numbers, not the
+two originally listed here: `LANDING_BUDGET = 200_000`,
+`CHUNK_BUDGET = 90_000` and `ROUTE_BUDGET = 60_000`, the last of which is
+what keeps recharts off a page's critical path.
 
-**Fix direction, in two parts.** A `PerformanceObserver` reporting INP, LCP
-and CLS, which is the only way to see the interaction cost PR 4 spent itself
-reducing. Note the landing budget currently has **3,053 B of headroom**
-(196,947 of 200,000), so the shim either fits or the budget is raised in the
-same commit with the reason in the message, as its own docstring sanctions.
-And a latency gate over the paginated read paths, seeded at a CI-affordable
-volume — roughly 10k transactions rather than the 170k of the `finance_speed`
-scratch database, since the failure mode worth catching is a complexity
-regression and that is visible at 10k. Document the chosen thresholds and
-their derivation in the test file rather than as bare constants, for the same
-reason the bundle budget documents its own: a number you can argue with beats
-one that just gets raised.
+**The latency half is done (PR A).** `tests/performance/` seeds two tenants,
+10,000 and 2,000 transactions, into a migrated scratch database and times
+`GET /postings` and `GET /ledger/export` through the restricted
+`app_runtime` role, gating on a cross-tenant scaling ratio and a wall-clock
+ceiling per path. It runs as its own required CI job. Every threshold's
+measurement and derivation is in the test module, including an honest
+statement of what it does not catch.
+
+**The web-vitals half is dropped, not deferred.** A `PerformanceObserver`
+reporting INP, LCP and CLS was specified here and declined on the same
+grounds PR 2's unused aggregates and PR 4's route prefetch were: there is no
+sink for the numbers and no consumer of them, so the shim would have spent
+landing-path bytes to duplicate what Chrome DevTools and Lighthouse already
+report natively, and asserted nothing about the result. If a real
+destination ever exists — a metrics endpoint, a third-party sink — it comes
+back as a new item premised on that sink, rather than as instrumentation
+looking for a use. (The landing path had 3,111 B of headroom at the time,
+196,889 of 200,000; the figure previously recorded here, 3,053 B, had
+drifted.)
 
 ## 11. A posting's identity embeds its description, so an enriched statement double-counts
 
