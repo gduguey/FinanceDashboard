@@ -245,3 +245,74 @@ def test_current_rates_to_base_always_maps_the_base_currency_to_one() -> None:
 def test_current_rates_to_base_raises_when_a_currency_has_no_history() -> None:
     with pytest.raises(ValueError, match="EUR"):
         exchange_rates.current_rates_to_base(pl.DataFrame(schema=exchange_rates.RATE_HISTORY_SCHEMA), date(2026, 6, 2))
+
+
+def _weekday_history(start: date, days: int, rate: float = 1.10, step: float = 0.01) -> pl.DataFrame:
+    """Weekday-only observations, the shape the ECB actually publishes."""
+    rows = []
+    for offset in range(days):
+        day = start + timedelta(days=offset)
+        if day.weekday() < 5:  # Saturday is 5
+            rows.append((day.isoformat(), "EUR", rate + step * offset))
+    return _history(*rows)
+
+
+def test_smoothed_rate_series_matches_smoothed_rate_as_of_on_every_day_it_covers() -> None:
+    """The whole contract: the per-date series is the per-date function, vectorised.
+
+    Checked on every calendar day rather than a sample, including the
+    weekends the ECB never publishes on — those are exactly the days a
+    naive as-of join would answer with the previous Friday's window.
+    """
+    history = _weekday_history(date(2026, 1, 1), 120)
+    series = exchange_rates.smoothed_rate_series(history, ["EUR"])
+
+    rows = series.filter(pl.col("currency") == "EUR")
+    for day, rate in zip(rows["date"].to_list(), rows["rate_to_base"].to_list(), strict=True):
+        expected = exchange_rates.smoothed_rate_as_of(history, "EUR", day)
+        if expected is not None:
+            assert rate == pytest.approx(expected), day
+
+
+def test_smoothed_rate_series_covers_every_calendar_day_in_the_history() -> None:
+    history = _weekday_history(date(2026, 1, 1), 30)
+    covered = exchange_rates.smoothed_rate_series(history, ["EUR"]).filter(pl.col("currency") == "EUR")["date"]
+    first, last = history["date"].min(), history["date"].max()
+    assert covered.to_list() == [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+
+
+def test_smoothed_rate_series_maps_the_base_currency_to_one_on_every_day() -> None:
+    series = exchange_rates.smoothed_rate_series(_weekday_history(date(2026, 1, 1), 10), ["USD", "EUR"])
+    base = series.filter(pl.col("currency") == "USD")
+    assert not base.is_empty()
+    assert base["rate_to_base"].to_list() == pytest.approx([1.0] * base.height)
+
+
+def test_smoothed_rate_series_fills_days_before_a_currencys_history_starts() -> None:
+    # EUR starts a month into the span USD-only rows already cover, and the
+    # earliest computable mean is carried backward rather than left null —
+    # a null rate would silently drop those rows from every sum.
+    history = pl.concat([
+        _history(("2026-01-01", "GBP", 1.30)),
+        _history(("2026-02-01", "EUR", 1.10), ("2026-02-02", "EUR", 1.20)),
+    ])
+    series = exchange_rates.smoothed_rate_series(history, ["EUR"])
+    eur = series.filter(pl.col("currency") == "EUR").sort("date")
+    assert eur["date"][0] == date(2026, 1, 1)
+    assert eur["rate_to_base"].null_count() == 0
+    assert eur["rate_to_base"][0] == pytest.approx(1.10)
+
+
+def test_smoothed_rate_series_raises_when_a_currency_has_no_history() -> None:
+    with pytest.raises(ValueError, match="EUR"):
+        exchange_rates.smoothed_rate_series(_history(("2026-06-02", "GBP", 1.30)), ["EUR"])
+
+
+def test_smoothed_rate_series_raises_for_a_non_base_currency_when_nothing_is_synced() -> None:
+    with pytest.raises(ValueError, match="EUR"):
+        exchange_rates.smoothed_rate_series(pl.DataFrame(schema=exchange_rates.RATE_HISTORY_SCHEMA), ["EUR"])
+
+
+def test_smoothed_rate_series_is_empty_when_only_the_base_currency_is_asked_for() -> None:
+    series = exchange_rates.smoothed_rate_series(pl.DataFrame(schema=exchange_rates.RATE_HISTORY_SCHEMA), ["USD"])
+    assert series.is_empty()

@@ -3165,7 +3165,7 @@ export interface paths {
     }
     /**
      * Get Overview
-     * @description Return the overview card row: value, gain split, XIRR, dollar alpha, TWR.
+     * @description Return the overview card row: value, gain split, XIRR, excess value over a HYSA, TWR.
      *
      *     Returns
      *     -------
@@ -3419,7 +3419,7 @@ export interface paths {
      *         `annual`, `tax_owed` (the annual report plus estimated
      *         `capital_gains_tax_usd`, `dividend_tax_usd`, `total_tax_usd`,
      *         `balance_due_usd` per year), `wash_sales`, `sale_previews`,
-     *         `after_tax_dollar_alpha_vs_hysa_usd`, and the liquidation estimate —
+     *         `after_tax_excess_value_vs_hysa_usd`, and the liquidation estimate —
      *         `liquidation_pretax_value_usd`, `liquidation_long_term_gain_usd`,
      *         `liquidation_short_term_gain_usd`, `liquidation_capital_gains_tax_usd`,
      *         `liquidation_value_usd` — what a full sale of every open lot right
@@ -4943,7 +4943,7 @@ export interface components {
     }
     /**
      * ClosedLotRow
-     * @description One closed lot, with its total return and alpha vs. HYSA over its holding window.
+     * @description One closed lot, with its total return and its excess over a HYSA, over its holding window.
      *
      *     `closed_by_event_id` is part of `lots.ClosedLot` but is not currently
      *     declared on the hand-written `web/src/types/portfolio.ts` `ClosedLot`
@@ -4987,8 +4987,8 @@ export interface components {
       days_held: number | null
       /** Total Return Pct */
       total_return_pct: number | null
-      /** Alpha Vs Hysa Pct */
-      alpha_vs_hysa_pct: number | null
+      /** Excess Return Vs Hysa Pct */
+      excess_return_vs_hysa_pct: number | null
     }
     /**
      * Currency
@@ -6232,7 +6232,7 @@ export interface components {
     }
     /**
      * Overview
-     * @description The overview card row: value, gain split, XIRR, dollar alpha, TWR.
+     * @description The overview card row: value, gain split, XIRR, excess value over a HYSA, TWR.
      */
     Overview: {
       /**
@@ -6254,8 +6254,8 @@ export interface components {
       xirr_pct: number | null
       /** Xirr Is Provisional */
       xirr_is_provisional: boolean
-      /** Dollar Alpha Vs Hysa Usd */
-      dollar_alpha_vs_hysa_usd: number
+      /** Excess Value Vs Hysa Usd */
+      excess_value_vs_hysa_usd: number
       /** Twr Pct */
       twr_pct: number | null
       /** Twr Annualized Pct */
@@ -6931,8 +6931,8 @@ export interface components {
       wash_sales: components['schemas']['WashSaleRow'][]
       /** Sale Previews */
       sale_previews: components['schemas']['SalePreviewRow'][]
-      /** After Tax Dollar Alpha Vs Hysa Usd */
-      after_tax_dollar_alpha_vs_hysa_usd: number
+      /** After Tax Excess Value Vs Hysa Usd */
+      after_tax_excess_value_vs_hysa_usd: number
       /** Liquidation Pretax Value Usd */
       liquidation_pretax_value_usd: number
       /** Liquidation Long Term Gain Usd */

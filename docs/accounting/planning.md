@@ -61,9 +61,17 @@ list of entries rather than any stored running total.
 
 - **A goal's balance at any date `T`** is the sum of that goal's own
   contributions dated on or before `T` (`dashboard.goals.goal_balance`).
-- **Unallocated money at date `T`** is `(real income − real expense,
-  cumulative through T)` minus `(every goal's contributions, cumulative
-  through T)` (`dashboard.goals.unallocated_balance`). This is
+- **Unallocated money at date `T`** is `(every real account's opening
+  balance, for those dated on or before T)` plus `(real income − real
+  expense, cumulative through T)` minus `(every goal's contributions,
+  cumulative through T)` (`dashboard.goals.unallocated_balance`). The
+  opening-balance term is what stops someone who started tracking
+  mid-life, with money already in an account, from being told they have
+  nothing to allocate: a `Posting` only ever records money moving
+  *through* the ledger, so money that was already there is invisible to
+  the flow terms. Opening balances live in their own table and never
+  become postings, so counting them here cannot double-count against
+  those terms. This is
   deliberately *never* written as if it were a goal's own contribution
   row — it's the residual left over after every real goal's contributions
   are subtracted out, recomputed fresh every time, with no contributions

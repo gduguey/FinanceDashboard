@@ -92,7 +92,15 @@ export function formatRelativeTime(iso: string | null): string {
   return `${days}d ago`
 }
 
+// Three states, not two: exactly zero is neither a gain nor a loss, and
+// painting it green claimed one. Every caller is oriented so that a
+// positive value is the good direction — the ones measuring something
+// where growth is bad (liabilities, tax owed, a spending increase) negate
+// their argument rather than asking for a different colour, so `-0` has to
+// land on the same neutral as `0`, which it does: neither `> 0` nor `< 0`.
 export function signColor(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return 'text-muted-foreground'
-  return value >= 0 ? 'text-emerald-600' : 'text-rose-600'
+  if (value > 0) return 'text-emerald-600'
+  if (value < 0) return 'text-rose-600'
+  return 'text-muted-foreground'
 }

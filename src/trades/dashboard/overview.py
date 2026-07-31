@@ -36,7 +36,7 @@ class OverviewCards:
     unrealized_gain_usd: float
     xirr_pct: float | None
     xirr_is_provisional: bool
-    dollar_alpha_vs_hysa_usd: float
+    excess_value_vs_hysa_usd: float
     twr_pct: float | None
     twr_annualized_pct: float | None
     timing_gap_pct: float | None
@@ -101,7 +101,7 @@ def _gross_deposits_and_dividends(ledger: pl.DataFrame) -> tuple[float, float, f
 
 
 def overview_cards(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSettings, as_of: date) -> OverviewCards:
-    """Assemble the overview card row: value, gain split, XIRR, dollar alpha, TWR.
+    """Assemble the overview card row: value, gain split, XIRR, excess value over a HYSA, TWR.
 
     Parameters
     ----------
@@ -155,7 +155,7 @@ def overview_cards(ledger: pl.DataFrame, config: AppConfig, settings: DashboardS
         unrealized_gain_usd=unrealized,
         xirr_pct=xirr_pct,
         xirr_is_provisional=is_provisional,
-        dollar_alpha_vs_hysa_usd=value - hysa_value,
+        excess_value_vs_hysa_usd=value - hysa_value,
         twr_pct=twr.raw_pct if twr else None,
         twr_annualized_pct=twr.annualized_pct if twr else None,
         timing_gap_pct=timing_gap_pct,

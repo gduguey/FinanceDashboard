@@ -122,7 +122,7 @@ export function InterestTrackingPanel() {
                   <TableCell
                     className={`text-right tabular-nums ${delta === null ? 'text-muted-foreground' : signColor(delta)}`}
                   >
-                    {delta === null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} pts`}
+                    {delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)} pts`}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatCurrency(row.interest_earned_this_year, row.currency)}

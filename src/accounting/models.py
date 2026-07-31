@@ -86,6 +86,18 @@ account nothing is ever independently imported for) stays safe, since
 nothing else will ever independently post to it.
 """
 
+VIRTUAL_ACCOUNT_KINDS: frozenset[AccountKind] = frozenset({"income_source", "expense_payee"})
+"""The counterparty kinds that are not somewhere money actually sits.
+
+Their "balance" is only how much has passed through categorization, so
+every figure about money you hold excludes them — net worth
+(`dashboard.net_worth`), the per-account history endpoint, and the opening
+balances `dashboard.goals.unallocated_balance` counts. The income statement
+reads the same set from the other side, to *find* the legs whose sibling is
+one of these (`dashboard.income_statement`). One definition rather than one
+per module, so a new virtual kind cannot be added to half of them.
+"""
+
 CategoryClassification = Literal["income", "expense"]
 """Whether a category is money coming in or money going out. Both share one
 tree (a category can have subcategories regardless of which side it's on),

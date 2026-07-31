@@ -1,4 +1,6 @@
+import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -6,12 +8,18 @@ import pytest
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.currency import DisplayCurrency
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
-from accounting.models import Account, GoalContribution
+from accounting.models import Account, GoalContribution, OpeningBalance
 
 SCHEMA = LEDGER_FRAME_SCHEMA
 
 CHECKING = Account(
     account_id="chase:checking:9579", name="Chase Checking", kind="checking", institution="Chase", currency="USD"
+)
+SAVINGS_EUR = Account(
+    account_id="n26:savings:0001", name="N26 Savings", kind="savings", institution="N26", currency="EUR"
+)
+CREDIT_CARD = Account(
+    account_id="amex:credit_card:1001", name="Amex", kind="credit_card", institution="Amex", currency="USD"
 )
 UNCATEGORIZED_INCOME = Account(
     account_id="uncategorized:income",
@@ -49,6 +57,10 @@ def _posting(posting_id: str, transaction_id: str, account_id: str, amount: floa
         "description": "",
         "meta": {},
     }
+
+
+def _opening(account_id: str, amount: str, as_of: str) -> OpeningBalance:
+    return OpeningBalance(account_id=account_id, amount=Decimal(amount), as_of_date=datetime.fromisoformat(as_of))
 
 
 def _contribution(
@@ -195,3 +207,114 @@ def test_unallocated_balance_converts_contributions_into_the_display_currency() 
     # 3000 USD income -> 1500 EUR, minus 500 USD (-> 250 EUR) contributed = 1250 EUR left unallocated.
     result = unallocated_balance(postings, ACCOUNTS, contributions, date(2026, 6, 30), display=_EUR_DISPLAY)
     assert result == pytest.approx(1250.0)
+
+
+_OPENING_ACCOUNTS = {
+    **ACCOUNTS,
+    SAVINGS_EUR.account_id: SAVINGS_EUR,
+    CREDIT_CARD.account_id: CREDIT_CARD,
+}
+
+
+def _income_only_postings() -> pl.DataFrame:
+    return pl.DataFrame(
+        [
+            _posting("p1", "t1", "chase:checking:9579", 3000.0, "2026-06-01"),
+            _posting("p2", "t1", "uncategorized:income", -3000.0, "2026-06-01"),
+        ],
+        schema=SCHEMA,
+    )
+
+
+def test_unallocated_balance_counts_an_opening_balance_the_ledger_never_saw() -> None:
+    # The whole point of A3a: someone who already had 10,000 in an account
+    # when they started tracking has none of it in any posting.
+    openings = {CHECKING.account_id: _opening(CHECKING.account_id, "10000.00", "2026-01-01")}
+    result = unallocated_balance(
+        _income_only_postings(), ACCOUNTS, contributions_to_frame({}), date(2026, 6, 30), opening_balances=openings
+    )
+    assert result == pytest.approx(13000.0)
+
+
+def test_unallocated_balance_ignores_an_opening_balance_dated_after_the_as_of_date() -> None:
+    openings = {CHECKING.account_id: _opening(CHECKING.account_id, "10000.00", "2026-07-01")}
+    result = unallocated_balance(
+        _income_only_postings(), ACCOUNTS, contributions_to_frame({}), date(2026, 6, 30), opening_balances=openings
+    )
+    assert result == pytest.approx(3000.0)
+
+
+def test_unallocated_balance_subtracts_a_liability_opening_balance() -> None:
+    openings = {
+        CHECKING.account_id: _opening(CHECKING.account_id, "10000.00", "2026-01-01"),
+        CREDIT_CARD.account_id: _opening(CREDIT_CARD.account_id, "-2000.00", "2026-01-01"),
+    }
+    result = unallocated_balance(
+        _income_only_postings(),
+        _OPENING_ACCOUNTS,
+        contributions_to_frame({}),
+        date(2026, 6, 30),
+        opening_balances=openings,
+    )
+    assert result == pytest.approx(11000.0)
+
+
+def test_unallocated_balance_converts_an_opening_balance_from_its_accounts_currency() -> None:
+    openings = {SAVINGS_EUR.account_id: _opening(SAVINGS_EUR.account_id, "100.00", "2026-01-01")}
+    # 1 EUR = 2 USD, so a 100 EUR opening balance is 200 USD on top of 3000 USD of income.
+    result = unallocated_balance(
+        _income_only_postings(),
+        _OPENING_ACCOUNTS,
+        contributions_to_frame({}),
+        date(2026, 6, 30),
+        display=DisplayCurrency(code="USD", rates_to_base={"USD": 1.0, "EUR": 2.0}),
+        opening_balances=openings,
+    )
+    assert result == pytest.approx(3200.0)
+
+
+def test_unallocated_balance_skips_an_opening_balance_on_a_virtual_account() -> None:
+    # A counterparty placeholder's "balance" is never money that is anywhere,
+    # so it is excluded here exactly as `net_worth_summary` excludes it.
+    openings = {UNCATEGORIZED_INCOME.account_id: _opening(UNCATEGORIZED_INCOME.account_id, "500.00", "2026-01-01")}
+    result = unallocated_balance(
+        _income_only_postings(), ACCOUNTS, contributions_to_frame({}), date(2026, 6, 30), opening_balances=openings
+    )
+    assert result == pytest.approx(3000.0)
+
+
+def test_unallocated_balance_skips_an_opening_balance_for_an_unknown_account() -> None:
+    openings = {"gone:checking:0000": _opening("gone:checking:0000", "500.00", "2026-01-01")}
+    result = unallocated_balance(
+        _income_only_postings(), ACCOUNTS, contributions_to_frame({}), date(2026, 6, 30), opening_balances=openings
+    )
+    assert result == pytest.approx(3000.0)
+
+
+def test_unallocated_balance_without_opening_balances_is_unchanged() -> None:
+    assert unallocated_balance(
+        _income_only_postings(), ACCOUNTS, contributions_to_frame({}), date(2026, 6, 30)
+    ) == pytest.approx(3000.0)
+
+
+BROKER_LINKED = Account(
+    account_id="ibkr:external_investment:0001",
+    name="IBKR",
+    kind="external_investment",
+    institution="IBKR",
+    currency="USD",
+    broker_connection_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+)
+
+
+def test_unallocated_balance_skips_a_broker_linked_accounts_opening_balance() -> None:
+    # `net_worth_summary.base_balance` takes a broker-linked account's whole
+    # value from the live portfolio and never adds its opening balance, so
+    # counting one here would put money into unallocated that appears in no
+    # other total.
+    accounts = {**ACCOUNTS, BROKER_LINKED.account_id: BROKER_LINKED}
+    openings = {BROKER_LINKED.account_id: _opening(BROKER_LINKED.account_id, "5000.00", "2026-01-01")}
+    result = unallocated_balance(
+        _income_only_postings(), accounts, contributions_to_frame({}), date(2026, 6, 30), opening_balances=openings
+    )
+    assert result == pytest.approx(3000.0)

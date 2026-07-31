@@ -27,8 +27,10 @@ part of what `GET /postings` costs.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -67,6 +69,49 @@ assertions divide the work.
 
 _INSTITUTION = "perf-harness-bank"
 _REAL_ACCOUNT_KEY = "acct:perf:checking"
+_EUR_ACCOUNT_KEY = "acct:perf:eur"
+
+_RATE_HISTORY_START = date(2019, 1, 1)
+"""First day of the seeded exchange-rate cache — a year before the seeded ledger's own first transaction."""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seeded_exchange_rates(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Point the running app at a full daily EUR rate history, so the per-date FX join is actually measured.
+
+    The seed carries a EUR account (with no postings of its own), which is
+    all it takes for `_currencies_in_use` to report two currencies and for
+    every income-statement request to build a per-date rate table and join
+    every posting against it. Without both halves the flow aggregations take
+    the single-currency shortcut, and a latency gate over them would be
+    watching a branch the code never enters.
+
+    Daily rather than weekday-only: this is the pessimistic shape for the
+    rolling window `smoothed_rate_series` computes per request.
+
+    Yields
+    ------
+    None
+    """
+    from accounting.api import dependencies as accounting_dependencies  # noqa: PLC0415
+    from accounting.config import AccountingConfig  # noqa: PLC0415
+    from accounting.market_data.exchange_rates import RATE_HISTORY_SCHEMA  # noqa: PLC0415
+    from accounting.utils.io_utils import write_csv_atomic  # noqa: PLC0415
+
+    config = AccountingConfig(data_dir=tmp_path_factory.mktemp("perf-rates"))
+    days = (datetime.now(tz=UTC).date() - _RATE_HISTORY_START).days + 1
+    history = pl.DataFrame(
+        {
+            "date": [_RATE_HISTORY_START + timedelta(days=offset) for offset in range(days)],
+            "currency": ["EUR"] * days,
+            "rate_to_base": [1.05 + (offset % 100) / 1000 for offset in range(days)],
+        },
+        schema=RATE_HISTORY_SCHEMA,
+    )
+    write_csv_atomic(history, config.exchange_rates_csv_path)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(accounting_dependencies.state, "config", config)
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -154,12 +199,17 @@ def _seed_tenant(connection: Connection, tenant: uuid.UUID, *, transactions: int
                 (user_id, natural_key, name, kind, institution, currency, meta, closed)
             VALUES
                 (:tenant, :real_key, 'Perf Checking', 'checking', :bank, 'USD', '{}'::jsonb, false),
+                (:tenant, :eur_key, 'Perf EUR Checking', 'checking', :bank, 'EUR', '{}'::jsonb, false),
                 (:tenant, :placeholder_key, 'Uncategorized Expense', 'expense_payee', 'internal',
                  'USD', '{}'::jsonb, false)
         """),
         {
             "tenant": tenant,
             "real_key": _REAL_ACCOUNT_KEY,
+            # Empty, and there on purpose: a second currency in use is what
+            # puts every income-statement read through the per-date rate
+            # join rather than the single-currency shortcut around it.
+            "eur_key": _EUR_ACCOUNT_KEY,
             "placeholder_key": UNCATEGORIZED_EXPENSE_ACCOUNT_ID,
             "bank": _INSTITUTION,
         },

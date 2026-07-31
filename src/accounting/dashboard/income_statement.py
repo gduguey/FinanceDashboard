@@ -17,14 +17,14 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from accounting.ledger.currency import DisplayCurrency
+from accounting.ledger.currency import DisplayCurrency, with_converted_amount
+from accounting.models import VIRTUAL_ACCOUNT_KINDS
 
 if TYPE_CHECKING:
     from datetime import date
 
     from accounting.models import Account, Category
 
-_VIRTUAL_KINDS = ["income_source", "expense_payee"]
 UNCATEGORIZED_INCOME_ID = "uncategorized:income-category"
 UNCATEGORIZED_EXPENSE_ID = "uncategorized:expense-category"
 
@@ -54,6 +54,11 @@ def real_income_expense_legs(
     itself a public function that continues the lazy chain and only
     collects at its own final boundary (see e.g. `category_totals`).
 
+    Each leg converts at *its own posted date's* rate, not the report
+    date's — see `ledger.currency.with_converted_amount`. A March 2024
+    expense is worth what it was worth in March 2024, permanently, so a
+    past month's total stops moving every time the currency market does.
+
     Also excludes any transaction `ledger.transfers.apply_transfer_links`
     marked `is_linked_transfer` — a confirmed pairing (manual, or a
     `TransferRule` safely resolved via `ledger.transfers.reconcile_rule_links`)
@@ -74,7 +79,7 @@ def real_income_expense_legs(
     """
     lazy = postings.lazy()
     has_link_column = "is_linked_transfer" in lazy.collect_schema().names()
-    virtual_ids = [account.account_id for account in accounts.values() if account.kind in _VIRTUAL_KINDS]
+    virtual_ids = [account.account_id for account in accounts.values() if account.kind in VIRTUAL_ACCOUNT_KINDS]
     sibling_flags = (
         lazy
         .select("transaction_id", "account_id")
@@ -89,10 +94,6 @@ def real_income_expense_legs(
         },
         schema={"account_id": pl.Utf8, "account_currency": pl.Utf8},
     )
-    rate_table = pl.LazyFrame(
-        {"account_currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
-        schema={"account_currency": pl.Utf8, "rate_to_base": pl.Float64},
-    )
     real_leg_filter = pl.col("any_virtual_sibling") & ~pl.col("account_id").is_in(virtual_ids)
     if has_link_column:
         real_leg_filter &= ~pl.col("is_linked_transfer")
@@ -102,10 +103,8 @@ def real_income_expense_legs(
         .filter(real_leg_filter)
         .drop("any_virtual_sibling")
         .join(real_currencies, on="account_id", how="left")
-        .join(rate_table, on="account_currency", how="left")
     )
-    converted = pl.col("amount") * pl.col("rate_to_base") / display.rates_to_base[display.code]
-    return legs.with_columns(amount=converted).drop("account_currency", "rate_to_base")
+    return with_converted_amount(legs, display, "account_currency", "posted_at").drop("account_currency")
 
 
 def category_totals(

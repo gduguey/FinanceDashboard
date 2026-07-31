@@ -210,10 +210,14 @@ class TimezoneConfig(BaseModel):
 class ReturnsConfig(BaseModel):
     """The annualization convention and the counterfactual benchmarks to compare against.
 
-    `hysa_annual_rate` stands in for a real HYSA rate time series until
-    `market_data.hysa_rates` is implemented — `counterfactuals.hysa_counterfactual_value`
-    takes a `rate_lookup` callable specifically so this constant can be
-    swapped for a real series later without changing that function.
+    `hysa_annual_rate` is the floor under the real rate series, not a
+    stand-in for one: `market_data.hysa_rates` scrapes and caches every
+    tracked bank's published APY history, and
+    `dashboard.settings.raw_hysa_rate_lookup` reads it for the bank the
+    user selected, falling back to this constant only for days that bank
+    published nothing (typically before its history starts). A user who
+    wants a different number sets `hysa_bank_id` or `hysa_fixed_rate_pct`
+    on their own dashboard settings rather than changing this.
     """
 
     model_config = ConfigDict(frozen=True)

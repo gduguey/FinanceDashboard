@@ -24,6 +24,8 @@ from trades.dashboard import (
     risk_stat,
     tax_summary,
 )
+from trades.dashboard.settings import raw_hysa_rate_lookup
+from trades.market_data import hysa_rates
 from trades.utils.io_utils import write_csv_atomic
 
 
@@ -143,7 +145,7 @@ def test_overview_cards_marks_xirr_provisional_under_the_annualization_threshold
     assert cards.xirr_pct == pytest.approx((1040.0 / 1000.0) ** (365 / 2) * 100 - 100)
 
 
-def test_overview_cards_reports_dollar_alpha_vs_hysa(tmp_path) -> None:
+def test_overview_cards_reports_excess_value_vs_hysa(tmp_path) -> None:
     config = _config(tmp_path)
     write_csv_atomic(
         pl.DataFrame({
@@ -155,10 +157,10 @@ def test_overview_cards_reports_dollar_alpha_vs_hysa(tmp_path) -> None:
     cards = overview_cards(_OVERVIEW_LEDGER, config, DashboardSettings(), as_of=date(2026, 1, 3))
 
     expected_hysa_value = 1000.0 * (1 + config.returns.hysa_annual_rate / 365) ** 2
-    assert cards.dollar_alpha_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
+    assert cards.excess_value_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
 
 
-def test_overview_cards_dollar_alpha_taxes_the_hysa_leg_when_tax_is_enabled(tmp_path) -> None:
+def test_overview_cards_excess_value_taxes_the_hysa_leg_when_tax_is_enabled(tmp_path) -> None:
     config = _config(tmp_path)
     write_csv_atomic(
         pl.DataFrame({
@@ -172,10 +174,10 @@ def test_overview_cards_dollar_alpha_taxes_the_hysa_leg_when_tax_is_enabled(tmp_
 
     after_tax_rate = config.returns.hysa_annual_rate * (1 - config.tax.marginal_ordinary_rate)
     expected_hysa_value = 1000.0 * (1 + after_tax_rate / 365) ** 2
-    assert cards.dollar_alpha_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
+    assert cards.excess_value_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
 
 
-def test_overview_cards_dollar_alpha_leaves_hysa_untaxed_for_a_nonresident_alien(tmp_path) -> None:
+def test_overview_cards_excess_value_leaves_hysa_untaxed_for_a_nonresident_alien(tmp_path) -> None:
     config = _config(tmp_path)
     write_csv_atomic(
         pl.DataFrame({
@@ -188,7 +190,7 @@ def test_overview_cards_dollar_alpha_leaves_hysa_untaxed_for_a_nonresident_alien
     cards = overview_cards(_OVERVIEW_LEDGER, config, settings, as_of=date(2026, 1, 3))
 
     expected_hysa_value = 1000.0 * (1 + config.returns.hysa_annual_rate / 365) ** 2
-    assert cards.dollar_alpha_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
+    assert cards.excess_value_vs_hysa_usd == pytest.approx(1040.0 - expected_hysa_value)
 
 
 def test_overview_cards_twr_matches_value_growth_with_no_intermediate_flows(tmp_path) -> None:
@@ -576,7 +578,7 @@ def test_lots_table_reports_open_lots_with_returns(tmp_path) -> None:
     assert table.open_lots["raw_return_pct"][0] == pytest.approx((650.0 / 500.0 - 1) * 100)
 
 
-def test_lots_table_reports_closed_lots_with_hysa_alpha(tmp_path) -> None:
+def test_lots_table_reports_closed_lots_with_their_excess_over_a_hysa(tmp_path) -> None:
     config = _config(tmp_path)
     write_csv_atomic(
         pl.DataFrame({
@@ -589,7 +591,7 @@ def test_lots_table_reports_closed_lots_with_hysa_alpha(tmp_path) -> None:
 
     assert len(table.closed_lots) == 1
     assert table.closed_lots["realized_gain"][0] == pytest.approx(100.0)
-    assert table.closed_lots["alpha_vs_hysa_pct"][0] is not None
+    assert table.closed_lots["excess_return_vs_hysa_pct"][0] is not None
 
 
 def test_lots_table_symbol_rollup_reports_open_status(tmp_path) -> None:
@@ -732,19 +734,19 @@ def test_tax_summary_previews_the_remaining_open_lot(tmp_path) -> None:
     assert preview["unrealized_gain_usd"] == pytest.approx(40.0)  # 2 shares * (420 - 400)
 
 
-def test_tax_summary_after_tax_alpha_taxes_the_hysa_leg_for_residents(tmp_path) -> None:
+def test_tax_summary_after_tax_excess_value_taxes_the_hysa_leg_for_residents(tmp_path) -> None:
     config, ledger = _tax_ledger(tmp_path)
     resident_settings = DashboardSettings(tax_regime="RESIDENT")
-    resident_alpha = tax_summary(
+    resident_excess = tax_summary(
         ledger, config, resident_settings, as_of=date(2026, 1, 1)
-    ).after_tax_dollar_alpha_vs_hysa_usd
+    ).after_tax_excess_value_vs_hysa_usd
 
     nra_settings = DashboardSettings(tax_regime="NRA")
-    nra_alpha = tax_summary(ledger, config, nra_settings, as_of=date(2026, 1, 1)).after_tax_dollar_alpha_vs_hysa_usd
+    nra_excess = tax_summary(ledger, config, nra_settings, as_of=date(2026, 1, 1)).after_tax_excess_value_vs_hysa_usd
 
-    # A resident's HYSA leg is taxed (smaller HYSA counterfactual, larger alpha);
-    # an NRA's is untaxed, so its alpha is smaller (the HYSA leg compounded more).
-    assert resident_alpha > nra_alpha
+    # A resident's HYSA leg is taxed (smaller HYSA counterfactual, larger excess);
+    # an NRA's is untaxed, so its excess is smaller (the HYSA leg compounded more).
+    assert resident_excess > nra_excess
 
 
 def test_tax_summary_liquidation_value_subtracts_capital_gains_tax_for_a_resident(tmp_path) -> None:
@@ -780,3 +782,95 @@ def test_tax_summary_tax_owed_estimates_tax_on_the_years_realized_income(tmp_pat
     # zero; the $25 ordinary dividend is taxed at the marginal rate.
     assert row["capital_gains_tax_usd"] == pytest.approx(0.0)
     assert row["dividend_tax_usd"] == pytest.approx(25.0 * config.tax.marginal_ordinary_rate)
+
+
+def _lots_prices(tmp_path) -> None:
+    write_csv_atomic(
+        pl.DataFrame({
+            "price_date": [date(2026, 1, 1), date(2026, 6, 1), date(2026, 12, 1)],
+            "close": [500.0, 600.0, 650.0],
+        }),
+        tmp_path / "VOO.csv",
+    )
+
+
+def test_closed_lot_excess_return_uses_the_users_own_hysa_rate_not_the_config_constant(tmp_path) -> None:
+    """A3e: this column used to be benchmarked against a flat `config.returns.hysa_annual_rate`.
+
+    The overview's own HYSA figure has always used the real published-rate
+    lookup, so the two "Alpha vs. HYSA" numbers on screen were measured
+    against two different rates. This one now goes through the same lookup,
+    which is what makes a fixed-rate override change it at all.
+    """
+    config = _config(tmp_path)
+    _lots_prices(tmp_path)
+    # The lot ran 2026-01-01 to 2026-06-01: 151 days compounded daily.
+    days_held = (date(2026, 6, 1) - date(2026, 1, 1)).days
+    table = lots_table(_LOTS_LEDGER, config, DashboardSettings(hysa_fixed_rate_pct=10.0), as_of=date(2026, 12, 1))
+
+    total_return_pct = table.closed_lots["total_return_pct"][0]
+    hysa_return_pct = ((1 + 0.10 / config.returns.days_per_year) ** days_held - 1) * 100
+    assert table.closed_lots["excess_return_vs_hysa_pct"][0] == pytest.approx(total_return_pct - hysa_return_pct)
+
+
+def test_closed_lot_excess_return_reads_the_selected_banks_published_rate(tmp_path) -> None:
+    config = _config(tmp_path)
+    _lots_prices(tmp_path)
+    write_csv_atomic(
+        pl.DataFrame({
+            "bank_id": ["some-bank"],
+            "bank_name": ["Some Bank"],
+            "rate_date": [date(2025, 1, 1)],
+            "apy_pct": [8.0],
+        }),
+        tmp_path / "rates.csv",
+    )
+    days_held = (date(2026, 6, 1) - date(2026, 1, 1)).days
+    table = lots_table(_LOTS_LEDGER, config, DashboardSettings(hysa_bank_id="some-bank"), as_of=date(2026, 12, 1))
+
+    total_return_pct = table.closed_lots["total_return_pct"][0]
+    hysa_return_pct = ((1 + 0.08 / config.returns.days_per_year) ** days_held - 1) * 100
+    assert table.closed_lots["excess_return_vs_hysa_pct"][0] == pytest.approx(total_return_pct - hysa_return_pct)
+
+
+def test_closed_lot_excess_return_shrinks_when_the_hysa_leg_is_left_untaxed(tmp_path) -> None:
+    """Tax-enabled taxes the HYSA leg, exactly as the overview card's does, so the excess grows."""
+    config = _config(tmp_path)
+    _lots_prices(tmp_path)
+    taxed = lots_table(
+        _LOTS_LEDGER,
+        config,
+        DashboardSettings(hysa_fixed_rate_pct=10.0, tax_enabled=True, tax_regime="RESIDENT"),
+        as_of=date(2026, 12, 1),
+    )
+    untaxed = lots_table(_LOTS_LEDGER, config, DashboardSettings(hysa_fixed_rate_pct=10.0), as_of=date(2026, 12, 1))
+
+    assert taxed.closed_lots["excess_return_vs_hysa_pct"][0] > untaxed.closed_lots["excess_return_vs_hysa_pct"][0]
+
+
+def test_raw_hysa_rate_lookup_matches_rate_as_of_on_every_kind_of_day(tmp_path) -> None:
+    """The bisect must answer exactly what `rate_as_of` answers, including the fallback.
+
+    `raw_hysa_rate_lookup` reads the bank's rows once and bisects them
+    instead of filtering the whole multi-bank history per call, because
+    every caller walks a span of days one at a time. This pins the
+    equivalence: before the history starts, on a change date, between two,
+    and after the last — plus the other bank's rows never leaking in.
+    """
+    write_csv_atomic(
+        pl.DataFrame({
+            "bank_id": ["other", "some-bank", "some-bank", "other"],
+            "bank_name": ["Other", "Some Bank", "Some Bank", "Other"],
+            "rate_date": [date(2025, 1, 1), date(2025, 6, 1), date(2026, 1, 1), date(2026, 6, 1)],
+            "apy_pct": [1.0, 8.0, 5.0, 2.0],
+        }),
+        tmp_path / "rates.csv",
+    )
+    config = _config(tmp_path)
+    history = hysa_rates.load_hysa_rates_cache(config)
+    lookup = raw_hysa_rate_lookup(config, DashboardSettings(hysa_bank_id="some-bank"))
+
+    for day in (date(2025, 1, 1), date(2025, 6, 1), date(2025, 9, 15), date(2026, 1, 1), date(2026, 12, 31)):
+        published = hysa_rates.rate_as_of(history, "some-bank", day)
+        expected = published / 100 if published is not None else config.returns.hysa_annual_rate
+        assert lookup(day) == pytest.approx(expected), day

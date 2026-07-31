@@ -61,7 +61,7 @@ class TaxSummary:
     tax_owed: pl.DataFrame
     wash_sales: pl.DataFrame
     sale_previews: pl.DataFrame
-    after_tax_dollar_alpha_vs_hysa_usd: float
+    after_tax_excess_value_vs_hysa_usd: float
     liquidation_pretax_value_usd: float
     liquidation_long_term_gain_usd: float
     liquidation_short_term_gain_usd: float
@@ -69,7 +69,7 @@ class TaxSummary:
     liquidation_value_usd: float
 
 
-def _after_tax_dollar_alpha_vs_hysa(
+def _after_tax_excess_value_vs_hysa(
     ledger: pl.DataFrame,
     config: AppConfig,
     settings: DashboardSettings,
@@ -78,7 +78,7 @@ def _after_tax_dollar_alpha_vs_hysa(
     status_change_date: date | None,
     marginal_ordinary_rate: float,
 ) -> float:
-    """Dollar alpha vs. HYSA, using the after-tax rate in place of the raw published rate.
+    """Excess value over a HYSA, using the after-tax rate in place of the raw published rate.
 
     Mirrors `overview_cards`'s pre-tax figure exactly, substituting an
     `after_tax_rate_lookup`-wrapped rate for the plain one — everything
@@ -187,7 +187,7 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSett
         pl.col("wash_sale_flag")
     )
     previews = collect_if_lazy(preview_sale(result.open_lots, ledger, make_price_lookup(config), as_of, config))
-    after_tax_alpha = _after_tax_dollar_alpha_vs_hysa(
+    after_tax_excess = _after_tax_excess_value_vs_hysa(
         ledger, config, settings, as_of, regime, status_change_date, marginal_ordinary_rate
     )
     liquidation = _liquidation_estimate(ledger, config, as_of, regime, marginal_ordinary_rate, qualified_ltcg_rate)
@@ -197,7 +197,7 @@ def tax_summary(ledger: pl.DataFrame, config: AppConfig, settings: DashboardSett
         tax_owed=owed,
         wash_sales=wash_sales,
         sale_previews=previews,
-        after_tax_dollar_alpha_vs_hysa_usd=after_tax_alpha,
+        after_tax_excess_value_vs_hysa_usd=after_tax_excess,
         liquidation_pretax_value_usd=liquidation.pretax_value_usd,
         liquidation_long_term_gain_usd=liquidation.long_term_gain_usd,
         liquidation_short_term_gain_usd=liquidation.short_term_gain_usd,

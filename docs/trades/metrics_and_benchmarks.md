@@ -151,16 +151,20 @@ annualized = (1 + raw_return)^(365 / days_held) − 1
 Only shown when `days_held ≥ 365` — shorter holds produce unstable
 annualized values that are mostly noise.
 
-### Closed-lot alpha vs HYSA
+### Excess return vs HYSA
 
 For closed lots, the dashboard also computes:
 
 ```
-alpha_vs_hysa = total_return_pct − hysa_period_return_pct
+excess_return_vs_hysa_pct = total_return_pct − hysa_period_return_pct
 ```
 
-where `hysa_period_return_pct` compounds at the configured HYSA rate over
-the lot's actual holding window. This is a final, non-provisional number.
+where `hysa_period_return_pct` compounds daily at the rate
+`dashboard.settings.hysa_rate_lookup` returns for each day of the lot's
+actual holding window — the user's selected bank, their fixed-rate
+override, after tax when tax is enabled. This is a final, non-provisional
+number, and it is a difference between two percentages rather than alpha:
+no risk adjustment is applied.
 
 ---
 
@@ -195,11 +199,16 @@ shares(t) = Σ(deposit / benchmark_price) − shares sold on withdrawals
 value(t)  = shares(t) × benchmark_price(t)
 ```
 
-### Dollar alpha vs HYSA
+### Excess value vs HYSA
 
 ```
-dollar_alpha = portfolio_value − hysa_counterfactual_value
+excess_value_vs_hysa_usd = portfolio_value − hysa_counterfactual_value
 ```
+
+A difference in dollars, not a return, and not alpha — nothing here
+adjusts for risk. The closed-lot table's `excess_return_vs_hysa_pct` is
+the percentage-point sibling of this, over one lot's own holding window,
+and both read the same rate from `dashboard.settings.hysa_rate_lookup`.
 
 When the tax toggle is on, the HYSA rate is after-tax (see
 `ledger/taxes.after_tax_rate_lookup`).
