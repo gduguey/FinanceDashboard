@@ -122,7 +122,7 @@ def all_goal_balances(
     return {goal_id: total_by_goal.get(goal_id, 0.0) for goal_id in goal_ids}
 
 
-def opening_balance_total(
+def _opening_balance_total(
     accounts: dict[str, Account],
     opening_balances: dict[str, OpeningBalance],
     as_of: date,
@@ -208,7 +208,7 @@ def unallocated_balance(
         is converted into before summing.
     opening_balances
         Manually-entered starting balances, keyed by `account_id`; see
-        `opening_balance_total`. `None` means the caller has none to
+        `_opening_balance_total`. `None` means the caller has none to
         offer, not that they should be ignored — every caller in
         `api.routers.goals` passes them.
 
@@ -217,7 +217,7 @@ def unallocated_balance(
     float
     """
     net_income = net_income_expense_total(postings, accounts, as_of, display)
-    opening = opening_balance_total(accounts, opening_balances or {}, as_of, display)
+    opening = _opening_balance_total(accounts, opening_balances or {}, as_of, display)
     dated = contributions.lazy().filter(pl.col("date").dt.date() <= as_of)
     contributed = _with_converted_amount(dated, display).select(pl.col("amount").sum().fill_null(0.0))
     total_contributed = contributed.collect().item()
