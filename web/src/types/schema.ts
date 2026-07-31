@@ -2046,7 +2046,7 @@ export interface paths {
      *         Each carries both sides' own `description` and a `suggestion_id`,
      *         for the caller to propose a `TransferRule` from or dismiss —
      *         never applied automatically. Excludes any pair already dismissed
-     *         (see `POST /dismissed-suggestions`).
+     *         (see `PUT /dismissed-suggestions/{suggestion_id}`).
      */
     get: operations['get_transfer_suggestions_api_v1_accounting_transfer_suggestions_get']
     put?: never
@@ -2078,7 +2078,7 @@ export interface paths {
      *     list[DuplicateGroup]
      *         Sorted least-certain first, since those need the closest review.
      *         Each carries a `suggestion_id` for dismissing it. Excludes any
-     *         group already dismissed (see `POST /dismissed-suggestions`).
+     *         group already dismissed (see `PUT /dismissed-suggestions/{suggestion_id}`).
      */
     get: operations['get_duplicate_suggestions_api_v1_accounting_duplicate_suggestions_get']
     put?: never
@@ -4256,8 +4256,9 @@ export interface components {
      *     opening balances are edited one account at a time through
      *     `PUT /accounts/{account_id}/opening-balance`, and the UI's "manually
      *     added transfers" are `transfer_links` with no `rule_id` — a different
-     *     table from `manual_transfers`, which holds only the balancing legs
-     *     behind an opening or closing balance.
+     *     thing from a `ManualTransfer`, which is not a table at all any more
+     *     but a projection over `origin='manual'` transactions and their two
+     *     balancing postings (see `repositories.accounts.load_manual_transfers`).
      */
     AccountingStoreResponse: {
       /** Accounts */
@@ -5387,7 +5388,7 @@ export interface components {
      *     which is the only route that assigns priorities. No
      *     `expected_version`: like a budget cell, an edit of one rule is
      *     last-write-wins on that rule (see
-     *     `docs/app-stack/optimistic-concurrency-versioning.md`).
+     *     `docs/optimistic-concurrency-versioning.md`).
      *
      *     Contribution-shaped for the same reason `GoalAutomationCreate` is —
      *     there is nothing on a withdrawal automation a `PATCH` could edit.
@@ -7132,7 +7133,7 @@ export interface components {
      *     (skip the check, last-write-wins) only for an idempotent toggle of the
      *     `active` flag, where losing the race against a newer flip of the same
      *     switch is the wanted outcome, not a conflict — see
-     *     `docs/app-stack/optimistic-concurrency-versioning.md`.
+     *     `docs/optimistic-concurrency-versioning.md`.
      */
     TransferRuleUpdate: {
       /** Description Contains */

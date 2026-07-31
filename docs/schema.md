@@ -1,11 +1,20 @@
 # Database schema
 
-Reference for the Postgres schema on branch `gduguey/schema-rewrite` (PR #29).
-Two jobs at once: the standing description of what the database *is*, and an
-account of what this rewrite changed. Every fact here was checked against the
-SQLAlchemy models and against a scratch database built by running
-`alembic upgrade head` and introspected with `\d+`, `pg_indexes`, `pg_policies`
-and `pg_constraint`.
+The standing reference for the Postgres schema: every table, column, key,
+`CHECK`, foreign key, index and RLS policy, and the reasoning behind the
+cross-cutting decisions. This is what the database *is* — not an account of how
+it got here. The rewrite narrative that used to share these pages is in
+[archive/schema-rewrite.md](archive/schema-rewrite.md).
+
+**This document is hand-maintained, with no generator and no drift check.** It
+is verified against the SQLAlchemy models and against a scratch database built
+by `alembic upgrade head` and introspected with `\d+`, `pg_indexes`,
+`pg_policies` and `pg_constraint` — see §6 for the commands. Nothing enforces
+that it stays true between those passes, which is `docs/remaining-work.md`'s
+item **E8**. Treat a disagreement between this page and the models as a bug in
+this page.
+
+Last verified against the models: **1.7.3**.
 
 ---
 
@@ -792,7 +801,8 @@ client, and done it as an accident of an internal refactor rather than as a
 decision. The annotations pin the wire exactly where it was: number in, number
 out, unchanged OpenAPI. Flipping this to exact decimal strings end to end —
 dropping the two annotations, regenerating the OpenAPI schema and the TS
-client — is **PR 3's job** (`TODO(PR3)` in `src/db/money.py`). Until then a
+client — remains possible and is not planned; the `TODO(PR3)` marker that used
+to sit in `src/db/money.py` is gone. A
 value is exact everywhere in Python and lossy only in the final JSON encode,
 which is strictly better than before (lossy from the moment it left Postgres)
 and changes no contract.
@@ -948,7 +958,7 @@ independent writes (accepting several duplicate-merge suggestions, adding two
 transfer rules) into sequential loops purely to stop them racing their own
 shared header. That sequencing is now plain parallel requests. Two mechanisms
 also meant two ways to be wrong; there is now one. Full reasoning in
-`docs/app-stack/optimistic-concurrency-versioning.md`.
+`docs/optimistic-concurrency-versioning.md`.
 
 ### 4.4 Primary keys
 
@@ -1314,185 +1324,45 @@ introspection: no `raw_statements` table exists in any of the three schemas.
 
 ---
 
-## 5. What changed from the old schema
+## 5. Known gaps and deferred work
 
-The old schema had **39 tables**; the new one has **35**. Six added, ten
-removed, one renamed.
-
-### 5.1 Tables added
-
-| New table | Schema | Why |
-|---|---|---|
-| `currencies` | `public` | Dimension. Replaces eight restated `CHECK (currency IN ('USD','EUR'))` clauses and covers the ninth column that had none |
-| `institutions` | `accounting` | Dimension. `accounts.institution` was free text with no constraint of any kind, despite selecting which importer runs and being a path segment in the statement archive |
-| `securities` | `trades` | Dimension. `ledger_events.symbol` and `dashboard_settings.benchmark_symbol_override` were both free text |
-| `categorization_rules` | `accounting` | Merge of `transfer_rules` + `category_patterns` |
-| `goal_automations` | `accounting` | Merge of `recurring_additions` + `withdrawal_priority_entries` |
-| `suggestions` | `accounting` | Merge of `posting_pending_suggestions` + `dismissed_suggestions` |
-
-### 5.2 Migration table: old → new
-
-| Old | New | Note |
-|---|---|---|
-| `accounts` | `accounts` | Gained `institution` FK, `currency` FK, `broker_connection_id` FK, generated `depth`/`parent_depth`, `created_at`/`updated_at`. Lost `external_ref` |
-| `categories` | `categories` | Gained generated `depth`/`parent_depth`, `UNIQUE (id, depth)`, `UNIQUE (id, parent_category_id)`, timestamps |
-| `tags` | `tags` | Gained timestamps |
-| `transactions` | `transactions` | Gained `posted_at`, `description`, `origin`, the zero-sum trigger's subject, `ix_transactions_user_posted_at`, timestamps. Was previously a bare identity row |
-| `postings` | `postings` | **Lost** the per-leg `posted_at` and `description` (moved to `transactions`). `budget_id` became a real FK. The in-place category write is gone |
-| `posting_tags` | `posting_tags` | Surrogate `id` dropped; PK is now the association tuple |
-| `opening_balances` | `opening_balances` | Gained FK indexes and timestamps |
-| `manual_transfers` | *(deleted)* | Its rows are now `transactions` with `origin='manual'` plus two `postings`. Old columns: date, two account ids, two amounts, description — all already expressible. The `manual_transfer` resolution stage went with it |
-| `other_assets` | `other_assets` | Gained `CHECK (value >= 0)`, `currency` FK, timestamps |
-| `budgets` + `general_budgets` | `budgets` | One table with a nullable `month`; `NULL` is the general target. They previously held the same four columns in two tables. Gained the coalescing partial unique index, the calendar-month CHECK, `amount >= 0` |
-| `goals` | `goals` | Kept its `version`. Gained `CHECK (target_amount > 0)`, `target_currency` FK |
-| `goal_contributions` | `goal_contributions` | Gained `account_id` (which account the earmarked money sits in), `origin` CHECK, `source_posting_id` `ON DELETE SET NULL` |
-| `recurring_additions` + `withdrawal_priority_entries` | `goal_automations` | `direction` is the discriminator; `ck_goal_automations_schedule_matches_direction` keeps each side's columns straight. `withdrawal_priority_entries`' `UNIQUE (user_id, goal_id)` became the partial index `… WHERE direction='withdrawal'`; the "one remainder" rule became a second partial index |
-| `transfer_rules` + `category_patterns` | `categorization_rules` | `effect` (`transfer`/`categorize`) is the discriminator, `stage` is derived from it, and `ck_categorization_rules_effect_columns` pins each effect to its own columns. Both previously carried the same matcher (`description_contains`, `priority`, `active`). All four reference columns became real FKs. Both tables' `version` columns collapse into one |
-| `transfer_rule_exclusions` | `categorization_rule_exclusions` | Renamed to follow the merged rules table. Surrogate `id` dropped. **Gained an RLS policy it never had** |
-| `posting_overrides` | `posting_overrides` | Gained `stage`, the paired category FK, FK indexes |
-| `posting_override_tags` | `posting_override_tags` | Surrogate `id` dropped |
-| `posting_splits` | `posting_splits` | Gained `stage` |
-| `posting_split_legs` | `posting_split_legs` | Gained `UNIQUE (user_id, posting_split_id, ordinal)` — it previously had **no** unique constraint |
-| `posting_merges` | `posting_merges` | Gained `stage` |
-| `posting_merge_duplicates` | `posting_merge_duplicates` | Surrogate `id` dropped |
-| `posting_pending_suggestions` + `dismissed_suggestions` | `suggestions` | `status` (`pending`/`dismissed`) is the discriminator; two shape CHECKs keep each lifecycle's columns out of the other's. The old `UNIQUE (user_id, posting_id)` is subsumed by `UNIQUE (user_id, natural_key)` with a `pending:<posting key>` prefix |
-| `transfer_links` | `transfer_links` | Gained `stage`; `rule_id` went from a bare `String` naming a rule's natural key to a real FK `ON DELETE SET NULL`. **Gained an RLS policy it never had** |
-| `transfer_linked_transactions` | `transfer_linked_transactions` | Surrogate `id` dropped; gained `UNIQUE (user_id, transaction_id)`. **Gained an RLS policy it never had** |
-| `store_versions` | *(deleted)* | The whole-store version counter. See §4.3 |
-| `llm_usage` | `llm_usage` | Gained timestamps |
-| `simulator_scenarios` | `simulator_scenarios` | Gained `currency` FK and `compounding_frequency` CHECK; `horizon_years`/`annual_rate_pct` went from `double precision` to `NUMERIC(12,6)` |
-| `users` | `users` | Gained `uuid7()` default and `updated_at`. **Lost** four vestigial columns nothing read: `hashed_password`, `is_superuser`, `is_verified` (and `is_active` was kept, as the Clerk soft-delete marker) |
-| `external_identities` | `external_identities` | Gained `updated_at`; exemption reason now recorded in code (`db.tenant.RLS_EXEMPT`) rather than only in prose |
-| `user_secrets` | `user_secrets` | Unchanged in shape — the one old table that already had both timestamps |
-| `broker_connections` | `broker_connections` | Gained `updated_at`; now the target of `accounts.broker_connection_id` |
-| `ledger_events` | `ledger_events` | `currency` and `symbol` became real FKs (`currency` had **no constraint of any kind** before); `amount` stayed `NUMERIC(18,4)` but now reads back as `Decimal` |
-| `ledger_event_trade_details` | `ledger_event_trade_details` | `shares`/`price` stayed `NUMERIC(20,8)`/`NUMERIC(18,4)`; both now read back as `Decimal` |
-| `dashboard_settings` | `dashboard_settings` | `benchmark_symbol_override` became an FK into `securities`; the four rate columns went from `double precision` to `NUMERIC(12,6)`; `target_allocation_pct` went from a JSONB map of JSON numbers to a `RateMap` of exact decimal strings |
-| `dashboard_settings_versions` | *(deleted)* | The settings version counter. See §4.3 |
-
-### 5.3 Columns and mechanisms deleted outright
-
-| Deleted | Replaced by |
-|---|---|
-| `accounts.external_ref` (a nullable `VARCHAR` with no FK, no CHECK, no index, compared against the literal `"trades"` in five separate inline Python expressions) | `accounts.broker_connection_id`, a real FK |
-| `postings.posted_at`, `postings.description` | `transactions.posted_at`, `transactions.description` |
-| `users.hashed_password`, `users.is_superuser`, `users.is_verified` | Nothing — vestigial since identity moved to Clerk |
-| Surrogate `id` on 5 association tables | The full association tuple as PK |
-| `transfer_links.rule_id` as `String` | The same column as a real FK |
-| Eight restated `CHECK (currency IN (...))`, plus `goals`' ninth on `target_currency` | Foreign keys into `public.currencies` |
-| `asdecimal=False` on `MONEY`/`SHARES` | `asdecimal=True`, so exactness survives the driver boundary |
-| Six untyped `Mapped[float]` rate columns (real `double precision`) | `RATE` = `NUMERIC(12,6)` |
-| `db.base.derive_id` + `_ID_NAMESPACE` (UUIDv5 content hash) and the per-table `default=uuid.uuid4` on 12 join/child tables | `public.uuid7()` server default everywhere |
-| `db.base.get_version`, `db.base.check_and_bump_version` | `check_and_bump_row_version` only |
-| `src/accounting/db/concurrency.py` (`StoreVersion`) | Deleted with its table |
-| `X-Expected-Store-Version`, `X-Expected-Dashboard-Settings-Version` headers and the session-stashing dependency behind them | Per-row `version` in the request body |
-| `_USER_SCOPED_TABLES` (hand-copied per migration) | `db.tenant.tenant_tables(metadata)` |
-| `src/accounting/store.py` (3,091 lines: `load_store`/`save_store`, the whole-store God-aggregate) | Four repository modules under `src/accounting/repositories/` |
-| `src/accounting/ledger/manual_transfers.py` (the sixth resolution stage) | Manual transfers are ordinary ledger rows |
-| `Posting.polars_schema` | `ledger.frame.LEDGER_FRAME_SCHEMA`, moved off the model on purpose — the domain model is exact and the projection is not, so deriving one from the other invited the confusion the boundary exists to prevent |
-| 28 Alembic revisions, including a mid-history drop-and-recreate of both schemas | One baseline revision |
-| `src/accounting/importers/sofi/statement_pdf.py` | Retired PDF importer; only archived CSVs are replayed by a rebuild |
-
-### 5.4 Counts, before and after
-
-| | Before | After |
-|---|---|---|
-| Application tables | 39 | 35 |
-| Alembic revisions | 28 (linear, with a mid-history `DROP SCHEMA … CASCADE` of both schemas) | 1 |
-| Declared `Index` objects | 3 (1 non-unique, 2 unique expression) | 51 (48 non-unique, 3 partial unique) |
-| Indexed foreign-key columns | 0 | every one that has a reason to be (§4.5) |
-| Tables with `created_at` | 6 | 35 |
-| Tables with `updated_at` | 1 | 35 |
-| Tables with no RLS policy | 4 of 39 — one deliberate (`external_identities`), **three by accident** | 4 of 35 — one deliberate, three because they are dimension tables with no tenant at all |
-| How the tenant set is decided | transcribed by hand into each migration | computed from `Base.metadata`, asserted against the live database |
-| `_USER_SCOPED_TABLES` lists to keep in sync | 6 (one per table-creating migration) | 0 |
-| Id-generation regimes | 3 (`derive_id` UUIDv5, Python `uuid.uuid4`, natural/composite PK) | 2 (`uuid7()` server default, natural/composite PK) |
-| Restated `currency IN (...)` CHECKs | 8 (of 9 currency columns; the ninth had nothing) | 0 |
-| Whole-store version counters | 2 tables + 2 HTTP headers | 0 |
-| Per-row `version` columns | `goals`, `transfer_rules`, `category_patterns` | `goals`, `categorization_rules` |
-| `double precision` columns | 6 | 0 |
-| Money/rate values reaching Python | `float` | `Decimal` |
-| Generated (stored) columns | 0 | 4 |
-| Constraint triggers | 0 | 1 |
-| Dimension tables | 0 | 3 |
-| Cross-schema foreign keys | 0 | 1 (`accounts.broker_connection_id`) |
-
----
-
-## 6. Table count honesty: 35, not ~28
-
-The DB-design audit's target shape named ~28 tables. The delivered schema has
-**35**. The target was not hit as a count, and it is worth being precise about
-why rather than rounding it off.
-
-The audit's 28 counted **aggregate roots**, and named 28 specific tables. Of
-those, 27 exist (four under different names: `transaction_overrides` →
-`posting_overrides`, `transaction_splits` → `posting_splits`,
-`transaction_links` → `transfer_links`, `user_settings` →
-`trades.dashboard_settings`). One does not:
-
-- **`raw_statements` was targeted and deliberately not built.** The on-disk
-  statement archive is already the source of truth; a metadata table would
-  shadow it with nothing to add. See §4.10.
-
-The eight tables in the delivered schema that the audit's list does not name:
-
-| Table | Kind |
-|---|---|
-| `posting_split_legs` | Child collection of `posting_splits` |
-| `posting_merge_duplicates` | Child collection of `posting_merges` |
-| `posting_override_tags` | Child collection of `posting_overrides` |
-| `transfer_linked_transactions` | Child collection of `transfer_links` |
-| `categorization_rule_exclusions` | Child collection of `categorization_rules` |
-| `posting_merges` | An aggregate root the audit's interpretation list simply omitted (it listed overrides, splits, links and suggestions, but no merges) |
-| `opening_balances` | The audit assumed an opening balance would become "an initial transaction"; it did not, and remains its own table |
-| `simulator_scenarios` | Not in the audit's list at all |
-
-So: 27 delivered + 8 unlisted = 35, with `raw_statements` the one named table
-that does not exist.
-
-The five child collections are the substantive part of the gap, and collapsing
-them into their parents would mean JSON arrays where typed foreign keys and
-`CHECK` constraints now are. Postgres cannot enforce "every element of this
-array references a real row", so `posting_override_tags` as a `uuid[]` would
-trade a real constraint for an opaque column — exactly the line the audit itself
-says not to cross. The 35-table shape is the target shape counted at table
-granularity instead of root granularity, plus three roots the audit's list
-omitted and one it asked for that was not needed.
-
----
-
-## 7. Known gaps and deferred work
-
-Things the schema does **not** yet guarantee, or that this rewrite explicitly
-left alone.
+Things the schema does **not** guarantee. Re-verified against the code at
+1.7.3; the entries the original rewrite listed as "PR 2/3/5 closes it" have
+been checked one by one and the closed ones removed.
 
 ### Money
 
-- **The API wire format still sends money as JSON numbers.** `Money`/`Rate`/`Shares`
-  serialize through `PlainSerializer(float)`. Exactness stops at the final JSON
-  encode. Flipping to decimal strings end to end is **PR 3** (`TODO(PR3)` in
-  `src/db/money.py`).
+- **The API wire format sends money as JSON numbers.** `Money`/`Rate`/`Shares`
+  serialize through `PlainSerializer(float, when_used="json")`
+  (`src/db/money.py`), so exactness stops at the final JSON encode. This is now
+  a settled decision rather than deferred work — see that module's own
+  docstring on why the wire format is held exactly where it is.
 - **Analytics aggregation is float.** Every balance, net-worth figure, income
-  statement line, budget total and chart value is a `Float64` sum. The error is
-  bounded by `NUMERIC(18,4)` inputs and re-quantized before storage, but it is
-  not zero, and the frontend consumes these numbers. The property-based tests
-  that would pin down the actual aggregation error do not exist yet
-  (`TODO(PR4/PR5)` in `src/accounting/ledger/frame.py`).
+  statement line, budget total and chart value is a `Float64` sum, crossing the
+  boundary at `db.money.to_analytics_float`. The error is bounded by
+  `NUMERIC(18,4)` inputs and re-quantized before storage, but it is not zero,
+  and the frontend consumes these numbers. `tests/db/test_money_properties.py`
+  covers the conversion boundary; no property test pins the *aggregation* error
+  across a whole ledger.
 
 ### Read paths
 
-- **Reads still replay history.** The whole-store 25-`SELECT` load is gone and
-  precedence is now declared in data — which is the precondition for rewriting
-  the resolution pipeline from a replay into overlay lookups — but the replay
-  itself is unchanged. `/store` and `/postings` still load and resolve the full
-  ledger, scaling linearly with postings (speed-audit **S1**). **PR 2 closes it.**
-- **The ~65,535-parameter ceiling stands.** `_write_ledger` no longer binds one
-  parameter per row on the import path (it reads the user's imported rows
-  wholesale, binding two parameters regardless of size), but `load_ledger` still
-  does, so the cliff is intact: past roughly 65k transactions the app 500s
-  rather than merely slowing down (speed-audit **S2** / DB-audit **D4**).
-  **PR 2 closes it.**
+- **Resolved reads still replay the ledger.** `GET /postings` pages by
+  transaction (`repositories.ledger.visible_transaction_page`) and
+  `GET /ledger/export` pages by posting (`load_ledger_page`), so neither loads
+  the full history any more — but the overlay resolution above them still
+  replays each page through every stage. `docs/remaining-work.md` **C1** is the
+  materialised projection that removes it. `GET /store` never touched the
+  ledger and does not now: it returns entities only.
+- **`GET /postings` falls off a cliff between `limit=300` and `limit=400`** on a
+  10k-transaction ledger, while `PAGE_LIMIT_MAX` is 5,000 — so a legal request
+  can exceed the 15 s `statement_timeout`. Reads like a planner flip on
+  `transactions.id = ANY(:uuid[])`. That is **C6**, not a schema guarantee, but
+  it lands on this schema's shape.
+
+  *(The ~65,535-parameter ceiling that used to sit here is closed:
+  `repositories.ledger` resolves natural keys with joins rather than `IN (...)`
+  lists, so no read binds a parameter per row.)*
 
 ### Concurrency
 
@@ -1502,7 +1372,7 @@ left alone.
   existing row, both insert, and the second violates
   `uq_*(user_id, natural_key)`. Current impact is a failed request, not
   corruption — the constraint is doing its job. Closing it (an
-  `INSERT ... ON CONFLICT DO UPDATE`, or a retry) is **PR 5**. Note that
+  `INSERT ... ON CONFLICT DO UPDATE`, or a retry) is still open. Note that
   `merge()` is deliberately the ORM's rather than raw SQL, because `accounts`
   and `categories` carry `GENERATED ALWAYS ... STORED` columns no statement may
   write and their `updated_at` is maintained by the mapper's `onupdate`; a fix
@@ -1534,10 +1404,6 @@ left alone.
 - **`postings.budget_id` is a real FK nothing sets.** Kept as a typed reference
   so a caller can use it without a migration, but non-null values never occur
   today.
-- **One docstring miscounts the old index situation.**
-  `src/db/indexes.py`'s module docstring says there were "exactly three
-  non-unique indexes"; there was one non-unique index and two unique ones. The
-  conclusion it draws (no foreign key had an index) is right.
 - **Institution and security names are visible across tenants** to anything that
   queries those tables directly. Nothing does — the app only writes a name it
   already has and reads it back off the row — and a bank name or ticker is not
@@ -1547,18 +1413,21 @@ left alone.
   trigger skips any transaction whose postings do not all share one currency,
   because the schema deliberately stores no exchange rate. A cross-currency
   transaction with two arbitrary amounts is accepted.
-- **The `app_runtime` isolation suite is PR 5's.** `tests/db/test_rls_coverage.py`
-  proves every tenant table has a forced policy with both `USING` and
-  `WITH CHECK`, by introspecting `pg_policies` on a freshly migrated scratch
-  database. The end-to-end proof that one tenant genuinely cannot read
-  another's rows *through the restricted role* is not yet written.
+- **Tenant isolation is proved two ways, and both are required checks.**
+  `tests/db/test_rls_coverage.py` introspects `pg_policies` on a freshly
+  migrated scratch database and proves every tenant table has a forced policy
+  with both `USING` and `WITH CHECK`; `tests/db/test_rls_isolation.py` proves
+  end to end that one tenant cannot read another's rows *through the restricted
+  `app_runtime` role*. Both run in the `Migrations apply and match the models`
+  job, which blocks a merge. (Listed here because it is the guarantee this
+  schema's whole RLS design exists to make, not because anything is missing.)
 - **`other_assets` and `simulator_scenarios` are in the taxonomy aggregate for
   want of a better home**, and are acknowledged as misplaced in that module's
   own docstring.
 
 ---
 
-## 8. Reproducing this document's facts
+## 6. Reproducing this document's facts
 
 ```bash
 # a scratch database, migrated from the single baseline
@@ -1584,5 +1453,10 @@ comparison of `CHECK` constraint names, `UNIQUE` constraint names, generated
 columns, table names and index names. **They agree exactly.** The only table in
 the database that is not in the models is `public.alembic_version`, which is
 Alembic's own. No discrepancy was found.
+
+CI checks that same agreement on every PR: the `Migrations apply and match the
+models` job runs `alembic check` against a freshly migrated database, so
+*models versus database* can never silently drift. What has no gate is **this
+document** versus either of them — see the note at the top, and item **E8**.
 
 Never point any of this at `finance_dev`, `finance_test`, or a remote host.

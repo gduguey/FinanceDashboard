@@ -29,8 +29,12 @@ event. A posting can carry any number of tags independent of its category.
 A `TransferRule` (`accounting.models.TransferRule`) is a trigger/action
 pair: `description_contains` (a case-insensitive substring match,
 optionally scoped to one `account_id`) triggers repointing a posting's
-placeholder counterparty to `counterparty_account_id`, and optionally
-setting a category. `ledger.categorization.apply_rules` evaluates every
+placeholder counterparty to `counterparty_account_id`. That is the whole
+action — a transfer rule cannot also set a category, and
+`ck_categorization_rules_effect_columns` in `accounting/db/automation.py`
+refuses a `transfer`-effect row whose `category_id` or `subcategory_id`
+is non-null. Categorizing is the other effect's job, one row down.
+`ledger.categorization.apply_rules` evaluates every
 *active* rule against every still-unresolved transaction each time the
 ledger is read — nothing is written back into the ledger cache; a deleted
 rule's effect disappears the very next time postings are read, with no

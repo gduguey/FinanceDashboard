@@ -181,7 +181,8 @@ went changes.
 | `hysa_counterfactual_series()` | Every external flow went into a HYSA instead |
 | `hysa_counterfactual_value()` | HYSA balance as of one date |
 | `benchmark_counterfactual_series()` | Every deposit bought the benchmark; every withdrawal sold shares |
-| `decision_counterfactual_value()` | Replay the real ledger with one reallocation's sell/buy removed |
+
+All three live in `trades/ledger/counterfactuals.py`.
 
 ### HYSA counterfactual
 

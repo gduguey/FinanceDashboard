@@ -10,7 +10,7 @@ import type { TransferRule, TransferRuleUpdate } from '@/types/accounting'
 // may override it — the `active`-toggle path passes `expected_version:
 // null` to opt into last-write-wins, since fast-flipping a switch should
 // never 409 against its own earlier click (see
-// `docs/app-stack/optimistic-concurrency-versioning.md`).
+// `docs/optimistic-concurrency-versioning.md`).
 export function ruleUpdateFromRule(
   rule: TransferRule,
   overrides: Partial<TransferRuleUpdate> = {},

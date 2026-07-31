@@ -77,8 +77,9 @@ class AccountingStoreResponse(BaseModel):
     opening balances are edited one account at a time through
     `PUT /accounts/{account_id}/opening-balance`, and the UI's "manually
     added transfers" are `transfer_links` with no `rule_id` — a different
-    table from `manual_transfers`, which holds only the balancing legs
-    behind an opening or closing balance.
+    thing from a `ManualTransfer`, which is not a table at all any more
+    but a projection over `origin='manual'` transactions and their two
+    balancing postings (see `repositories.accounts.load_manual_transfers`).
     """
 
     accounts: dict[str, Account]
@@ -196,7 +197,7 @@ class TransferRuleUpdate(BaseModel):
     (skip the check, last-write-wins) only for an idempotent toggle of the
     `active` flag, where losing the race against a newer flip of the same
     switch is the wanted outcome, not a conflict — see
-    `docs/app-stack/optimistic-concurrency-versioning.md`.
+    `docs/optimistic-concurrency-versioning.md`.
     """
 
     description_contains: str = Field(min_length=1)
@@ -330,7 +331,7 @@ class GoalAutomationUpdate(BaseModel):
     which is the only route that assigns priorities. No
     `expected_version`: like a budget cell, an edit of one rule is
     last-write-wins on that rule (see
-    `docs/app-stack/optimistic-concurrency-versioning.md`).
+    `docs/optimistic-concurrency-versioning.md`).
 
     Contribution-shaped for the same reason `GoalAutomationCreate` is —
     there is nothing on a withdrawal automation a `PATCH` could edit.

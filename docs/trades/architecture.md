@@ -79,7 +79,8 @@ src/trades/
       main.py         sync, rebuild, load/write the Postgres-backed ledger
   api/                the one FastAPI app; auth.py/webhooks.py (Clerk
                        session verification and invite provisioning) plus
-                       routers/ (dashboard, market_data, settings, sync);
+                       routers/ (broker_connections, dashboard, market_data,
+                       settings, sync);
                        also mounts `accounting.api`'s router (see
                        `/docs/architecture.md` at the repo root)
 ```

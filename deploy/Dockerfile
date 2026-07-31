@@ -1,7 +1,15 @@
 # Multi-stage Dockerfile: build frontend, build backend, final runtime
 
 # Stage 1: Build Node/React frontend
-FROM node:20-alpine AS frontend-builder
+#
+# Node 22 and Debian, matching `.nvmrc`, `web/package.json`'s `engines` and
+# every CI job's `node-version-file`. Two divergences used to sit here at
+# once: Node 20 (now past end-of-life) against CI's 22, and Alpine's musl
+# against CI's and the runtime stage's glibc. The bundle budget in
+# `web/tooling/budget.ts` runs inside `npm run build`, so it was enforced in
+# both places — but the numbers recorded against it were measured on 22, and
+# a toolchain nobody measures on is not one to ship from.
+FROM node:22-bookworm-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm ci
@@ -33,8 +41,13 @@ RUN npm run build
 FROM python:3.14-slim AS python-builder
 WORKDIR /app
 
-# Grab the uv binary straight from its official image — no pip/curl install needed
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Grab the uv binary straight from its official image — no pip/curl install
+# needed. Pinned, not `:latest`: the next line's `--locked` exists to refuse a
+# build whose dependency versions were not the ones resolved locally, and a
+# floating resolver undercuts that — two builds of the same commit could
+# resolve differently. Bump this deliberately, the way any other dependency
+# gets bumped.
+COPY --from=ghcr.io/astral-sh/uv:0.8.22 /uv /usr/local/bin/uv
 
 # Only what dependency resolution + the package build need
 COPY pyproject.toml uv.lock README.md ./

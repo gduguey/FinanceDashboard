@@ -10,7 +10,7 @@ maintained running total that could silently drift out of sync with the
 history it's supposed to summarize.
 
 It shares the same FastAPI process and React frontend as `trades` (see
-`accounting/api.py`'s router, mounted by `trades/api.py`), but the two
+`accounting/api/api.py`'s router, mounted by `trades/api/api.py`), but the two
 packages are otherwise independent — `accounting` may read `trades` (net
 worth needs the tracked brokerage portfolio's value), never the reverse.
 
@@ -64,9 +64,10 @@ file that uses them.
   calls directly (it's handed already-loaded data instead).
 - **TransferRule** vs. **category pattern** — two different,
   easily-confused mechanisms, covered in full in `categorization.md`. In
-  short: a `TransferRule` resolves a posting's *counterparty account* (and
-  optionally its category) automatically, with no confirmation step, every
-  time the ledger is read. A category pattern only ever *suggests* a
+  short: a `TransferRule` resolves a posting's *counterparty account*
+  automatically, with no confirmation step, every time the ledger is read
+  — and only that; a `CHECK` refuses a transfer-effect row that carries a
+  category. A category pattern only ever *suggests* a
   category — nothing changes until a human applies and validates the
   suggestion. Either can be switched off without deleting it (`active`).
 
@@ -99,7 +100,7 @@ re-running a rule or re-importing a statement.
 counts as real income or a real expense — as opposed to an internal
 transfer between two accounts you hold — when its transaction's sibling
 leg is *still* on one of the two virtual placeholder accounts above (see
-`dashboard.income_statement._real_income_expense_legs`). The instant a
+`dashboard.income_statement.real_income_expense_legs`). The instant a
 rule repoints that placeholder at a real account, the transaction becomes,
 structurally, a transfer — and every income/expense/budget/goal
 computation correctly stops counting it, with no separate "is this a
@@ -281,7 +282,7 @@ so the frontend offers only connections that actually exist
 doesn't. A `CHECK` pins the link to the `external_investment` kind, which
 is why `net_worth.is_trades_linked` tests one column rather than two.
 
-When it does pull, `api.routers.dashboard._external_investment_values_usd`
+When it does pull, `api.routers.dashboard._external_investment_values`
 reads the value live from the *running* `trades.api` app's own
 `app.state.config`, via
 `trades.dashboard.valuation.daily_portfolio_values` (one batched

@@ -7,11 +7,11 @@ one dev server serves both. Mounting the module is two calls, not one:
 exception handlers their status-code contract depends on — FastAPI hangs
 those off the application, not off an `APIRouter`.
 
-`state` (see `accounting.api.dependencies`)
-lives off the shared `app` object, so accounting stays importable — and
-testable — without ever importing `trades.api` itself, keeping the
-one-directional coupling (`accounting` reads `trades`, never the reverse)
-intact at the API layer too.
+`state` (see `accounting.api.dependencies`) is a module-level `_State`
+object rather than anything hung off the shared `app`, which is what keeps
+accounting importable — and testable — without ever importing
+`trades.api` itself, holding the one-directional coupling (`accounting`
+reads `trades`, never the reverse) intact at the API layer too.
 """
 
 from __future__ import annotations

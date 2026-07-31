@@ -23,7 +23,7 @@ the accounts and taxonomy aggregates moved into `src/accounting/repositories/`,
 and its whole-store counter (`accounting.store_versions`) has since been deleted
 outright, so there is no late check left to reject a handler that has already
 written. Optimistic concurrency is now per-row only; see
-`docs/app-stack/optimistic-concurrency-versioning.md`. What remains is narrower:
+`docs/optimistic-concurrency-versioning.md`. What remains is narrower:
 each of these
 handlers still spans several repository writes that commit as they go
 (`replace_budgets`, `save_overrides_for_postings`, `retire_categories`,
@@ -40,12 +40,12 @@ just size.
 
 1. `POST /api/v1/trades/sync` deliberately depends on mid-request commits for
    partial-success semantics: `sync_ibkr_account` commits per successful step and
-   rolls back per failed one, then `src/trades/api/routers/sync.py:150` re-arms
+   rolls back per failed one, then `src/trades/api/routers/sync.py` re-arms
    RLS and keeps reading. One commit at request end would turn a partly-successful
    sync into all-or-nothing — a behaviour change, not a refactor.
 2. Committing at request end commits partial writes for any handler that catches
    an error and still returns normally (e.g. the per-item commits at
-   `imports.py:527` and `postings.py:500`). Today those partial writes are rolled
+   `imports.py` and `postings.py`). Today those partial writes are rolled
    back by `session_scope`. Each such handler needs its own decision.
 
 Neither is hard; both need failure-injection tests, and both are behavioural
@@ -165,7 +165,7 @@ Note the original entry also said this "breaks the rule that no two
 accounting-store mutations may be in flight at once". **There is no such rule
 any more.** PR 1 deleted the shared `X-Expected-Store-Version` header and moved
 to per-row versioning, so concurrent mutations no longer race on shared state —
-see `docs/app-stack/optimistic-concurrency-versioning.md`. PR 4 audited all
+see `docs/optimistic-concurrency-versioning.md`. PR 4 audited all
 eleven components that await a mutation and found every remaining case to be a
 genuine data dependency (create-then-set-opening-balance) or a deliberate
 rate limit (the LLM categorization loop), not a workaround for that rule.
@@ -311,13 +311,13 @@ docstring and its own label, so it was not a mislabelling. Two related
 findings closed with it: the figure that gates a contribution silently
 dropped every non-USD row (A3f), and it now converts dated flows per date
 along with everything else (A3b). What follows is what the gap said.
-`dashboard/goals.py:157` computes `net_income - float(total_contributed)`,
+`dashboard/goals.py` computes `net_income - float(total_contributed)`,
 where `net_income_expense_total` sums every real income/expense leg from the
-start of the ledger (`income_statement.py:280-311`). It ignores balances,
+start of the ledger (`income_statement.py`). It ignores balances,
 opening balances and transfers, so it is a lifetime flow, not money you have.
-It is presented as spendable in `FinancialHealthStrip.tsx:107-112`
-("Not yet assigned to any goal") and `GoalsPage.tsx:337-344`, and it *gates a
-write* at `api/routers/goals.py:891-892`.
+It is presented as spendable in `FinancialHealthStrip.tsx`
+("Not yet assigned to any goal") and `GoalsPage.tsx`, and it *gates a
+write* at `api/routers/goals.py`.
 
 **Historical foreign currency is converted at one rate for all history —
 FIXED (A3b).** The decided fix shipped as decided: the trailing 30-day mean
@@ -327,11 +327,11 @@ the rationale. A posting older than the two-year cache clamps to the oldest
 rate on file; making that visible on screen is now A5. The latency cost was
 measured and did not separate from noise. What follows is what the gap said.
 Narrower than first stated: net worth already threads an as-of date
-(`routers/dashboard.py:205,271,319`) and so does goals (`goals.py:680`). Only
+(`routers/dashboard.py`) and so does goals (`goals.py`). Only
 the income statement, budgets and the spend curve pass none
-(`routers/dashboard.py:366,394`, `routers/budgets.py:140,182`), so
-`dependencies.py:426` defaults them to today. Note the app never converts at a
-*spot* rate at all: `market_data/exchange_rates.py:111` returns a trailing
+(`routers/dashboard.py`, `routers/budgets.py`), so
+`dependencies.py` defaults them to today. Note the app never converts at a
+*spot* rate at all: `market_data/exchange_rates.py` returns a trailing
 30-day mean, deliberately, to suppress single-day noise. **Decided fix:**
 evaluate that same mean as of each posting's own date — not the report date,
 and not spot. Amend `docs/accounting/currency-handling.md` in the same change
@@ -339,16 +339,16 @@ so the rationale survives and the change is not later mistaken for a
 regression back to spot rates. This one has a performance cost (a per-row rate
 join replacing a scalar multiply) and should land after a latency gate exists.
 
-**A card refund reads as income.** `income_statement.py:272-273` splits legs
+**A card refund reads as income.** `income_statement.py` splits legs
 on `amount >= 0` with no account-kind test; `credit_card` is known only to
-`net_worth.py:34`. A refund to a credit card is therefore counted as income,
+`net_worth.py`. A refund to a credit card is therefore counted as income,
 which also inflates unallocated money above.
 
 **"A shortfall shows a green +" does not reproduce** and is not part of this
 gap. The Sankey shortfall is deliberately grey and dashed
-(`CashflowSankeyChart.tsx:92,130-134`), negative unallocated is rose, and
+(`CashflowSankeyChart.tsx`), negative unallocated is rose, and
 budget overspend is `text-destructive`. The real adjacent defect is
-`web/src/lib/format.ts:95-98`: `signColor` returns emerald for `value >= 0`,
+`web/src/lib/format.ts`: `signColor` returns emerald for `value >= 0`,
 so exactly zero reads as a gain, and every expense-like caller compensates by
 negating its argument (`signColor(-swing.delta)`). Fixing the helper means
 auditing those call sites, not just the helper. **Fixed (A3d)**, call sites
@@ -367,12 +367,12 @@ published-rate lookup the overview card does, so the two are no longer
 measured against different rates. One correction to the entry below: the
 `0.04` was never a dead placeholder — `raw_hysa_rate_lookup` uses it as the
 fallback for days the selected bank published nothing. Its docstring was the
-stale part. What follows is what the gap said. `trades/dashboard/overview.py:158` is `value - hysa_value`, a dollar
+stale part. What follows is what the gap said. `trades/dashboard/overview.py` is `value - hysa_value`, a dollar
 difference in terminal values benchmarked against real published rates.
-`trades/dashboard/holdings.py:59-61` is an excess return benchmarked against
+`trades/dashboard/holdings.py` is an excess return benchmarked against
 `config.returns.hysa_annual_rate`, a flat `0.04` whose own docstring
-(`config.py:213-214`) calls it a placeholder. The two are measured against
-different rates under one label. `glossary.ts:55-58` already describes the
+(`config.py`) calls it a placeholder. The two are measured against
+different rates under one label. `glossary.ts` already describes the
 computation correctly — only the word "alpha" is wrong.
 
 ## 10. Nothing stops PR 2's and PR 4's performance gains from regressing — FIXED, with one half dropped
@@ -406,9 +406,9 @@ drifted.)
 
 ## 11. A posting's identity embeds its description, so an enriched statement double-counts
 
-`row_hash(account_id, posting_date, str(amount), description)` — documented in
-`docs/accounting/adding-accounts.md` — is the natural key a re-imported row is
-recognised by. Because `description` is an *input*, a bank that posts
+`row_hash(account_id, posting_date, f"{amount:.4f}", description)` — documented
+in `docs/accounting/adding-accounts.md` — is the natural key a re-imported row
+is recognised by. Because `description` is an *input*, a bank that posts
 `PENDING TESCO` and later enriches it to `TESCO STORES 1234` produces a
 different key for the same real transaction, and it is imported twice. In a
 money app that is a silent double-count.
@@ -441,7 +441,7 @@ retry, bounded by `NATURAL_KEY_MERGE_ATTEMPTS`), which was the same concurrency
 theme, but did not reach the two read-modify-write paths of gap 4. They are
 unchanged and their fix directions still stand, with one refinement recorded
 during PR 5: `patch_target_allocation` should **not** be given a version
-column. `trades/db/models.py:173-175` deliberately records that this one row is
+column. `trades/db/models.py` deliberately records that this one row is
 last-write-wins, and a DB-side `jsonb` merge composes by construction — which
 is what `application/merge-patch+json` actually promises, and a stronger
 guarantee than versioning, since two PATCHes naming different symbols would

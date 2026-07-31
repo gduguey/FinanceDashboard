@@ -240,7 +240,7 @@ counter table, and nothing store-wide — a second, identical mechanism for
 row is deliberately last-write-wins (see
 `trades.dashboard.settings.save_settings`). The reasoning behind which
 fields deserve a check at all is in
-`docs/app-stack/optimistic-concurrency-versioning.md`.
+`docs/optimistic-concurrency-versioning.md`.
 
 **Wipe-and-reinsert**: delete every row this user owns in a table, then
 insert fresh rows for everything currently held in memory. Not "diff and
@@ -251,26 +251,47 @@ reinserted row comes back with a *new* `id` — ids are minted, not
 recomputed — so any foreign key held elsewhere would be left pointing at a
 row that no longer exists. (That is why `accounts`/`categories`/`tags`, which
 the ledger does reference, use upsert-and-prune instead.)
-This is the technique for 15 tables. Several *are* foreign-keyed against by
-others in the same wipe-and-reinsert set (e.g. `posting_split_legs` →
-`posting_splits`, `goal_contributions`/`goal_automations` → `goals`) — which
+This is the technique for **eight** tables, each behind a `replace_*`
+function that runs only when a request genuinely submits that whole list:
+
+- `repositories.accounts.replace_opening_balances`: `opening_balances`.
+- `repositories.taxonomy.replace_other_assets` /
+  `replace_simulator_scenarios`: `other_assets`, `simulator_scenarios`.
+- `repositories.planning.replace_budgets`: `budgets`.
+- `repositories.interpretation.replace_posting_splits` /
+  `replace_posting_merges`: `posting_splits`, `posting_split_legs`,
+  `posting_merges`, `posting_merge_duplicates`.
+
+Two of those pairs are parent-and-child (`posting_split_legs` →
+`posting_splits`, `posting_merge_duplicates` → `posting_merges`), which
 works because parent and child are rewritten in the same transaction, the
-parents flushed first so each child reads its parent's brand-new id straight
-off the flushed row:
+parents flushed first so each child reads its parent's brand-new id
+straight off the flushed row.
 
-Every one of them is now behind a `replace_*` function that runs only
-when a request genuinely submits that whole list:
+A ninth, `repositories.planning.replace_goal_automations`, is the same
+shape but **scoped**: it deletes only the rows for one `direction`, so
+rewriting the withdrawal order cannot touch the recurring additions
+sharing the table.
 
-- `repositories.accounts` (`PUT /accounts/{id}/opening-balance`'s
-  whole-list sibling, and the store round-trip): `opening_balances`.
-- `repositories.taxonomy` (`PUT /other-assets`, `PUT /simulator/scenarios`):
-  `other_assets`, `simulator_scenarios`.
-- `repositories.planning` (`PUT /budgets`, `PUT /goals`, ...):
-  `goal_contributions`, `goal_automations`, `goals`, `budgets`.
-- `repositories.interpretation` (`PUT /category-patterns`,
-  `PUT /posting-merges`, ...): `posting_split_legs`, `posting_splits`,
-  `posting_merge_duplicates`, `posting_merges`, `transfer_links`,
-  `transfer_linked_transactions`.
+Everything a reader might expect to find here and does not:
+
+- **`goals` and `goal_contributions` are not wiped.** There is no
+  `replace_goals` and no `replace_goal_contributions`. A goal is written
+  by `insert_goal`/`update_goal` (the latter version-checked) and removed
+  by `delete_goal`; a contribution by `insert_goal_contributions`/
+  `upsert_goal_contribution`/`remove_goal_contribution`. All are per-row.
+- **`categorization_rules` is upserted, then pruned within one `effect`**
+  — see below.
+- **`categorization_rule_exclusions`** is diffed per rule
+  (`_sync_rule_exclusions` — add the newly excluded, delete the no-longer
+  excluded), never deleted for the whole user.
+- **`transfer_links` and `transfer_linked_transactions` are not wiped.**
+  They are written by `insert_transfer_links` and removed one link (or
+  one rule's links) at a time.
+- **`posting_overrides` is not wiped either.** The scoped
+  `save_overrides_for_postings` rewrites only the postings it is handed —
+  see `docs/accounting/category-tag-merging.md` for why that scoping is
+  load-bearing.
 
 Note the difference the split makes: these used to be wiped on *every*
 save, however unrelated, because one function wrote every table at once.
@@ -319,7 +340,7 @@ moment a real reference existed. This is exactly the same "does anything
 foreign-key against this?" question the primary-key section above asks,
 applied one layer up: at the *write path* instead of the *id* itself.
 
-**Why the 15 wipe-and-reinsert tables stay small**: every one of them
+**Why the wipe-and-reinsert tables stay small**: every one of them
 holds *settings you configured by hand* — a budget you typed a number
 into, a savings goal you created, a transfer rule you wrote — never
 anything an import can add on its own. A heavy user might have dozens of
@@ -328,17 +349,28 @@ most, not the tens of thousands a transaction history could reach. Small
 row counts are exactly what makes "delete everything, reinsert
 everything" cheap enough to do on every save without it mattering.
 
-## `transactions`/`postings`: written once at import time, never wiped
+## `transactions`/`postings`: bulk-written at import time, never wiped
 
-Your actual transaction history isn't part of either pattern above. No
-repository mentions `transactions` or `postings` at all — they're
-owned by a completely separate write path,
+Your actual transaction history isn't part of either pattern above. Bulk
+writes to it are owned by a separate path,
 `accounting.importers.ingest._write_ledger`, called only when you import
 a statement (`ingest_csv`, the canonical CSV/Excel importer) or rebuild
 the ledger from your raw archive (`rebuild_from_raw_statements`). Clicking
 "+" on a goal, editing a budget, renaming a category — none of that ever
 touches these two tables, no matter how large your real history has
 grown.
+
+Two repositories do reach them, and neither wipes anything:
+
+- `repositories.ledger` is the **read** side — the one SQL statement every
+  accounting read path starts from, joining `postings` to `transactions`,
+  accounts, categories and budgets and projecting the result into
+  `ledger.frame.LEDGER_FRAME_SCHEMA`. It writes nothing.
+- `repositories.accounts.insert_manual_transfers` is the one **write**
+  outside the import path: a manual transfer has no table of its own, so
+  it is recorded as one `origin='manual'` transaction plus two balancing
+  postings, additively and keyed by natural key, so re-recording the same
+  transfer is a harmless upsert.
 
 `_write_ledger` itself *is* upsert-and-prune, same technique as
 `accounts`/`categories`/`tags` and for the same reason —
@@ -427,10 +459,14 @@ and should never silently disappear out from under it.
   provider — that mapping lives in `external_identities` instead (below),
   so this core table (and everything foreign-keyed to it) stays usable
   even if this app ever swaps identity providers.
-  `hashed_password`/`is_active`/`is_superuser`/`is_verified` are
-  vestigial — kept only because this table was originally shaped to match
+  `hashed_password`, `is_superuser` and `is_verified` — shaped to match
   what a different auth library expected, before Clerk became this app's
-  real identity provider; nothing reads them anymore.
+  real identity provider — were dropped by the schema rewrite. The one
+  boolean left, `is_active`, is **not** vestigial: it is a soft-delete
+  marker. `trades/api/webhooks.py` sets it on `user.created` and clears it
+  on `user.deleted`, so a Clerk account that goes away leaves its row (and
+  therefore every row foreign-keyed to it) standing as a record instead of
+  cascading the whole tenant away.
 - **`external_identities`** — one row per `(provider, external_id)` pair,
   e.g. `("clerk", "user_2abc...")`, pointing at the `users.id` it belongs
   to. This is the *only* place any code in this app is allowed to know a
@@ -678,8 +714,12 @@ One consequence worth knowing: if Carol is later deleted in Clerk and
 re-invited under the same email, she gets a **new** Clerk id, but step 4
 only checks by Clerk id — so a naive re-provisioning would create a
 second, disconnected `users` row, orphaning anything tied to the first
-one. That's not automatic today (nothing currently listens for Clerk's
-`user.deleted` event) — the manual step this requires is a single-row
+one. `user.deleted` *is* handled — `webhooks._deactivate_user` clears
+`is_active` on the matching `users` row — but that is a soft delete, not
+a re-link: it deliberately leaves `external_identities` pointing at the
+old Clerk id, because the row exists to preserve what happened rather
+than to be recycled. So relinking is still not automatic, and the manual
+step it requires is a single-row
 update, reassigning her existing `external_identities` row to the new
 Clerk id (never a migration touching every other table, which is the
 whole reason this table exists as a separate mapping instead of a column

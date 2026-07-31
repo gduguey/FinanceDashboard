@@ -10,10 +10,10 @@ wipe-and-reinsert/upsert-and-prune background these mechanisms build on.
 ## Category rename → merge
 
 `POST /categories/{category_id}/rename`
-(`accounting.api.routers.categories.post_category_rename:436`).
+(`accounting.api.routers.categories.post_category_rename`).
 Renaming "Dining" to an existing category's name, "Food & Drink", merges
 the two. The matching rule itself lives in `taxonomy.plan_category_rename`
-(`:249`) and isn't repeated here — a top-level category only ever merges
+and isn't repeated here — a top-level category only ever merges
 into another top-level category of the same `classification`; a
 subcategory only ever merges into a sibling under the same
 `parent_category_id`.
@@ -26,7 +26,7 @@ subcategory only ever merges into a sibling under the same
    a same-named sibling already under "Food & Drink" or get reparented
    onto it (`parent_category_id` updated, same id kept).
 
-2. **`GET /categories/{category_id}/rename-preview`** (`:493`) — before
+2. **`GET /categories/{category_id}/rename-preview`** — before
    the real rename is ever called, the frontend calls this to find out
    whether it *would* merge. It runs step 1 (`plan_category_rename`) plus
    step 3 below (`remap_category_ids`) against the rows as they stand,
@@ -38,7 +38,7 @@ subcategory only ever merges into a sibling under the same
    discarded rather than repointed. The UI shows this in
    a confirmation dialog before the user commits to the real rename.
 
-3. **`taxonomy.remap_category_ids`** (`:360`) — the three collections
+3. **`taxonomy.remap_category_ids`** — the three collections
    that name a category and aren't the tree itself (loaded together as a
    `taxonomy.CategoryReferences`, one repository `load_*` each) get every
    `category_id`/`subcategory_id` field pointing at "Dining" swapped to
@@ -48,7 +48,14 @@ subcategory only ever merges into a sibling under the same
    alike, since a general budget is just a `Budget` with no `month`), and
    `posting_splits`
    (`PostingSplitLeg.category_id`/`subcategory_id`). A `TransferRule` has
-   no category fields of its own, so there is nothing there to repoint. A repointed budget's
+   no category fields of its own, so there is nothing there to repoint.
+
+   One mapping to keep straight throughout: `CategoryPattern` and
+   `TransferRule` are separate API resources but **one table**,
+   `accounting.categorization_rules`, discriminated by `effect`
+   (`categorize` vs `transfer`) — which is why the summary table at the
+   bottom names that table twice, once per effect, with different
+   behaviour on each row. A repointed budget's
    `budget_id` is **rebuilt** from its new
    `(month, category_id, subcategory_id)` triple (see
    `repositories.planning.budget_row_key`) rather than left naming the
@@ -76,13 +83,16 @@ subcategory only ever merges into a sibling under the same
    therefore still shows the merged-away id, and `GET /postings` shows the
    survivor; that difference is the whole point.
 
-5. **Manual overrides**, inline in `post_category_rename` (`:570`, right
-   after step 4) — `PostingOverride.category_id`/`subcategory_id` (a
-   person's by-hand re-categorization, deliberately outside
-   `CategoryReferences` too) get the same old-id → new-id swap via `load_overrides`/
-   `save_overrides`, which fully deletes and reinserts every
-   `posting_overrides` row for this user (same pattern as the 16
-   wipe-and-reinsert tables in `src/db/README.md`).
+5. **Manual overrides**, inline in `post_category_rename`, right after
+   step 4 — `PostingOverride.category_id`/`subcategory_id` (a person's
+   by-hand re-categorization, deliberately outside `CategoryReferences`
+   too) get the same old-id → new-id swap. `load_overrides` reads them
+   all, the handler filters down to the overrides that actually reference
+   a merged-away id, and `save_overrides_for_postings` writes back **only
+   those postings**. That scoping is the point: `save_overrides`, the
+   whole-table write this replaced, deleted and reinserted every
+   `posting_overrides` row for the user, so a rename racing an unrelated
+   override edit on a different posting silently erased it.
 
 6. **The scoped repository writes, then `retire_categories`, then
    `replace_categories`.** Everything step 3 repointed *except* the
@@ -109,32 +119,33 @@ subcategory only ever merges into a sibling under the same
 
 ## Category delete
 
-`DELETE /categories/{category_id}` (`accounting.api.routers.categories.
-delete_category:276`). Deleting "Dining" outright, not merging it into
+`DELETE /categories/{category_id}`
+(`accounting.api.routers.categories.delete_category`). Deleting "Dining" outright, not merging it into
 anything.
 
-1. **`taxonomy.category_ids_to_delete`** (`:462`) — a subcategory's delete
+1. **`taxonomy.category_ids_to_delete`** — a subcategory's delete
    never cascades (it has none of its own); a top-level category's delete
    takes every one of its subcategories down with it. Returns the full set
    of ids being removed, e.g. `{"expense:dining"}`, or
    `{"expense:dining", "expense:dining:fast-food"}` if "Dining" had a
    subcategory.
 
-2. **`GET /categories/{category_id}/delete-preview`** (`:381`) — counts
+2. **`GET /categories/{category_id}/delete-preview`** — counts
    how many raw ledger postings currently carry any id from step 1 as
    their own `category_id` or `subcategory_id`
-   (`_posting_count_for_categories`, `:366`), without deleting anything.
+   (`_posting_count_for_categories`), without deleting anything.
    The frontend shows this count in a confirmation dialog ("N transactions
    will become uncategorized") only when it's greater than zero — deleting
    a category with no postings just happens immediately, no popup.
 
-3. **`taxonomy.uncategorize_category_ids`** (`:489`) — the delete-side
+3. **`taxonomy.uncategorize_category_ids`** — the delete-side
    counterpart to `remap_category_ids` (step 3 above), except there's no
    replacement id to repoint at, so references are either cleared or the
    whole row is dropped, depending on whether the field is optional:
-   - `TransferRule.category_id`/`subcategory_id` and
-     `PostingSplitLeg.category_id`/`subcategory_id` are nullable — cleared
-     to `NULL`, row otherwise untouched.
+   - `PostingSplitLeg.category_id`/`subcategory_id` are nullable — cleared
+     to `NULL`, row otherwise untouched. A `TransferRule` has no category
+     fields at all (step 3 of the merge case above says the same), so
+     there is nothing there to clear either.
    - `Budget.category_id` and `CategoryPattern.category_id` are **not**
      nullable. A row whose own `category_id` is being deleted has nothing
      left to be, so the whole row is **dropped**. A row only referencing a
@@ -153,10 +164,10 @@ anything.
    with *no* successor is exactly "resolves to uncategorized", which is
    the same state a posting that was never categorized is already in.
 
-5. **Manual overrides**, inline in `delete_category` (`:410`, right after
-   step 4) — any `PostingOverride.category_id`/`subcategory_id` pointing
-   at a deleted id is cleared the same way, via `load_overrides`/
-   `save_overrides`.
+5. **Manual overrides**, inline in `delete_category`, right after step 4 —
+   any `PostingOverride.category_id`/`subcategory_id` pointing at a
+   deleted id is cleared the same way, and written back through the same
+   scoped `load_overrides` + `save_overrides_for_postings` pair.
 
 6. **The scoped repository writes, then `retire_categories`, then
    `replace_categories`** — the same split as step 6 of the merge case, in
@@ -172,54 +183,67 @@ anything.
 
 ## Tag rename → merge
 
-`POST /tags/{tag_id}/rename` (`accounting.api.routers.tags.
-post_tag_rename:157`). Renaming tag "Trip" to an existing tag's name,
+`POST /tags/{tag_id}/rename`
+(`accounting.api.routers.tags.post_tag_rename`). Renaming tag "Trip" to an existing tag's name,
 "Travel", merges the two. Built from scratch for this — nothing like it
 existed before; the only way to "rename" a tag used to be delete-and-
 recreate, which orphaned every reference to the old id.
 
-1. **`taxonomy.plan_tag_rename`** (`:576`) — pure name match, case-
+1. **`taxonomy.plan_tag_rename`** — pure name match, case-
    insensitive, no classification or parent to scope it by (`Tag` has
    neither). No collision → `name` updated in place, same `tag_id`, empty
    remap. Collision → "Trip" removed from the tags dict, returns
    `{"tag:trip": "tag:travel"}`.
 
-2. **`GET /tags/{tag_id}/rename-preview`** (`:748`) — same idea as the
+2. **`GET /tags/{tag_id}/rename-preview`** — same idea as the
    category preview: runs step 1 without persisting, reports whether it
    would merge and into what, for the same confirm-before-merge dialog.
 
-3. **`repositories.taxonomy.remap_tag_ids`** — two places outside the `tags`
-   table itself need fixing, for two different reasons:
-   - **`posting_tags`** (`accounting.db.core.PostingTag`, a real,
-     database-enforced foreign key: `posting_tags.tag_id → tags.id`) — a
-     direct `UPDATE posting_tags SET tag_id = <Travel's id> WHERE tag_id =
-     <Trip's id>`. If a posting already had **both** "Trip" and "Travel"
-     applied, updating would violate `posting_tags`' own
-     `(user_id, posting_id, tag_id)` uniqueness — for those postings, the
-     "Trip" row is **deleted** instead (the "Travel" row it already had is
-     untouched).
-   - **`posting_overrides.tag_ids_override`** — a raw Postgres array of
-     tag-id strings, **not** foreign-keyed to anything, so nothing in the
-     database would catch a stale "Trip" string left in there on its own.
-     Every override's array gets an explicit find-and-replace
-     (`"tag:trip"` → `"tag:travel"`, de-duplicated in case an override
-     already listed both) via `load_overrides`/`save_overrides`.
+3. **`repositories.taxonomy.remap_tag_ids`** — two join tables outside
+   `tags` itself store a tag id, and both are handled identically, in
+   direct SQL, with no override load/save anywhere in the path:
+   - **`posting_tags`** (`accounting.db.core.PostingTag`) — which tags a
+     person applied to a real posting.
+   - **`posting_override_tags`**
+     (`accounting.db.corrections.PostingOverrideTag`) — which tags a
+     person's *override* replaces a posting's tags with. This used to be
+     `posting_overrides.tag_ids_override`, a loose Postgres array of tag-id
+     strings that no constraint could check; it is now one row per
+     (override, tag) pair with a real `tag_id → tags.id` foreign key, and
+     the model docstring says it mirrors `PostingTag` exactly.
 
-4. **`repositories.taxonomy.replace_tags`** — `tags` is upsert-and-prune too
-   (same three-table list as `accounts`/`categories`): this is where
-   "Trip"'s row is actually deleted, after step 3 has already repointed
-   everything that could still reference it.
+   Each gets a `DELETE` of the rows that would collide followed by an
+   `UPDATE … SET tag_id = <Travel's id> WHERE tag_id = <Trip's id>`. The
+   delete comes first because both tables key on the tag: if a posting (or
+   an override) already carried **both** "Trip" and "Travel", the update
+   alone would violate that composite primary key, so the "Trip" row is
+   dropped and the "Travel" row it already had is left untouched.
+
+   Because both are now real foreign keys, the database itself would
+   refuse a stale reference — which is exactly what the array could not
+   do, and the reason this step existed as a hand-written find-and-replace
+   before.
+
+4. **`repositories.taxonomy.replace_tags`** — `tags` is upsert-and-prune,
+   the same shape `accounts` and `categories` use: this is where "Trip"'s
+   row is actually deleted, after step 3 has already repointed everything
+   that could still reference it. It has to be that shape rather than a
+   wipe, because `posting_tags.tag_id` and `posting_override_tags.tag_id`
+   are real foreign keys into it — and their `ON DELETE CASCADE` is what
+   makes pruning a tag remove it from every posting carrying it.
 
 ## What's deleted vs. just edited, at a glance
 
 | Table | Category merge | Category delete | Tag merge |
 |---|---|---|---|
 | `categories` / `tags` | category **retired**, naming its successor; tag pruned | category + subcategories **retired**, no successor | old tag entry pruned |
-| `categorization_rules` (transfer effect), `posting_split_legs` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | — |
+| `categorization_rules` (transfer effect) | — no category columns to repoint | — same | — |
+| `posting_split_legs` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | — |
 | `categorization_rules` (categorize effect), `budgets` | repointed; merged-away collision dropped | row dropped if its own `category_id` is deleted, else `subcategory_id` cleared | — |
 | `posting_tags` | — | — | `tag_id` repointed; deleted if it'd duplicate an existing row |
 | `postings` (real ledger) | **untouched** — resolves to the survivor on read | **untouched** — resolves to uncategorized on read | no column of its own — join table only |
-| `posting_overrides` | `category_id`/`subcategory_id` repointed | cleared to `NULL` | `tag_ids_override` array entries replaced |
+| `posting_overrides` | `category_id`/`subcategory_id` repointed, for the referencing rows only | cleared to `NULL`, for the referencing rows only | — |
+| `posting_override_tags` | — | — | `tag_id` repointed; deleted if it'd duplicate an existing row |
 
 No row in `postings` is written *at all* by any of these three
 operations — not deleted, not updated. That is the invariant the D14 fix

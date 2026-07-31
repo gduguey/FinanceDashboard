@@ -4,6 +4,7 @@ Every configurable value is a field on one of the frozen models below.
 `AppConfig` composes all of them into a single object that gets passed to
 every function that needs configuration. `IbkrFlexCredentials` is kept
 separate because it's a per-user secret resolved from Postgres (see
+`trades.brokers.ibkr.credentials`, over the broker-agnostic storage in
 `trades.broker_credentials`), never a tunable with a sensible default and
 never read from `.env`.
 """
@@ -248,8 +249,9 @@ class ReturnsConfig(BaseModel):
 class IbkrFlexCredentials(BaseModel):
     """The IBKR Flex Web Service token and query ID for one user, resolved from Postgres.
 
-    Never `.env`-backed — see `trades.broker_credentials.resolve_ibkr_credentials`,
-    the only place this gets constructed. Both fields are required because
+    Never `.env`-backed — see
+    `trades.brokers.ibkr.credentials.resolve_ibkr_credentials`, the only
+    place this gets constructed. Both fields are required because
     a partial credential (a query id with no token, or vice versa) can't
     call the Flex Web Service at all; `resolve_ibkr_credentials` is what
     turns "nothing saved yet" into a clear error before this model is ever built.

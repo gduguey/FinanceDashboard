@@ -1,7 +1,7 @@
 """Per-user brokerage connections and the ledger events they produce.
 
 Global, non-user-specific reference data (daily close prices, CPI, HYSA
-rates) deliberately stays out of Postgres — see `DATABASE_SCHEMA.md` — it's
+rates) deliberately stays out of Postgres — see `docs/schema.md` — it's
 identical for every user and stays exactly where it is today, under
 `data/trades/{prices,cpi,hysa_rates}/`.
 

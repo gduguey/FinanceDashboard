@@ -60,7 +60,7 @@ list of entries rather than any stored running total.
 ### Derived quantities — always computed, never stored
 
 - **A goal's balance at any date `T`** is the sum of that goal's own
-  contributions dated on or before `T` (`dashboard.goals.goal_balance`).
+  contributions dated on or before `T` (`dashboard.goals.all_goal_balances`).
 - **Unallocated money at date `T`** is `(every real account's opening
   balance, for those dated on or before T)` plus `(real income − real
   expense, cumulative through T)` minus `(every goal's contributions,

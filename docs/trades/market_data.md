@@ -59,8 +59,13 @@ We use the `query2` host; `query1` returned `429` consistently in testing.
 
 ### Cache mechanics
 
-- `update_price_cache` / `update_adjusted_price_cache` fetch only the
-  date range missing from the on-disk cache (`_missing_ranges`).
+- `update_price_cache` fetches only the date range missing from the
+  on-disk cache (`_missing_ranges`).
+- `refresh_adjusted_price_history` is **deliberately not** incremental: it
+  re-fetches the whole window and overwrites the cache every time. Yahoo
+  retroactively recalculates `adjclose` for every historical date whenever
+  a symbol pays a dividend or splits, so an incremental adjusted cache
+  would let its already-stored dates drift out of date forever.
 - After the first backfill, each cron run typically costs one small
   request per symbol (see "Syncing market data" below).
 - Rows are validated through `PriceObservation` before writing.
@@ -84,7 +89,7 @@ The full series is small (a few hundred KB), so re-fetching daily is cheap.
 
 ### Cache
 
-One file: `data/cpi/{series_id}.csv` with columns `observation_date`,
+One file: `data/trades/cpi/{series_id}.csv` with columns `observation_date`,
 `value`.
 
 `cpi_as_of(df, date)` mirrors `price_as_of`: rollback to the most recent
@@ -108,7 +113,7 @@ needed, just finding and parsing that embedded JSON.
 
 ### Cache
 
-One file: `data/hysa_rates/rates.csv` with columns `bank_id`, `bank_name`,
+One file: `data/trades/hysa_rates/rates.csv` with columns `bank_id`, `bank_name`,
 `rate_date`, `apy_pct`.
 
 A rate only gets a new row on the date it **changed**, not one row per day.

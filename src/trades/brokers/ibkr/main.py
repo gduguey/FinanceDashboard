@@ -120,7 +120,7 @@ def _write_ledger(ledger: pl.DataFrame, session: Session, user_id: uuid.UUID) ->
     Unlike `accounting.importers.ingest._write_ledger`, this is a plain
     delete-all-then-reinsert — nothing else in this schema foreign-keys
     into `ledger_events`, so there's no risk of deleting a row still
-    referenced elsewhere (see `DATABASE_SCHEMA.md`).
+    referenced elsewhere (see `docs/schema.md`).
 
     Parameters
     ----------

@@ -249,5 +249,27 @@ def test_statement_to_ledger_combines_trades_and_cash_transactions() -> None:
         ],
     )
     ledger = preprocessing.statement_to_ledger(statement, CONFIG)
-    assert set(ledger["event_id"]) == {"ibkr:9001", "ibkr:8000"}
+    assert set(ledger["event_id"]) == {"ibkr:9001", "ibkr:cash:8000"}
+
+
+def test_statement_to_ledger_keeps_a_trade_and_a_cash_transaction_sharing_a_transaction_id_apart() -> None:
+    """A shared `transactionID` must not collapse two events into one.
+
+    `main._merge_ledger` dedupes on `event_id` with `keep="last"`, so two
+    events sharing one would lose the earlier silently — no constraint
+    violation, no error. Nothing in IBKR's Flex schema promises a
+    `<Trade>` and a `<CashTransaction>` cannot carry the same
+    `transactionID`, so the namespace is what guarantees it here.
+    """
+    statement = ParsedStatement(
+        from_date=datetime(2026, 6, 30).date(),
+        to_date=datetime(2026, 6, 30).date(),
+        when_generated=datetime(2026, 7, 1, 6, 0, 0),
+        trades=[IbkrTrade(**_ibkr_trade("BUY", "VOO", 2.0, 681.81, transaction_id="7777"))],
+        cash_transactions=[
+            IbkrCashTransaction(**_ibkr_cash_transaction("Deposits/Withdrawals", 1000.0, transaction_id="7777"))
+        ],
+    )
+    ledger = preprocessing.statement_to_ledger(statement, CONFIG)
+    assert set(ledger["event_id"]) == {"ibkr:7777", "ibkr:cash:7777"}
     assert set(ledger["event_type"]) == {"BUY", "DEPOSIT"}

@@ -9,9 +9,8 @@ everything else. Two independent modules share the same backend/database:
   positions and gains, and compares performance against benchmarks and
   counterfactuals.
 - **`accounting`** — tracks day-to-day cash accounts (checking, savings,
-  credit cards), imported from bank exports and statement PDFs,
-  categorized, and rolled up into net worth, an income statement, budgets,
-  and goals.
+  credit cards), imported from bank CSV exports, categorized, and rolled
+  up into net worth, an income statement, budgets, and goals.
 
 Both are exposed through the same FastAPI backend and React frontend, and
 both persist to the same Postgres database (see
@@ -29,8 +28,10 @@ the one API app fit together) — but neither depends on the other, and
 
 - [uv](https://docs.astral.sh/uv/) (manages the Python install and
   virtualenv — you don't need Python or pip set up yourself first)
-- [Node.js](https://nodejs.org/) 20+ and npm — only needed for the web
-  dashboard, not the notebooks
+- [Node.js](https://nodejs.org/) 22+ and npm — only needed for the web
+  dashboard, not the notebooks. The version is declared once in `.nvmrc`,
+  which `web/package.json`'s `engines`, both CI workflows and
+  `deploy/Dockerfile` all follow
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) —
   the easiest way to get a Postgres database running locally (see
   "Setting up Postgres" below). Everything in this app — the trade/cash
@@ -202,12 +203,14 @@ backfilling one if it happens).
 uv run jupyter lab
 ```
 
-**Currently broken.** `portfolio.ipynb`/`prices_sync.ipynb` still call
+**Currently broken.** `portfolio.ipynb`, `prices_sync.ipynb` and
+`ibkr_sync.ipynb` all still call
 `trades.brokers.ibkr.main.load_ledger(config)`, a single-argument,
 config-based signature from before this app's Postgres/multi-user
-migration — `load_ledger` now takes `(session, user_id)` instead. These
-notebooks need updating to open a session and pass a real user id before
-Option A is usable again; until then, use Option B.
+migration — `load_ledger` now takes `(session, user_id)` instead. All
+three need updating to open a session and pass a real user id before
+Option A is usable again; until then, use Option B. (`cpi_sync.ipynb` and
+`hysa_sync.ipynb` do not call it and are unaffected.)
 
 ## Option B: the web dashboard
 
@@ -269,7 +272,7 @@ src/trades/
   models.py           pydantic schemas — canonical column names live here once
   api/                the one FastAPI app; auth.py/webhooks.py (Clerk session
                       verification and invite provisioning) plus routers/
-                      (dashboard, market_data, settings, sync)
+                      (broker_connections, dashboard, market_data, settings, sync)
   dashboard/           API-facing aggregation (composes ledger + market_data)
   ledger/              replay, lots, metrics, NAV, counterfactuals, taxes
   market_data/         prices, CPI, HYSA rates, symbol search
@@ -306,6 +309,13 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | Doc | What it covers |
 |-----|----------------|
 | [architecture.md](docs/architecture.md) | How `trades`, `accounting`, and `db` fit into the one FastAPI app |
+| [schema.md](docs/schema.md) | Every table, column, constraint, index and RLS policy in the Postgres schema |
+| [http-api-contract.md](docs/http-api-contract.md) | What the HTTP surface promises: methods, status codes, bodies, and why |
+| [optimistic-concurrency-versioning.md](docs/optimistic-concurrency-versioning.md) | Which writes carry a version and which deliberately do not |
+| [versioning.md](docs/versioning.md) | SemVer policy, what CI's version gate enforces, how the image gets tagged |
+| [backups.md](docs/backups.md) | What is backed up, from where, and how far back |
+| [known-gaps.md](docs/known-gaps.md) | Gaps that are known and accepted, with the reasoning |
+| [remaining-work.md](docs/remaining-work.md) | The triaged backlog, with stable item ids |
 | [trades/architecture.md](docs/trades/architecture.md) | Module map, conventions, data layout |
 | [trades/ledger.md](docs/trades/ledger.md) | Event types, replay, lots, cashflows |
 | [trades/metrics_and_benchmarks.md](docs/trades/metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
@@ -319,6 +329,7 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | [accounting/currency-handling.md](docs/accounting/currency-handling.md) | Multi-currency conversion, adding a new supported currency |
 | [accounting/adding-accounts.md](docs/accounting/adding-accounts.md) | Teaching the app a new bank's export format |
 | [accounting/canonical-csv-import.md](docs/accounting/canonical-csv-import.md) | The no-code fallback CSV importer for a bank with no dedicated standardizer |
+| [accounting/category-tag-merging.md](docs/accounting/category-tag-merging.md) | What renaming, merging or deleting a category or tag rewrites |
 | [db/README.md](src/db/README.md) | The shared Postgres layer: roles, RLS, encryption, backups |
 
 Start with [architecture.md](docs/architecture.md), then

@@ -361,9 +361,9 @@ function MoneyTab() {
       <Section id="rules" icon={ArrowRightLeft} title="Transfer rules">
         <Definition term="Transfer rule">
           a trigger/action pair you define once: "if a posting on this account contains this text in its description,
-          repoint its placeholder counterparty to this other account (and optionally set this category)." Transfer rules
-          exist specifically to link two of your own accounts together — everything that isn't resolved by one stays
-          pointed at one of the two virtual placeholders above.
+          repoint its placeholder counterparty to this other account." Transfer rules exist specifically to link two of
+          your own accounts together — everything that isn't resolved by one stays pointed at one of the two virtual
+          placeholders above. A transfer rule never sets a category; that is what a category pattern is for.
         </Definition>
         <p>
           (Transfer rules are a different thing from the description-match <em>category patterns</em> covered in

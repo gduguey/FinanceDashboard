@@ -34,18 +34,33 @@ brokers/ibkr/
 
 ## Credentials
 
-From `.env` (gitignored), via `IbkrFlexCredentials`:
+Per user, encrypted, in Postgres — **never** `.env`. Each user connects
+their own IBKR account from the app, so there is no process-wide token to
+put in a file: `trades/config.py` says so explicitly on
+`IbkrFlexCredentials`, which is a plain model built per request rather
+than a settings class.
 
-```
-IBKR_FLEX_WEB_SERVICE_TOKEN=...
-IBKR_QUERY_ID=...
-```
+Two things a user supplies:
 
 - **Token** — Account Management → Reports → Settings → Flex Web Service
-- **Query ID** — the numeric ID of your saved Flex Query (Reports → Flex
+- **Query ID** — the numeric ID of their saved Flex Query (Reports → Flex
   Queries)
 
-The token is a `SecretStr` so it never leaks into logs or reprs.
+Three layers hold them:
+
+| Module | Responsibility |
+|--------|----------------|
+| `db.secrets` | Fernet-encrypts one named credential per user into `public.user_secrets`, with the key version that encrypted it (see `src/db/README.md`) |
+| `trades.broker_credentials` | One user's full field set for one broker, stored as JSON under the key `broker:{broker}`. Knows nothing about IBKR — a second broker reuses it unchanged |
+| `trades.brokers.ibkr.credentials` | The only module that knows IBKR needs a `token` and a `query_id`. `resolve_ibkr_credentials(session, user_id)` builds an `IbkrFlexCredentials` from what is saved, or raises `IbkrCredentialsNotConfiguredError` |
+
+`PUT /api/v1/trades/settings/ibkr` writes them (a partial merge — omitting
+either field leaves the saved one alone), and `sync_ibkr_account` takes
+the resolved credentials as an argument rather than reading them itself.
+
+The token is a `SecretStr` so it never leaks into logs or reprs, and
+`ibkr_credential_fields` exists to report *which* fields are configured
+without returning either value.
 
 ---
 
@@ -147,7 +162,7 @@ This keeps `ledger/taxes.py` free of IBKR-specific strings.
 
 ```
 1. fetch_flex_statement()     → raw XML
-2. save_raw_statement()       → data/brokers/ibkr/raw_statements/{timestamp}.xml
+2. save_raw_statement()       → data/trades/brokers/ibkr/raw_statements/{timestamp}.xml
                                  (or R2, keyed by statements/{user_id}/ibkr/... if configured)
 3. parse_statement()          → IbkrTrade + IbkrCashTransaction DataFrames
 4. statement_to_ledger()      → LedgerEvent DataFrame (validated)
@@ -174,12 +189,19 @@ Ledger events dedupe by `event_id`:
 
 Re-syncing overlapping history only adds genuinely new events.
 
+The `:fee` suffix and the `cash:` segment are what keep those three kinds
+of row in one `event_id` space without being able to collide.
+`main._merge_ledger` dedupes with `.unique(subset="event_id", keep="last")`,
+so two events sharing an id would silently become one rather than raise —
+and IBKR's Flex schema does not promise that a `<Trade>` and a
+`<CashTransaction>` cannot carry the same `transactionID`.
+
 ---
 
 ## Storage
 
 ```
-data/brokers/ibkr/
+data/trades/brokers/ibkr/
   raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
                                     (local fallback; not per-user-scoped —
                                     R2, if configured, is)

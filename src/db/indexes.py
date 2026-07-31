@@ -2,8 +2,9 @@
 
 Postgres does not index a foreign key for you. Indexing them is the single
 most emphasised rule in *Use The Index, Luke!*, and this schema met it in
-almost no place: across ~39 tables there were exactly three non-unique
-indexes, so `postings.transaction_id`, `account_id`, `category_id`,
+almost no place: across ~39 tables there were exactly three declared
+indexes — one non-unique and two unique expression indexes — so
+`postings.transaction_id`, `account_id`, `category_id`,
 `budget_id`, every `corrections.*` `posting_id`, and every junction
 table's own columns were unindexed. That is DB-audit D1, and it showed up
 as a measurably slow cascade delete and as joins that seq-scan the whole
