@@ -146,8 +146,9 @@ def _unallocated_basis(
         Whose ledger, accounts, opening balances and currencies to read.
     display_currency
         The currency to answer in. The three automation/simulation
-        endpoints take no such parameter and get `BASE_CURRENCY`, since
-        their answer feeds a comparison rather than a display.
+        endpoints take no such query parameter and get the same `"USD"`
+        default every other endpoint's does, since their answer feeds a
+        comparison rather than a display.
 
     Returns
     -------
