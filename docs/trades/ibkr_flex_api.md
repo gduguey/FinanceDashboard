@@ -162,7 +162,7 @@ This keeps `ledger/taxes.py` free of IBKR-specific strings.
 
 ```
 1. fetch_flex_statement()     → raw XML
-2. save_raw_statement()       → data/brokers/ibkr/raw_statements/{timestamp}.xml
+2. save_raw_statement()       → data/trades/brokers/ibkr/raw_statements/{timestamp}.xml
                                  (or R2, keyed by statements/{user_id}/ibkr/... if configured)
 3. parse_statement()          → IbkrTrade + IbkrCashTransaction DataFrames
 4. statement_to_ledger()      → LedgerEvent DataFrame (validated)
@@ -201,7 +201,7 @@ and IBKR's Flex schema does not promise that a `<Trade>` and a
 ## Storage
 
 ```
-data/brokers/ibkr/
+data/trades/brokers/ibkr/
   raw_statements/{timestamp}.xml   every fetch, verbatim, never overwritten
                                     (local fallback; not per-user-scoped —
                                     R2, if configured, is)

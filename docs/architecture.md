@@ -14,8 +14,9 @@ decided the way it was.
   IBKR, replays it into positions and gains, compares performance against
   benchmarks and counterfactuals.
 - **`accounting`** — a day-to-day cash-accounts tracker. Imports bank/card
-  CSVs and statement PDFs, categorizes them, rolls them up into net worth,
-  budgets, and goals.
+  CSVs, categorizes them, rolls them up into net worth, budgets, and
+  goals. (Statement-PDF import was retired; the one PDF path left is
+  paystub parsing, `importers/paystub.py`.)
 
 Both are built around the same idea — **store what happened, replay
 everything else** — but they don't share code, models, or a database.
@@ -24,23 +25,27 @@ could be deleted independently without breaking the other's tests.
 
 ## One FastAPI app, not two
 
-There is exactly one `FastAPI()` instance in this repo, created in
-`trades/api.py`:
+There is exactly one `FastAPI()` instance in this repo. `trades.api` is a
+package, and the instance is created in `trades/api/dependencies.py`,
+where the lifespan and shared request dependencies it needs are also
+defined; `trades/api/api.py` imports it and does the mounting:
 
 ```python
-# src/trades/api.py
-app = FastAPI(title="Investments API")
-...
-app.include_router(accounting_router)  # from accounting.api
+# src/trades/api/dependencies.py
+app = FastAPI(title="Investments API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
+
+# src/trades/api/api.py
+app.include_router(accounting_router, dependencies=_authenticated)  # from accounting.api
 ```
 
-`accounting/api.py` never constructs its own `FastAPI()` — it only
+`accounting/api/api.py` never constructs its own `FastAPI()` — it only
 defines `router = APIRouter(prefix="/api/v1/accounting")`, an ordinary
 FastAPI router with no opinion about which app it ends up mounted on.
-`trades.api` imports that router and mounts it onto its own `app` at
+`trades.api.api` imports that router and mounts it onto the one `app` at
 import time. The result, at runtime, is one process, one port, one
-`uvicorn trades.api:app` — every `/api/...` and `/api/v1/accounting/...`
-route is served by the same app, the same event loop, the same process.
+`uvicorn trades.api:app` (the package's `__init__.py` re-exports `app`) —
+every `/api/...` and `/api/v1/accounting/...` route is served by the same
+app, the same event loop, the same process.
 
 This isn't an accident of convenience; it's deliberate insurance.
 Because `accounting.api` never reaches into `trades.api`'s own app object
@@ -63,7 +68,7 @@ whichever `/api/...` path it needs.
 `accounting` is allowed to read from `trades`; `trades` never reads from
 `accounting`. Concretely, this is exactly two functions in
 `accounting/api/routers/dashboard.py` —
-`_external_investment_values_usd` and `_benchmark_apy_pct` — doing exactly
+`_external_investment_values` and `_benchmark_apy_pct` — doing exactly
 two things: reading the *running* `trades.api` app's own `app.state.config`
 to (1) replay its ledger and answer "what is the tracked portfolio worth
 as of this date" (used only for an `Account` of `kind="external_investment"`
@@ -103,14 +108,13 @@ one Docker container staying up, not a CLI tool or serverless function
 restarting per invocation), moving an import into a function doesn't
 avoid the one-time cost of that first import, it only defers *when* it's
 paid — and if the function runs on most requests anyway, that's not a
-real saving. As of this writing there are exactly 11 local imports in the
-whole repo (`src/` and `tests/` combined, verified via
+real saving. Count them with
 `ruff check . --select PLC0415 --ignore-noqa`, which bypasses every
 `# noqa` to catch anything that might otherwise hide from a plain
-`ruff check`), and each falls into one of two legitimate categories:
+`ruff check`. Every one falls into one of three legitimate categories:
 
 - **Enforcing the module boundary above** — the six `from trades import
-  ...` lines inside `_external_investment_values_usd`/`_benchmark_apy_pct`.
+  ...` lines inside `_external_investment_values`/`_benchmark_apy_pct`.
   A top-level import here would make `accounting.api.routers.dashboard`
   (and therefore all of `accounting.api`, since every router is imported
   at app-construction time) hard-fail if `trades` isn't installed —
@@ -124,6 +128,14 @@ whole repo (`src/` and `tests/` combined, verified via
   caught the same way, since a missing package would raise at *module*
   import time (crashing the whole app at startup) rather than only when
   that specific provider is actually used.
+- **Keeping a test-support module importable without what it sets up** —
+  the imports in `tests/support/scratch_db.py` and
+  `tests/performance/conftest.py`. `scratch_db` defers `alembic` because
+  only the suites that migrate a database pay for it; the performance
+  conftest defers `trades.api`, `db.session` and the accounting
+  dependencies so collecting the module does not construct the app, which
+  matters because the `perf` marker is deselected by default and the
+  module is still imported on every run.
 
 A local import with neither reason — e.g. one existed for
 `accounting.importers.paystub.extract_paystub_pdf_text`'s `import

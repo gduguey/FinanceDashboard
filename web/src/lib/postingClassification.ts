@@ -13,7 +13,7 @@ export function hasAnyRealAccount(accounts: Iterable<{ kind: string }>): boolean
   return [...accounts].some((account) => !VIRTUAL_ACCOUNT_KINDS.has(account.kind))
 }
 
-// Mirrors the backend's own `_real_income_expense_legs` test (see
+// Mirrors the backend's own `real_income_expense_legs` test (see
 // `dashboard.income_statement`): a posting only ever represents real
 // income or a real expense — as opposed to an internal transfer between
 // two accounts you hold — when it's not itself on a virtual placeholder

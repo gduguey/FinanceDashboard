@@ -106,42 +106,62 @@ both operate purely on whatever's in the rate table they're handed.
 
 ## What actually enumerates the supported currencies
 
-Two things, and only two:
+One module, `src/db/currency.py`, holding two things:
 
-- `accounting.models.CurrencyCode` — a `Literal["USD", "EUR"]` type. This
-  is the compile-time list of currency codes the codebase is allowed to
-  write into a `currency` field.
-- `accounting.models.SUPPORTED_CURRENCIES` — a `dict[CurrencyCode, Currency]`
-  registry holding each currency's display symbol and decimal places.
-  `GET /api/v1/accounting/currencies` returns this dict directly, and every
-  currency dropdown in the frontend (an account's currency, a goal's
-  target currency, the page-header display-currency toggle) is built from
-  that endpoint's response — none of them hardcode "USD" or "EUR" as a
-  literal option.
+- `db.currency.CurrencyCode` — a `Literal["USD", "EUR"]`. This is the
+  compile-time list of codes the codebase is allowed to write into a
+  `currency` field, and it stays a hand-written `Literal` rather than
+  being derived from the `public.currencies` table on purpose: a `Literal`
+  is what makes `currency: CurrencyCode` a narrow union in mypy, in
+  pydantic's validation, in the generated OpenAPI schema, and therefore in
+  the SPA's `schema.ts`. None of those can be computed from database rows
+  at type-check time.
+- `db.currency.CURRENCY_REFERENCE` — each code's display symbol and
+  decimal places. It is the seed for `public.currencies`, the reference
+  table every `currency` column foreign-keys into
+  (`db.models.CURRENCY_SEED_STATEMENTS`). So the Literal is the **API
+  vocabulary** and the table is the **referential guarantee**, from one
+  declaration.
 
-Everything else in the module — the exchange-rate fetcher, the conversion
-functions, every aggregation in `dashboard/` — reads from these two in a
-loop, never a fixed list of currency names typed out by hand.
+`accounting.models.SUPPORTED_CURRENCIES` still exists and is what
+`GET /api/v1/accounting/currencies` returns — every currency dropdown in
+the frontend is built from that response rather than hardcoding "USD" or
+"EUR" — but it is now a *projection* of `CURRENCY_REFERENCE`, not a second
+list to keep in step.
+
+Everything else — the exchange-rate fetcher, the conversion functions,
+every aggregation in `dashboard/` — reads from these in a loop, never a
+fixed list of currency names typed out by hand.
 
 ## Concretely: what adding Mexican pesos would take
 
 Say you opened a peso-denominated account and wanted `MXN` supported
 end to end. Here's exactly what would and wouldn't need to change:
 
-**Required, two edits, both in `accounting/models.py`:**
+**Required: one edit, in `src/db/currency.py`.** Add `"MXN"` as a new arm
+of the `CurrencyCode` Literal and its entry beside it:
 
-1. Add `"MXN"` as a new arm of the `CurrencyCode` Literal.
-2. Add an entry to `SUPPORTED_CURRENCIES`:
-   ```python
-   "MXN": Currency(code="MXN", symbol="$", decimal_places=2),
-   ```
+```python
+CurrencyCode = Literal["USD", "EUR", "MXN"]
 
-**Recommended, one edit, for full frontend type-safety:** add `'MXN'` to
-the `CurrencyCode` union type in `web/src/types/accounting.ts`. The
-frontend's currency dropdowns are already data-driven from
-`GET /currencies`, so they'd show "MXN" as a selectable option even
-without this — but TypeScript wouldn't otherwise know `'MXN'` is a valid
-value for a typed `currency` field.
+CURRENCY_REFERENCE: dict[CurrencyCode, CurrencyReference] = {
+    ...
+    "MXN": CurrencyReference(symbol="$", decimal_places=2),
+}
+```
+
+Both live in `db`, below both ledgers, because `trades.ledger_events`'
+`currency` column is the identical column and `trades` may not import
+`accounting`. `CURRENCY_REFERENCE` is keyed by `CurrencyCode`, so mypy
+rejects a row for a code the Literal does not have, and
+`tests/db/test_schema_invariants.py` rejects the reverse — a Literal arm
+with no row.
+
+**Nothing to edit in the frontend.** `web/src/types/accounting.ts` derives
+`CurrencyCode` as `Currency['code']` off the generated `schema.ts`, which
+`openapi-typescript` regenerates from the backend's own OpenAPI schema —
+and CI's `openapi-types` workflow fails the build if the committed file
+has drifted. There is no hand-written union with an arm to add.
 
 **Requires nothing else — genuinely automatic:**
 

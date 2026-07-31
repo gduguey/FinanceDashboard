@@ -166,6 +166,15 @@ realized_gain = shares × (exit_price − cost_per_share) − allocated_fees
 
 A single SELL may close multiple lots or only part of one lot.
 
+`allocated_fees` comes from `consume_fifo`'s `total_fees` parameter,
+divided pro rata by shares consumed — and that parameter **defaults to
+`0.0` and is never passed** on the replay path (`ledger.replay`), so in
+practice the term is always zero today. That is deliberate rather than an
+omission: a commission arrives as its own separate `FEE` event
+(`ibkr:{transactionID}:fee`), precisely so it never inflates a lot's cost
+basis or gets buried inside a realized gain. The parameter exists for a
+future source that reports a sale's fee inline instead.
+
 ### Term
 
 | Label | Condition |
@@ -200,10 +209,14 @@ Key rules:
   consumed_dividends = lot.dividends_received × consumed_shares / lot.shares
   ```
   The remaining open portion and the closed portion each keep their share.
-- **Included in return calculations.** `metrics.lot_returns()` and
-  `metrics.unrealized_gain()` include `dividends_received` in the numerator
-  so that a lot's total return accounts for all income received while it
-  was open, not just price appreciation.
+- **Included in `lot_returns`, opt-in for `unrealized_gain`.**
+  `metrics.lot_returns()` always puts `dividends_received` in the
+  numerator, so a lot's total return accounts for all income received
+  while it was open. `metrics.unrealized_gain()` takes
+  `include_dividends`, which **defaults to `False`** — it is price
+  appreciation alone unless a caller asks otherwise, and the one caller
+  today (`dashboard.overview`) does not. The two figures therefore differ
+  for any lot that has received a dividend, on purpose.
 
 ---
 
@@ -229,7 +242,7 @@ the same.
 ## Storage
 
 ```
-data/brokers/ibkr/
+data/trades/brokers/ibkr/
   raw_statements/{timestamp}.xml   source of truth — every fetch, verbatim
 ```
 

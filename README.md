@@ -9,9 +9,8 @@ everything else. Two independent modules share the same backend/database:
   positions and gains, and compares performance against benchmarks and
   counterfactuals.
 - **`accounting`** — tracks day-to-day cash accounts (checking, savings,
-  credit cards), imported from bank exports and statement PDFs,
-  categorized, and rolled up into net worth, an income statement, budgets,
-  and goals.
+  credit cards), imported from bank CSV exports, categorized, and rolled
+  up into net worth, an income statement, budgets, and goals.
 
 Both are exposed through the same FastAPI backend and React frontend, and
 both persist to the same Postgres database (see
@@ -202,12 +201,14 @@ backfilling one if it happens).
 uv run jupyter lab
 ```
 
-**Currently broken.** `portfolio.ipynb`/`prices_sync.ipynb` still call
+**Currently broken.** `portfolio.ipynb`, `prices_sync.ipynb` and
+`ibkr_sync.ipynb` all still call
 `trades.brokers.ibkr.main.load_ledger(config)`, a single-argument,
 config-based signature from before this app's Postgres/multi-user
-migration — `load_ledger` now takes `(session, user_id)` instead. These
-notebooks need updating to open a session and pass a real user id before
-Option A is usable again; until then, use Option B.
+migration — `load_ledger` now takes `(session, user_id)` instead. All
+three need updating to open a session and pass a real user id before
+Option A is usable again; until then, use Option B. (`cpi_sync.ipynb` and
+`hysa_sync.ipynb` do not call it and are unaffected.)
 
 ## Option B: the web dashboard
 
@@ -269,7 +270,7 @@ src/trades/
   models.py           pydantic schemas — canonical column names live here once
   api/                the one FastAPI app; auth.py/webhooks.py (Clerk session
                       verification and invite provisioning) plus routers/
-                      (dashboard, market_data, settings, sync)
+                      (broker_connections, dashboard, market_data, settings, sync)
   dashboard/           API-facing aggregation (composes ledger + market_data)
   ledger/              replay, lots, metrics, NAV, counterfactuals, taxes
   market_data/         prices, CPI, HYSA rates, symbol search
