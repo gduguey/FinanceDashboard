@@ -58,9 +58,19 @@ does not have; the other direction (a Literal arm with no entry here) is
 asserted by the schema-invariant test, since a mapping's exhaustiveness over
 a `Literal` is not something the type checker can check.
 
-Adding a currency is now **one** edit — a new arm on `CurrencyCode` and its
-entry here — and it reaches the API contract, the display registry
-(`accounting.models.SUPPORTED_CURRENCIES`) and the database's own reference
-table from that single place. No migration touches any of the nine columns
-that reference it.
+Adding a currency is **one** edit to this module — a new arm on
+`CurrencyCode` and its entry here — and it reaches the API contract, the
+display registry (`accounting.models.SUPPORTED_CURRENCIES`) and the seed
+for the database's own reference table from that single place. No
+migration touches any of the nine columns that reference it.
+
+The one thing that edit does *not* do is insert the row into an
+already-existing `public.currencies`: this mapping is applied by the
+baseline migration's `db.models.CURRENCY_SEED_STATEMENTS` and by the
+`create_all` hook, neither of which runs again, and there is no
+`ensure_reference_rows` path for currencies the way there is for
+institutions and securities. Until that row exists, every referencing
+foreign key rejects the new code — so a currency added after launch also
+needs a one-line data migration. See
+`docs/accounting/currency-handling.md`.
 """

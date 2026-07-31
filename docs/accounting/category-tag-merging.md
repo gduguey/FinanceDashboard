@@ -48,7 +48,14 @@ subcategory only ever merges into a sibling under the same
    alike, since a general budget is just a `Budget` with no `month`), and
    `posting_splits`
    (`PostingSplitLeg.category_id`/`subcategory_id`). A `TransferRule` has
-   no category fields of its own, so there is nothing there to repoint. A repointed budget's
+   no category fields of its own, so there is nothing there to repoint.
+
+   One mapping to keep straight throughout: `CategoryPattern` and
+   `TransferRule` are separate API resources but **one table**,
+   `accounting.categorization_rules`, discriminated by `effect`
+   (`categorize` vs `transfer`) — which is why the summary table at the
+   bottom names that table twice, once per effect, with different
+   behaviour on each row. A repointed budget's
    `budget_id` is **rebuilt** from its new
    `(month, category_id, subcategory_id)` triple (see
    `repositories.planning.budget_row_key`) rather than left naming the

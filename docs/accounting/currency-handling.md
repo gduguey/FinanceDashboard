@@ -157,11 +157,30 @@ rejects a row for a code the Literal does not have, and
 `tests/db/test_schema_invariants.py` rejects the reverse — a Literal arm
 with no row.
 
-**Nothing to edit in the frontend.** `web/src/types/accounting.ts` derives
-`CurrencyCode` as `Currency['code']` off the generated `schema.ts`, which
-`openapi-typescript` regenerates from the backend's own OpenAPI schema —
-and CI's `openapi-types` workflow fails the build if the committed file
-has drifted. There is no hand-written union with an arm to add.
+**Then get the row into `public.currencies` on every existing database.**
+`CURRENCY_REFERENCE` is the *seed*, and it is only ever applied by the
+baseline migration's `CURRENCY_SEED_STATEMENTS` and by the `create_all`
+hook the test suite uses. Neither runs again on a database that already
+exists — and unlike `institutions` and `securities`, which
+`db.base.ensure_reference_rows` fills in on first sight of a name,
+nothing inserts a currency at runtime. Until the row exists, every one of
+the nine `currency` columns' foreign keys rejects `"MXN"`. So a currency
+added after launch needs a one-line data migration inserting it; before
+launch, recreating the database from the baseline is enough.
+
+**Nothing to edit in the frontend, but do regenerate.**
+`web/src/types/accounting.ts` derives `CurrencyCode` as `Currency['code']`
+off the generated `schema.ts`, so there is no hand-written union with an
+arm to add — but `schema.ts` still has to be regenerated and committed,
+because the OpenAPI schema enumerates the Literal's arms and today's copy
+lists only `USD` and `EUR`:
+
+```bash
+uv run python -m trades.api.export_openapi
+cd web && npm run generate:schema && npx biome format --write src/types/schema.ts
+```
+
+CI's `openapi-types` workflow fails the build if you forget.
 
 **Requires nothing else — genuinely automatic:**
 

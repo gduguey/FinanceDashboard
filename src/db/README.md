@@ -340,7 +340,7 @@ moment a real reference existed. This is exactly the same "does anything
 foreign-key against this?" question the primary-key section above asks,
 applied one layer up: at the *write path* instead of the *id* itself.
 
-**Why the 15 wipe-and-reinsert tables stay small**: every one of them
+**Why the wipe-and-reinsert tables stay small**: every one of them
 holds *settings you configured by hand* — a budget you typed a number
 into, a savings goal you created, a transfer rule you wrote — never
 anything an import can add on its own. A heavy user might have dozens of
@@ -349,7 +349,7 @@ most, not the tens of thousands a transaction history could reach. Small
 row counts are exactly what makes "delete everything, reinsert
 everything" cheap enough to do on every save without it mattering.
 
-## `transactions`/`postings`: written once at import time, never wiped
+## `transactions`/`postings`: bulk-written at import time, never wiped
 
 Your actual transaction history isn't part of either pattern above. Bulk
 writes to it are owned by a separate path,

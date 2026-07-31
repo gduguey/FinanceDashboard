@@ -41,13 +41,21 @@ this scheme.
 
 `.github/workflows/backend.yml` enforces the process end to end:
 
-- **`version-check`** (on every PR): fails unless the PR's version is
-  strictly greater than `main`'s — catches both "forgot to bump" and
-  "accidentally reverted someone else's bump."
-- **`tag`** (on every push to `main`, after tests pass): reads the version
-  and creates + pushes a matching `vX.Y.Z` git tag, if one doesn't already
-  exist for it — so a tag always corresponds to an exact commit that
-  actually landed on `main`, never something created by hand out of sync.
+- **`version-check`**: fails unless the PR's version is strictly greater
+  than `main`'s — catches both "forgot to bump" and "accidentally reverted
+  someone else's bump."
+- **`tag`** (after the test, migrations and performance jobs pass): reads
+  the version and creates + pushes a matching `vX.Y.Z` git tag, if one
+  doesn't already exist for it — so a tag always corresponds to an exact
+  commit that actually landed on `main`, never something created by hand
+  out of sync.
+
+Both sit in `backend.yml`, which is **path-filtered**: it runs only when a
+PR or push touches `src/**`, `tests/**`, `pyproject.toml`, `uv.lock`,
+`.python-version` or the workflow file itself. A change touching none of
+those — a docs-only PR, say — neither checks the version nor tags a
+release, which is the intended behaviour: a commit that ships no code has
+nothing to version.
 
 Mechanically: bump the version in the same PR as the change it describes,
 one bump per merge (not per commit) — the version tracks what shipped, not
