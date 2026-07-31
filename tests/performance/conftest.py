@@ -251,8 +251,55 @@ def _seed_tenant(connection: Connection, tenant: uuid.UUID, *, transactions: int
     )
 
 
+_ANALYZED_TABLES = ("postings", "transactions")
+"""The two relations every threshold in this module depends on the planner having statistics for."""
+
+
+def _analyze_as_owner(perf_database: URL) -> None:
+    """`ANALYZE` the seeded database over the owning role, and prove it actually happened.
+
+    Split out from `tenants` because the assertion is the point. `ANALYZE`
+    reports success whether or not it analyzed anything: a role without
+    ownership gets a `WARNING` per table and an empty `pg_statistic`, which is
+    indistinguishable from a working call unless something checks. This gate
+    ran that way from the day it landed until C6 was diagnosed, so the check
+    stays even though the role is now correct — a permission change that
+    quietly re-broke it would otherwise cost another investigation.
+
+    Parameters
+    ----------
+    perf_database
+        The scratch database's URL, as the role that owns it.
+
+    Raises
+    ------
+    RuntimeError
+        If either relation still has no rows in `pg_statistic` afterwards.
+    """
+    engine = create_one_shot_engine(perf_database)
+    try:
+        with engine.connect() as connection:
+            connection.execution_options(isolation_level="AUTOCOMMIT").execute(text("ANALYZE"))
+            missing = [
+                table
+                for table in _ANALYZED_TABLES
+                if not connection.execute(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_statistic WHERE starelid = "
+                        "(quote_ident('accounting') || '.' || quote_ident(:table))::regclass)"
+                    ),
+                    {"table": table},
+                ).scalar_one()
+            ]
+        if missing:
+            message = f"ANALYZE left {', '.join(missing)} without statistics; every threshold here would time a guess"
+            raise RuntimeError(message)
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture(scope="session")
-def tenants(app_runtime_engine: Engine) -> dict[str, uuid.UUID]:
+def tenants(app_runtime_engine: Engine, perf_database: URL) -> dict[str, uuid.UUID]:
     """Two tenants in one database, five times apart in size.
 
     Seeded as `app_runtime` itself, the same way
@@ -263,7 +310,10 @@ def tenants(app_runtime_engine: Engine) -> dict[str, uuid.UUID]:
     Parameters
     ----------
     app_runtime_engine
-        The restricted-role engine.
+        The restricted-role engine, which the rows are written over.
+    perf_database
+        The same database as the owning role, which is the only role that can
+        `ANALYZE` it — see `_analyze_as_owner`.
 
     Returns
     -------
@@ -279,8 +329,17 @@ def tenants(app_runtime_engine: Engine) -> dict[str, uuid.UUID]:
     # autovacuum has got round to, which on a CI runner is usually nothing.
     # Timing a plan chosen from empty statistics measures the absence of a
     # vacuum rather than the query.
-    with app_runtime_engine.connect() as connection:
-        connection.execution_options(isolation_level="AUTOCOMMIT").execute(text("ANALYZE"))
+    #
+    # Run as the *owning* role, not as `app_runtime`. `ANALYZE` silently skips
+    # any table the caller does not own — it emits
+    # `WARNING: permission denied to analyze "postings", skipping it` and
+    # returns success — so issuing it over the restricted engine left
+    # `pg_statistic` empty and `last_analyze` null, and this gate spent every
+    # run since it landed racing autovacuum for whether it measured a planned
+    # query or an unplanned one. That is what produced C6's "cliff between
+    # limit=300 and limit=400": not a page size, but whichever side of that
+    # race the runner happened to land on (B5).
+    _analyze_as_owner(perf_database)
     return {"big": big, "small": small}
 
 
