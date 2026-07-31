@@ -202,7 +202,7 @@ value(t)  = shares(t) × benchmark_price(t)
 ### Excess value vs HYSA
 
 ```
-excess_value_vs_hysa = portfolio_value − hysa_counterfactual_value
+excess_value_vs_hysa_usd = portfolio_value − hysa_counterfactual_value
 ```
 
 A difference in dollars, not a return, and not alpha — nothing here
