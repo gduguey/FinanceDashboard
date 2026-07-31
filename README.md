@@ -28,8 +28,10 @@ the one API app fit together) — but neither depends on the other, and
 
 - [uv](https://docs.astral.sh/uv/) (manages the Python install and
   virtualenv — you don't need Python or pip set up yourself first)
-- [Node.js](https://nodejs.org/) 20+ and npm — only needed for the web
-  dashboard, not the notebooks
+- [Node.js](https://nodejs.org/) 22+ and npm — only needed for the web
+  dashboard, not the notebooks. The version is declared once in `.nvmrc`,
+  which `web/package.json`'s `engines`, both CI workflows and
+  `deploy/Dockerfile` all follow
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) —
   the easiest way to get a Postgres database running locally (see
   "Setting up Postgres" below). Everything in this app — the trade/cash
