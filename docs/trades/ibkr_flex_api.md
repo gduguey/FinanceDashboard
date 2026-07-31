@@ -34,18 +34,33 @@ brokers/ibkr/
 
 ## Credentials
 
-From `.env` (gitignored), via `IbkrFlexCredentials`:
+Per user, encrypted, in Postgres — **never** `.env`. Each user connects
+their own IBKR account from the app, so there is no process-wide token to
+put in a file: `trades/config.py` says so explicitly on
+`IbkrFlexCredentials`, which is a plain model built per request rather
+than a settings class.
 
-```
-IBKR_FLEX_WEB_SERVICE_TOKEN=...
-IBKR_QUERY_ID=...
-```
+Two things a user supplies:
 
 - **Token** — Account Management → Reports → Settings → Flex Web Service
-- **Query ID** — the numeric ID of your saved Flex Query (Reports → Flex
+- **Query ID** — the numeric ID of their saved Flex Query (Reports → Flex
   Queries)
 
-The token is a `SecretStr` so it never leaks into logs or reprs.
+Three layers hold them:
+
+| Module | Responsibility |
+|--------|----------------|
+| `db.secrets` | Fernet-encrypts one named credential per user into `public.user_secrets`, with the key version that encrypted it (see `src/db/README.md`) |
+| `trades.broker_credentials` | One user's full field set for one broker, stored as JSON under the key `broker:{broker}`. Knows nothing about IBKR — a second broker reuses it unchanged |
+| `trades.brokers.ibkr.credentials` | The only module that knows IBKR needs a `token` and a `query_id`. `resolve_ibkr_credentials(session, user_id)` builds an `IbkrFlexCredentials` from what is saved, or raises `IbkrCredentialsNotConfiguredError` |
+
+`PUT /api/v1/trades/settings/ibkr` writes them (a partial merge — omitting
+either field leaves the saved one alone), and `sync_ibkr_account` takes
+the resolved credentials as an argument rather than reading them itself.
+
+The token is a `SecretStr` so it never leaks into logs or reprs, and
+`ibkr_credential_fields` exists to report *which* fields are configured
+without returning either value.
 
 ---
 
