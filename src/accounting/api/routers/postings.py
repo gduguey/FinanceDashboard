@@ -659,7 +659,7 @@ def get_transfer_suggestions(
         Each carries both sides' own `description` and a `suggestion_id`,
         for the caller to propose a `TransferRule` from or dismiss —
         never applied automatically. Excludes any pair already dismissed
-        (see `POST /dismissed-suggestions`).
+        (see `PUT /dismissed-suggestions/{suggestion_id}`).
     """
     postings = _resolved_postings(session, user_id)
     candidates = find_unmatched_transfer_candidates(
@@ -694,7 +694,7 @@ def get_duplicate_suggestions(
     list[DuplicateGroup]
         Sorted least-certain first, since those need the closest review.
         Each carries a `suggestion_id` for dismissing it. Excludes any
-        group already dismissed (see `POST /dismissed-suggestions`).
+        group already dismissed (see `PUT /dismissed-suggestions/{suggestion_id}`).
     """
     postings = _resolved_postings(session, user_id)
     groups = find_duplicate_candidates(postings, window_days=window_days)

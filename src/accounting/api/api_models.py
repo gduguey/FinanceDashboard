@@ -77,8 +77,9 @@ class AccountingStoreResponse(BaseModel):
     opening balances are edited one account at a time through
     `PUT /accounts/{account_id}/opening-balance`, and the UI's "manually
     added transfers" are `transfer_links` with no `rule_id` — a different
-    table from `manual_transfers`, which holds only the balancing legs
-    behind an opening or closing balance.
+    thing from a `ManualTransfer`, which is not a table at all any more
+    but a projection over `origin='manual'` transactions and their two
+    balancing postings (see `repositories.accounts.load_manual_transfers`).
     """
 
     accounts: dict[str, Account]
