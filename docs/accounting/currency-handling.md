@@ -12,6 +12,11 @@ income statement, budgets, and goals. Each of those reads a
 converts every amount into it on the fly, at read time — the stored data
 itself never changes.
 
+This means the same ledger can answer "what's my net worth in USD" and
+"what's my net worth in EUR" from the exact same rows, just by asking for
+a different display currency; neither answer is more "native" than the
+other, and neither is cached.
+
 ## Which date's rate: a stock converts at the as-of date, a flow at its own
 
 The rate a conversion uses depends on what is being converted, and the two
@@ -47,11 +52,6 @@ turns into a null amount that every `sum` then silently skips, producing a
 wrong total that looks like a right one — and refusing the request, which
 would make a single old posting a 400 for the whole income statement.
 
-This means the same ledger can answer "what's my net worth in USD" and
-"what's my net worth in EUR" from the exact same rows, just by asking for
-a different display currency; neither answer is more "native" than the
-other, and neither is cached.
-
 ## Where a rate comes from
 
 `accounting/market_data/exchange_rates.py` fetches daily historical rates
@@ -79,7 +79,9 @@ A single day's exchange rate is noisy — pricing net worth off yesterday's
 tick would make it swing on pure currency-market noise that has nothing to
 do with what's actually happening in your accounts. So the rate this app
 actually converts with is a trailing 30-day average of that daily history,
-not the latest spot rate.
+not the latest spot rate. `smoothed_rate_as_of` computes that average for
+one date; `smoothed_rate_series` computes it for every date at once, which
+is what converting each flow at its own date needs.
 
 ## The two pieces that make conversion generic
 
@@ -90,9 +92,14 @@ not the latest spot rate.
   `rates_to_base` entry for whichever two codes it's asked to convert
   between.
 - `accounting.ledger.currency.DisplayCurrency` — bundles a target currency
-  code with the rate table needed to reach it, since the two are always
+  code with the rate tables needed to reach it, since they are always
   needed together by anything that aggregates across accounts
-  (`dashboard.net_worth`, `dashboard.income_statement`, and so on).
+  (`dashboard.net_worth`, `dashboard.income_statement`, and so on):
+  `rates_to_base` for a stock, and `rates_by_date` — one rate per
+  (currency, day), already divided into the target — for a flow.
+- `accounting.ledger.currency.with_converted_amount` — applies the second
+  of those to a whole frame in one join, and is the only place that
+  decides which date's rate a row gets.
 
 Neither of these hardcodes USD/EUR, or any fixed number of currencies —
 both operate purely on whatever's in the rate table they're handed.
