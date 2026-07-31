@@ -91,7 +91,7 @@ export function CashSittingCard() {
             <div className="tabular-nums">
               {formatUsd(data.hypothetical_value_portfolio_usd)}{' '}
               <span className={signColor(data.missed_earnings_portfolio_usd)}>
-                ({data.missed_earnings_portfolio_usd >= 0 ? '+' : ''}
+                ({data.missed_earnings_portfolio_usd > 0 ? '+' : ''}
                 {formatUsd(data.missed_earnings_portfolio_usd)})
               </span>
             </div>
@@ -101,7 +101,7 @@ export function CashSittingCard() {
             <div className="tabular-nums">
               {formatUsd(data.hypothetical_value_benchmark_usd)}{' '}
               <span className={signColor(data.missed_earnings_benchmark_usd)}>
-                ({data.missed_earnings_benchmark_usd >= 0 ? '+' : ''}
+                ({data.missed_earnings_benchmark_usd > 0 ? '+' : ''}
                 {formatUsd(data.missed_earnings_benchmark_usd)})
               </span>
             </div>

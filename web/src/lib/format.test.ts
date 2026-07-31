@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCurrency, formatCurrencyCompact, formatMonthLong, formatUsd } from '@/lib/format'
+import { formatCurrency, formatCurrencyCompact, formatMonthLong, formatUsd, signColor } from '@/lib/format'
 
 describe('formatUsd', () => {
   it('formats a positive amount as USD', () => {
@@ -46,5 +46,34 @@ describe('formatCurrencyCompact', () => {
 describe('formatMonthLong', () => {
   it('formats a YYYY-MM string as a full month name and year', () => {
     expect(formatMonthLong('2026-03')).toBe('March 2026')
+  })
+})
+
+describe('signColor', () => {
+  it('paints a gain green', () => {
+    expect(signColor(1)).toBe('text-emerald-600')
+  })
+
+  it('paints a loss red', () => {
+    expect(signColor(-1)).toBe('text-rose-600')
+  })
+
+  // A3d: `value >= 0` painted exactly zero green, so a balance of £0.00 and
+  // a month with no change both read as a gain.
+  it('paints exactly zero neither green nor red', () => {
+    expect(signColor(0)).toBe('text-muted-foreground')
+  })
+
+  // Several call sites negate their argument because growth is the bad
+  // direction there (`signColor(-liabilities)`), and negating zero gives
+  // `-0`, which must stay neutral rather than falling through to red.
+  it('treats negative zero as zero', () => {
+    expect(signColor(-0)).toBe('text-muted-foreground')
+  })
+
+  it('has no colour for a missing or unusable value', () => {
+    expect(signColor(null)).toBe('text-muted-foreground')
+    expect(signColor(undefined)).toBe('text-muted-foreground')
+    expect(signColor(Number.NaN)).toBe('text-muted-foreground')
   })
 })
