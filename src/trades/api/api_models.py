@@ -23,7 +23,7 @@ class SyncProgress(BaseModel):
 
 
 class Overview(BaseModel):
-    """The overview card row: value, gain split, XIRR, dollar alpha, TWR."""
+    """The overview card row: value, gain split, XIRR, excess value over a HYSA, TWR."""
 
     as_of: date
     value_usd: float
@@ -33,7 +33,7 @@ class Overview(BaseModel):
     unrealized_gain_usd: float
     xirr_pct: float | None
     xirr_is_provisional: bool
-    dollar_alpha_vs_hysa_usd: float
+    excess_value_vs_hysa_usd: float
     twr_pct: float | None
     twr_annualized_pct: float | None
     timing_gap_pct: float | None
@@ -327,7 +327,7 @@ class TaxReport(BaseModel):
     tax_owed: list[TaxOwedRow]
     wash_sales: list[WashSaleRow]
     sale_previews: list[SalePreviewRow]
-    after_tax_dollar_alpha_vs_hysa_usd: float
+    after_tax_excess_value_vs_hysa_usd: float
     liquidation_pretax_value_usd: float
     liquidation_long_term_gain_usd: float
     liquidation_short_term_gain_usd: float
@@ -391,7 +391,7 @@ class OpenLotRow(BaseModel):
 
 
 class ClosedLotRow(BaseModel):
-    """One closed lot, with its total return and alpha vs. HYSA over its holding window.
+    """One closed lot, with its total return and its excess over a HYSA, over its holding window.
 
     `closed_by_event_id` is part of `lots.ClosedLot` but is not currently
     declared on the hand-written `web/src/types/portfolio.ts` `ClosedLot`
@@ -413,7 +413,7 @@ class ClosedLotRow(BaseModel):
     dividends_received: float
     days_held: int | None
     total_return_pct: float | None
-    alpha_vs_hysa_pct: float | None
+    excess_return_vs_hysa_pct: float | None
 
 
 class SymbolRollupRow(BaseModel):

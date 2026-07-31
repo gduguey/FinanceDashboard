@@ -687,7 +687,7 @@ function InvestmentsTab() {
           "was this worth it."
         </Definition>
         <p>
-          <span className="font-medium text-foreground">Dollar alpha vs. HYSA</span> is today's portfolio value minus
+          <span className="font-medium text-foreground">Excess value vs. HYSA</span> is today's portfolio value minus
           today's HYSA counterfactual value — a positive number means investing produced more real dollars than parking
           the same deposits in savings would have. <span className="font-medium text-foreground">Growth of $100</span>{' '}
           makes the same comparison a different way: every line starts at exactly 100 and ignores contribution timing

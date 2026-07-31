@@ -37,7 +37,7 @@ const SECTIONS: { title: string; icon: typeof TrendingUp; terms: GlossaryTerm[] 
       'benchmarkCounterfactual',
       'hysaCounterfactual',
       'cashSittingCounterfactual',
-      'dollarAlphaHysa',
+      'excessValueVsHysa',
     ],
   },
   {
@@ -54,7 +54,7 @@ const SECTIONS: { title: string; icon: typeof TrendingUp; terms: GlossaryTerm[] 
       'annualizedReturn',
       'realizedGain',
       'unrealizedGain',
-      'alphaVsHysa',
+      'excessReturnVsHysa',
       'dripReinvestment',
     ],
   },

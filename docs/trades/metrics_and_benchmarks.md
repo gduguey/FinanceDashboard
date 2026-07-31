@@ -195,11 +195,16 @@ shares(t) = Σ(deposit / benchmark_price) − shares sold on withdrawals
 value(t)  = shares(t) × benchmark_price(t)
 ```
 
-### Dollar alpha vs HYSA
+### Excess value vs HYSA
 
 ```
-dollar_alpha = portfolio_value − hysa_counterfactual_value
+excess_value_vs_hysa = portfolio_value − hysa_counterfactual_value
 ```
+
+A difference in dollars, not a return, and not alpha — nothing here
+adjusts for risk. The closed-lot table's `excess_return_vs_hysa_pct` is
+the percentage-point sibling of this, over one lot's own holding window,
+and both read the same rate from `dashboard.settings.hysa_rate_lookup`.
 
 When the tax toggle is on, the HYSA rate is after-tax (see
 `ledger/taxes.after_tax_rate_lookup`).

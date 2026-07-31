@@ -43,8 +43,8 @@ export function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
     const dividendsReceived = group.reduce((sum, l) => sum + l.dividends_received, 0)
     const daysHeld = group.reduce((sum, l) => sum + l.shares * (l.days_held ?? 0), 0) / shares
     const totalReturnPct = ((realizedGain + dividendsReceived) / costBasis) * 100
-    const alphaVsHysaPct =
-      group.reduce((sum, l) => sum + l.shares * l.cost_per_share * (l.alpha_vs_hysa_pct ?? 0), 0) / costBasis
+    const excessReturnVsHysaPct =
+      group.reduce((sum, l) => sum + l.shares * l.cost_per_share * (l.excess_return_vs_hysa_pct ?? 0), 0) / costBasis
     const largest = group.reduce((a, b) => (b.shares > a.shares ? b : a))
     return {
       lot_id: group.map((l) => l.lot_id).join('+'),
@@ -60,7 +60,7 @@ export function aggregateClosedLotsByDay(lots: ClosedLot[]): ClosedLot[] {
       dividends_received: dividendsReceived,
       days_held: daysHeld,
       total_return_pct: totalReturnPct,
-      alpha_vs_hysa_pct: alphaVsHysaPct,
+      excess_return_vs_hysa_pct: excessReturnVsHysaPct,
     }
   })
 }

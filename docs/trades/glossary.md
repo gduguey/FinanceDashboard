@@ -128,11 +128,13 @@ The benchmark fund (VOO by default), shown as a growth-of-$100 index. It is
 not matched to the account's deposits or withdrawals. It simply shows how
 the benchmark itself performed over time.
 
-### Dollar alpha vs. HYSA
+### Excess value vs. HYSA
 
 Today's portfolio value minus today's HYSA counterfactual value. A positive
 value means investing produced more dollars than leaving the same deposits
-in a high-yield savings account.
+in a high-yield savings account. It is a difference in dollars, not a
+return, and not alpha: nothing here adjusts for how much more risk the
+portfolio took to get there.
 
 ### CPI
 
@@ -209,11 +211,13 @@ changes until the shares are sold.
 LONG = held for at least 365 days before being sold. SHORT = held for less
 than 365 days. This is only a holding-period label, not tax advice.
 
-### Alpha vs. HYSA
+### Excess return vs. HYSA
 
 This lot's return minus the return a high-yield savings account would have
-earned over the same holding period. Because the lot is closed, this value
-is final and will not change.
+earned over the same holding period, compounded daily at your configured
+HYSA rate — the same rate the overview card uses. Because the lot is
+closed, this value is final and will not change. It is a difference between
+two percentages, not alpha: no risk adjustment is applied.
 
 ### DRIP (dividend reinvestment)
 
@@ -261,7 +265,7 @@ lives on an actual tax return, not this dashboard.
 Shown on Performance and Allocation, not on the Taxes page itself (which
 always shows its report regardless of this switch). Changes two things:
 the HYSA line and rate switch from the published rate to an after-tax rate
-(labeled "(after tax)"), and the overview's "Dollar alpha vs. HYSA" card is
+(labeled "(after tax)"), and the overview's "Excess value vs. HYSA" card is
 recomputed the same way; on Allocation, lot-level dividend figures switch
 from gross to net of withholding, reflecting the actual cash received. XIRR
 already reflects withholding either way, since it's a cash outflow recorded

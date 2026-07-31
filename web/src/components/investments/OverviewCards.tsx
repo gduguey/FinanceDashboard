@@ -50,7 +50,7 @@ function StatCard({
 // rather than `Array.from({ length: 4 })`, whose items are four
 // indistinguishable `undefined`s with nothing to key on. Keep in step with
 // the four `StatCard`s at the bottom of `OverviewCards`.
-const SECONDARY_STATS = ['xirr', 'dollarAlpha', 'twr', 'maxDrawdown']
+const SECONDARY_STATS = ['xirr', 'excessValue', 'twr', 'maxDrawdown']
 
 function StatSkeleton({ big }: { big?: boolean }) {
   return (
@@ -68,7 +68,7 @@ function StatSkeleton({ big }: { big?: boolean }) {
 // One hero Value card (current value, gain split realized/unrealized,
 // plus money-in-from-you and dividends-received context) instead of a
 // flat list of same-sized cards — the fact that matters most should look
-// like it matters most. The secondary row (XIRR, dollar alpha, TWR, risk)
+// like it matters most. The secondary row (XIRR, excess value vs. HYSA, TWR, risk)
 // fills out evenly instead of leaving an orphaned single card on its own row.
 export function OverviewCards() {
   const { data, isLoading, isError, error } = useOverview()
@@ -158,9 +158,9 @@ export function OverviewCards() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label={xirrLabel} tooltip={xirrTooltip} value={formatPercent(data.xirr_pct)} />
         <StatCard
-          label={taxAdjusted ? 'Dollar alpha vs. HYSA (after tax)' : 'Dollar alpha vs. HYSA'}
-          tooltip="dollarAlphaHysa"
-          value={formatUsd(data.dollar_alpha_vs_hysa_usd)}
+          label={taxAdjusted ? 'Excess value vs. HYSA (after tax)' : 'Excess value vs. HYSA'}
+          tooltip="excessValueVsHysa"
+          value={formatUsd(data.excess_value_vs_hysa_usd)}
           detail={
             taxAdjusted ? 'vs. an after-tax compounding HYSA counterfactual' : 'vs. a compounding HYSA counterfactual'
           }

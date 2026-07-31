@@ -61,6 +61,7 @@ export function LotsTable() {
               <TabsContent value="closed">
                 <ClosedLotsTable
                   lots={aggregateByDay ? aggregateClosedLotsByDay(data.closed_lots) : data.closed_lots}
+                  taxEnabled={taxEnabled}
                 />
               </TabsContent>
             </Tabs>
@@ -166,7 +167,7 @@ function OpenLotsTable({ lots, taxEnabled }: { lots: OpenLot[]; taxEnabled: bool
   )
 }
 
-function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
+function ClosedLotsTable({ lots, taxEnabled }: { lots: ClosedLot[]; taxEnabled: boolean }) {
   const { sorted, sort, toggleSort } = useSortableRows(lots, 'closed_at')
   if (!lots.length) return <p className="py-6 text-center text-sm text-muted-foreground">No closed lots</p>
   return (
@@ -216,11 +217,12 @@ function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
           </SortableTableHead>
           <SortableTableHead
             align="right"
-            active={sort.key === 'alpha_vs_hysa_pct'}
+            active={sort.key === 'excess_return_vs_hysa_pct'}
             desc={sort.desc}
-            onClick={() => toggleSort('alpha_vs_hysa_pct')}
+            onClick={() => toggleSort('excess_return_vs_hysa_pct')}
           >
-            Alpha vs. HYSA <InfoTooltip term="alphaVsHysa" />
+            {taxEnabled ? 'Excess return vs. HYSA (after tax)' : 'Excess return vs. HYSA'}{' '}
+            <InfoTooltip term="excessReturnVsHysa" />
           </SortableTableHead>
         </TableRow>
       </TableHeader>
@@ -240,8 +242,8 @@ function ClosedLotsTable({ lots }: { lots: ClosedLot[] }) {
             <TableCell className={`text-right tabular-nums ${signColor(lot.total_return_pct)}`}>
               {formatPercent(lot.total_return_pct)}
             </TableCell>
-            <TableCell className={`text-right tabular-nums ${signColor(lot.alpha_vs_hysa_pct)}`}>
-              {formatPercent(lot.alpha_vs_hysa_pct)}
+            <TableCell className={`text-right tabular-nums ${signColor(lot.excess_return_vs_hysa_pct)}`}>
+              {formatPercent(lot.excess_return_vs_hysa_pct)}
             </TableCell>
           </TableRow>
         ))}

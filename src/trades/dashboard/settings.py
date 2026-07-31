@@ -201,7 +201,8 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
 def hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Callable[[date], float]:
     """Build the HYSA rate lookup every HYSA counterfactual on the dashboard shares.
 
-    Because the overview's dollar-alpha card, the dollar chart, and the
+    Because the overview's excess-value-vs-HYSA card, the closed-lot
+    excess-return column, the dollar chart, and the
     growth-of-$100 chart all source their HYSA leg from this one function,
     turning on `DashboardSettings.tax_enabled` here — wrapping the published
     rate through `taxes.after_tax_rate_lookup` — is enough to make every one

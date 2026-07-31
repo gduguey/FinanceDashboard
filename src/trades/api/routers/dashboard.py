@@ -66,7 +66,7 @@ def get_overview(
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
     as_of: date | None = None,
 ) -> Overview:
-    """Return the overview card row: value, gain split, XIRR, dollar alpha, TWR.
+    """Return the overview card row: value, gain split, XIRR, excess value over a HYSA, TWR.
 
     Returns
     -------
@@ -324,7 +324,7 @@ def get_tax_report(
         `annual`, `tax_owed` (the annual report plus estimated
         `capital_gains_tax_usd`, `dividend_tax_usd`, `total_tax_usd`,
         `balance_due_usd` per year), `wash_sales`, `sale_previews`,
-        `after_tax_dollar_alpha_vs_hysa_usd`, and the liquidation estimate —
+        `after_tax_excess_value_vs_hysa_usd`, and the liquidation estimate —
         `liquidation_pretax_value_usd`, `liquidation_long_term_gain_usd`,
         `liquidation_short_term_gain_usd`, `liquidation_capital_gains_tax_usd`,
         `liquidation_value_usd` — what a full sale of every open lot right
@@ -346,7 +346,7 @@ def get_tax_report(
         tax_owed=[TaxOwedRow(**row) for row in summary.tax_owed.to_dicts()],
         wash_sales=[WashSaleRow(**row) for row in summary.wash_sales.to_dicts()],
         sale_previews=[SalePreviewRow(**row) for row in summary.sale_previews.to_dicts()],
-        after_tax_dollar_alpha_vs_hysa_usd=summary.after_tax_dollar_alpha_vs_hysa_usd,
+        after_tax_excess_value_vs_hysa_usd=summary.after_tax_excess_value_vs_hysa_usd,
         liquidation_pretax_value_usd=summary.liquidation_pretax_value_usd,
         liquidation_long_term_gain_usd=summary.liquidation_long_term_gain_usd,
         liquidation_short_term_gain_usd=summary.liquidation_short_term_gain_usd,

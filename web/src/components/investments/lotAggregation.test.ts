@@ -31,7 +31,7 @@ function makeClosedLot(overrides: Partial<ClosedLot> & Pick<ClosedLot, 'lot_id'>
     dividends_received: 0,
     days_held: 31,
     total_return_pct: 10,
-    alpha_vs_hysa_pct: 2,
+    excess_return_vs_hysa_pct: 2,
     ...overrides,
   }
 }
@@ -88,16 +88,16 @@ describe('aggregateClosedLotsByDay', () => {
     expect(merged.closed_by_event_id).toBe('big')
   })
 
-  // Regression: ClosedLotRow.days_held/alpha_vs_hysa_pct can be null (see the
+  // Regression: ClosedLotRow.days_held/excess_return_vs_hysa_pct can be null (see the
   // OpenAPI-generated type) — a merge must not let one null leg turn the
   // whole weighted average into NaN.
-  it('treats a null days_held/alpha_vs_hysa_pct leg as contributing zero to the weighted average', () => {
+  it('treats a null days_held/excess_return_vs_hysa_pct leg as contributing zero to the weighted average', () => {
     const lots = [
-      makeClosedLot({ lot_id: 'a', shares: 1, days_held: null, alpha_vs_hysa_pct: null }),
-      makeClosedLot({ lot_id: 'b', shares: 1, days_held: 30, alpha_vs_hysa_pct: 4 }),
+      makeClosedLot({ lot_id: 'a', shares: 1, days_held: null, excess_return_vs_hysa_pct: null }),
+      makeClosedLot({ lot_id: 'b', shares: 1, days_held: 30, excess_return_vs_hysa_pct: 4 }),
     ]
     const [merged] = aggregateClosedLotsByDay(lots)
     expect(merged.days_held).toBe(15)
-    expect(merged.alpha_vs_hysa_pct).toBe(2)
+    expect(merged.excess_return_vs_hysa_pct).toBe(2)
   })
 })

@@ -52,9 +52,9 @@ export const GLOSSARY = {
     title: 'Benchmark',
     body: "The benchmark fund (VOO by default), shown as a growth-of-$100 index. It is not matched to the account's deposits or withdrawals. It simply shows how the benchmark itself performed over time.",
   },
-  dollarAlphaHysa: {
-    title: 'Dollar alpha vs. HYSA',
-    body: "Today's portfolio value minus today's HYSA counterfactual value. A positive value means investing produced more dollars than leaving the same deposits in a high-yield savings account.",
+  excessValueVsHysa: {
+    title: 'Excess value vs. HYSA',
+    body: "Today's portfolio value minus today's HYSA counterfactual value. A positive value means investing produced more dollars than leaving the same deposits in a high-yield savings account. It is a difference in dollars, not a return, and not alpha: nothing here adjusts for how much more risk the portfolio took to get there.",
   },
   portfolioValue: {
     title: 'Portfolio value',
@@ -92,9 +92,9 @@ export const GLOSSARY = {
     title: 'Term',
     body: 'LONG = held for at least 365 days before being sold. SHORT = held for less than 365 days. This is only a holding-period label, not tax advice.',
   },
-  alphaVsHysa: {
-    title: 'Alpha vs. HYSA',
-    body: "This lot's return minus the return a high-yield savings account would have earned over the same holding period. Because the lot is closed, this value is final and will not change.",
+  excessReturnVsHysa: {
+    title: 'Excess return vs. HYSA',
+    body: "This lot's return minus the return a high-yield savings account would have earned over the same holding period, compounded daily at your configured HYSA rate — the same rate the overview card uses. Because the lot is closed, this value is final and will not change. It is a difference between two percentages, not alpha: no risk adjustment is applied.",
   },
   drift: {
     title: 'Drift',
@@ -138,7 +138,7 @@ export const GLOSSARY = {
   },
   taxToggle: {
     title: 'Taxes',
-    body: "Changes how this page and Allocation show tax's effect on your numbers — the full annual report, estimated tax owed, flagged wash sales, and sale previews always live on the separate Taxes page regardless of this switch. Here, it changes two things: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Dollar alpha vs. HYSA' card is recomputed the same way — both labeled '(after tax)' once this is on. On Allocation, lot-level dividend figures switch from gross to net of withholding, reflecting the actual cash received; XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized. The regime and rates it applies are set on the Taxes page, not here.",
+    body: "Changes how this page and Allocation show tax's effect on your numbers — the full annual report, estimated tax owed, flagged wash sales, and sale previews always live on the separate Taxes page regardless of this switch. Here, it changes two things: the HYSA line and rate wherever they appear (the dollar chart, the growth-of-$100 chart) switch from the published rate to an after-tax rate, and the overview's 'Excess value vs. HYSA' card and the closed-lot 'Excess return vs. HYSA' column are recomputed the same way — all labeled '(after tax)' once this is on. On Allocation, lot-level dividend figures switch from gross to net of withholding, reflecting the actual cash received; XIRR already reflects withholding since it's a cash outflow recorded in the ledger. Unrealized gains, portfolio value, and benchmark comparisons do not anticipate future tax liability on unsold positions, since no tax is owed until a gain is realized. The regime and rates it applies are set on the Taxes page, not here.",
   },
   taxOwed: {
     title: 'Estimated tax owed',
