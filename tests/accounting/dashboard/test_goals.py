@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -294,3 +295,26 @@ def test_unallocated_balance_without_opening_balances_is_unchanged() -> None:
     assert unallocated_balance(
         _income_only_postings(), ACCOUNTS, contributions_to_frame({}), date(2026, 6, 30)
     ) == pytest.approx(3000.0)
+
+
+BROKER_LINKED = Account(
+    account_id="ibkr:external_investment:0001",
+    name="IBKR",
+    kind="external_investment",
+    institution="IBKR",
+    currency="USD",
+    broker_connection_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+)
+
+
+def test_unallocated_balance_skips_a_broker_linked_accounts_opening_balance() -> None:
+    # `net_worth_summary.base_balance` takes a broker-linked account's whole
+    # value from the live portfolio and never adds its opening balance, so
+    # counting one here would put money into unallocated that appears in no
+    # other total.
+    accounts = {**ACCOUNTS, BROKER_LINKED.account_id: BROKER_LINKED}
+    openings = {BROKER_LINKED.account_id: _opening(BROKER_LINKED.account_id, "5000.00", "2026-01-01")}
+    result = unallocated_balance(
+        _income_only_postings(), accounts, contributions_to_frame({}), date(2026, 6, 30), opening_balances=openings
+    )
+    assert result == pytest.approx(3000.0)

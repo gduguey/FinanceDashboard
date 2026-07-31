@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from bisect import bisect_right
 from datetime import date
 from typing import TYPE_CHECKING, cast
 
+import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -156,6 +158,16 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
     `config.returns.hysa_annual_rate` for any day that bank has no
     published rate for yet (e.g. before its history starts).
 
+    The bank's own rows are read out of the cache once, here, and searched
+    per day with a bisect rather than by calling
+    `market_data.hysa_rates.rate_as_of` — which filters, sorts and collects
+    the whole multi-bank history on every call. Every caller walks a span
+    of calendar days one at a time (`ledger.counterfactuals.hysa_counterfactual_series`,
+    `dashboard.holdings._hysa_growth_index`), so that per-call cost is paid
+    once per *day* in the span: measured at 403 ms over an eight-year span,
+    against 3 ms after this change. `rate_as_of` stays the right call for
+    a one-off lookup, which is what `_benchmark_apy_pct` makes.
+
     Parameters
     ----------
     config
@@ -184,6 +196,9 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
 
     bank_id = settings.hysa_bank_id or config.hysa_rates.default_bank_id
     history = hysa_rates_module.load_hysa_rates_cache(config)
+    published = history.filter(pl.col("bank_id") == bank_id).sort("rate_date")
+    change_dates: list[date] = published["rate_date"].to_list()
+    change_rates: list[float] = published["apy_pct"].to_list()
 
     def rate(day: date) -> float:
         """Return the chosen bank's published rate on `day`, falling back to the configured default.
@@ -192,7 +207,10 @@ def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Call
         -------
         float
         """
-        apy_pct = hysa_rates_module.rate_as_of(history, bank_id, day)
+        # The last row dated on or before `day` — `rate_as_of`'s own
+        # "rates only get a row when they change, so roll back" rule.
+        index = bisect_right(change_dates, day)
+        apy_pct = change_rates[index - 1] if index else None
         return apy_pct / 100 if apy_pct is not None else config.returns.hysa_annual_rate
 
     return rate

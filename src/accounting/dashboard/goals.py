@@ -132,13 +132,20 @@ def _opening_balance_total(
 
     Signed and summed exactly the way `dashboard.net_worth.net_worth_summary`
     treats the same rows, rather than inventing a second convention for
-    them: a liability account's opening balance is negative and therefore
-    subtracts, an opening balance contributes nothing until `as_of` reaches
-    its own `as_of_date`, and a virtual counterparty account
-    (`models.VIRTUAL_ACCOUNT_KINDS`) is excluded — its "balance" is never
-    money that is anywhere. Converted at the `as_of` rate, again like net
-    worth: this is a stock held on one date, not a flow that happened
-    across many, so it has no per-posting dates to convert at.
+    them, which means matching it on all four of its rules: a liability
+    account's opening balance is negative and therefore subtracts; an
+    opening balance contributes nothing until `as_of` reaches its own
+    `as_of_date`; a virtual counterparty account
+    (`models.VIRTUAL_ACCOUNT_KINDS`) is excluded, its "balance" never being
+    money that is anywhere; and a broker-linked account is excluded too,
+    because `net_worth_summary.base_balance` takes that account's whole
+    value from `external_investment_value` and never adds its opening
+    balance to it. Counting one here that net worth does not count would
+    put money into unallocated that appears in no other total.
+
+    Converted at the `as_of` rate, again like net worth: this is a stock
+    held on one date, not a flow that happened across many, so it has no
+    per-posting dates to convert at.
 
     An opening balance keyed to an account that no longer exists is
     skipped. The row is deleted with its account (`opening_balances`
@@ -163,7 +170,9 @@ def _opening_balance_total(
     total = 0.0
     for account_id, opening in opening_balances.items():
         account = accounts.get(account_id)
-        if account is None or account.kind in VIRTUAL_ACCOUNT_KINDS or as_of < opening.as_of_date.date():
+        if account is None or account.kind in VIRTUAL_ACCOUNT_KINDS or account.broker_connection_id is not None:
+            continue
+        if as_of < opening.as_of_date.date():
             continue
         total += convert(to_analytics_float(opening.amount), account.currency, display.code, display.rates_to_base)
     return total

@@ -151,16 +151,20 @@ annualized = (1 + raw_return)^(365 / days_held) − 1
 Only shown when `days_held ≥ 365` — shorter holds produce unstable
 annualized values that are mostly noise.
 
-### Closed-lot alpha vs HYSA
+### Excess return vs HYSA
 
 For closed lots, the dashboard also computes:
 
 ```
-alpha_vs_hysa = total_return_pct − hysa_period_return_pct
+excess_return_vs_hysa_pct = total_return_pct − hysa_period_return_pct
 ```
 
-where `hysa_period_return_pct` compounds at the configured HYSA rate over
-the lot's actual holding window. This is a final, non-provisional number.
+where `hysa_period_return_pct` compounds daily at the rate
+`dashboard.settings.hysa_rate_lookup` returns for each day of the lot's
+actual holding window — the user's selected bank, their fixed-rate
+override, after tax when tax is enabled. This is a final, non-provisional
+number, and it is a difference between two percentages rather than alpha:
+no risk adjustment is applied.
 
 ---
 

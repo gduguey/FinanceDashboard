@@ -77,6 +77,16 @@ def with_converted_amount(
     rate, which a left join turns into a null amount and every `sum`
     then silently skips — a wrong total that looks like a right one.
 
+    That reasoning covers the *date* axis only. The currency axis carries
+    the same exposure and is a caller obligation rather than something
+    enforced here: a row whose currency is in neither rate table joins to
+    nothing and lands in exactly that null-amount state. Every API caller
+    builds its table from `api.dependencies._currencies_in_use`, which is
+    derived from the same accounts, assets and contributions being
+    converted, so the set is complete by construction. Making it loud
+    instead of implicit needs a `collect()` and would cost the laziness
+    every caller composes on — tracked as A7 in `docs/remaining-work.md`.
+
     With no `rates_by_date` the whole frame converts at `rates_to_base`,
     the pre-per-date behaviour, which is what a direct caller
     constructing a bare `DisplayCurrency` gets.

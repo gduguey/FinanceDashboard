@@ -24,6 +24,8 @@ from trades.dashboard import (
     risk_stat,
     tax_summary,
 )
+from trades.dashboard.settings import raw_hysa_rate_lookup
+from trades.market_data import hysa_rates
 from trades.utils.io_utils import write_csv_atomic
 
 
@@ -844,3 +846,31 @@ def test_closed_lot_excess_return_shrinks_when_the_hysa_leg_is_left_untaxed(tmp_
     untaxed = lots_table(_LOTS_LEDGER, config, DashboardSettings(hysa_fixed_rate_pct=10.0), as_of=date(2026, 12, 1))
 
     assert taxed.closed_lots["excess_return_vs_hysa_pct"][0] > untaxed.closed_lots["excess_return_vs_hysa_pct"][0]
+
+
+def test_raw_hysa_rate_lookup_matches_rate_as_of_on_every_kind_of_day(tmp_path) -> None:
+    """The bisect must answer exactly what `rate_as_of` answers, including the fallback.
+
+    `raw_hysa_rate_lookup` reads the bank's rows once and bisects them
+    instead of filtering the whole multi-bank history per call, because
+    every caller walks a span of days one at a time. This pins the
+    equivalence: before the history starts, on a change date, between two,
+    and after the last — plus the other bank's rows never leaking in.
+    """
+    write_csv_atomic(
+        pl.DataFrame({
+            "bank_id": ["other", "some-bank", "some-bank", "other"],
+            "bank_name": ["Other", "Some Bank", "Some Bank", "Other"],
+            "rate_date": [date(2025, 1, 1), date(2025, 6, 1), date(2026, 1, 1), date(2026, 6, 1)],
+            "apy_pct": [1.0, 8.0, 5.0, 2.0],
+        }),
+        tmp_path / "rates.csv",
+    )
+    config = _config(tmp_path)
+    history = hysa_rates.load_hysa_rates_cache(config)
+    lookup = raw_hysa_rate_lookup(config, DashboardSettings(hysa_bank_id="some-bank"))
+
+    for day in (date(2025, 1, 1), date(2025, 6, 1), date(2025, 9, 15), date(2026, 1, 1), date(2026, 12, 31)):
+        published = hysa_rates.rate_as_of(history, "some-bank", day)
+        expected = published / 100 if published is not None else config.returns.hysa_annual_rate
+        assert lookup(day) == pytest.approx(expected), day

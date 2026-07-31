@@ -175,8 +175,10 @@ it.
 
 It is measured because A3b put a per-row rate join into it: each posting is
 now converted at its own date's trailing-30-day mean instead of one scalar
-rate for the report, against a rate table built per request from six years
-of daily history. Four local runs over the 10k ledger, two-currency (the
+rate for the report, against a rate table built per request. The harness
+seeds daily rates back to 2019 — well past the two years
+`exchange_rates.DEFAULT_HISTORY_YEARS` keeps in production — so the
+rolling window this measures is the pessimistic one, not the real one. Four local runs over the 10k ledger, two-currency (the
 expensive path — a single-currency tenant skips the join entirely):
 **343, 344, 372 and 388 ms with the join**, against **378 and 398 ms** with
 the same fixtures and the join disabled. The join does not separate from
