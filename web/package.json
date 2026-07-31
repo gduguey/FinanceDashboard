@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "biome lint .",
-    "check": "biome check .",
+    "lint": "biome lint --error-on-warnings .",
+    "check": "biome check --error-on-warnings .",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
