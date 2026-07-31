@@ -58,12 +58,19 @@ src/routes/investments/index.tsx    ->  /investments
 src/routes/investments/allocation.tsx -> /investments/allocation
 ```
 
-`App.tsx` scans that folder at build time with `import.meta.glob` and
-builds the `<Routes>` list from it automatically — adding a page is just
-adding a file, nothing to hand-register elsewhere. Each route file is a
-thin re-export of the real page component (which lives in `src/pages/`)
-plus one `requiresStore: boolean` flag saying whether that page depends on
-the accounting store (and should show a fallback if it failed to load).
+`routeTable.tsx` scans that folder at build time with `import.meta.glob`
+and exports the finished `routes` array; `App.tsx` only maps it into
+`<Route>` elements. Adding a page is just adding a file, nothing to
+hand-register elsewhere. Each route file is a thin re-export of the real
+page component (which lives in `src/pages/`) plus one
+`requiresStore: boolean` flag saying whether that page depends on the
+accounting store (and should show a fallback if it failed to load).
+
+The glob is deliberately **not** `{ eager: true }`: each page is its own
+lazily-fetched chunk, so landing on the overview does not also download
+the guide, the importer and the tax panel. Because `requiresStore` is
+unreadable until its chunk arrives, `routeTable.tsx` applies the store
+gate inside the loader rather than leaving it to `App.tsx`.
 
 This is a lighter-weight version of what frameworks like TanStack Router
 do natively (generated route trees, typed dynamic segments, pathless
@@ -169,8 +176,15 @@ gone, with two deliberate exceptions:
   advisory level the moment warnings started failing. `info` is now what
   "surfaced, never fatal" is spelled as.
 
-Tests are plain-logic unit tests today (no `jsdom`/`@testing-library/react`
-installed) — see `vitest.config.ts`'s comment for why it's a separate
-config file from `vite.config.ts`. Test files are colocated next to the
-code they cover (`postingClassification.ts` + `postingClassification.test.ts`
-in the same folder), not under a separate `tests/` tree.
+Tests run under Vitest with `jsdom` as the environment for every file —
+`@testing-library/react`, `@testing-library/user-event` and
+`@testing-library/jest-dom` are installed, so a test can render a
+component and drive it the way a person would, as well as call a plain
+function. `vitest.config.ts` sets the environment globally rather than
+leaving each file to declare `@vitest-environment`, so a component test
+cannot fail obscurely for having forgotten it; see that file's own comment
+for why it is separate from `vite.config.ts`.
+
+Test files are colocated next to the code they cover
+(`postingClassification.ts` + `postingClassification.test.ts` in the same
+folder), not under a separate `tests/` tree.
