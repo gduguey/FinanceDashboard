@@ -3802,3 +3802,71 @@ def test_posting_the_same_upsert_twice_reports_created_then_replaced(client) -> 
     assert "Location" in first.headers
     assert "Location" not in second.headers
     assert second.json()["amount"] == pytest.approx(400.0)
+
+
+_EUR_CHECKING_CSV = (
+    "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+    "DEBIT,03/15/2026,Groceries,-100.00,DEBIT_CARD,900.00,,\n"
+    "DEBIT,06/15/2026,Groceries,-100.00,DEBIT_CARD,800.00,,\n"
+)
+
+
+def _two_month_eur_history() -> pl.DataFrame:
+    """EUR at 1.50 through March and 1.10 from June onward, with an empty gap between them.
+
+    The gap matters: each month's trailing 30-day window then contains only
+    that month's own observations, so the smoothed rate on a March date is
+    exactly 1.50 and on a June date exactly 1.10, with no averaging across
+    the step. The second block runs to today because
+    `_flow_display_currency` still needs a rate *as of today* for the
+    stock-shaped conversions, exactly as it did before this change.
+    """
+    days = [date(2026, 3, 1) + timedelta(days=offset) for offset in range(31)]
+    june_onward = (date.today() - date(2026, 6, 1)).days + 1
+    days += [date(2026, 6, 1) + timedelta(days=offset) for offset in range(june_onward)]
+    rates = [1.50] * 31 + [1.10] * june_onward
+    return pl.DataFrame(
+        {"date": days, "currency": ["EUR"] * len(days), "rate_to_base": rates}, schema=RATE_HISTORY_SCHEMA
+    )
+
+
+def test_monthly_income_expense_converts_each_month_at_that_months_own_rate(client, monkeypatch) -> None:
+    """A3b end to end: two identical EUR expenses, three months apart, are two different USD numbers."""
+    monkeypatch.setattr(
+        exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _two_month_eur_history()
+    )
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    account_id = _create_account(
+        client, name="BNP Checking", kind="checking", institution="Chase", currency="EUR", last_four="0001"
+    )["account_id"]
+    _import_chase_checking(client, account_id=account_id, csv_text=_EUR_CHECKING_CSV)
+
+    months = client.get(
+        "/api/v1/accounting/income-statement/monthly", params={"start": "2026-01-01", "end": "2026-12-31"}
+    ).json()
+
+    by_month = {row["month"]: row["expense"] for row in months}
+    assert by_month["2026-03"] == pytest.approx(150.0)
+    assert by_month["2026-06"] == pytest.approx(110.0)
+
+
+def test_monthly_income_expense_in_eur_leaves_a_eur_expense_exactly_itself(client, monkeypatch) -> None:
+    """The per-date divisor: displayed in its own currency, a EUR expense is 100 EUR in both months."""
+    monkeypatch.setattr(
+        exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _two_month_eur_history()
+    )
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    account_id = _create_account(
+        client, name="BNP Checking", kind="checking", institution="Chase", currency="EUR", last_four="0001"
+    )["account_id"]
+    _import_chase_checking(client, account_id=account_id, csv_text=_EUR_CHECKING_CSV)
+
+    months = client.get(
+        "/api/v1/accounting/income-statement/monthly",
+        params={"start": "2026-01-01", "end": "2026-12-31", "display_currency": "EUR"},
+    ).json()
+
+    assert {row["month"]: row["expense"] for row in months} == {
+        "2026-03": pytest.approx(100.0),
+        "2026-06": pytest.approx(100.0),
+    }

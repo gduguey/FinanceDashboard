@@ -20,6 +20,9 @@ CHECKING_CSV = (
     "CREDIT,06/01/2026,SOME EMPLOYER PAYROLL PPD ID: 1234567890,3000.00,ACH_CREDIT,4000.00,,\n"
 )
 
+_LEDGER_EPOCH = date(2026, 1, 1)
+"""The earliest date any fixture here uses — `_fake_rate_history` starts its span a month before it."""
+
 
 def _add_contribution_automation(client, **overrides) -> dict:
     payload = {
@@ -73,10 +76,22 @@ def _stored_automations(client) -> dict[str, dict]:
 
 
 def _fake_rate_history() -> pl.DataFrame:
+    """A EUR history spanning every date the ledger below uses, averaging exactly 2.0 on all of them.
+
+    Flows convert at their own date's trailing mean now (see
+    `ledger.currency.with_converted_amount`), so a two-day history would
+    make every expectation here a statement about the clamp instead of
+    about the display currency. The last two days are 1.9 and 2.1 so that
+    the smoothing is still doing something; they are symmetric, so every
+    trailing window that contains both still averages 2.0 — which is the
+    only rate any assertion below has to know.
+    """
     today = date.today()
+    span = [_LEDGER_EPOCH + timedelta(days=offset) for offset in range((today - _LEDGER_EPOCH).days + 1)]
+    rates = [2.0] * len(span)
+    rates[-2:] = [1.9, 2.1]
     return pl.DataFrame(
-        {"date": [today - timedelta(days=1), today], "currency": ["EUR", "EUR"], "rate_to_base": [1.9, 2.1]},
-        schema=RATE_HISTORY_SCHEMA,
+        {"date": span, "currency": ["EUR"] * len(span), "rate_to_base": rates}, schema=RATE_HISTORY_SCHEMA
     )
 
 

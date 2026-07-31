@@ -13,7 +13,7 @@ from accounting.dashboard.income_statement import (
     spend_curve_vs_average,
     spend_curve_window,
 )
-from accounting.ledger.currency import DisplayCurrency
+from accounting.ledger.currency import DisplayCurrency, rates_into_display
 from accounting.ledger.frame import LEDGER_FRAME_SCHEMA
 from accounting.models import Account, Category
 
@@ -348,3 +348,94 @@ def test_spend_curve_vs_average_only_averages_lookback_months_with_real_history(
     by_day = {row["day"]: row["average_previous_months_cumulative"] for row in curve.iter_rows(named=True)}
     assert by_day[9] == pytest.approx(0.0)
     assert by_day[10] == pytest.approx(40.0)
+
+
+def _dated_display(code: str, rows: list[tuple[str, str, float]]) -> DisplayCurrency:
+    """A display currency whose rate table varies by date, as the API's own `_rates_by_date` builds it."""
+    series = pl.DataFrame(
+        {
+            "date": [date.fromisoformat(day) for day, _, _ in rows],
+            "currency": [currency for _, currency, _ in rows],
+            "rate_to_base": [rate for _, _, rate in rows],
+        },
+        schema={"date": pl.Date, "currency": pl.Utf8, "rate_to_base": pl.Float64},
+    )
+    return DisplayCurrency(code, {"USD": 1.0, "EUR": 1.10}, rates_into_display(series, code))
+
+
+_TWO_DATED_RATES = [
+    ("2024-03-01", "USD", 1.0),
+    ("2024-03-01", "EUR", 1.50),
+    ("2026-06-01", "USD", 1.0),
+    ("2026-06-01", "EUR", 1.10),
+]
+
+
+def test_monthly_income_expense_converts_each_month_at_its_own_rate() -> None:
+    # A3b: the same 100 EUR expense in two different months is two different
+    # numbers in USD, and the older one must not move when the rate does.
+    postings = _postings(
+        _posting("p1", "t1", "bnp:checking:0001", -100.0, posted_at="2024-03-01"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, posted_at="2024-03-01"),
+        _posting("p3", "t2", "bnp:checking:0001", -100.0, posted_at="2026-06-01"),
+        _posting("p4", "t2", "uncategorized:expense", 100.0, posted_at="2026-06-01"),
+    )
+    monthly = monthly_income_expense(
+        postings, ACCOUNTS, date(2024, 3, 1), date(2026, 6, 30), display=_dated_display("USD", _TWO_DATED_RATES)
+    ).sort("month")
+    assert monthly["expense"].to_list() == pytest.approx([150.0, 110.0])
+
+
+def test_category_totals_converts_an_old_posting_at_its_own_date_not_the_report_date() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "bnp:checking:0001", -100.0, posted_at="2024-03-01", category_id="expense:food"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, posted_at="2024-03-01"),
+    )
+    totals = category_totals(
+        postings,
+        ACCOUNTS,
+        CATEGORIES,
+        date(2024, 1, 1),
+        date(2026, 12, 31),
+        display=_dated_display("USD", _TWO_DATED_RATES),
+    )
+    assert totals.row(0, named=True)["amount"] == pytest.approx(150.0)
+
+
+def test_a_eur_posting_shown_in_eur_is_exactly_itself_on_every_date() -> None:
+    # The divisor is per-date too. Dividing by *today's* EUR rate would leave
+    # a EUR amount displayed in EUR drifting with the market.
+    postings = _postings(
+        _posting("p1", "t1", "bnp:checking:0001", -100.0, posted_at="2024-03-01"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, posted_at="2024-03-01"),
+        _posting("p3", "t2", "bnp:checking:0001", -100.0, posted_at="2026-06-01"),
+        _posting("p4", "t2", "uncategorized:expense", 100.0, posted_at="2026-06-01"),
+    )
+    monthly = monthly_income_expense(
+        postings, ACCOUNTS, date(2024, 3, 1), date(2026, 6, 30), display=_dated_display("EUR", _TWO_DATED_RATES)
+    ).sort("month")
+    assert monthly["expense"].to_list() == pytest.approx([100.0, 100.0])
+
+
+def test_a_posting_older_than_the_rate_history_converts_at_the_oldest_rate_on_file() -> None:
+    # D4's clamp. The cache holds two years; a 2019 posting has no trailing
+    # mean of its own, and a null rate would drop it from the sum entirely.
+    postings = _postings(
+        _posting("p1", "t1", "bnp:checking:0001", -100.0, posted_at="2019-01-01"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, posted_at="2019-01-01"),
+    )
+    total = net_income_expense_total(
+        postings, ACCOUNTS, date(2026, 6, 30), display=_dated_display("USD", _TWO_DATED_RATES)
+    )
+    assert total == pytest.approx(-150.0)
+
+
+def test_a_posting_newer_than_the_rate_history_converts_at_the_newest_rate_on_file() -> None:
+    postings = _postings(
+        _posting("p1", "t1", "bnp:checking:0001", -100.0, posted_at="2027-01-01"),
+        _posting("p2", "t1", "uncategorized:expense", 100.0, posted_at="2027-01-01"),
+    )
+    total = net_income_expense_total(
+        postings, ACCOUNTS, date(2027, 6, 30), display=_dated_display("USD", _TWO_DATED_RATES)
+    )
+    assert total == pytest.approx(-110.0)

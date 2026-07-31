@@ -251,6 +251,100 @@ def smoothed_rate_as_of(
     return float(window["rate_to_base"].mean())  # type: ignore[arg-type]
 
 
+def smoothed_rate_series(
+    history: pl.DataFrame,
+    currencies: Iterable[CurrencyCode] = SUPPORTED_CURRENCIES,
+    window_days: int = DEFAULT_SMOOTHING_WINDOW_DAYS,
+) -> pl.DataFrame:
+    """`smoothed_rate_as_of` evaluated on *every* calendar day the cache spans, in one pass per currency.
+
+    What `current_rates_to_base` is to one date, this is to all of them:
+    the same trailing mean, the same window, computed for every day rather
+    than one. It exists because an aggregation over dated flows (the income
+    statement, budgets, the spend curve, goals) has to convert each row at
+    its own date's rate, and calling `smoothed_rate_as_of` once per
+    distinct posting date would re-filter the whole history per date.
+
+    Every calendar day gets a row, not only the days the ECB published on
+    (it publishes on weekdays; people spend money on Saturdays). The
+    trailing mean is over whatever observations actually fall in the
+    window, so a Saturday's answer is Saturday's window, not Friday's — the
+    same number `smoothed_rate_as_of(history, currency, saturday)` returns,
+    which is the property this function is tested against directly.
+
+    Days before a currency's own history starts are filled backward from
+    its first computable mean rather than left null. That is the same
+    clamp `ledger.currency.with_converted_amount` applies on the far side
+    for a posting dated after the cache's last day, and it is a deliberate
+    choice over two alternatives: a null rate would silently drop those
+    rows from every sum (a left join, a null product, a `sum` that skips
+    nulls), and refusing outright would make one 2019 posting a 400 for the
+    whole income statement. The cache holds
+    `DEFAULT_HISTORY_YEARS` years, so anything older is converted at the
+    oldest rate on file, and `docs/accounting/currency-handling.md` says so.
+
+    Parameters
+    ----------
+    history
+        Exchange-rate history, as `load_rate_history` returns it.
+    currencies
+        Every currency a rate series is needed for; defaults to every supported one.
+    window_days
+        How many trailing calendar days to average over.
+
+    Returns
+    -------
+    polars.DataFrame
+        Columns `date`, `currency`, `rate_to_base`, one row per (calendar
+        day in the cache's span, requested currency). `BASE_CURRENCY` is
+        included at `1.0` on every day, so a caller can divide by the
+        display currency's own rate without special-casing the base. Empty
+        if `history` is, which only happens when nothing but the base
+        currency is in play (anything else raises below).
+
+    Raises
+    ------
+    ValueError
+        If a requested non-base currency has no rate history at all — the
+        same refusal `current_rates_to_base` makes, for the same reason.
+    """
+    requested = [code for code in currencies if code != BASE_CURRENCY]
+    if history.is_empty():
+        if requested:
+            message = f"No exchange-rate history for {requested[0]!r} — sync exchange rates first."
+            raise ValueError(message)
+        return pl.DataFrame(schema=RATE_HISTORY_SCHEMA)
+
+    span = pl.date_range(cast("date", history["date"].min()), cast("date", history["date"].max()), eager=True).alias(
+        "date"
+    )
+    # `window_size` is one day wider than `window_days` because `closed="right"`
+    # excludes the window's own left edge: `(t - 31d, t]` is exactly the
+    # `date >= t - 30d and date <= t` that `smoothed_rate_as_of` filters on.
+    window = pl.col("rate_to_base").rolling_mean_by("date", window_size=f"{window_days + 1}d", closed="right")
+    series = [pl.DataFrame({"date": span}).with_columns(currency=pl.lit(BASE_CURRENCY), rate_to_base=pl.lit(1.0))]
+    for code in requested:
+        observations = history.filter(pl.col("currency") == code).select("date", "rate_to_base")
+        if observations.is_empty():
+            message = f"No exchange-rate history for {code!r} — sync exchange rates first."
+            raise ValueError(message)
+        # The calendar days carry a null rate and so contribute nothing to any
+        # mean; they are here purely to be the rows the window is evaluated
+        # *at*. Filtering back down to them afterwards is what leaves one row
+        # per calendar day rather than one per day plus one per observation.
+        calendar = pl.DataFrame({"date": span}).with_columns(rate_to_base=pl.lit(None, dtype=pl.Float64))
+        rolled = (
+            pl
+            .concat([observations, calendar])
+            .sort("date")
+            .with_columns(smoothed=window)
+            .filter(pl.col("rate_to_base").is_null())
+            .select("date", currency=pl.lit(code), rate_to_base=pl.col("smoothed").fill_null(strategy="backward"))
+        )
+        series.append(rolled)
+    return pl.concat(series).cast(RATE_HISTORY_SCHEMA)  # type: ignore[arg-type]
+
+
 def current_rates_to_base(
     history: pl.DataFrame,
     as_of: date,

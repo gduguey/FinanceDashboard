@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import BudgetComparisonRow, BudgetUpsert, SuggestedBudgetAmount
 from accounting.api.dependencies import (
     _currencies_in_use,
-    _display_currency,
+    _flow_display_currency,
     _resolved_postings_for_aggregation,
 )
 from accounting.api.entities import Budget
@@ -137,7 +137,7 @@ def get_budget_comparison(
         load_categories(session, user_id),
         load_budgets(session, user_id),
         month,
-        _display_currency(display_currency, _currencies_in_use(session, user_id)),
+        _flow_display_currency(display_currency, _currencies_in_use(session, user_id)),
     )
     # `budgeted` crosses from the stored `Money` to an analytics float here,
     # which is what makes the row internally coherent with `actual` — see
@@ -179,7 +179,7 @@ def get_suggested_budget_amount(
         month,
         lookback_months,
         subcategory_id,
-        _display_currency(display_currency, _currencies_in_use(session, user_id)),
+        _flow_display_currency(display_currency, _currencies_in_use(session, user_id)),
     )
     return SuggestedBudgetAmount(suggested_amount=amount)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Annotated
 
@@ -25,7 +25,12 @@ from accounting.api.api_models import (
     WithdrawalAutomationCreate,
     WithdrawalAutomationResult,
 )
-from accounting.api.dependencies import _currencies_in_use, _display_currency, _resolved_postings
+from accounting.api.dependencies import (
+    _currencies_in_use,
+    _display_currency,
+    _rates_by_date,
+    _resolved_postings,
+)
 from accounting.api.entities import Goal, GoalAutomation, GoalContribution
 from accounting.api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
@@ -62,6 +67,7 @@ from db.money import quantize_money
 from db.session import get_db
 
 if TYPE_CHECKING:
+    from accounting.ledger.currency import DisplayCurrency
     from accounting.models import Account, OpeningBalance
 
 router = APIRouter()
@@ -84,7 +90,9 @@ class _UnallocatedBasis:
     Held as a bundle rather than re-derived per call because
     `post_simulate_contribution` needs the figure on two different dates
     from the same request, and the ledger read is by far the most
-    expensive part of it.
+    expensive part of it. `rates_by_date` is held for the same reason and
+    is date-independent anyway; only the scalar rates the opening-balance
+    term uses are rebuilt per date.
     """
 
     postings: pl.DataFrame
@@ -92,20 +100,37 @@ class _UnallocatedBasis:
     opening_balances: dict[str, OpeningBalance]
     currencies: set[CurrencyCode]
     display_currency: CurrencyCode
+    rates_by_date: pl.DataFrame | None = field(default=None, compare=False)
 
-    def at(self, contributions: pl.DataFrame, as_of: date) -> float:
-        """Unallocated money as of one date, at that date's own exchange rates.
+    def display_at(self, as_of: date) -> DisplayCurrency:
+        """Build the rates every goal figure on this request shares: dated for flows, `as_of` for stocks.
+
+        Every goal figure means both of them — `all_goal_balances` sums the
+        same dated contributions `unallocated_balance` subtracts, so a
+        balance and the residual it is subtracted from have to be built
+        from one rate table or the two do not add up.
 
         Propagates `_display_currency`'s 400 when a currency in use has no
-        rate history — the same answer `GET /goals/summary` already gives,
-        rather than quietly dropping that currency's rows.
+        rate history, rather than quietly dropping that currency's rows.
+
+        Returns
+        -------
+        accounting.ledger.currency.DisplayCurrency
+        """
+        return replace(
+            _display_currency(self.display_currency, self.currencies, as_of), rates_by_date=self.rates_by_date
+        )
+
+    def at(self, contributions: pl.DataFrame, as_of: date) -> float:
+        """Unallocated money as of one date: dated flows at their own rates, opening balances at `as_of`'s.
 
         Returns
         -------
         float
         """
-        display = _display_currency(self.display_currency, self.currencies, as_of)
-        return unallocated_balance(self.postings, self.accounts, contributions, as_of, display, self.opening_balances)
+        return unallocated_balance(
+            self.postings, self.accounts, contributions, as_of, self.display_at(as_of), self.opening_balances
+        )
 
 
 def _unallocated_basis(
@@ -128,12 +153,14 @@ def _unallocated_basis(
     -------
     _UnallocatedBasis
     """
+    currencies = _currencies_in_use(session, user_id)
     return _UnallocatedBasis(
         postings=_resolved_postings(session, user_id),
         accounts=seeded_accounts(session, user_id),
         opening_balances=load_opening_balances(session, user_id),
-        currencies=_currencies_in_use(session, user_id),
+        currencies=currencies,
         display_currency=display_currency,
+        rates_by_date=_rates_by_date(display_currency, currencies),
     )
 
 
@@ -753,9 +780,10 @@ def get_goals_summary(
     """
     as_of_date = as_of or datetime.now(UTC).date()
     basis = _unallocated_basis(session, user_id, display_currency)
-    display = _display_currency(display_currency, basis.currencies, as_of_date)
     contributions = contributions_to_frame(load_goal_contributions(session, user_id))
-    balances = all_goal_balances(contributions, list(load_goals(session, user_id).keys()), as_of_date, display)
+    balances = all_goal_balances(
+        contributions, list(load_goals(session, user_id).keys()), as_of_date, basis.display_at(as_of_date)
+    )
     return GoalsSummary(balances=balances, unallocated=basis.at(contributions, as_of_date))
 
 
@@ -904,12 +932,19 @@ def post_run_withdrawal_automation(
     as_of_date = as_of or datetime.now(UTC).date()
     contributions = load_goal_contributions(session, user_id)
     contributions_frame = contributions_to_frame(contributions)
-    unallocated = _unallocated_basis(session, user_id).at(contributions_frame, as_of_date)
+    basis = _unallocated_basis(session, user_id)
+    unallocated = basis.at(contributions_frame, as_of_date)
     if unallocated >= 0:
         return WithdrawalAutomationResult(withdrawals=[], remaining_shortfall=0.0)
 
     shortfall = -unallocated
-    balances = all_goal_balances(contributions_frame, list(load_goals(session, user_id).keys()), as_of_date)
+    # The same rates the shortfall was computed with, so a drawdown never
+    # draws a balance measured in one currency against a gap measured in
+    # another — this used to take the default `{"USD": 1.0}` and skip every
+    # non-USD contribution, the same defect the basis exists to close.
+    balances = all_goal_balances(
+        contributions_frame, list(load_goals(session, user_id).keys()), as_of_date, basis.display_at(as_of_date)
+    )
     withdrawals = [
         automation for automation in load_goal_automations(session, user_id) if automation.direction == "withdrawal"
     ]

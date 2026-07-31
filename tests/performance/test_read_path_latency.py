@@ -1,9 +1,16 @@
-"""The latency gate over the two paginated read paths.
+"""The latency gate over the read paths whose cost is proportional to the ledger.
 
 PR 2 and PR 4 made `GET /postings` and `GET /ledger/export` cost
 O(what is shown) rather than O(all history). Nothing stopped that from
 regressing: the bundle budget guards bytes, and no gate guarded time. This
 module is that gate.
+
+`GET /income-statement/category-totals` joined them in PR B. It is not
+paginated and never was (known gap C5), so there is no O(page) claim to
+defend there; what it is here for is the per-date FX join A3b put in front
+of every posting it reads. A read path that gains a rate lookup per row and
+has no gate over it is how a linear aggregation quietly becomes a quadratic
+one.
 
 What it is actually defending
 -----------------------------
@@ -78,6 +85,10 @@ pytestmark = pytest.mark.perf
 
 _POSTINGS = "/api/v1/accounting/postings"
 _EXPORT = "/api/v1/accounting/ledger/export"
+_CATEGORY_TOTALS = "/api/v1/accounting/income-statement/category-totals"
+
+_LEDGER_WINDOW = {"start": "2019-01-01", "end": "2030-01-01"}
+"""Wider than the seeded ledger, so the measurement covers every posting rather than a slice of them."""
 
 _PAGE_SIZE = 200
 """The default page the Transactions screen asks for (`api_models.PAGE_LIMIT_DEFAULT`)."""
@@ -135,8 +146,31 @@ cheaper of the two by construction — it applies no overlay — so its ceiling
 is lower even though its page covers more rows.
 """
 
+MAX_CATEGORY_TOTALS_SECONDS = 4.0
+"""Wall-clock ceiling for one whole-history `GET /income-statement/category-totals`.
 
-def _median_seconds(client: TestClient, path: str, **params: int) -> float:
+The third path here, and the odd one out: it is not paginated at all (known
+gap C5 — a dashboard reads every posting inside its window, and the owner
+declined bounding it), so its cost is the whole ledger by design and the
+scaling assertion below is the only one that can say anything useful about
+it.
+
+It is measured because A3b put a per-row rate join into it: each posting is
+now converted at its own date's trailing-30-day mean instead of one scalar
+rate for the report, against a rate table built per request from six years
+of daily history. Four local runs over the 10k ledger, two-currency (the
+expensive path — a single-currency tenant skips the join entirely):
+**343, 344, 372 and 388 ms with the join**, against **378 and 398 ms** with
+the same fixtures and the join disabled. The join does not separate from
+run-to-run noise at this volume; the cost of this endpoint is reading and
+resolving the ledger, which C5 owns.
+
+The ceiling is roughly 10x the measured figure, the same multiple and the
+same shared-runner reasoning as the two above.
+"""
+
+
+def _median_seconds(client: TestClient, path: str, **params: int | str) -> float:
     """Time one request repeatedly and return the median, discarding a warm-up.
 
     Parameters
@@ -254,4 +288,33 @@ def test_the_ledger_export_page_stays_within_its_wall_clock_budget(request_as: C
 
     assert elapsed < MAX_EXPORT_PAGE_SECONDS, (
         f"one {PAGE_LIMIT_MAX}-posting export page took {elapsed:.2f} s, budget {MAX_EXPORT_PAGE_SECONDS} s"
+    )
+
+
+def test_the_income_statement_scales_with_the_ledger_and_not_worse(request_as: Callable[[str], TestClient]) -> None:
+    """A whole-history income statement reads every posting; it must not read them a second time per rate.
+
+    This path has no `LIMIT` to lose (see `MAX_CATEGORY_TOTALS_SECONDS`), so
+    what is being defended is the shape of the FX conversion A3b added: a
+    join against a per-date rate table is linear, and a per-row rate lookup
+    that walked the history for each posting would not be.
+    """
+    small = _median_seconds(request_as("small"), _CATEGORY_TOTALS, **_LEDGER_WINDOW)
+    big = _median_seconds(request_as("big"), _CATEGORY_TOTALS, **_LEDGER_WINDOW)
+
+    factor = big / small
+    assert factor < MAX_SCALING_FACTOR, (
+        f"the income statement cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Quadratic would be {VOLUME_RATIO**2:.0f}x. "
+        f"Something now resolves a rate per posting instead of joining one table."
+    )
+
+
+def test_the_income_statement_stays_within_its_wall_clock_budget(request_as: Callable[[str], TestClient]) -> None:
+    """The coarse backstop for the third path — see `MAX_CATEGORY_TOTALS_SECONDS`."""
+    elapsed = _median_seconds(request_as("big"), _CATEGORY_TOTALS, **_LEDGER_WINDOW)
+
+    assert elapsed < MAX_CATEGORY_TOTALS_SECONDS, (
+        f"a whole-history income statement took {elapsed:.2f} s over a "
+        f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_CATEGORY_TOTALS_SECONDS} s"
     )

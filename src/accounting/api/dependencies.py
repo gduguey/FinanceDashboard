@@ -8,7 +8,7 @@ without a circular import back through the module that imports them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
@@ -25,10 +25,10 @@ from accounting.ledger.categorization import (
     apply_posting_splits,
     apply_rules,
 )
-from accounting.ledger.currency import DisplayCurrency
+from accounting.ledger.currency import DisplayCurrency, rates_into_display
 from accounting.ledger.transfers import apply_transfer_links
 from accounting.market_data import exchange_rates
-from accounting.models import CurrencyCode
+from accounting.models import BASE_CURRENCY, CurrencyCode
 from accounting.precedence import OVERLAY_PRECEDENCE
 from accounting.repositories.interpretation import (
     load_overrides,
@@ -427,3 +427,68 @@ def _display_currency(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return DisplayCurrency(code, rates)
+
+
+def _rates_by_date(code: CurrencyCode, currencies: Iterable[CurrencyCode] = ()) -> pl.DataFrame | None:
+    """Build the per-date rate table `ledger.currency.with_converted_amount` converts flows with.
+
+    `None` when the base currency is the only one in play, because then
+    there is nothing to convert: every rate into it is `1.0` on every day,
+    and the scalar path already says so. That also keeps the table off the
+    request entirely for the common single-currency case.
+
+    Split out from `_flow_display_currency` for the one caller that needs
+    the table and the scalar rates on *different* dates:
+    `routers.goals` values dated contributions with this and undated
+    opening balances at an `as_of`, and answers on two dates per request.
+
+    Parameters
+    ----------
+    code
+        The currency every rate is divided into.
+    currencies
+        Every other currency the caller's own figures are held in (see `_currencies_in_use`).
+
+    Returns
+    -------
+    polars.DataFrame or None
+        Columns `currency`, `rate_date`, `rate_into_display`.
+
+    Raises
+    ------
+    HTTPException
+        400 if exchange rates have never been synced (or lack history for
+        a needed currency) — the same refusal `_display_currency` makes.
+    """
+    needed = {code, *currencies}
+    if needed == {BASE_CURRENCY}:
+        return None
+    try:
+        series = exchange_rates.smoothed_rate_series(exchange_rates.load_rate_history(state.config), needed)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return rates_into_display(series, code)
+
+
+def _flow_display_currency(code: CurrencyCode, currencies: Iterable[CurrencyCode] = ()) -> DisplayCurrency:
+    """Build a `DisplayCurrency` that converts each dated row at its own date's smoothed rate.
+
+    The counterpart to `_display_currency` for an aggregation over flows
+    rather than a balance on one date: the income statement, budgets, the
+    spend curve, and goals. Those used to pass no `as_of` at all, so every
+    row in them — including one from two years ago — was converted at
+    today's rate, and last March's total moved whenever the currency
+    market did.
+
+    Parameters
+    ----------
+    code
+        The currency to display aggregates in.
+    currencies
+        Every other currency the caller's own figures are held in (see `_currencies_in_use`).
+
+    Returns
+    -------
+    DisplayCurrency
+    """
+    return replace(_display_currency(code, currencies), rates_by_date=_rates_by_date(code, currencies))

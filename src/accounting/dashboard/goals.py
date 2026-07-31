@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from accounting.dashboard.income_statement import net_income_expense_total
-from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.ledger.currency import DisplayCurrency, convert, with_converted_amount
 from accounting.models import VIRTUAL_ACCOUNT_KINDS
 from db.money import to_analytics_float
 
@@ -60,33 +60,30 @@ def contributions_to_frame(contributions: dict[str, GoalContribution]) -> pl.Dat
 
 
 def _with_converted_amount(frame: pl.LazyFrame, display: DisplayCurrency) -> pl.LazyFrame:
-    """Return `frame` with `amount` replaced by its `display.code`-converted value, from its own `currency` column.
+    """Return `frame` with `amount` replaced by its `display.code`-converted value, at each row's own date.
 
-    Mirrors `dashboard.income_statement.real_income_expense_legs`'s own
-    rate-table join — a contribution keeps its own currency at rest (see
-    `models.GoalContribution`) exactly like a posting does, so converting
-    it for aggregation here never mutates the persisted row. Stays a
+    The contributions-frame binding of
+    `ledger.currency.with_converted_amount` — a contribution keeps its own
+    currency at rest (see `models.GoalContribution`) exactly like a posting
+    does, so converting it for aggregation here never mutates the
+    persisted row, and it is a dated flow exactly like a posting, so it
+    converts at its own date's rate rather than the report date's. Stays a
     `LazyFrame` in and out, so a caller can keep composing (a `group_by`,
     a further `filter`) before collecting once at its own boundary.
 
     Parameters
     ----------
     frame
-        Any lazy frame with `amount` and `currency` columns — a contributions frame here.
+        Any lazy frame with `amount`, `currency` and `date` columns — a contributions frame here.
     display
-        The currency (and rate) every row's amount is converted into.
+        The currency (and rates) every row's amount is converted into.
 
     Returns
     -------
     polars.LazyFrame
         `frame`, with `amount` converted into `display.code`.
     """
-    rate_table = pl.LazyFrame(
-        {"currency": list(display.rates_to_base.keys()), "rate_to_base": list(display.rates_to_base.values())},
-        schema={"currency": pl.Utf8, "rate_to_base": pl.Float64},
-    )
-    converted = pl.col("amount") * pl.col("rate_to_base") / display.rates_to_base[display.code]
-    return frame.join(rate_table, on="currency", how="left").with_columns(amount=converted).drop("rate_to_base")
+    return with_converted_amount(frame, display, "currency", "date")
 
 
 def all_goal_balances(
