@@ -30,8 +30,9 @@ same database, five times apart in size, and asserts the ratio. This is the
 real detector. It divides the runner's speed out of the answer entirely — a
 slow runner makes both numbers larger and leaves the ratio alone — so it can
 be set close to the truth without flapping. Linear work scales at 5x;
-quadratic work scales at 25x. The bound below sits between those, far from
-both.
+quadratic work scales at 25x. The bounds below sit between those — one for
+the paged paths, where healthy is *sub*-linear, and a looser one for the
+income statement, where linear is what correct looks like.
 
 **The wall-clock assertion** is a coarse backstop for the regressions
 scaling cannot see: a constant per-request cost that is the same at 2k as at
@@ -118,6 +119,23 @@ reach it, and a third of quadratic, so the regression it exists for cannot
 hide under it.
 """
 
+MAX_INCOME_STATEMENT_SCALING_FACTOR = 12.0
+"""`MAX_SCALING_FACTOR`'s counterpart for the one read path that is *supposed* to be linear.
+
+The two paged paths are healthy at 2.4-2.7x for 5x the ledger, because a
+page is bounded and only their fixed costs grow. The income statement has
+no page: it reads every posting in its window by construction (known gap
+C5), so linear — 5.0 — is what healthy looks like, and 8.0 would leave a
+correct implementation 1.6x of headroom on a two-core shared runner.
+Measured 2.7x locally and **5.1x on a CI runner** (129 ms at 2k, 655 ms at
+10k), which is the number this bound has to accommodate.
+
+Twelve is a little over twice the linear figure and under half of
+quadratic (25), so it still rejects the regression it exists for — a rate
+resolved per posting instead of joined once — without failing on a runner
+having a bad minute.
+"""
+
 MAX_DEEP_OFFSET_FACTOR = 4.0
 """How much more the last page of an export may cost than the first.
 
@@ -146,7 +164,7 @@ cheaper of the two by construction — it applies no overlay — so its ceiling
 is lower even though its page covers more rows.
 """
 
-MAX_CATEGORY_TOTALS_SECONDS = 4.0
+MAX_CATEGORY_TOTALS_SECONDS = 6.0
 """Wall-clock ceiling for one whole-history `GET /income-statement/category-totals`.
 
 The third path here, and the odd one out: it is not paginated at all (known
@@ -165,8 +183,9 @@ the same fixtures and the join disabled. The join does not separate from
 run-to-run noise at this volume; the cost of this endpoint is reading and
 resolving the ledger, which C5 owns.
 
-The ceiling is roughly 10x the measured figure, the same multiple and the
-same shared-runner reasoning as the two above.
+Six seconds is roughly 9x the 656 ms a CI runner measured, matching the
+headroom the postings ceiling actually has there (3.0 s against 305 ms)
+rather than a multiple of the faster local figure.
 """
 
 
@@ -296,16 +315,20 @@ def test_the_income_statement_scales_with_the_ledger_and_not_worse(request_as: C
 
     This path has no `LIMIT` to lose (see `MAX_CATEGORY_TOTALS_SECONDS`), so
     what is being defended is the shape of the FX conversion A3b added: a
-    join against a per-date rate table is linear, and a per-row rate lookup
-    that walked the history for each posting would not be.
+    join against a per-date rate table keeps the whole read linear, and a
+    per-row rate lookup that walked the history for each posting would not.
+    Its bound is `MAX_INCOME_STATEMENT_SCALING_FACTOR` rather than the one
+    the paged paths use — read that for why linear is the healthy shape
+    here and sub-linear is not available.
     """
     small = _median_seconds(request_as("small"), _CATEGORY_TOTALS, **_LEDGER_WINDOW)
     big = _median_seconds(request_as("big"), _CATEGORY_TOTALS, **_LEDGER_WINDOW)
 
     factor = big / small
-    assert factor < MAX_SCALING_FACTOR, (
+    assert factor < MAX_INCOME_STATEMENT_SCALING_FACTOR, (
         f"the income statement cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
-        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Quadratic would be {VOLUME_RATIO**2:.0f}x. "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Linear is {VOLUME_RATIO:.0f}x and expected here; "
+        f"quadratic would be {VOLUME_RATIO**2:.0f}x. "
         f"Something now resolves a rate per posting instead of joining one table."
     )
 
