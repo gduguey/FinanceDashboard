@@ -1,6 +1,6 @@
 [project]
 name = "personalfinances"
-version = "1.7.0"
+version = "1.7.1"
 description = "Personal finance dashboard: replays an append-only ledger into IBKR portfolio performance, net worth, budgets, and goals."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -209,5 +209,13 @@ max-args = 7  # symbol/date-range/config/behavior-flag/session-override function
 ]
 
 [tool.pytest.ini_options]
-addopts = "--strict-markers --strict-config"
+# `-m "not perf"` keeps the latency gate out of the default run: it seeds tens
+# of thousands of rows into a migrated scratch database and asserts on elapsed
+# time, which is neither fast nor meaningful on a laptop competing with a
+# browser. CI runs it as its own job with `-m perf`; run it locally the same
+# way. A command-line `-m` overrides this one, since addopts is prepended.
+addopts = "--strict-markers --strict-config -m \"not perf\""
 testpaths = ["tests"]
+markers = [
+    "perf: latency gate over the paginated read paths — deselected by default, see tests/performance/",
+]

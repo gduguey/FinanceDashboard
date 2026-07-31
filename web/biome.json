@@ -24,17 +24,12 @@
         "useHookAtTopLevel": "error"
       },
       "style": {
-        "noNonNullAssertion": "error",
-        "useImportType": "error",
         "useComponentExportOnlyModules": {
-          "level": "warn",
+          "level": "info",
           "options": {
             "allowConstantExport": true
           }
         }
-      },
-      "suspicious": {
-        "noGlobalIsNan": "error"
       }
     }
   },

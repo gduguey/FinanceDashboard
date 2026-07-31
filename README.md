@@ -330,7 +330,7 @@ adding a new data source or broker.
 
 ### The test database
 
-`uv run pytest` runs against `finance_test` (step 2 of "Setting up
+`uv run pytest` reads `DATABASE_URL_TEST` (step 2 of "Setting up
 Postgres"), never `finance_dev`. `tests/conftest.py` enforces that from
 both ends: the engine comes from `DATABASE_URL_TEST` alone, and
 `DATABASE_URL`/`DATABASE_URL_APP` are stripped from the environment *and*
@@ -338,15 +338,25 @@ from the settings classes' `.env` fallback for the whole run, so a test
 that forgets to override the `get_db` dependency fails loudly instead of
 mutating dev data.
 
-The schema is rebuilt from the SQLAlchemy models at the start of every
-session — the `trades` and `accounting` schemas are dropped and recreated
-— and each individual test runs inside a transaction that is rolled back
-afterwards. So `finance_test` needs to exist, but nothing in it needs to
-be preserved; drop and recreate it any time. Alembic is exercised
-separately by `tests/db/test_rls_coverage.py`, which provisions and drops
-its own scratch database (this needs the `finance` user's CREATEDB
-privilege, which the container's superuser has); that module skips itself
-if `DATABASE_URL_TEST` is unset, everything else just fails.
+**Every run gets its own database.** `finance_test` itself is never
+written to — only its host, port and credentials are read out of that URL,
+and the run creates a scratch database of its own, builds the schema from
+the SQLAlchemy models into it, and drops it at the end
+(`tests/support/scratch_db.py`). Two `pytest` runs at once are therefore
+safe; before this they destroyed each other, and the wreckage read as a
+regression in whatever was being tested. Each individual test still runs
+inside a transaction that is rolled back afterwards.
+
+So `finance_test` needs to exist and be connectable, but nothing in it is
+used; drop and recreate it any time. Creating the scratch database needs
+the `finance` user's CREATEDB privilege, which the container's superuser
+has.
+
+`tests/db/test_rls_coverage.py` and `test_rls_isolation.py` go through the
+same helper but run the real migrations into their scratch database rather
+than `create_all`, because policies, grants and the restricted
+`app_runtime` role exist only in the migrations. Those modules skip
+themselves if `DATABASE_URL_TEST` is unset; everything else just fails.
 
 ### The gates
 

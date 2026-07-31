@@ -134,22 +134,40 @@ than a structured request body FastAPI can describe.
 | `npm run dev` | Start the Vite dev server with hot-reload |
 | `npm run build` | Typecheck (`tsc -b`), then bundle to `web/dist/` |
 | `npm run typecheck` | `tsc -b --noEmit` — types only, no build output |
-| `npm run lint` | Biome's linter |
+| `npm run lint` | Biome's linter, `--error-on-warnings` (see below) |
 | `npm run format` / `format:check` | Biome's formatter (write / check-only) |
-| `npm run check` | Biome's full `check` — lint + format + import organization in one pass; this is the one that catches import-order drift (`lint`/`format` alone don't) |
+| `npm run check` | Biome's full `check` — lint + format + import organization in one pass, also `--error-on-warnings`; this is the one that catches import-order drift (`lint`/`format` alone don't) |
 | `npm run test` | Run the Vitest suite |
 | `npm run generate:schema` | Regenerate `schema.ts` from `web/openapi.json` (run `uv run python -m trades.api.export_openapi` first to refresh that file) |
 
 Biome is the single tool for both linting and formatting — no separate
 linter (this project used to run oxlint alongside Biome; that split is
-gone now). Its linter rules are intentionally **narrower** than Biome's own
-"recommended" preset today: only `useHookAtTopLevel` and
-`useComponentExportOnlyModules` are enabled (`web/biome.json`), matching
-what was actually enforced before the oxlint migration rather than
-silently adopting a stricter ruleset. Enabling the full recommended preset
-is a deliberate, separate decision — it currently surfaces ~100 pre-existing
-findings (mostly form-accessibility rules like `noLabelWithoutControl`)
-that would need fixing or explicitly suppressing first.
+gone now). Biome's own **`recommended` preset is on** (`web/biome.json`),
+turned on in PR 5 after the ~100 pre-existing findings it surfaced — mostly
+form-accessibility rules like `noLabelWithoutControl` — were fixed. Three
+rules are named on top of it: `useHookAtTopLevel` and `noUselessFragments`
+pinned to `error`, and `useComponentExportOnlyModules`, which the preset
+does not cover at all, at `info`.
+
+**`npm run lint` and `npm run check` fail on a warning.** (Not `npm run
+build`, which only typechecks and bundles — but CI runs all three, so a
+warning fails the pipeline.) `biome lint` exits 0 on warnings, so until
+PR A a warn-level rule enforced nothing. Four rules were pinned to `error`
+to work around that, which covered those four and nothing else — any
+warn-level rule the preset gained later would have been silently
+unenforced. Both scripts now pass `--error-on-warnings`, so the pins are
+gone, with two deliberate exceptions:
+
+- `noUselessFragments` stays pinned. The recommended preset gives it
+  **`info`**, not `warn`, and `--error-on-warnings` does not promote info —
+  so this is the one of the original four that failing on warnings does not
+  subsume.
+- `useComponentExportOnlyModules` is set to **`info`** rather than `warn`.
+  It is meant to be advisory (the four shadcn/ui files under
+  `components/ui/` legitimately export a component beside its `cva`
+  variants, and suppress it individually), and `warn` stopped being an
+  advisory level the moment warnings started failing. `info` is now what
+  "surfaced, never fatal" is spelled as.
 
 Tests are plain-logic unit tests today (no `jsdom`/`@testing-library/react`
 installed) — see `vitest.config.ts`'s comment for why it's a separate

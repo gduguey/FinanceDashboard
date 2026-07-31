@@ -35,6 +35,7 @@ import db.models
 import db.session as session_module
 from db.base import Base
 from db.settings import AppRuntimeDatabaseSettings, DatabaseSettings, TestDatabaseSettings
+from tests.support.scratch_db import scratch_database
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -216,23 +217,31 @@ def _no_real_database_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(scope="session")
 def _db_engine() -> Iterator[Engine]:
-    """One Postgres engine for the whole test session, with a freshly (re)built schema.
+    """One Postgres engine for the whole test session, against a database created for this run alone.
 
     Deliberately never points at `DatabaseSettings().database_url` (the dev
     database) — `TestDatabaseSettings` reads a separate `DATABASE_URL_TEST`,
     so a misconfigured `.env` fails loudly instead of a test run silently
     wiping dev data.
+
+    `DATABASE_URL_TEST`'s own database is not written to either: only its
+    host, port and credentials are used, and the run gets a scratch database
+    of its own. See `tests.support.scratch_db` for why — two concurrent runs
+    sharing one database destroyed each other, and the wreckage read as a
+    regression in whatever was being tested.
     """
-    engine = create_engine(TestDatabaseSettings().database_url)
-    with engine.begin() as connection:
-        connection.execute(text("DROP SCHEMA IF EXISTS accounting CASCADE"))
-        connection.execute(text("DROP SCHEMA IF EXISTS trades CASCADE"))
-        connection.execute(text("CREATE SCHEMA accounting"))
-        connection.execute(text("CREATE SCHEMA trades"))
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    yield engine
-    engine.dispose()
+    with scratch_database(TestDatabaseSettings().database_url, prefix="pytest") as url:
+        engine = create_engine(url)
+        # A fresh database has `public` and nothing else; the two application
+        # schemas are ordinarily created by the migrations this fixture skips.
+        with engine.begin() as connection:
+            connection.execute(text("CREATE SCHEMA accounting"))
+            connection.execute(text("CREATE SCHEMA trades"))
+        Base.metadata.create_all(engine)
+        try:
+            yield engine
+        finally:
+            engine.dispose()
 
 
 @pytest.fixture
