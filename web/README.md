@@ -142,22 +142,21 @@ than a structured request body FastAPI can describe.
 
 Biome is the single tool for both linting and formatting — no separate
 linter (this project used to run oxlint alongside Biome; that split is
-gone now). Its linter rules are intentionally **narrower** than Biome's own
-"recommended" preset today: only `useHookAtTopLevel` and
-`useComponentExportOnlyModules` are enabled (`web/biome.json`), matching
-what was actually enforced before the oxlint migration rather than
-silently adopting a stricter ruleset. Enabling the full recommended preset
-is a deliberate, separate decision — it currently surfaces ~100 pre-existing
-findings (mostly form-accessibility rules like `noLabelWithoutControl`)
-that would need fixing or explicitly suppressing first.
+gone now). Biome's own **`recommended` preset is on** (`web/biome.json`),
+turned on in PR 5 after the ~100 pre-existing findings it surfaced — mostly
+form-accessibility rules like `noLabelWithoutControl` — were fixed. Three
+rules are named on top of it: `useHookAtTopLevel` and `noUselessFragments`
+pinned to `error`, and `useComponentExportOnlyModules`, which the preset
+does not cover at all, at `info`.
 
-**A lint warning fails the build.** `biome lint` exits 0 on warnings, so
-until PR A both `lint` and `check` ran `--error-on-warnings`-less and a
-warn-level rule enforced nothing. Four rules were pinned to `error` to work
-around that, which covered those four and nothing else — any warn-level rule
-the preset gained afterwards would have been silently unenforced. Both
-scripts now pass `--error-on-warnings`, so the pins are gone, with two
-deliberate exceptions:
+**`npm run lint` and `npm run check` fail on a warning.** (Not `npm run
+build`, which only typechecks and bundles — but CI runs all three, so a
+warning fails the pipeline.) `biome lint` exits 0 on warnings, so until
+PR A a warn-level rule enforced nothing. Four rules were pinned to `error`
+to work around that, which covered those four and nothing else — any
+warn-level rule the preset gained later would have been silently
+unenforced. Both scripts now pass `--error-on-warnings`, so the pins are
+gone, with two deliberate exceptions:
 
 - `noUselessFragments` stays pinned. The recommended preset gives it
   **`info`**, not `warn`, and `--error-on-warnings` does not promote info —
