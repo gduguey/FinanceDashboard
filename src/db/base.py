@@ -837,7 +837,7 @@ def check_and_bump_row_version(
         last-write-wins field (a boolean toggle) where losing the race
         against a newer write of the same field is exactly the wanted
         outcome, not a conflict (see
-        `docs/app-stack/optimistic-concurrency-versioning.md`).
+        `docs/optimistic-concurrency-versioning.md`).
 
     Returns
     -------

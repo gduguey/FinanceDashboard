@@ -15,8 +15,7 @@ Two rules for anyone working this list:
 whose user-visible behaviour does not change on purpose — which most of this
 list is; `MINOR` only for something additive; `MAJOR` only when deploying needs
 manual intervention beyond `git pull` and a restart. Say in the commit body
-which rule applied. (The policy itself is at `docs/server-setup/versioning.md`,
-which is gitignored — see G8.)
+which rule applied. (The policy itself is at `docs/versioning.md`.)
 
 **Check whether it is already handled before building anything.** Read the
 neighbouring modules and their docstrings first. A1 and A3c on this list were

@@ -240,7 +240,7 @@ counter table, and nothing store-wide — a second, identical mechanism for
 row is deliberately last-write-wins (see
 `trades.dashboard.settings.save_settings`). The reasoning behind which
 fields deserve a check at all is in
-`docs/app-stack/optimistic-concurrency-versioning.md`.
+`docs/optimistic-concurrency-versioning.md`.
 
 **Wipe-and-reinsert**: delete every row this user owns in a table, then
 insert fresh rows for everything currently held in memory. Not "diff and

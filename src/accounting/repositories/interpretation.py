@@ -893,7 +893,7 @@ def save_posting_split(split: PostingSplit, session: Session, user_id: uuid.UUID
     split is one coherent replace-in-full unit keyed by `posting_id` (not
     a set of independently-editable fields), so last-write-wins on the
     same posting is the intended semantics — see
-    `docs/app-stack/optimistic-concurrency-versioning.md` on why a
+    `docs/optimistic-concurrency-versioning.md` on why a
     whole-unit replace scoped to its own key needs no version column.
 
     Parameters

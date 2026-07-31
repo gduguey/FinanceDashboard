@@ -23,7 +23,7 @@ the accounts and taxonomy aggregates moved into `src/accounting/repositories/`,
 and its whole-store counter (`accounting.store_versions`) has since been deleted
 outright, so there is no late check left to reject a handler that has already
 written. Optimistic concurrency is now per-row only; see
-`docs/app-stack/optimistic-concurrency-versioning.md`. What remains is narrower:
+`docs/optimistic-concurrency-versioning.md`. What remains is narrower:
 each of these
 handlers still spans several repository writes that commit as they go
 (`replace_budgets`, `save_overrides_for_postings`, `retire_categories`,
@@ -165,7 +165,7 @@ Note the original entry also said this "breaks the rule that no two
 accounting-store mutations may be in flight at once". **There is no such rule
 any more.** PR 1 deleted the shared `X-Expected-Store-Version` header and moved
 to per-row versioning, so concurrent mutations no longer race on shared state —
-see `docs/app-stack/optimistic-concurrency-versioning.md`. PR 4 audited all
+see `docs/optimistic-concurrency-versioning.md`. PR 4 audited all
 eleven components that await a mutation and found every remaining case to be a
 genuine data dependency (create-then-set-opening-balance) or a deliberate
 rate limit (the LLM categorization loop), not a workaround for that rule.

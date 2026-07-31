@@ -5387,7 +5387,7 @@ export interface components {
      *     which is the only route that assigns priorities. No
      *     `expected_version`: like a budget cell, an edit of one rule is
      *     last-write-wins on that rule (see
-     *     `docs/app-stack/optimistic-concurrency-versioning.md`).
+     *     `docs/optimistic-concurrency-versioning.md`).
      *
      *     Contribution-shaped for the same reason `GoalAutomationCreate` is —
      *     there is nothing on a withdrawal automation a `PATCH` could edit.
@@ -7132,7 +7132,7 @@ export interface components {
      *     (skip the check, last-write-wins) only for an idempotent toggle of the
      *     `active` flag, where losing the race against a newer flip of the same
      *     switch is the wanted outcome, not a conflict — see
-     *     `docs/app-stack/optimistic-concurrency-versioning.md`.
+     *     `docs/optimistic-concurrency-versioning.md`.
      */
     TransferRuleUpdate: {
       /** Description Contains */

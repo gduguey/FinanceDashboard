@@ -948,7 +948,7 @@ independent writes (accepting several duplicate-merge suggestions, adding two
 transfer rules) into sequential loops purely to stop them racing their own
 shared header. That sequencing is now plain parallel requests. Two mechanisms
 also meant two ways to be wrong; there is now one. Full reasoning in
-`docs/app-stack/optimistic-concurrency-versioning.md`.
+`docs/optimistic-concurrency-versioning.md`.
 
 ### 4.4 Primary keys
 

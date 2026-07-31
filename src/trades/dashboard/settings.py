@@ -107,8 +107,8 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     and every field on it is an idempotent preference (a bank id, a
     benchmark symbol, a tax rate, a browser-reported timezone) — the only
     thing that matters about the end state is which value was actually
-    wanted last, exactly the case `docs/app-stack/
-    optimistic-concurrency-versioning.md` identifies as *not* worth
+    wanted last, exactly the case
+    `docs/optimistic-concurrency-versioning.md` identifies as *not* worth
     version-checking. A version check here bought no protection against
     real lost work and instead made two unrelated saves against the same
     row (a timezone report racing a tax-rate edit) spuriously 409.

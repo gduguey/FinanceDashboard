@@ -306,6 +306,12 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | Doc | What it covers |
 |-----|----------------|
 | [architecture.md](docs/architecture.md) | How `trades`, `accounting`, and `db` fit into the one FastAPI app |
+| [http-api-contract.md](docs/http-api-contract.md) | What the HTTP surface promises: methods, status codes, bodies, and why |
+| [optimistic-concurrency-versioning.md](docs/optimistic-concurrency-versioning.md) | Which writes carry a version and which deliberately do not |
+| [versioning.md](docs/versioning.md) | SemVer policy, what CI's version gate enforces, how the image gets tagged |
+| [backups.md](docs/backups.md) | What is backed up, from where, and how far back |
+| [known-gaps.md](docs/known-gaps.md) | Gaps that are known and accepted, with the reasoning |
+| [remaining-work.md](docs/remaining-work.md) | The triaged backlog, with stable item ids |
 | [trades/architecture.md](docs/trades/architecture.md) | Module map, conventions, data layout |
 | [trades/ledger.md](docs/trades/ledger.md) | Event types, replay, lots, cashflows |
 | [trades/metrics_and_benchmarks.md](docs/trades/metrics_and_benchmarks.md) | XIRR, TWR, NAV, counterfactuals |
@@ -319,6 +325,7 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | [accounting/currency-handling.md](docs/accounting/currency-handling.md) | Multi-currency conversion, adding a new supported currency |
 | [accounting/adding-accounts.md](docs/accounting/adding-accounts.md) | Teaching the app a new bank's export format |
 | [accounting/canonical-csv-import.md](docs/accounting/canonical-csv-import.md) | The no-code fallback CSV importer for a bank with no dedicated standardizer |
+| [accounting/category-tag-merging.md](docs/accounting/category-tag-merging.md) | What renaming, merging or deleting a category or tag rewrites |
 | [db/README.md](src/db/README.md) | The shared Postgres layer: roles, RLS, encryption, backups |
 
 Start with [architecture.md](docs/architecture.md), then
