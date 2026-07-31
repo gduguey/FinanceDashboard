@@ -174,6 +174,13 @@ Ledger events dedupe by `event_id`:
 
 Re-syncing overlapping history only adds genuinely new events.
 
+The `:fee` suffix and the `cash:` segment are what keep those three kinds
+of row in one `event_id` space without being able to collide.
+`main._merge_ledger` dedupes with `.unique(subset="event_id", keep="last")`,
+so two events sharing an id would silently become one rather than raise —
+and IBKR's Flex schema does not promise that a `<Trade>` and a
+`<CashTransaction>` cannot carry the same `transactionID`.
+
 ---
 
 ## Storage

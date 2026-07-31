@@ -227,7 +227,15 @@ def _standardize_ibkr_cash_transactions(ibkr_cash_transactions: pl.DataFrame) ->
 
     events = [
         LedgerEvent(
-            event_id=f"ibkr:{row['transaction_id']}",
+            # `ibkr:cash:`, not `ibkr:` — a `<Trade>` and a `<CashTransaction>`
+            # carry `transactionID` values from IBKR's own namespaces, and nothing
+            # in the Flex schema promises the two can never coincide. They share
+            # one `event_id` space here, and `main._merge_ledger` dedupes it with
+            # `.unique(subset="event_id", keep="last")`, so a collision would drop
+            # one of the two events silently rather than raise. Namespacing by row
+            # kind removes the possibility, the same way a trade's commission row
+            # is `ibkr:{transaction_id}:fee` rather than sharing its principal's id.
+            event_id=f"ibkr:cash:{row['transaction_id']}",
             event_datetime=row["date_time"],
             symbol=row["symbol"] or "CASH",
             event_type=row["event_type"],
