@@ -309,6 +309,7 @@ docs/                 architecture deep-dives (see below), under docs/trades/ an
 | Doc | What it covers |
 |-----|----------------|
 | [architecture.md](docs/architecture.md) | How `trades`, `accounting`, and `db` fit into the one FastAPI app |
+| [schema.md](docs/schema.md) | Every table, column, constraint, index and RLS policy in the Postgres schema |
 | [http-api-contract.md](docs/http-api-contract.md) | What the HTTP surface promises: methods, status codes, bodies, and why |
 | [optimistic-concurrency-versioning.md](docs/optimistic-concurrency-versioning.md) | Which writes carry a version and which deliberately do not |
 | [versioning.md](docs/versioning.md) | SemVer policy, what CI's version gate enforces, how the image gets tagged |
