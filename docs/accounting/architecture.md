@@ -64,9 +64,10 @@ file that uses them.
   calls directly (it's handed already-loaded data instead).
 - **TransferRule** vs. **category pattern** — two different,
   easily-confused mechanisms, covered in full in `categorization.md`. In
-  short: a `TransferRule` resolves a posting's *counterparty account* (and
-  optionally its category) automatically, with no confirmation step, every
-  time the ledger is read. A category pattern only ever *suggests* a
+  short: a `TransferRule` resolves a posting's *counterparty account*
+  automatically, with no confirmation step, every time the ledger is read
+  — and only that; a `CHECK` refuses a transfer-effect row that carries a
+  category. A category pattern only ever *suggests* a
   category — nothing changes until a human applies and validates the
   suggestion. Either can be switched off without deleting it (`active`).
 
