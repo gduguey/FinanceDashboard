@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
+import polars as pl
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
@@ -36,6 +38,7 @@ from accounting.models import CurrencyCode, GoalAutomationDirection
 from accounting.models import Goal as DomainGoal
 from accounting.models import GoalAutomation as DomainGoalAutomation
 from accounting.models import GoalContribution as DomainGoalContribution
+from accounting.repositories.accounts import load_opening_balances
 from accounting.repositories.planning import (
     delete_goal,
     goal_automation_exists,
@@ -58,7 +61,80 @@ from db.current_user import get_current_user_id
 from db.money import quantize_money
 from db.session import get_db
 
+if TYPE_CHECKING:
+    from accounting.models import Account, OpeningBalance
+
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class _UnallocatedBasis:
+    """Everything `dashboard.goals.unallocated_balance` reads, loaded once per request.
+
+    Three of the four endpoints that ask for unallocated money used to
+    call it with no `DisplayCurrency` at all, which meant the default
+    (`{"USD": 1.0}`) — and both the posting and the contribution
+    conversions *left*-join their rate table, so a EUR row got a null rate,
+    a null amount, and was silently skipped by the sum. The figure that
+    gates a contribution therefore disagreed with the one
+    `GET /goals/summary` displayed, by however much non-USD money the user
+    held. Loading the currencies in use here, once, is what makes every
+    caller's answer the same answer.
+
+    Held as a bundle rather than re-derived per call because
+    `post_simulate_contribution` needs the figure on two different dates
+    from the same request, and the ledger read is by far the most
+    expensive part of it.
+    """
+
+    postings: pl.DataFrame
+    accounts: dict[str, Account]
+    opening_balances: dict[str, OpeningBalance]
+    currencies: set[CurrencyCode]
+    display_currency: CurrencyCode
+
+    def at(self, contributions: pl.DataFrame, as_of: date) -> float:
+        """Unallocated money as of one date, at that date's own exchange rates.
+
+        Propagates `_display_currency`'s 400 when a currency in use has no
+        rate history — the same answer `GET /goals/summary` already gives,
+        rather than quietly dropping that currency's rows.
+
+        Returns
+        -------
+        float
+        """
+        display = _display_currency(self.display_currency, self.currencies, as_of)
+        return unallocated_balance(self.postings, self.accounts, contributions, as_of, display, self.opening_balances)
+
+
+def _unallocated_basis(
+    session: Session, user_id: uuid.UUID, display_currency: CurrencyCode = "USD"
+) -> _UnallocatedBasis:
+    """Read everything unallocated money is derived from.
+
+    Parameters
+    ----------
+    session
+        An open database session.
+    user_id
+        Whose ledger, accounts, opening balances and currencies to read.
+    display_currency
+        The currency to answer in. The three automation/simulation
+        endpoints take no such parameter and get `BASE_CURRENCY`, since
+        their answer feeds a comparison rather than a display.
+
+    Returns
+    -------
+    _UnallocatedBasis
+    """
+    return _UnallocatedBasis(
+        postings=_resolved_postings(session, user_id),
+        accounts=seeded_accounts(session, user_id),
+        opening_balances=load_opening_balances(session, user_id),
+        currencies=_currencies_in_use(session, user_id),
+        display_currency=display_currency,
+    )
 
 
 @router.post("/goals", status_code=201, responses=CREATED_WITH_LOCATION)
@@ -675,13 +751,12 @@ def get_goals_summary(
     -------
     GoalsSummary
     """
-    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
-    display = _display_currency(display_currency, _currencies_in_use(session, user_id), as_of_date)
+    basis = _unallocated_basis(session, user_id, display_currency)
+    display = _display_currency(display_currency, basis.currencies, as_of_date)
     contributions = contributions_to_frame(load_goal_contributions(session, user_id))
     balances = all_goal_balances(contributions, list(load_goals(session, user_id).keys()), as_of_date, display)
-    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions, as_of_date, display)
-    return GoalsSummary(balances=balances, unallocated=unallocated)
+    return GoalsSummary(balances=balances, unallocated=basis.at(contributions, as_of_date))
 
 
 # Registered *after* `GET /goals/summary`, and that ordering is load-bearing:
@@ -751,7 +826,6 @@ def post_run_recurring_additions(
     list[GoalContribution]
         The new contributions just written (empty if nothing was due).
     """
-    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     contributions = load_goal_contributions(session, user_id)
     existing_ids = set(contributions.keys())
@@ -773,7 +847,7 @@ def post_run_recurring_additions(
         return []
 
     contributions_frame = contributions_to_frame(contributions)
-    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
+    unallocated = _unallocated_basis(session, user_id).at(contributions_frame, as_of_date)
     funded = run_recurring_additions(due, unallocated)
 
     # Keyed by `automation_id`, not `goal_id`: a goal may legitimately have
@@ -827,11 +901,10 @@ def post_run_withdrawal_automation(
         The contributions just written, and however much of the shortfall
         (if any) no goal had enough left to cover.
     """
-    postings = _resolved_postings(session, user_id)
     as_of_date = as_of or datetime.now(UTC).date()
     contributions = load_goal_contributions(session, user_id)
     contributions_frame = contributions_to_frame(contributions)
-    unallocated = unallocated_balance(postings, seeded_accounts(session, user_id), contributions_frame, as_of_date)
+    unallocated = _unallocated_basis(session, user_id).at(contributions_frame, as_of_date)
     if unallocated >= 0:
         return WithdrawalAutomationResult(withdrawals=[], remaining_shortfall=0.0)
 
@@ -885,14 +958,13 @@ def post_simulate_contribution(
         running once more, with this contribution already applied, so the
         user can see if it sets up a shortfall soon after (non-blocking).
     """
-    postings = _resolved_postings(session, user_id)
-    accounts = seeded_accounts(session, user_id)
+    basis = _unallocated_basis(session, user_id)
     contributions_frame = contributions_to_frame(load_goal_contributions(session, user_id))
-    unallocated_as_of_date = unallocated_balance(postings, accounts, contributions_frame, payload.date)
+    unallocated_as_of_date = basis.at(contributions_frame, payload.date)
     exceeds_unallocated = payload.amount > unallocated_as_of_date
 
     today = datetime.now(UTC).date()
-    unallocated_today = unallocated_balance(postings, accounts, contributions_frame, today)
+    unallocated_today = basis.at(contributions_frame, today)
     projected_before_run = unallocated_today - payload.amount
     scheduled = [
         automation for automation in load_goal_automations(session, user_id) if automation.direction == "contribution"

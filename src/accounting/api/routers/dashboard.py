@@ -39,7 +39,7 @@ from accounting.dashboard import income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import convert
 from accounting.ledger.replay import account_balances_over_time
-from accounting.models import CurrencyCode
+from accounting.models import VIRTUAL_ACCOUNT_KINDS, CurrencyCode
 from accounting.repositories.accounts import load_opening_balances
 from accounting.repositories.taxonomy import load_categories, load_other_assets
 from accounting.taxonomy import seeded_accounts
@@ -49,8 +49,6 @@ from db.money import to_analytics_float
 from db.session import get_db
 
 router = APIRouter()
-
-_VIRTUAL_ACCOUNT_KINDS = {"income_source", "expense_payee"}
 
 
 @router.get("/simulator/project")
@@ -306,7 +304,7 @@ def get_net_worth_history_by_account(
     real_accounts = {
         account_id: account
         for account_id, account in seeded_accounts(session, user_id).items()
-        if account.kind not in _VIRTUAL_ACCOUNT_KINDS
+        if account.kind not in VIRTUAL_ACCOUNT_KINDS
     }
     has_external_investment = any(account.broker_connection_id is not None for account in real_accounts.values())
     external_values = _external_investment_values(dates, session, user_id) if has_external_investment else None

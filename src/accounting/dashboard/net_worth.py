@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, cast
 
 from accounting.ledger.currency import DisplayCurrency, convert
 from accounting.ledger.replay import account_balances
+from accounting.models import VIRTUAL_ACCOUNT_KINDS
 from db.money import to_analytics_float as to_analytics_amount
 
 if TYPE_CHECKING:
@@ -30,7 +31,6 @@ if TYPE_CHECKING:
 
     from accounting.models import Account, AccountKind, CurrencyCode, OpeningBalance, OtherAsset
 
-_VIRTUAL_KINDS = {"income_source", "expense_payee"}
 _LIABILITY_KINDS = {"credit_card", "loan"}
 
 
@@ -159,7 +159,7 @@ def net_worth_summary(
             currency=account.currency,
         )
         for account in accounts.values()
-        if account.kind not in _VIRTUAL_KINDS
+        if account.kind not in VIRTUAL_ACCOUNT_KINDS
     ]
 
     def to_display(amount: float, currency: CurrencyCode) -> float:

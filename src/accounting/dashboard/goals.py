@@ -2,7 +2,9 @@
 
 A goal's balance and the amount of money not yet allocated to any goal
 are both pure derivations over `GoalContribution` rows (see
-`models.GoalContribution`) and the resolved posting ledger — never a
+`models.GoalContribution`), the resolved posting ledger, and — for
+unallocated money — the opening balances accounts already held before
+their first posting — never a
 cached figure that could drift out of sync with the contributions or
 postings it's computed from, the same reasoning `models.Budget`'s own
 docstring gives for spending actuals. "Unallocated" is deliberately never
@@ -17,12 +19,14 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from accounting.dashboard.income_statement import net_income_expense_total
-from accounting.ledger.currency import DisplayCurrency
+from accounting.ledger.currency import DisplayCurrency, convert
+from accounting.models import VIRTUAL_ACCOUNT_KINDS
+from db.money import to_analytics_float
 
 if TYPE_CHECKING:
     from datetime import date
 
-    from accounting.models import Account, GoalContribution
+    from accounting.models import Account, GoalContribution, OpeningBalance
 
 CONTRIBUTION_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     "contribution_id": pl.Utf8,
@@ -121,17 +125,76 @@ def all_goal_balances(
     return {goal_id: total_by_goal.get(goal_id, 0.0) for goal_id in goal_ids}
 
 
+def opening_balance_total(
+    accounts: dict[str, Account],
+    opening_balances: dict[str, OpeningBalance],
+    as_of: date,
+    display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
+) -> float:
+    """Every real account's manually-entered starting balance, summed and converted, as of `as_of`.
+
+    Signed and summed exactly the way `dashboard.net_worth.net_worth_summary`
+    treats the same rows, rather than inventing a second convention for
+    them: a liability account's opening balance is negative and therefore
+    subtracts, an opening balance contributes nothing until `as_of` reaches
+    its own `as_of_date`, and a virtual counterparty account
+    (`models.VIRTUAL_ACCOUNT_KINDS`) is excluded — its "balance" is never
+    money that is anywhere. Converted at the `as_of` rate, again like net
+    worth: this is a stock held on one date, not a flow that happened
+    across many, so it has no per-posting dates to convert at.
+
+    An opening balance keyed to an account that no longer exists is
+    skipped. The row is deleted with its account (`opening_balances`
+    cascades on `account_id`), so this only ever sees one mid-request.
+
+    Parameters
+    ----------
+    accounts
+        Every known account, keyed by `account_id`.
+    opening_balances
+        Manually-entered starting balances, keyed by `account_id` (see
+        `repositories.accounts.load_opening_balances`).
+    as_of
+        Last day to include, inclusive.
+    display
+        The currency (and rate) every balance is converted into before summing.
+
+    Returns
+    -------
+    float
+    """
+    total = 0.0
+    for account_id, opening in opening_balances.items():
+        account = accounts.get(account_id)
+        if account is None or account.kind in VIRTUAL_ACCOUNT_KINDS or as_of < opening.as_of_date.date():
+            continue
+        total += convert(to_analytics_float(opening.amount), account.currency, display.code, display.rates_to_base)
+    return total
+
+
 def unallocated_balance(
     postings: pl.DataFrame | pl.LazyFrame,
     accounts: dict[str, Account],
     contributions: pl.DataFrame | pl.LazyFrame,
     as_of: date,
     display: DisplayCurrency = DisplayCurrency(),  # noqa: B008
+    opening_balances: dict[str, OpeningBalance] | None = None,
 ) -> float:
     """Money that's neither gone toward a real expense nor been earmarked into any goal yet, as of `as_of`.
 
+    `(every real account's opening balance)` plus
     `(real income - real expense, cumulative through as_of)` minus
     `(every goal's contributions, cumulative through as_of)`.
+
+    The first term is why this is not simply the income statement's net
+    total. A posting only ever records money moving *through* the ledger
+    (see `models.OpeningBalance`), so someone who started tracking
+    mid-life, with money already sitting in an account, has all of it
+    invisible to the flow terms — the app would offer them nothing to
+    allocate until their next payday. Opening balances are not postings and
+    never become any: they are their own table, added on top here and in
+    `dashboard.net_worth` alone, so counting them cannot double-count
+    against the legs summed below.
 
     Parameters
     ----------
@@ -144,14 +207,21 @@ def unallocated_balance(
     as_of
         Last day to include, inclusive.
     display
-        The currency (and rate) every posting/contribution's amount is converted into before summing.
+        The currency (and rate) every posting/contribution/opening balance
+        is converted into before summing.
+    opening_balances
+        Manually-entered starting balances, keyed by `account_id`; see
+        `opening_balance_total`. `None` means the caller has none to
+        offer, not that they should be ignored — every caller in
+        `api.routers.goals` passes them.
 
     Returns
     -------
     float
     """
     net_income = net_income_expense_total(postings, accounts, as_of, display)
+    opening = opening_balance_total(accounts, opening_balances or {}, as_of, display)
     dated = contributions.lazy().filter(pl.col("date").dt.date() <= as_of)
     contributed = _with_converted_amount(dated, display).select(pl.col("amount").sum().fill_null(0.0))
     total_contributed = contributed.collect().item()
-    return net_income - float(total_contributed)
+    return opening + net_income - float(total_contributed)

@@ -552,11 +552,11 @@ function MoneyTab() {
         </Definition>
         <p>
           Alongside every goal, the app also tracks{' '}
-          <span className="font-medium text-foreground">unallocated money</span> — everything you've earned minus
-          everything you've spent, minus whatever you've already put toward any goal. This is never stored as if it were
-          its own goal; it's a number computed fresh each time, the leftover after every real goal's contributions are
-          subtracted out. It shows up as its own slice in a few charts for convenience, but it has no contributions of
-          its own and nothing writes to it directly.
+          <span className="font-medium text-foreground">unallocated money</span> — whatever your accounts already held
+          when you started tracking, plus everything you've earned, minus everything you've spent, minus whatever you've
+          already put toward any goal. This is never stored as if it were its own goal; it's a number computed fresh
+          each time, the leftover after every real goal's contributions are subtracted out. It shows up as its own slice
+          in a few charts for convenience, but it has no contributions of its own and nothing writes to it directly.
         </p>
         <p>
           Two optional automations build on top of this, and a goal's own contribution history is kept on a dedicated

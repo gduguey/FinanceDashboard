@@ -1129,3 +1129,73 @@ def test_simulate_contribution_within_unallocated_does_not_flag(client, db_sessi
         json={"goal_id": "emergency-fund", "date": "2026-06-15", "amount": 500.0},
     )
     assert response.json()["exceeds_unallocated"] is False
+
+
+def test_goals_summary_counts_an_opening_balance_the_ledger_never_saw(client, db_session) -> None:
+    account_id = _import_checking(client)
+    _create_goal(db_session)
+    response = client.put(
+        f"/api/v1/accounting/accounts/{account_id}/opening-balance",
+        json={"account_id": account_id, "amount": 10000.0, "as_of_date": "2026-01-01T00:00:00"},
+    )
+    assert response.status_code == 200
+
+    summary = client.get("/api/v1/accounting/goals/summary", params={"as_of": "2026-06-30"}).json()
+    # 10,000 already in the account before tracking started, plus 3,000 of imported income.
+    assert summary["unallocated"] == pytest.approx(13000.0)
+
+
+def test_the_contribution_gate_sees_the_same_opening_balance_the_summary_shows(client, db_session) -> None:
+    account_id = _import_checking(client)
+    _create_goal(db_session)
+    client.put(
+        f"/api/v1/accounting/accounts/{account_id}/opening-balance",
+        json={"account_id": account_id, "amount": 10000.0, "as_of_date": "2026-01-01T00:00:00"},
+    )
+
+    # 5,000 exceeds the 3,000 of income on its own, and is well within the
+    # 13,000 that is actually there — the gate has to agree with the display.
+    simulated = client.post(
+        "/api/v1/accounting/goals/simulate-contribution",
+        json={"goal_id": "emergency-fund", "date": "2026-06-15", "amount": 5000.0},
+    ).json()
+    assert simulated["unallocated_as_of_date"] == pytest.approx(13000.0)
+    assert simulated["exceeds_unallocated"] is False
+
+
+def test_the_contribution_gate_and_the_summary_agree_on_non_usd_money(client, monkeypatch, db_session) -> None:
+    """A3f: the gate used to drop every non-USD row instead of converting it.
+
+    Three of the four callers of `unallocated_balance` passed no
+    `DisplayCurrency`, so the default `{"USD": 1.0}` left-joined a EUR row
+    to a null rate, nulled its amount, and the sum skipped it. The gate
+    therefore saw more money than the summary displayed, by exactly the
+    non-USD contributions.
+    """
+    monkeypatch.setattr(
+        exchange_rates, "fetch_rate_history", lambda config, history_years=2, session=None: _fake_rate_history()
+    )
+    exchange_rates.update_rate_history_cache(accounting_api.state.config)
+    today = date.today()
+    _import_checking(client)
+    _create_goal(db_session)
+    client.post(
+        "/api/v1/accounting/goal-contributions",
+        json={
+            "goal_id": "emergency-fund",
+            "date": f"{today.isoformat()}T00:00:00",
+            "amount": 100.0,
+            "currency": "EUR",
+        },
+    )
+
+    summary = client.get("/api/v1/accounting/goals/summary").json()
+    simulated = client.post(
+        "/api/v1/accounting/goals/simulate-contribution",
+        json={"goal_id": "emergency-fund", "date": today.isoformat(), "amount": 10.0},
+    ).json()
+
+    # 1 EUR = 2 USD smoothed, so the 100 EUR contribution is 200 USD off the
+    # 3,000 USD of income. Skipping it entirely would leave 3,000 here.
+    assert summary["unallocated"] == pytest.approx(2800.0)
+    assert simulated["unallocated_as_of_date"] == pytest.approx(summary["unallocated"])

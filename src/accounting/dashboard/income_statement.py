@@ -18,13 +18,13 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from accounting.ledger.currency import DisplayCurrency
+from accounting.models import VIRTUAL_ACCOUNT_KINDS
 
 if TYPE_CHECKING:
     from datetime import date
 
     from accounting.models import Account, Category
 
-_VIRTUAL_KINDS = ["income_source", "expense_payee"]
 UNCATEGORIZED_INCOME_ID = "uncategorized:income-category"
 UNCATEGORIZED_EXPENSE_ID = "uncategorized:expense-category"
 
@@ -74,7 +74,7 @@ def real_income_expense_legs(
     """
     lazy = postings.lazy()
     has_link_column = "is_linked_transfer" in lazy.collect_schema().names()
-    virtual_ids = [account.account_id for account in accounts.values() if account.kind in _VIRTUAL_KINDS]
+    virtual_ids = [account.account_id for account in accounts.values() if account.kind in VIRTUAL_ACCOUNT_KINDS]
     sibling_flags = (
         lazy
         .select("transaction_id", "account_id")
