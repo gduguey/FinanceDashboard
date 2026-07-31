@@ -221,7 +221,10 @@ jobs:
   tag:
     name: Tag release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
+    # Every gate, not just the unit suite. A tag is the thing `deploy.sh` reads
+    # and the thing a rollback names, so a version must not be able to exist
+    # for a commit whose tenant-isolation or latency job failed.
+    needs: [test, migrations, performance]
     runs-on: ubuntu-latest
     permissions:
       contents: write
