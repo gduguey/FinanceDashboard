@@ -224,6 +224,28 @@ describe('the insights drilldown', () => {
     )
   })
 
+  // The period bar stays live above this card. A slice selected against March
+  // names March's total, and that number does not re-derive when the window
+  // moves — nor would a page offset of 50 survive into a smaller April.
+  it('returns to the chart when the period bar moves under it', async () => {
+    const { rerender } = renderPie()
+    await drillIntoGroceries()
+    await screen.findByText(/Supermarket/)
+
+    rerender(
+      <CategoryDrilldownPie
+        categoryTotals={[GROCERIES]}
+        scope={{ ...SCOPE, start: '2026-04-01', end: '2026-04-30' }}
+        accounts={ACCOUNTS}
+        isLoading={false}
+        displayCurrency="USD"
+      />,
+    )
+
+    expect(screen.queryByText(/Supermarket/)).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Groceries/ })).toBeInTheDocument()
+  })
+
   it('spells “uncategorized” with the wire’s sentinel and narrows by no subcategory', async () => {
     vi.mocked(accountingApi.postingsPage).mockResolvedValue(
       page([posting({ posting_id: 'p1', category_id: null, subcategory_id: null })], 1),

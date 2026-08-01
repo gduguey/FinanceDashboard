@@ -1,5 +1,5 @@
 import { ChevronRight } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { PieChartLegend } from '@/components/shared/PieChartLegend'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
@@ -348,6 +348,20 @@ export function CategoryDrilldownPie({
   const [scope, setScope] = useState<Scope>({})
   const [showPercent, setShowPercent] = useState(false)
   const [selected, setSelected] = useState<SelectedSubcategory | null>(null)
+
+  // The period bar sits above this card and stays live while the drilldown is
+  // open, so changing the window, account or tag has to close it. Two reasons,
+  // both of them a wrong number rather than a stale one: `selection.total` was
+  // captured from a ring aggregated over the *old* window and does not
+  // re-derive, and the table's page offset would survive into a collection
+  // that may now be smaller than it — which reads as "nothing matches". The
+  // transactions table resets its offset on the same signal.
+  const scopeFingerprint = JSON.stringify(periodScope)
+  const lastScope = useRef(scopeFingerprint)
+  if (lastScope.current !== scopeFingerprint) {
+    lastScope.current = scopeFingerprint
+    if (selected) setSelected(null)
+  }
 
   const rings = buildRings(categoryTotals, scope)
   const bandWidth = rings.length ? (OUTER_END - INNER_START) / rings.length : 0
