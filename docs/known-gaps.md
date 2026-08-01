@@ -38,11 +38,16 @@ only exists because a request can commit mid-flight.
 **Why deferred (again, out of the API-contract PR):** two concrete blockers, not
 just size.
 
-1. `POST /api/v1/trades/sync` deliberately depends on mid-request commits for
-   partial-success semantics: `sync_ibkr_account` commits per successful step and
-   rolls back per failed one, then `src/trades/api/routers/sync.py` re-arms
-   RLS and keeps reading. One commit at request end would turn a partly-successful
-   sync into all-or-nothing — a behaviour change, not a refactor.
+1. ~~`POST /api/v1/trades/sync` deliberately depends on mid-request commits for
+   partial-success semantics~~ — **removed by PR F.** The sync no longer runs
+   inside a request at all: it runs on a background session
+   (`trades.api.routers.sync._execute_run`), where the per-step commits, the
+   rollback per failed step and the RLS re-arm all still happen and are
+   tested. Nothing about a request-scoped transaction touches them any more.
+   The original blocker read: `sync_ibkr_account` commits per successful step
+   and rolls back per failed one, then `src/trades/api/routers/sync.py`
+   re-arms RLS and keeps reading; one commit at request end would turn a
+   partly-successful sync into all-or-nothing.
 2. Committing at request end commits partial writes for any handler that catches
    an error and still returns normally (e.g. the per-item commits at
    `imports.py` and `postings.py`). Today those partial writes are rolled
@@ -50,9 +55,42 @@ just size.
 
 Neither is hard; both need failure-injection tests, and both are behavioural
 rather than contractual — so this belongs in its own PR rather than one whose
-subject is the HTTP contract.
+subject is the HTTP contract. **One of the two is now gone** (see above), which
+is what D3 in `remaining-work.md` predicted D2 would do for free. The second
+blocker stands, so the item does too.
 
-## 2. `POST /api/v1/trades/sync` is synchronous, and its progress is per-process
+## 2. `POST /api/v1/trades/sync` is synchronous, and its progress is per-process — FIXED
+
+**Fixed in PR F.** The recorded fix direction shipped as written:
+`POST /api/v1/trades/sync-runs` answers `202 Accepted` with a `Location`,
+the run is a row in `trades.sync_runs`, and a `GET` on that address reports
+its step and percent and then its result. Both consequences below are
+closed — a client can poll and can recover a run it lost the id of
+(`GET /sync-runs`, newest first), and progress is readable by any worker
+because it is a row rather than a dict.
+
+Three things the entry did not anticipate. The per-user `threading.Lock`
+beside the progress dict had **exactly the same defect** and is gone with
+it: one sync per user is now `uq_sync_runs_active_user`, a partial unique
+index, so a second start is refused by Postgres rather than by whichever
+worker the request landed on — and that refusal is a `409` carrying its own
+`Location`, which is what lets a reloaded page find the run again. The
+runner is a lifespan-owned `ThreadPoolExecutor` rather than Starlette's
+`BackgroundTasks`, which is awaited inside the ASGI call and would have held
+the connection that returned `202` for the whole sync and blocked graceful
+shutdown. And an in-process runner cannot survive `docker stop`, so startup
+sweeps runs left `queued`/`running` — without that, one restart mid-sync
+would wedge that user's slot for ever, since the index counts them as in
+flight.
+
+The partial-success contract survived deliberately and is tested both ways:
+a failed broker leg still ends the run `succeeded` with the failure in
+`steps`, exactly as the synchronous endpoint answered 200 with a failed
+step, and `failed` means only that the runner did not finish. That was the
+property most at risk in moving the work off the request path, and it is one
+of gap 1's two blockers — see the note there.
+
+The original entry follows.
 
 **Where:** `sync` in `src/trades/api/routers/sync.py`;
 `_report_sync_progress` in `src/trades/api/dependencies.py`.
@@ -84,7 +122,37 @@ with a lie. Note the `303 See Other` originally proposed alongside this is
 `fetch()` follows redirects invisibly, so the SPA could not distinguish it from
 the 200 it already gets.
 
-## 3. First-login lockout if the Clerk `user.created` webhook is slow or lost
+## 3. First-login lockout if the Clerk `user.created` webhook is slow or lost — FIXED
+
+**Fixed in PR F**, as the entry proposed: `resolve_current_user_id`
+provisions on a lookup miss, through a Clerk Backend API call for the email
+the session token does not carry. Only on a miss, so no provisioned user
+pays for an external call; bounded by a timeout *and* by `retries=None`,
+because the SDK's default backoff has a one-hour `max_elapsed_time`; and
+fails closed on every path — unreachable, erroring, no such user, banned,
+locked, deprovisioned or no primary email all answer the identical 401 an
+unprovisioned session already got, with only the server log telling them
+apart.
+
+Two things the entry did not contain. **The concurrency hazard was not the
+one anybody expected.** Two simultaneous first requests do not collide:
+each mints its own `uuid4` and `users.email` carries no unique constraint,
+so both `users` rows insert happily and only `external_identities` conflicts
+— silently, via `ON CONFLICT DO NOTHING`. The loser used to walk away with
+its own orphaned id, stranding every row that request went on to write under
+an id no later sign-in resolves to. A duplicate-key error would have been
+the good outcome. `link_identity` now returns the id actually linked and
+`db.provisioning` rolls its own insert back when it lost, which also closes
+the orphan case `webhooks` had documented as acceptable.
+
+**And nothing can be resurrected.** `_deactivate_user` clears
+`users.is_active` and leaves the `external_identities` row alone, so a
+deactivated account still *hits* the lookup and provisioning never runs for
+it. That is now load-bearing rather than incidental and has a test of its
+own; re-inviting the same person in Clerk mints a new Clerk id and therefore
+a new, separate user, which is what `db.models.User` says should happen.
+
+The original entry follows.
 
 **Where:** `resolve_current_user_id` in `src/trades/api/auth.py`; user
 provisioning in `src/trades/api/webhooks.py`.
@@ -105,7 +173,31 @@ the auth path.
 path (every request's auth check), so it deserves careful, isolated implementation
 and tests — not a quick bolt-on.
 
-## 4. Two read-modify-write paths can lose a concurrent write
+## 4. Two read-modify-write paths can lose a concurrent write — HALF FIXED
+
+**(2) is fixed in PR F** and (1) is not, which is the same split
+`remaining-work.md` records as A4b and A4a: the automation reorder was
+dropped on the owner's call (one user, two tabs, a deliberate drag in both
+at once, and a reorder that visibly does not stick), and the target
+allocation was kept.
+
+The fix took the second of the two directions below and not the first.
+`dashboard.merge_target_allocation` is one `INSERT ... ON CONFLICT DO
+UPDATE` whose `SET` is `target_allocation_pct || :assignments - :removals`,
+so the read and the write are one statement and two patches of different
+symbols compose *by construction* — `ON CONFLICT DO UPDATE` re-reads the row
+it updates, so the second one's merge lands on the first one's committed
+value. No lock, no retry, no 409, and no version column, which PR 5 had
+already ruled out for this row (see gap 12).
+
+Two details worth keeping. `self_group()` around the concatenation is
+load-bearing: Postgres binds binary `-` tighter than `||`, so without it the
+deletion applies to the incoming patch instead of to the stored map and a
+delete-only patch silently does nothing. And the handler no longer rewrites
+all twelve columns of the settings row through `save_settings`, so a
+concurrent HYSA or timezone save is no longer collateral damage.
+
+The original entry follows.
 
 **Where:** `_reorder_automations` in `src/accounting/api/routers/goals.py`
 (behind `PUT /goal-automations/{contributions,withdrawals}/order`);
@@ -466,7 +558,13 @@ worse than duplicating one. Write the contract into
 materialized resolved projection of gap 6, since both change how a posting is
 identified and addressed.
 
-## 12. Known gap 4's lost updates are still open after the savepoint work
+## 12. Known gap 4's lost updates are still open after the savepoint work — HALF FIXED
+
+**Half closed in PR F**, and the refinement below is what shipped:
+`patch_target_allocation` got the database-side `jsonb` merge, not a version
+column. The other path, the automation reorder, was dropped on the owner's
+call rather than fixed — see gap 4 and `remaining-work.md`'s A4a. What
+follows is what this entry said.
 
 PR 5 fixed `merge_by_natural_key`'s concurrent first insert (savepoint-scoped
 retry, bounded by `NATURAL_KEY_MERGE_ATTEMPTS`), which was the same concurrency
