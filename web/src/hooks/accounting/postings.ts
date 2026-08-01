@@ -57,6 +57,27 @@ export const usePostingSummary = () => useQuery({ queryKey: keys.postingCount, q
  */
 export const usePostingMonths = () => useQuery({ queryKey: keys.postingMonths, queryFn: accountingApi.postingMonths })
 
+/**
+ * The real leg of each named transaction, for a screen that holds only ids.
+ *
+ * The Rules page's three list tabs each render "one transaction as a small
+ * card" for a set the user authored — a rule's links, the manual pairs, a
+ * rule's exclusions — and knew nothing but the transaction id. They used to
+ * index the whole resolved ledger to turn one into a row.
+ *
+ * The ids are sorted into the query key so two callers asking for the same
+ * set in a different order share one cache entry, and skipped entirely when
+ * the set is empty — a fresh install has no rules and should make no request.
+ */
+export const useTransactionLegs = (transactionIds: string[]) => {
+  const sorted = [...new Set(transactionIds)].sort()
+  return useQuery({
+    queryKey: keys.transactionLegs(sorted),
+    queryFn: () => accountingApi.transactionLegs(sorted),
+    enabled: sorted.length > 0,
+  })
+}
+
 export const useTransferSuggestions = (windowDays?: number) =>
   useQuery({
     queryKey: [...keys.transferSuggestions, windowDays ?? {}],

@@ -82,6 +82,7 @@ export {
   useRestoreSuggestion,
   useSetPostingOverride,
   useSetPostingSplit,
+  useTransactionLegs,
   useTransferSuggestions,
   useValidatePending,
 } from '@/hooks/accounting/postings'

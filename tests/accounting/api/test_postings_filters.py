@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from http_api.pagination import PAGE_LIMIT_MAX
 from tests.accounting.conftest import ACCOUNTING, _posting_on
 
 if TYPE_CHECKING:
@@ -345,6 +346,44 @@ def test_a_linked_row_carries_its_partners_leg(seeded_ledger, client) -> None:
 def test_an_unlinked_row_carries_no_partner(seeded_ledger, client) -> None:
     page = _page(client, limit=500)
     assert all(row["linked_leg"] is None for row in page["items"] if not row["is_linked_transfer"])
+
+
+def _legs(client: TestClient, transaction_ids: list[str]) -> dict:
+    response = client.post(f"{ACCOUNTING}/postings/legs", json={"transaction_ids": transaction_ids})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_legs_lookup_answers_the_row_a_person_would_recognise(seeded_ledger, client) -> None:
+    """What the Rules page draws for a transaction it only knows the id of."""
+    groceries = _posting_on(client, seeded_ledger["groceries"]["account_id"], "CORNER SHOP")
+    leg = _legs(client, [groceries["transaction_id"]])[groceries["transaction_id"]]
+
+    assert leg["transaction_id"] == groceries["transaction_id"]
+    assert leg["description"] == "CORNER SHOP GROCERIES"
+    assert leg["account_id"] not in PLACEHOLDERS
+
+
+def test_the_legs_lookup_never_answers_with_a_placeholder(seeded_ledger, client) -> None:
+    """A placeholder leg is never rendered as a row, so it is never the leg to show for a transaction."""
+    transaction_ids = [row["transaction_id"] for row in _rendered(_page(client, limit=500))]
+    legs = _legs(client, transaction_ids)
+
+    assert legs
+    assert all(leg["account_id"] not in PLACEHOLDERS for leg in legs.values())
+
+
+def test_the_legs_lookup_omits_a_transaction_it_cannot_find(seeded_ledger, client) -> None:
+    """The caller is drawing a list; a vanished row is one it should not draw, not an error."""
+    assert _legs(client, ["txn:does-not-exist"]) == {}
+
+
+def test_the_legs_lookup_refuses_a_list_longer_than_a_page(seeded_ledger, client) -> None:
+    """Bounded rather than truncated — a silently shortened answer is what the bound exists to avoid."""
+    response = client.post(
+        f"{ACCOUNTING}/postings/legs", json={"transaction_ids": [f"txn:{n}" for n in range(PAGE_LIMIT_MAX + 1)]}
+    )
+    assert response.status_code == 422, response.text
 
 
 def test_a_bulk_action_resolves_its_own_set_from_the_filter(seeded_ledger, client) -> None:

@@ -1724,6 +1724,62 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/accounting/postings/legs': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Transaction Legs
+     * @description Look up the real (non-placeholder) leg of each named transaction, keyed by transaction.
+     *
+     *     The Rules page renders "one transaction as a small card" in three of its
+     *     four tabs — the transactions a rule links, the manually-linked pairs, and
+     *     the ones excluded from a rule. Each names transactions and nothing else,
+     *     so each needs the row a person would recognise: the date, the account,
+     *     the description and the amount. It used to get them by holding the whole
+     *     resolved ledger and indexing it, which is the fetch C1 removed from every
+     *     other screen.
+     *
+     *     **A `POST` for a read, deliberately.** The caller names an arbitrary set
+     *     of ids it already holds — a few hundred UUIDs for a well-used rule — and
+     *     that does not survive a query string: `http-api-contract.md`'s own
+     *     bounded-reads rule assumes a window, and there is no window here to page.
+     *     Bounded instead by `TransactionLegsRequest`'s `max_length`, which is
+     *     `PAGE_LIMIT_MAX`, so the response can never be larger than one page of
+     *     `GET /postings`. The same exception `POST /postings/matching-ids` makes,
+     *     for the same reason, and both say so rather than leaving it to look like
+     *     a lapse.
+     *
+     *     A transaction with no real leg — merged away, or its statement
+     *     re-imported — is simply absent from the result rather than being an
+     *     error: the caller is rendering a list and a vanished row is a row it
+     *     should not draw.
+     *
+     *     Parameters
+     *     ----------
+     *     payload
+     *         The transactions to look up. At most `PAGE_LIMIT_MAX`; a longer list
+     *         is a 422 rather than a truncation.
+     *
+     *     Returns
+     *     -------
+     *     dict[str, LinkedLeg]
+     *         One entry per transaction that has a real leg, keyed by its natural
+     *         key. The same shape and the same query `GET /postings` uses for
+     *         `PostingRow.linked_leg`.
+     */
+    post: operations['post_transaction_legs_api_v1_accounting_postings_legs_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/accounting/ledger/export': {
     parameters: {
       query?: never
@@ -7449,6 +7505,14 @@ export interface components {
       local_zone?: string | null
     }
     /**
+     * TransactionLegsRequest
+     * @description Which transactions to look the real leg up for — `POST /postings/legs`' body.
+     */
+    TransactionLegsRequest: {
+      /** Transaction Ids */
+      transaction_ids?: string[]
+    }
+    /**
      * TransferLink
      * @description A confirmed pairing of two transactions as the two sides of one real-world transfer.
      */
@@ -7595,12 +7659,20 @@ export interface components {
      * @description One likely internal transfer no rule has resolved yet.
      *
      *     See `ledger.transfers.find_unmatched_transfer_candidates`.
+     *
+     *     Carries both the postings it matched and the transactions they belong
+     *     to. The match is between postings, but the action a user takes on it —
+     *     `POST /transfer-links` — names transactions, so a client without the two
+     *     `transaction_id`s has to find them itself. The one that had to used to
+     *     hold the entire resolved ledger to build a two-entry lookup.
      */
     TransferSuggestion: {
       /** Account Id */
       account_id: string
       /** Posting Id */
       posting_id: string
+      /** Transaction Id */
+      transaction_id: string
       /**
        * Posted At
        * Format: date-time
@@ -7617,6 +7689,8 @@ export interface components {
       other_posted_at: string
       /** Other Posting Id */
       other_posting_id: string
+      /** Other Transaction Id */
+      other_transaction_id: string
       /** Other Description */
       other_description: string
       /** Amount */
@@ -9523,6 +9597,41 @@ export interface operations {
         }
         content: {
           'application/json': string[]
+        }
+      }
+    }
+  }
+  post_transaction_legs_api_v1_accounting_postings_legs_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TransactionLegsRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            [key: string]: components['schemas']['LinkedLeg']
+          }
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }

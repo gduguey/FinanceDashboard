@@ -50,7 +50,7 @@ from accounting.models import (
     TransferLinkSource,
 )
 from db.money import ZERO, Money, Rate
-from http_api.pagination import PAGE_LIMIT_DEFAULT, Page
+from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX, Page
 
 
 class AccountingStoreResponse(BaseModel):
@@ -875,6 +875,12 @@ class PostingRow(Posting):
     top of the one the projection already has."""
 
 
+class TransactionLegsRequest(BaseModel):
+    """Which transactions to look the real leg up for — `POST /postings/legs`' body."""
+
+    transaction_ids: list[str] = Field(default_factory=list, max_length=PAGE_LIMIT_MAX)
+
+
 class LinkedLeg(BaseModel):
     """The other side of a confirmed transfer, as its badge and detail popup need it.
 
@@ -1080,15 +1086,23 @@ class TransferSuggestion(BaseModel):
     """One likely internal transfer no rule has resolved yet.
 
     See `ledger.transfers.find_unmatched_transfer_candidates`.
+
+    Carries both the postings it matched and the transactions they belong
+    to. The match is between postings, but the action a user takes on it —
+    `POST /transfer-links` — names transactions, so a client without the two
+    `transaction_id`s has to find them itself. The one that had to used to
+    hold the entire resolved ledger to build a two-entry lookup.
     """
 
     account_id: str
     posting_id: str
+    transaction_id: str
     posted_at: datetime
     description: str
     other_account_id: str
     other_posted_at: datetime
     other_posting_id: str
+    other_transaction_id: str
     other_description: str
     amount: float
     suggestion_id: str

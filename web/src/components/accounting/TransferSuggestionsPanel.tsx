@@ -19,7 +19,7 @@ import { usePersistedState } from '@/hooks/usePersistedState'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { formatCurrency, formatDate, signColor } from '@/lib/format'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import type { Account, Posting, TransferRule, TransferSuggestion } from '@/types/accounting'
+import type { Account, TransferRule, TransferSuggestion } from '@/types/accounting'
 
 function suggestionKey(suggestion: TransferSuggestion): string {
   return suggestion.suggestion_id
@@ -200,11 +200,9 @@ function SuggestedRulePair({
 export function TransferSuggestionsPanel({
   accounts,
   rules,
-  postings,
 }: {
   accounts: Record<string, Account>
   rules: TransferRule[]
-  postings: Posting[]
 }) {
   const [windowDays, setWindowDays] = usePersistedState('accounting.transfer-suggestions.window-days', 3)
   const [windowDaysDraft, setWindowDaysDraft] = useState(String(windowDays))
@@ -214,19 +212,11 @@ export function TransferSuggestionsPanel({
   const dismissSuggestion = useDismissSuggestion()
   const createTransferLink = useCreateTransferLink()
   const { sorted, sort, toggleSort } = useSortableRows(data ?? [], 'posted_at')
-  // A suggestion pairs two postings, never transactions directly — needed
-  // to turn "link this pair" into the transaction ids `POST /transfer-links`
-  // actually takes.
-  const transactionIdByPostingId = useMemo(() => {
-    const lookup = new Map<string, string>()
-    for (const posting of postings) lookup.set(posting.posting_id, posting.transaction_id)
-    return lookup
-  }, [postings])
-
+  // A suggestion pairs two postings, never transactions directly — but it
+  // carries both transaction ids, which is what `POST /transfer-links` takes.
+  // This used to hold the entire resolved ledger to build a two-entry lookup.
   function transactionIdsFor(suggestion: TransferSuggestion) {
-    const transactionId = transactionIdByPostingId.get(suggestion.posting_id)
-    const otherTransactionId = transactionIdByPostingId.get(suggestion.other_posting_id)
-    return transactionId && otherTransactionId ? { transactionId, otherTransactionId } : null
+    return { transactionId: suggestion.transaction_id, otherTransactionId: suggestion.other_transaction_id }
   }
 
   function linkPair(transactionId: string, otherTransactionId: string) {

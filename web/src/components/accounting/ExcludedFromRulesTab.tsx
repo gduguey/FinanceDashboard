@@ -9,14 +9,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { usePatchTransferRule } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
-import {
-  type LinkedPairRow,
-  pairTransferRows,
-  realLegByTransactionId,
-  type TransferRowInfo,
-} from '@/lib/transferRowInfo'
+import { type LinkedPairRow, pairTransferRows, type TransferRowInfo } from '@/lib/transferRowInfo'
 import { ruleUpdateFromRule } from '@/lib/transferRules'
-import type { Account, Posting, TransferRule } from '@/types/accounting'
+import type { Account, TransferRule } from '@/types/accounting'
 
 // A rule's `excluded_transaction_ids` names transactions, never postings —
 // this looks up each one's own real (non-placeholder) leg to show a person
@@ -49,11 +44,11 @@ function excludedRowsForRule(
 export function ExcludedFromRulesTab({
   rules,
   accounts,
-  postings,
+  legByTransactionId,
 }: {
   rules: TransferRule[]
   accounts: Record<string, Account>
-  postings: Posting[]
+  legByTransactionId: Map<string, TransferRowInfo>
 }) {
   const patchRule = usePatchTransferRule()
   const rulesWithExclusions = useMemo(
@@ -61,7 +56,6 @@ export function ExcludedFromRulesTab({
     [rules],
   )
   const { sorted, sort, toggleSort } = useSortableRows(rulesWithExclusions, 'priority')
-  const legByTransactionId = useMemo(() => realLegByTransactionId(postings, accounts), [postings, accounts])
   // Pairing is computed once per rule here (not just on expand) so the
   // "Excluded" count column below and the expanded detail tables always
   // agree on what counts as one transfer — a rule's `excluded_transaction_ids`

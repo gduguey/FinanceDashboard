@@ -9,10 +9,10 @@ import { useRemoveTransferLink } from '@/hooks/useAccountingData'
 import {
   type LinkedPairRow,
   linkedPairRowFromLink,
-  realLegByTransactionId,
   TRANSFER_UNLINK_WARNING_PAIR,
+  type TransferRowInfo,
 } from '@/lib/transferRowInfo'
-import type { Account, Posting, TransferLink } from '@/types/accounting'
+import type { TransferLink } from '@/types/accounting'
 
 // Every transfer link a user made directly, rather than one a rule matched
 // — `TransferRulesTab`'s own "linked by this rule" table groups the
@@ -22,15 +22,12 @@ import type { Account, Posting, TransferLink } from '@/types/accounting'
 // behave identically.
 export function ManualTransfersTab({
   transferLinks,
-  accounts,
-  postings,
+  legByTransactionId,
 }: {
   transferLinks: TransferLink[]
-  accounts: Record<string, Account>
-  postings: Posting[]
+  legByTransactionId: Map<string, TransferRowInfo>
 }) {
   const removeTransferLink = useRemoveTransferLink()
-  const legByTransactionId = useMemo(() => realLegByTransactionId(postings, accounts), [postings, accounts])
   const rows = useMemo(() => {
     const result: LinkedPairRow[] = []
     for (const link of transferLinks) {

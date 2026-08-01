@@ -42,6 +42,7 @@ import type {
   ImportResult,
   InterestAccountRow,
   LedgerExportPage,
+  LinkedLeg,
   LlmSettings,
   LlmSettingsUpdate,
   LlmUsage,
@@ -351,6 +352,13 @@ export const accountingApi = {
   // the whole resident ledger, which was only ever cheap while something
   // else was already holding it.
   postingMonths: () => request<string[]>('/postings/months'),
+  // The real leg of each named transaction, for the three Rules tabs that
+  // render "one transaction as a small card" and know nothing but the id. A
+  // POST for a read because the caller names an arbitrary set it already
+  // holds, which does not survive a query string; bounded server-side at
+  // `PAGE_LIMIT_MAX` ids, so the answer is never larger than one page.
+  transactionLegs: (transactionIds: string[]) =>
+    request<Record<string, LinkedLeg>>('/postings/legs', jsonInit('POST', { transaction_ids: transactionIds })),
   // Same paging loop as `postings` above, and for the same reason — an
   // export that silently stopped at the cap would write a partial backup to
   // a file the user believes is complete. Its `window_unit` is `"posting"`

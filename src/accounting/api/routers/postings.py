@@ -19,10 +19,12 @@ from accounting.api.api_models import (
     DuplicateGroup,
     FilteredBulkRequest,
     LedgerExportPage,
+    LinkedLeg,
     PostingMergeUpsert,
     PostingPage,
     PostingQuery,
     PostingRow,
+    TransactionLegsRequest,
     TransferLinkCreate,
     TransferSuggestion,
     ValidatePendingResult,
@@ -182,6 +184,54 @@ def get_posting_months(
     """
     drain(session, user_id)
     return distinct_months(session, user_id)
+
+
+@router.post("/postings/legs")
+def post_transaction_legs(
+    payload: TransactionLegsRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, LinkedLeg]:
+    """Look up the real (non-placeholder) leg of each named transaction, keyed by transaction.
+
+    The Rules page renders "one transaction as a small card" in three of its
+    four tabs — the transactions a rule links, the manually-linked pairs, and
+    the ones excluded from a rule. Each names transactions and nothing else,
+    so each needs the row a person would recognise: the date, the account,
+    the description and the amount. It used to get them by holding the whole
+    resolved ledger and indexing it, which is the fetch C1 removed from every
+    other screen.
+
+    **A `POST` for a read, deliberately.** The caller names an arbitrary set
+    of ids it already holds — a few hundred UUIDs for a well-used rule — and
+    that does not survive a query string: `http-api-contract.md`'s own
+    bounded-reads rule assumes a window, and there is no window here to page.
+    Bounded instead by `TransactionLegsRequest`'s `max_length`, which is
+    `PAGE_LIMIT_MAX`, so the response can never be larger than one page of
+    `GET /postings`. The same exception `POST /postings/matching-ids` makes,
+    for the same reason, and both say so rather than leaving it to look like
+    a lapse.
+
+    A transaction with no real leg — merged away, or its statement
+    re-imported — is simply absent from the result rather than being an
+    error: the caller is rendering a list and a vanished row is a row it
+    should not draw.
+
+    Parameters
+    ----------
+    payload
+        The transactions to look up. At most `PAGE_LIMIT_MAX`; a longer list
+        is a 422 rather than a truncation.
+
+    Returns
+    -------
+    dict[str, LinkedLeg]
+        One entry per transaction that has a real leg, keyed by its natural
+        key. The same shape and the same query `GET /postings` uses for
+        `PostingRow.linked_leg`.
+    """
+    drain(session, user_id)
+    return linked_legs(session, user_id, payload.transaction_ids)
 
 
 @router.get("/ledger/export")

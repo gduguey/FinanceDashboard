@@ -79,6 +79,7 @@ export const keys = {
   postingCount: [...prefixes.postings, 'count'],
   postingMonths: [...prefixes.postings, 'months'],
   postingsPage: (query: object) => [...POSTINGS_PAGE_PREFIX, query],
+  transactionLegs: (transactionIds: readonly string[]) => [...prefixes.postings, 'legs', transactionIds],
   transferSuggestions: prefixes.transferSuggestions,
   duplicateSuggestions: prefixes.duplicateSuggestions,
   dismissedSuggestions: prefixes.dismissedSuggestions,

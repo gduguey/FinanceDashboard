@@ -61,10 +61,12 @@ _AMOUNT_TOLERANCE = 1e-6
 _CANDIDATE_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     "account_id": pl.Utf8,
     "posting_id": pl.Utf8,
+    "transaction_id": pl.Utf8,
     "posted_at": pl.Datetime("us"),
     "description": pl.Utf8,
     "other_account_id": pl.Utf8,
     "other_posting_id": pl.Utf8,
+    "other_transaction_id": pl.Utf8,
     "other_posted_at": pl.Datetime("us"),
     "other_description": pl.Utf8,
     "amount": pl.Float64,
@@ -131,12 +133,13 @@ def find_unmatched_transfer_candidates(
     Returns
     -------
     polars.DataFrame
-        Columns `account_id`, `posting_id`, `posted_at`, `description`,
-        `other_account_id`, `other_posting_id`, `other_posted_at`,
-        `other_description`, `amount` — one row per candidate pair,
-        `amount` signed from `account_id`'s side. The two description
-        columns are for the caller to propose a `TransferRule` from (see
+        One row per candidate pair, in `_CANDIDATE_SCHEMA`'s columns, with
+        `amount` signed from `account_id`'s side. The two description columns
+        are for the caller to propose a `TransferRule` from (see
         `api.get_transfer_suggestions`), never read by the matching itself.
+        The two `transaction_id` columns are what `POST /transfer-links`
+        takes — a suggestion pairs postings, but a link joins transactions,
+        and the client used to hold the whole ledger purely to look that up.
     """
     linked_transaction_ids = {
         transaction_id
@@ -164,10 +167,12 @@ def find_unmatched_transfer_candidates(
     return matches.select(
         "account_id",
         "posting_id",
+        "transaction_id",
         "posted_at",
         "description",
         other_account_id="account_id_other",
         other_posting_id="posting_id_other",
+        other_transaction_id="transaction_id_other",
         other_posted_at="posted_at_other",
         other_description="description_other",
         amount="amount",

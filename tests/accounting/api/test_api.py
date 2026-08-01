@@ -1329,6 +1329,37 @@ def test_transfer_suggestions_finds_the_chase_card_payoff(client) -> None:
     assert suggestions[0]["other_description"]
 
 
+def test_a_transfer_suggestion_names_both_transactions_it_pairs(client) -> None:
+    """A suggestion matches postings; the link it becomes joins transactions, so it has to carry both.
+
+    Without these the only consumer had to fetch the whole resolved ledger to
+    build a two-entry `posting_id -> transaction_id` lookup.
+    """
+    _import_chase_checking(client)
+    credit_card_csv = (
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+        "06/29/2026,06/29/2026,Something else entirely,Other,Sale,70.00,\n"
+    )
+    _import_chase_credit_card(client, credit_card_csv)
+    suggestion = client.get("/api/v1/accounting/transfer-suggestions").json()[0]
+
+    by_posting = {row["posting_id"]: row["transaction_id"] for row in _postings(client)}
+    assert suggestion["transaction_id"] == by_posting[suggestion["posting_id"]]
+    assert suggestion["other_transaction_id"] == by_posting[suggestion["other_posting_id"]]
+    assert suggestion["transaction_id"] != suggestion["other_transaction_id"]
+
+    # And they are exactly what `POST /transfer-links` takes, which is the
+    # whole reason they are on the wire.
+    linked = client.post(
+        "/api/v1/accounting/transfer-links",
+        json={
+            "transaction_id_a": suggestion["transaction_id"],
+            "transaction_id_b": suggestion["other_transaction_id"],
+        },
+    )
+    assert linked.status_code == 201, linked.text
+
+
 def test_transfer_suggestions_respects_a_wider_window_days(client) -> None:
     _import_chase_checking(client)
     credit_card_csv = (
