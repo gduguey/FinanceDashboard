@@ -232,6 +232,10 @@ def _confirmed_primary_email(clerk_user_id: str) -> str:
         with Clerk(bearer_auth=settings.secret_key.get_secret_value()) as clerk:
             user = clerk.users.get(user_id=clerk_user_id, timeout_ms=PROVISIONING_TIMEOUT_MS, retries=None)
     except ClerkBaseError, httpx.HTTPError:
+        # (The missing parentheses are not a typo and cannot be added back:
+        # PEP 758 makes an unparenthesised `except A, B:` valid from Python
+        # 3.14, and `ruff format` at `target-version = "py314"` removes them.)
+        #
         # Both, and the second is not redundant. `ClerkBaseError` is the SDK's
         # own hierarchy — a 4XX/5XX response, an unparseable body — but a
         # request that never got a response does not go through it: with
