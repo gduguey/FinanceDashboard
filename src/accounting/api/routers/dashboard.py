@@ -29,17 +29,12 @@ from accounting.api.api_models import (
     ProjectionPoint,
     SpendCurvePoint,
 )
-from accounting.api.dependencies import (
-    _currencies_in_use,
-    _display_currency,
-    _flow_display_currency,
-    _resolved_postings,
-    _resolved_postings_for_aggregation,
-)
+from accounting.api.dependencies import _currencies_in_use, _display_currency, _flow_display_currency
 from accounting.dashboard import income_statement, interest, simulator
 from accounting.dashboard.net_worth import net_worth_summary
 from accounting.ledger.currency import convert
 from accounting.ledger.replay import account_balances_over_time
+from accounting.ledger.resolution import resolved_postings, resolved_postings_for_aggregation
 from accounting.models import VIRTUAL_ACCOUNT_KINDS, CurrencyCode
 from accounting.repositories.accounts import load_opening_balances
 from accounting.repositories.taxonomy import load_categories, load_other_assets
@@ -164,7 +159,7 @@ def get_interest_summary(
     -------
     list[InterestAccountRow]
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
     rows = interest.interest_summary(
         postings,
@@ -189,7 +184,7 @@ def get_net_worth(
     -------
     NetWorthSummary
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     accounts = seeded_accounts(session, user_id)
     has_external_investment = any(account.broker_connection_id is not None for account in accounts.values())
     resolved_as_of = as_of or datetime.now(tz=UTC).date()
@@ -251,7 +246,7 @@ def get_net_worth_history(
     list[NetWorthHistoryPoint]
         Oldest first.
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     accounts = seeded_accounts(session, user_id)
     other_assets = load_other_assets(session, user_id)
     opening_balances = load_opening_balances(session, user_id)
@@ -298,7 +293,7 @@ def get_net_worth_history_by_account(
     list[NetWorthHistoryByAccountPoint]
         `balance` already converted into `display_currency`.
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     opening_balances = load_opening_balances(session, user_id)
     currencies = _currencies_in_use(session, user_id)
     dates = pl.date_range(start, end, interval=f"{interval_days}d", eager=True).to_list()
@@ -352,7 +347,7 @@ def get_category_totals(
     -------
     list[CategoryTotalRow]
     """
-    postings = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
+    postings = resolved_postings_for_aggregation(session, user_id, since=start, until=end)
     parsed_account_ids = account_ids.split(",") if account_ids else None
     totals = collect_if_lazy(
         income_statement.category_totals(
@@ -383,7 +378,7 @@ def get_monthly_income_expense(
     -------
     list[MonthlyIncomeExpenseRow]
     """
-    postings = _resolved_postings_for_aggregation(session, user_id, since=start, until=end)
+    postings = resolved_postings_for_aggregation(session, user_id, since=start, until=end)
     rows = collect_if_lazy(
         income_statement.monthly_income_expense(
             postings,
@@ -412,7 +407,7 @@ def get_spend_curve(
     list[SpendCurvePoint]
     """
     since, until = income_statement.spend_curve_window(month, lookback_months)
-    postings = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
+    postings = resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     rows = collect_if_lazy(
         income_statement.spend_curve_vs_average(
             postings,

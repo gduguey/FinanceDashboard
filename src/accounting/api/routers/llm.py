@@ -18,9 +18,9 @@ from accounting.api.api_models import (
     PatternSuggestBulkRequest,
     VerifyResult,
 )
-from accounting.api.dependencies import _resolved_postings
 from accounting.ledger.patterns import match_patterns_bulk, matching_pattern
 from accounting.ledger.pending import stage_pending_suggestion
+from accounting.ledger.resolution import resolved_postings
 from accounting.llm import categorize
 from accounting.llm.gemini import GeminiProvider, verify_gemini_key
 from accounting.llm.mistral import MistralProvider, verify_mistral_key
@@ -313,7 +313,7 @@ def post_ai_suggest_category(
     HTTPException
         404 if the posting doesn't exist; 503 if no LLM provider is configured or every configured one failed.
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -375,7 +375,7 @@ def post_pattern_suggest_category(
     HTTPException
         404 if the posting doesn't exist.
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     target = postings.filter(pl.col("posting_id") == posting_id)
     if target.is_empty():
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -425,7 +425,7 @@ def post_pattern_suggest_category_bulk(
         How many postings got a staged suggestion.
     """
     allow_background_runtime(session, user_id)
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
     if targets.is_empty():
         return BulkSuggestResult(applied=0)

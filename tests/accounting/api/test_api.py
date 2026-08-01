@@ -1406,7 +1406,7 @@ def test_duplicate_suggestions_finds_the_same_purchase_imported_from_two_sources
 def test_monthly_income_expense_correctly_drops_a_duplicate_that_straddles_the_query_window(client) -> None:
     """A dashboard endpoint scoped to one month must still resolve a merge whose two sides are in different months.
 
-    `_resolved_postings` now passes `since`/`until` straight
+    `ledger.resolution.resolved_postings` now passes `since`/`until` straight
     through to `load_ledger`'s own SQL filter — safe even for a merge like
     this one (kept side dated the last day of June, duplicate dated the
     first day of July) because `apply_posting_merges` drops a duplicate
@@ -1926,7 +1926,7 @@ def test_postings_report_a_manual_transfer_override(client) -> None:
 
 
 def test_postings_suppress_via_rule_badge_when_a_manual_override_also_applies(client) -> None:
-    """A manual override is applied after rules (see `_resolved_postings_and_store`), so it always wins if both
+    """A manual override is applied after rules (see `ledger.resolution.apply_overlays`), so it always wins if both
 
     somehow apply to the same transaction — `resolved_by_transfer_rule_id` must not claim "via rule" when a
     manual override is what actually decided the account shown.

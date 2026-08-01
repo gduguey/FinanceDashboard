@@ -676,7 +676,7 @@ class PostingRow(Posting):
     `ManualOverride.account_id`, the same way `resolved_by_transfer_rule_id`
     is set on both legs of a rule-repointed one — and since a manual
     override is applied *after* rules in the resolution pipeline (see
-    `api.dependencies._resolved_postings_and_store`) and so always wins if
+    `ledger.resolution.apply_overlays`) and so always wins if
     both somehow apply to the same transaction, `get_postings` never sets
     `resolved_by_transfer_rule_id` on a transaction that also has one of
     these, so the two are mutually exclusive here — never "via rule" when

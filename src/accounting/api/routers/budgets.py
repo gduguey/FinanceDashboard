@@ -10,14 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from accounting.api.api_models import BudgetComparisonRow, BudgetUpsert, SuggestedBudgetAmount
-from accounting.api.dependencies import (
-    _currencies_in_use,
-    _flow_display_currency,
-    _resolved_postings_for_aggregation,
-)
+from accounting.api.dependencies import _currencies_in_use, _flow_display_currency
 from accounting.api.entities import Budget
 from accounting.api.locations import created_or_replaced, location_of
 from accounting.dashboard import budgets
+from accounting.ledger.resolution import resolved_postings_for_aggregation
 from accounting.models import Budget as DomainBudget
 from accounting.models import CurrencyCode
 from accounting.repositories.planning import (
@@ -130,7 +127,7 @@ def get_budget_comparison(
     if not re.fullmatch(r"\d{4}-\d{2}", month):
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     since, until = budgets.month_bounds(month)
-    postings = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
+    postings = resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     rows = budgets.budget_comparison(
         postings,
         seeded_accounts(session, user_id),
@@ -171,7 +168,7 @@ def get_suggested_budget_amount(
         raise HTTPException(status_code=400, detail="month must be in YYYY-MM form")
     window = budgets.suggested_budget_amount_window(month, lookback_months)
     since, until = window if window is not None else (None, None)
-    postings = _resolved_postings_for_aggregation(session, user_id, since=since, until=until)
+    postings = resolved_postings_for_aggregation(session, user_id, since=since, until=until)
     amount = budgets.suggested_budget_amount(
         postings,
         seeded_accounts(session, user_id),

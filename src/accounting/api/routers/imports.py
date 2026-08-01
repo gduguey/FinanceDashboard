@@ -27,7 +27,7 @@ from accounting.api.api_models import (
     SupportedImportKind,
     SyncStatus,
 )
-from accounting.api.dependencies import _resolved_postings, state
+from accounting.api.dependencies import state
 from accounting.api.entities import Category, EarningsStatement, PostingSplitLeg
 from accounting.dashboard.paystub import propose_posting_splits, reconcile_earnings_statement
 from accounting.importers.canonical.csv import (
@@ -57,6 +57,7 @@ from accounting.importers.ingest import (
     supported_import_kinds,
 )
 from accounting.importers.paystub import extract_paystub_pdf_text, parse_earnings_statement_text
+from accounting.ledger.resolution import resolved_postings
 from accounting.models import CurrencyCode
 from accounting.repositories.taxonomy import replace_categories
 from accounting.taxonomy import seeded_accounts, seeded_categories
@@ -580,7 +581,7 @@ async def post_paystub_reconciliation(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     result = reconcile_earnings_statement(statement, postings, seeded_accounts(session, user_id))
     proposed_splits = propose_posting_splits(statement, result.matches)
     return PaystubReconciliationResult(

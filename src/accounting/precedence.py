@@ -5,7 +5,7 @@ Every table in the interpretation aggregate (see
 posting ledger, and the layers are not commutative: an override has to see
 the account a rule resolved, a merge has to see the rows a split produced.
 Until this module existed, that ordering lived nowhere but the top-to-bottom
-line order of `api.dependencies._resolved_postings_and_store` — reading it
+line order of the resolution pipeline itself — reading it
 meant reading a function body, changing it meant editing a hard-coded
 sequence, and nothing stopped a row from being written by a stage that had
 already run.

@@ -26,7 +26,7 @@ from accounting.api.api_models import (
     ValidatePendingRequest,
     ValidatePendingResult,
 )
-from accounting.api.dependencies import _resolve_postings, _resolved_postings, state
+from accounting.api.dependencies import state
 from accounting.api.entities import (
     DismissedSuggestion,
     ManualOverride,
@@ -41,6 +41,7 @@ from accounting.ledger.categorization import resolved_transfer_rule_ids_by_trans
 from accounting.ledger.duplicates import DuplicateGroup as DuplicateGroupData
 from accounting.ledger.duplicates import find_duplicate_candidates
 from accounting.ledger.pending import resolve_pending_suggestion
+from accounting.ledger.resolution import resolve_postings, resolved_postings
 from accounting.ledger.transfers import find_unmatched_transfer_candidates, make_transfer_link
 from accounting.models import DismissedSuggestion as DomainDismissedSuggestion
 from accounting.models import PostingMerge as DomainPostingMerge
@@ -100,7 +101,7 @@ def get_postings(
     "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
     manual override always wins if both somehow apply to the same
     transaction (it's applied after rules — see
-    `api.dependencies._resolved_postings`), so
+    `ledger.resolution.apply_overlays`), so
     `resolved_by_transfer_rule_id` is suppressed whenever
     `manual_transfer_override_posting_id` is set for that transaction —
     see `PostingRow`'s own docstring.
@@ -134,7 +135,7 @@ def get_postings(
     # read again. These four display columns are only `get_postings`'
     # concern, but re-reading them for it meant loading the whole ledger
     # twice per request (speed-audit S1).
-    resolution = _resolve_postings(session, user_id, limit=limit, offset=offset)
+    resolution = resolve_postings(session, user_id, limit=limit, offset=offset)
     overrides = resolution.overrides
     resolved_by_rule = resolved_transfer_rule_ids_by_transaction(resolution.raw, resolution.rules, resolution.accounts)
     # Newest first, matching the order the page window itself was cut in.
@@ -316,7 +317,7 @@ def put_posting_split(
     HTTPException
         404 if the posting doesn't exist; 400 if the legs don't sum to the posting's own amount.
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     current_amount = _current_amount_for_split(postings, posting_id)
     if current_amount is None:
         raise HTTPException(status_code=404, detail=f"Posting {posting_id!r} not found")
@@ -660,7 +661,7 @@ def get_transfer_suggestions(
         never applied automatically. Excludes any pair already dismissed
         (see `PUT /dismissed-suggestions/{suggestion_id}`).
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     candidates = find_unmatched_transfer_candidates(
         postings, window_days=window_days, existing_links=load_transfer_links(session, user_id)
     )
@@ -695,7 +696,7 @@ def get_duplicate_suggestions(
         Each carries a `suggestion_id` for dismissing it. Excludes any
         group already dismissed (see `PUT /dismissed-suggestions/{suggestion_id}`).
     """
-    postings = _resolved_postings(session, user_id)
+    postings = resolved_postings(session, user_id)
     groups = find_duplicate_candidates(postings, window_days=window_days)
     suggestion_ids = [_duplicate_suggestion_id(group) for group in groups]
     dismissed = dismissed_suggestion_ids(session, user_id, suggestion_ids)
