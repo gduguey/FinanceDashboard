@@ -8,11 +8,13 @@ documented in docs/trades/architecture.md.
 GET endpoints only ever read what's already cached on disk — they never
 make a network call, with one exception: `GET /api/v1/trades/symbols/search` is a
 live Yahoo Finance lookup for the benchmark picker's search box, which by
-its nature needs a live answer rather than a cached one. `POST /sync` is
-the endpoint that touches the network for the app's own data as a whole
-(an IBKR pull plus a price/CPI/HYSA-rate cache refresh); that's what makes
-the frontend's "Sync" button a real, explicit action instead of something
-that silently happens on every page load. `POST
+its nature needs a live answer rather than a cached one. `POST /sync-runs`
+is what touches the network for the app's own data (the IBKR pull); that's
+what makes the frontend's "Sync" button a real, explicit action instead of
+something that silently happens on every page load. It does not do the pull
+inside the request — it starts a run and answers `202` with a `Location`, so
+the network call happens on a background thread and the client polls the run
+(see `trades.api.routers.sync`). `POST
 /api/v1/trades/symbols/{symbol}/ensure-priced` is the narrow exception to that: it
 refreshes a single symbol's price cache on the spot, so picking a new
 benchmark takes effect without waiting for a full sync.

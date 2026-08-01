@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from accounting.api.api_models import SimulatorScenarioCreate
 from accounting.api.entities import SimulatorScenario
-from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import SimulatorScenario as DomainSimulatorScenario
 from accounting.repositories.taxonomy import (
     delete_simulator_scenario,
@@ -19,6 +18,7 @@ from accounting.repositories.taxonomy import (
 )
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.locations import CREATED_WITH_LOCATION, location_of
 
 router = APIRouter()
 

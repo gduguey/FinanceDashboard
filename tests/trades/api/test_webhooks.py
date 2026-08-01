@@ -18,7 +18,10 @@ from svix.webhooks import Webhook
 
 import db.session as session_module
 import trades.api as trades_api
+from sqlalchemy.orm import Session
+
 from db.external_identities import lookup_user_id
+from db.models import ExternalIdentity, User
 from db.session import get_db
 from trades.api import webhooks as webhooks_module
 from trades.api.auth import require_clerk_session
@@ -47,6 +50,38 @@ def _webhook_uses_the_test_engine(monkeypatch: pytest.MonkeyPatch, _db_engine: E
     directly.
     """
     monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+
+
+@pytest.fixture(autouse=True)
+def _clean_up_what_the_webhook_really_committed(_db_engine: Engine):
+    """Delete the rows these tests commit, since nothing rolls them back.
+
+    The handler provisions through `db.session.session_scope`, which opens
+    its own session and commits for real — it has to, it is a webhook and
+    there is no request transaction to join. So unlike almost every other
+    test in this repo these leave rows behind in the shared scratch
+    database, and the clerk ids they use are fixed strings rather than
+    per-run uuids.
+
+    That was a live defect, not a hypothetical one: `user_redelivered`
+    survived into `tests/db/test_external_identities.py`, whose own test of
+    the same id then read the leaked row and failed. Invisible in the
+    default run only because `testpaths` collects `tests/db` *before*
+    `tests/trades`, so the leak lands after the test it breaks — running the
+    two directories in the other order failed on `v1.9.0` too.
+    """
+    with Session(_db_engine) as before:
+        existing = {(row.provider, row.external_id) for row in before.query(ExternalIdentity).all()}
+    yield
+    with Session(_db_engine) as after:
+        leaked = [row for row in after.query(ExternalIdentity).all() if (row.provider, row.external_id) not in existing]
+        user_ids = [row.user_id for row in leaked]
+        for row in leaked:
+            after.delete(row)
+        after.flush()
+        for user_id in user_ids:
+            after.query(User).filter_by(id=user_id).delete()
+        after.commit()
 
 
 def _signed_headers_and_body(payload: dict[str, object]) -> tuple[dict[str, str], str]:
@@ -161,6 +196,45 @@ class TestClerkWebhook:
         row = db_session.execute(text("SELECT is_active FROM users WHERE id = :id"), {"id": str(linked_id)}).first()
         assert row is not None
         assert row.is_active is False
+
+    def test_user_deleted_leaves_the_identity_link_in_place(self, client: TestClient, db_session) -> None:
+        """The soft delete must stay soft, and this is what makes it so now that provisioning is just-in-time.
+
+        `resolve_current_user_id` provisions whenever the
+        `external_identities` lookup misses (D1). So if this handler removed
+        the link along with the activation flag, the deactivated user's very
+        next request would miss, provision a brand-new `users` row and sign
+        them straight back in under it — an undelete nobody asked for, and
+        one that would look like a working app rather than like a bug.
+
+        Because the link survives, the lookup still hits and provisioning
+        never runs for a deactivated account at all. Re-inviting that person
+        in Clerk mints a *new* Clerk id, which misses and provisions a second
+        unrelated user — which is exactly what `db.models.User` documents
+        should happen, and is not a resurrection of the first.
+        """
+        created_headers, created_body = _signed_headers_and_body(
+            _user_created_payload("user_soft_deleted", "soft-deleted@example.com")
+        )
+        client.post("/api/webhooks/clerk", content=created_body, headers=created_headers)
+        linked_id = lookup_user_id(db_session, "clerk", "user_soft_deleted")
+        assert linked_id is not None, "provisioning did not run, so the rest of this test would pass vacuously"
+
+        deleted_headers, deleted_body = _signed_headers_and_body(_user_deleted_payload("user_soft_deleted"))
+        client.post("/api/webhooks/clerk", content=deleted_body, headers=deleted_headers)
+
+        # `expire_all` is what makes the assertion able to fail. `lookup_user_id`
+        # goes through `session.get`, which serves a primary key it already
+        # holds straight from the identity map — and the lookup above put this
+        # exact row there. The delete webhook commits on a *different* session,
+        # so nothing invalidates that copy: without this, the assertion would
+        # read the cached object and pass whether or not the handler deleted
+        # the row, which is the one thing it exists to catch.
+        db_session.expire_all()
+
+        assert lookup_user_id(db_session, "clerk", "user_soft_deleted") == linked_id, (
+            "the identity link was removed by the soft delete, so the next request would silently re-provision"
+        )
 
     def test_user_deleted_for_an_unknown_clerk_id_is_a_noop(self, client: TestClient) -> None:
         headers, body = _signed_headers_and_body(_user_deleted_payload("user_never_provisioned"))

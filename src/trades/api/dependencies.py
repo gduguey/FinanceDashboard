@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from sqlalchemy.orm import Session
 
-from trades.api.api_models import SyncProgress
 from trades.api.auth import validate_clerk_settings
+from trades.api.sync_runs import fail_interrupted_runs, runner
 from trades.brokers.ibkr import api as ibkr_api
 from trades.brokers.ibkr import main
 from trades.config import AppConfig
@@ -31,19 +31,32 @@ if TYPE_CHECKING:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Validate `CLERK_SECRET_KEY` at process startup rather than on the first authenticated request."""
+    """Validate Clerk's credentials, close runs a previous process abandoned, and own the sync runner's pool.
+
+    Three things at startup, in this order, and the middle one is not
+    housekeeping. A sync runs on a thread inside this process, so a
+    `docker stop` part-way through leaves its row saying `running` — and
+    `uq_sync_runs_active_user` counts that as a sync in flight, so without
+    the sweep that user could never start another one. See
+    `trades.api.sync_runs.fail_interrupted_runs` for why doing this at
+    startup is correct under a single-container deployment and what a second
+    replica would have to do instead.
+
+    The pool is opened here and closed on teardown rather than created on
+    first use, so its lifetime is the application's and a shutdown waits for
+    a sync that is part-way through instead of abandoning it.
+    """
     validate_clerk_settings()
-    yield
+    fail_interrupted_runs()
+    runner.start()
+    try:
+        yield
+    finally:
+        runner.shutdown()
 
 
 app = FastAPI(title="Investments API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
 app.state.config = AppConfig()
-app.state.sync_progress = {}
-"""`dict[uuid.UUID, SyncProgress]` — each user's own sync progress, keyed by
-their own id. Per-user rather than one shared value: two different people
-syncing around the same time must never see each other's step/percent/error
-(see `_report_sync_progress` and `trades.api.routers.sync.get_sync_progress`).
-A user absent from this dict has simply never triggered a sync yet."""
 
 
 def _config() -> AppConfig:
@@ -59,13 +72,6 @@ def _config() -> AppConfig:
         The application configuration currently attached to `app.state`.
     """
     return cast("AppConfig", app.state.config)
-
-
-def _report_sync_progress(user_id: uuid.UUID, step: str, percent: float) -> None:
-    """Record `user_id`'s current sync step and progress, readable via `GET /api/v1/trades/sync/progress`."""
-    cast("dict[uuid.UUID, SyncProgress]", app.state.sync_progress)[user_id] = SyncProgress(
-        step=step, percent=percent, done=False
-    )
 
 
 def _load_ledger(session: Session, user_id: uuid.UUID) -> pl.DataFrame:

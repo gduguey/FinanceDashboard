@@ -31,7 +31,7 @@ enforced by the database rather than by application `WHERE` clauses.
 | `accounting` | 28 | The cash ledger, its taxonomy, its interpretation overlays, the resolved projection, planning, the institution dimension |
 | `trades` | 5 | Broker connections, the brokerage event ledger, dashboard settings, the security dimension |
 
-**37 application tables** (38 counting `alembic_version`). Postgres 16, both
+**38 application tables** (39 counting `alembic_version`). Postgres 16, both
 locally and in `deploy/docker-compose.yml`.
 
 Schema history is the baseline plus one revision:
@@ -129,7 +129,7 @@ Column lists below omit `created_at`/`updated_at`.
 
 - RLS: forced, policy compares `id` (not `user_id`) — the one special case in
   `db.tenant._USERS_TABLE`.
-- Referenced by all 33 tenant tables.
+- Referenced by all 34 tenant tables.
 - No indexes beyond the primary key.
 
 #### `public.external_identities` — provider account → internal user.
@@ -699,6 +699,40 @@ No `version` column, deliberately: one row per user, edited by the one person
 who owns it, every field an idempotent preference — last-write-wins is the
 wanted behaviour, not a conflict.
 
+Patched through one statement rather than read-modify-written, so two edits
+naming different symbols compose — see
+`trades.dashboard.settings.merge_target_allocation`, and known gap 4 for what
+that replaced.
+
+#### `trades.sync_runs` — one run of a broker sync, as a row rather than a request in flight.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` PK | `uuid7()`, so the primary key is already the newest-first order |
+| `user_id` | `uuid NOT NULL` | FK → `users(id)` `ON DELETE CASCADE` |
+| `state` | `varchar NOT NULL` | CHECK `queued` \| `running` \| `succeeded` \| `failed` |
+| `step`, `percent` | `varchar`, `double precision` | Progress, written by the runner on its own transaction |
+| `error` | `varchar NULL` | Why the *runner* failed — never why a step did |
+| `started_at`, `finished_at` | `timestamp NULL` | |
+| `synced_at` | `varchar NULL` | Already rendered in the user's display zone, as the wire carries it |
+| `new_event_count`, `total_event_count` | `integer NOT NULL` | |
+| `steps` | `jsonb NOT NULL` | Each leg's `label`/`ok`/`error`; opaque, never queried across runs |
+
+Indexes: `ix_sync_runs_user_id`, and `uq_sync_runs_active_user` — **unique
+on `user_id`, partial on `state IN ('queued','running')`**. That partial index
+is the concurrency control: "one sync in flight per user" is a fact about the
+database, not about one Python process, so a second `POST /sync-runs` is
+refused by Postgres however many workers exist. The plain index is not
+redundant beside it — a partial index cannot serve the unqualified `user_id`
+lookup the isolation policy and the cascade from `users` both make, which is
+why `db.indexes` no longer counts one as covering a foreign key.
+
+`state` is `succeeded` even when the broker leg failed: a sync commits per
+successful step, so a partly-successful pull is a completed run that records
+what did not work in `steps`. `failed` means the runner itself did not finish
+— including a run a container restart abandoned, which the API's own startup
+closes so the partial index does not wedge that user's next sync.
+
 #### `accounting.llm_usage` — one (user, provider) call counter.
 
 PK `(user_id, provider)`. `period_start timestamp NOT NULL`,
@@ -1138,7 +1172,7 @@ rather than the repetitive head), so two names cannot silently collide.
 
 ### 4.6 Timestamps
 
-Every one of the 35 application tables carries
+Every one of the 38 application tables carries
 `created_at timestamptz NOT NULL DEFAULT now()` and
 `updated_at timestamptz NOT NULL DEFAULT now()` (with `onupdate=now()`), from
 the `Timestamped` mixin in `src/db/base.py`. Only `alembic_version` — Alembic's

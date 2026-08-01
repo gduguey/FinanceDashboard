@@ -35,6 +35,8 @@ from sqlalchemy.exc import ProgrammingError
 
 from sqlalchemy.orm import Session
 
+import db.session as session_module
+from db.provisioning import provision_linked_user
 from db.session import create_one_shot_engine, set_rls_user
 from tests.db.conftest import app_runtime_database_url
 
@@ -66,6 +68,19 @@ _SEED = (
     (
         "trades.broker_connections",
         "INSERT INTO trades.broker_connections (user_id, natural_key, broker) VALUES (:tenant, :key, 'ibkr')",
+    ),
+    # A fourth shape, added with the sync runner: a table whose rows are
+    # written by a *background thread* rather than by the request that
+    # started the work. The policy is the same generated one, but the writer
+    # is a session nobody's request owns, so "the runner sees only its own
+    # user's runs" is worth asserting once rather than assumed.
+    (
+        "trades.sync_runs",
+        (
+            "INSERT INTO trades.sync_runs "
+            "(user_id, state, step, percent, new_event_count, total_event_count, steps) "
+            "VALUES (:tenant, 'succeeded', 'Done', 100.0, 0, 0, '[]'::jsonb)"
+        ),
     ),
 )
 
@@ -375,3 +390,57 @@ def test_the_projection_drain_re_arms_the_session_it_committed(seeded: Engine) -
         assert session.execute(text("SELECT count(*) FROM accounting.accounts")).scalar_one() == 1, (
             "the session could not see its own rows after `drain` committed"
         )
+
+
+def test_provisioning_a_new_user_works_under_the_real_policies(seeded: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Just-in-time provisioning writes `users` through a session scoped to an id that does not exist yet (D1).
+
+    Here rather than in the auth suite for the reason PR E's drain bug
+    established: `tests/conftest.py` builds its schema with
+    `Base.metadata.create_all`, which creates no policies, so every
+    provisioning test over there would pass whether or not the policies
+    permit the write. Two of them are load-bearing and only visible here:
+
+    - `users` has no `user_id` column; its policy compares the row's own
+      `id`. `db.provisioning` scopes the session to the id it is about to
+      insert, so the `WITH CHECK` half passes on a row that, by definition,
+      belongs to nobody yet. Get that wrong and the insert is refused
+      outright.
+    - `external_identities` is the single entry in `db.tenant.RLS_EXEMPT`,
+      and the lookup that decides whether to provision at all runs *before*
+      the acting user is known. Under a policy it would match nothing, and
+      every request would provision a fresh user forever.
+
+    Run as `app_runtime`, the restricted login the API actually uses, so the
+    grants are exercised too and not just the policies.
+    """
+    external_id = f"user_rls_{uuid.uuid4().hex}"
+    monkeypatch.setattr(session_module, "get_engine", lambda: seeded)
+
+    provisioned = provision_linked_user("clerk", external_id, f"{external_id}@example.test")
+
+    try:
+        # Readable back through a session scoped to the id that was just
+        # minted — which is the first thing the provisioned request goes on
+        # to do, and the half a permissive INSERT with a broken SELECT policy
+        # would still fail.
+        with Session(bind=seeded) as reader:
+            set_rls_user(reader, provisioned)
+            visible = reader.execute(
+                text("SELECT id, is_active FROM public.users WHERE id = :id"), {"id": provisioned}
+            ).all()
+            assert [(row.id, row.is_active) for row in visible] == [(provisioned, True)]
+
+        # And the new tenant is a tenant like any other: it sees its own row
+        # and none of the seeded ones.
+        with seeded.connect() as connection:
+            _become(connection, provisioned)
+            assert connection.execute(text("SELECT count(*) FROM accounting.accounts")).scalar_one() == 0
+    finally:
+        with seeded.begin() as teardown:
+            _become(teardown, provisioned)
+            teardown.execute(
+                text("DELETE FROM public.external_identities WHERE provider = 'clerk' AND external_id = :x"),
+                {"x": external_id},
+            )
+            teardown.execute(text("DELETE FROM public.users WHERE id = :id"), {"id": provisioned})

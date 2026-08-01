@@ -10,7 +10,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import OperationalError
 
 import db.session as session_module
-from db.session import set_rls_user
+from db.session import allow_background_runtime, set_rls_user
 from db.settings import StatementTimeoutSettings
 from tests.conftest import DEFAULT_USER_ID
 
@@ -117,3 +117,41 @@ def test_a_statement_past_the_bound_is_cancelled_rather_than_left_running(db_ses
 
     with pytest.raises(OperationalError):
         db_session.execute(text("SELECT pg_sleep(1)"))
+
+
+def test_a_request_gets_the_request_bound_and_not_the_background_one(
+    _db_engine: Engine,  # noqa: PT019 — needs the fixture's returned Engine, not just its setup side effect
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bound a real request actually runs under, which nothing asserted before (D5).
+
+    Everything above tests `set_rls_user`, the mechanism. The defect was one
+    level up and invisible from there: `get_db` called
+    `session_scope(user_id)` and `session_scope` defaults `background=True`,
+    because every other caller of it is a cron job or a webhook. So every
+    HTTP request ran with the 600-second bound rather than the 15-second
+    one, and `allow_background_runtime` — whose whole job is to raise the
+    bound for the few genuinely slow handlers — raised nothing, because the
+    bound was already raised.
+
+    Asserted by draining the dependency the way FastAPI does rather than by
+    reading the source, so it stays true of whatever `get_db` becomes.
+    """
+    monkeypatch.setattr(session_module, "get_engine", lambda: _db_engine)
+    settings = StatementTimeoutSettings()
+
+    sessions = session_module.get_db(DEFAULT_USER_ID)
+    session = next(sessions)
+    try:
+        assert _statement_timeout_ms(session) == settings.statement_timeout_seconds * 1000, (
+            "a request is running under the background bound, so a pathological query holds a worker "
+            "for ten minutes instead of failing its own request"
+        )
+
+        # And the escape hatch still works, which is the other half: the few
+        # handlers that are legitimately slow have to be able to say so.
+        allow_background_runtime(session, DEFAULT_USER_ID)
+        assert _statement_timeout_ms(session) == settings.background_statement_timeout_seconds * 1000
+    finally:
+        session.rollback()
+        next(sessions, None)

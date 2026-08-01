@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import BudgetComparisonRow, BudgetUpsert, SuggestedBudgetAmount
 from accounting.api.dependencies import _currencies_in_use, _flow_display_currency
 from accounting.api.entities import Budget
-from accounting.api.locations import created_or_replaced, location_of
 from accounting.dashboard import budgets
 from accounting.ledger.resolution import resolved_postings_for_aggregation
 from accounting.models import Budget as DomainBudget
@@ -28,6 +27,7 @@ from accounting.taxonomy import seed_new_user_defaults, seeded_accounts
 from db.current_user import get_current_user_id
 from db.money import to_analytics_float
 from db.session import get_db
+from http_api.locations import created_or_replaced, location_of
 
 router = APIRouter()
 

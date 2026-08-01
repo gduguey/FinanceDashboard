@@ -15,12 +15,12 @@ from accounting.api.api_models import (
     TagRenameResponse,
 )
 from accounting.api.entities import Tag
-from accounting.api.locations import CREATED_WITH_LOCATION, location_of
 from accounting.models import Tag as DomainTag
 from accounting.repositories.taxonomy import delete_tag, load_tags, remap_tag_ids, replace_tags
 from accounting.taxonomy import plan_tag_rename, slugify
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.locations import CREATED_WITH_LOCATION, location_of
 
 router = APIRouter()
 
@@ -34,7 +34,7 @@ def get_tag(
     """Return one tag by id.
 
     The address `post_tag` advertises in its `Location` — see
-    `api.locations.location_of` for why the header is resolved against
+    `http_api.locations.location_of` for why the header is resolved against
     this route rather than formatted by hand.
 
     Returns

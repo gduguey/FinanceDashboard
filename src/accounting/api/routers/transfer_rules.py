@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from accounting.api.api_models import TransferRuleCreate, TransferRuleUpdate
 from accounting.api.entities import TransferRule
-from accounting.api.locations import created_or_replaced, location_of
 from accounting.importers.common import row_hash
 from accounting.importers.ingest import load_ledger
 from accounting.ledger.transfers import reconcile_and_persist_rule_links
@@ -25,6 +24,7 @@ from accounting.repositories.interpretation import (
 from accounting.taxonomy import seeded_accounts
 from db.current_user import get_current_user_id
 from db.session import get_db
+from http_api.locations import created_or_replaced, location_of
 
 router = APIRouter()
 

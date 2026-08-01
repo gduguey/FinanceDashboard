@@ -8,13 +8,22 @@ same guarantee `require_clerk_session` gives every other route, just via a
 different mechanism (Clerk's webhook deliveries are signed with Svix, not
 issued as session JWTs).
 
-On `user.created`, generates a brand-new internal id for the invitee and
-inserts both a `users` row and the `external_identities` link
+On `user.created`, hands off to `db.provisioning.provision_linked_user`,
+which inserts both a `users` row and the `external_identities` link
 (`trades.api.auth.resolve_current_user_id` reads that same link on every
 later request from them) — so a newly invited person's very first
 authenticated request already resolves to a row that exists, rather than
 hitting the foreign-key violation this app shipped with before any of
 this identity-linking existed (see migration `bcb4d6662dfc`).
+
+That provisioning is **no longer only here**. `resolve_current_user_id`
+calls the same function when a valid session arrives before this delivery
+does, which is what closed the first-login lockout — so the two can now
+genuinely run at once for the same account, and the shared function is what
+makes the loser adopt the winner's id instead of stranding one of its own.
+This module used to do the insert itself and documented the concurrent-
+redelivery case as an acceptable orphaned `users` row; that is fixed rather
+than tolerated now, as a side effect of the auth path needing it fixed.
 
 On `user.deleted`, marks the linked `users` row `is_active=False` —
 fired by Clerk regardless of whether the person deleted their own
@@ -24,6 +33,13 @@ is metadata only today: nothing else in this app currently reads
 account already can't produce a valid session token at all, so access is
 already cut off the moment Clerk itself deletes it; this just records
 that it happened, for anyone looking at the `users` table directly.
+
+**It deliberately leaves the `external_identities` row in place**, and that
+is load-bearing now rather than incidental: because the link survives, a
+deactivated account still resolves through the ordinary lookup and the
+just-in-time path never fires for it. Removing the link here would silently
+turn every deactivated user's next request into a fresh provision — an
+undelete nobody asked for. `tests/trades/api/test_webhooks.py` pins it.
 """
 
 from __future__ import annotations
@@ -38,8 +54,9 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from svix.webhooks import Webhook, WebhookVerificationError
 
-from db.external_identities import link_identity, lookup_user_id
+from db.external_identities import lookup_user_id
 from db.models import User
+from db.provisioning import provision_linked_user
 from db.session import session_scope
 
 router = APIRouter()
@@ -93,34 +110,6 @@ def _primary_email(data: dict[str, Any]) -> str:
             return str(email_address["email_address"])
     message = f"No email address in the payload matches primary_email_address_id {primary_id!r}"
     raise HTTPException(status_code=400, detail=message)
-
-
-def _provision_user(clerk_user_id: str, email: str) -> None:
-    """Create a `users` row (and its `external_identities` link) for a newly signed-up Clerk account.
-
-    Checks `external_identities` first rather than relying on a database
-    `ON CONFLICT`, since the id inserted here is freshly random every call
-    — nothing to conflict on if this is genuinely a redelivery of an event
-    already handled. (A webhook delivered twice *concurrently*, rather
-    than as a later retry, could still race past this check and create a
-    harmless orphaned `users` row nobody links to — Clerk redeliveries are
-    retries after a delay, not concurrent duplicates, so this is treated
-    as an acceptable, narrow edge case rather than something worth an
-    advisory lock for.)
-    """
-    new_user_id = uuid.uuid4()
-    with session_scope(new_user_id) as session:
-        if lookup_user_id(session, "clerk", clerk_user_id) is not None:
-            return
-        session.add(
-            User(
-                id=new_user_id,
-                email=email,
-                is_active=True,
-            )
-        )
-        link_identity(session, new_user_id, "clerk", clerk_user_id)
-        session.commit()
 
 
 def _deactivate_user(clerk_user_id: str) -> None:
@@ -190,7 +179,7 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
 
     if payload.get("type") == "user.created":
         data = payload["data"]
-        _provision_user(data["id"], _primary_email(data))
+        provision_linked_user("clerk", data["id"], _primary_email(data))
     elif payload.get("type") == "user.deleted":
         _deactivate_user(payload["data"]["id"])
 

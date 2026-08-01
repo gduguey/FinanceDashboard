@@ -9,9 +9,12 @@ from typing import TYPE_CHECKING, cast
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import Text, bindparam, func
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from db.base import ensure_reference_rows
+from db.base import RateMap, ensure_reference_rows
 from db.money import Rate
 from trades.config import TaxRegime
 from trades.db.models import DashboardSettings as DashboardSettingsRow
@@ -20,7 +23,7 @@ from trades.ledger.taxes import after_tax_rate_lookup
 from trades.market_data import hysa_rates as hysa_rates_module
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from trades.config import AppConfig
 
@@ -148,6 +151,95 @@ def save_settings(settings: DashboardSettings, session: Session, user_id: uuid.U
     row.marginal_ordinary_rate_pct = settings.marginal_ordinary_rate_pct
     row.qualified_ltcg_rate_pct = settings.qualified_ltcg_rate_pct
     session.commit()
+
+
+def merge_target_allocation(session: Session, user_id: uuid.UUID, patch: Mapping[str, Rate | None]) -> dict[str, Rate]:
+    """Apply an RFC 7386 merge patch to the target allocation, in the database, in one statement.
+
+    The reason this is not `load_settings` / edit / `save_settings` is that
+    the read-modify-write loses a concurrent edit (known gap 4, item A4b).
+    Two `PATCH`es naming *different* symbols each read the map, each add
+    their own key to the copy they read, and each write the whole map back —
+    so the later commit drops the earlier one. That directly contradicts
+    what this endpoint's own media type promises: the whole point of
+    `application/merge-patch+json` is that a patch says only what changed,
+    and patches of disjoint keys therefore compose.
+
+    **Not** a version column, deliberately, and not a row lock either. A
+    version would make the two patches conflict and 409 one of them, which
+    is a worse answer than merging them — and `save_settings` documents at
+    length why this particular row is last-write-wins. A database-side merge
+    composes *by construction*: `ON CONFLICT DO UPDATE` re-reads the row it
+    is updating, so under READ COMMITTED the second patch's `||` applies to
+    the first one's committed value and both survive. Nothing to retry,
+    nothing to conflict, no new column.
+
+    `jsonb`'s `||` is a shallow merge and `- text[]` removes keys, which is
+    exactly merge-patch over a flat map: a symbol with a number sets it, a
+    symbol with an explicit `null` **deletes** it (not "sets it to null" —
+    the distinction merge-patch turns on), and a symbol the body never
+    mentions is untouched. The map is flat by construction (`db.base.RateMap`
+    stores `symbol -> exact decimal string`), so shallow is the whole of it;
+    a nested resource would need the recursive form.
+
+    An upsert rather than an update because the settings row is created
+    lazily — a user who has never saved a preference has no row, and their
+    first patch must still land. Empty patches need no special case: `|| '{}'`
+    and `- '{}'` are both no-ops.
+
+    `updated_at` is set explicitly, because a Core statement does not go
+    through the mapper that would otherwise apply `Timestamped`'s `onupdate`.
+
+    Parameters
+    ----------
+    session
+        An active database session; committed here.
+    user_id
+        Whose allocation to patch.
+    patch
+        Symbol to target percentage, or to `None` to remove that symbol.
+
+    Returns
+    -------
+    dict[str, Rate]
+        The whole resulting allocation, read back from the row that was
+        written — not the caller's own merge of it, which is the value that
+        could disagree with what another patch just committed.
+    """
+    assignments = {symbol: target for symbol, target in patch.items() if target is not None}
+    removals = sorted(symbol for symbol, target in patch.items() if target is None)
+
+    allocation = DashboardSettingsRow.target_allocation_pct
+    # `type_=RateMap` on both binds keeps the Decimal-to-exact-string encoding
+    # in the one place that owns it, rather than restating it in SQL here —
+    # and makes `RETURNING` decode back to `Decimal` on the way out.
+    # `self_group()` is load-bearing, not decoration. Postgres puts binary `-`
+    # at a *higher* precedence than `||`, so the unparenthesised
+    # `allocation || :assignments - :removals` parses as
+    # `allocation || (:assignments - :removals)` — it deletes the keys from
+    # the patch instead of from the stored map, and a delete-only patch then
+    # silently does nothing at all.
+    merged = (
+        allocation
+        .concat(bindparam("assignments", assignments, type_=RateMap))
+        .self_group()
+        .op("-")(bindparam("removals", removals, type_=ARRAY(Text)))
+    )
+    statement = (
+        pg_insert(DashboardSettingsRow)
+        .values(
+            user_id=user_id,
+            target_allocation_pct=bindparam("initial", assignments, type_=RateMap),
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={"target_allocation_pct": merged, "updated_at": func.now()},
+        )
+        .returning(allocation)
+    )
+    result: dict[str, Rate] = session.execute(statement).scalar_one()
+    session.commit()
+    return result
 
 
 def raw_hysa_rate_lookup(config: AppConfig, settings: DashboardSettings) -> Callable[[date], float]:

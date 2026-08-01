@@ -23,8 +23,8 @@ import type {
   RiskStat,
   SymbolPriceStatus,
   SymbolSearchResult,
-  SyncProgress,
-  SyncResult,
+  SyncRun,
+  SyncRunPage,
   TargetAllocation,
   TargetAllocationPatch,
   TaxReport,
@@ -94,6 +94,29 @@ function withRange(path: string, range?: DateRange): string {
   return query ? `${path}?${query}` : path
 }
 
+// Starts a sync and returns the run that reports on it — the pull itself
+// happens on the server, in the background, and the POST answers 202 without
+// waiting for it.
+//
+// A 409 is not an error here. It means this account already has a sync going,
+// which is the same situation the caller wanted to be in, and the response
+// says which run that is in its own `Location`. Surfacing it as a failure
+// would show "Sync failed" to someone whose sync is running perfectly well —
+// so the run id is read off the header and the existing run is returned
+// instead. Every other non-OK status is a real failure and still throws.
+async function startSync(): Promise<SyncRun> {
+  const response = await fetch(`${TRADES_API_BASE}/sync-runs`, { method: 'POST' })
+  if (response.status === 409) {
+    const location = response.headers.get('Location')
+    if (location) return await api.syncRun(location.split('/').pop() as string)
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new ApiError(body?.detail ?? `${response.status} ${response.statusText}`)
+  }
+  return (await parseBody(response)) as SyncRun
+}
+
 export const api = {
   overview: (asOf?: string) => request<Overview>(asOf ? `/overview?as_of=${asOf}` : '/overview'),
   dollarChart: (range?: DateRange) => request<DollarChart>(withRange('/chart/dollar', range)),
@@ -127,8 +150,11 @@ export const api = {
     fetchAllPages<LedgerEvent>(({ limit, offset }) =>
       request<LedgerEventPage>(`/ledger/export?limit=${limit}&offset=${offset}`),
     ),
-  sync: () => request<SyncResult>('/sync', { method: 'POST' }),
-  syncProgress: () => request<SyncProgress>('/sync/progress'),
+  startSync,
+  syncRun: (runId: string) => request<SyncRun>(`/sync-runs/${runId}`),
+  // `limit=1` on the newest-first list, which is how a page that reloaded
+  // mid-sync finds the run whose id it lost.
+  latestSyncRun: () => request<SyncRunPage>('/sync-runs?limit=1'),
   hysaRates: () => request<HysaRates>('/hysa-rates'),
   hysaSettings: () => request<HysaSettings>('/settings/hysa'),
   setHysaSettings: (settings: HysaSettingsUpdate) =>

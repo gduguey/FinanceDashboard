@@ -1,8 +1,17 @@
-"""One way to answer `Location` on a create, so the header can never name a route that does not exist.
+"""One way to answer `Location`, so the header can never name a route that does not exist.
 
-Every `201 Created` in `accounting.api.routers` owes a `Location`, and every
-one of them sets it through `location_of` below rather than by formatting a
-path itself.
+Every `201 Created` in `accounting.api.routers` owes a `Location`, and so
+does the `202 Accepted` that starts a sync run in `trades.api.routers`.
+All of them set it through `location_of` below rather than by formatting a
+path themselves.
+
+Here rather than under `accounting.api`, for the reason `Page` moved here in
+PR D: a response header is wire format, which neither ledger owns. The
+independence rule covers their domains, data and write paths. `trades`
+needing the second `Location` in the app was what made keeping it on one
+side untenable — the alternatives were an import between the two ledgers or
+a second implementation of a header whose whole point is that there is only
+one way to build it.
 """
 
 from __future__ import annotations
@@ -30,6 +39,26 @@ CREATED_WITH_LOCATION: dict[int | str, dict[str, Any]] = {
         }
     }
 }
+
+ACCEPTED_WITH_LOCATION: dict[int | str, dict[str, Any]] = {
+    202: {
+        "headers": {
+            "Location": {
+                "description": "URL of the resource tracking the work this request started.",
+                "schema": {"type": "string", "format": "uri-reference"},
+            }
+        }
+    }
+}
+"""What a `202` promises: the work is not done, and this is where to watch it.
+
+The same declaration as `CREATED_WITH_LOCATION` and for the same reason —
+FastAPI knows nothing about headers, so an undeclared one is invisible to the
+generated client — but a different meaning. A `201`'s `Location` names a
+resource that now exists in the state the request asked for; a `202`'s names
+one that exists only to report on work still happening, and which the client
+is expected to poll.
+"""
 
 
 def created_or_replaced(model: type[BaseModel]) -> dict[int | str, dict[str, Any]]:

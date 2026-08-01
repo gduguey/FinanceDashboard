@@ -27,7 +27,6 @@ from accounting.api.api_models import (
 )
 from accounting.api.dependencies import _currencies_in_use, _display_currency, _rates_by_date
 from accounting.api.entities import Goal, GoalAutomation, GoalContribution
-from accounting.api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
 from accounting.ledger.goal_automations import (
     next_recurring_occurrence,
@@ -61,6 +60,7 @@ from accounting.taxonomy import next_available_color, seeded_accounts
 from db.current_user import get_current_user_id
 from db.money import quantize_money
 from db.session import get_db
+from http_api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 
 if TYPE_CHECKING:
     from accounting.ledger.currency import DisplayCurrency

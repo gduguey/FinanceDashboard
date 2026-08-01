@@ -97,7 +97,25 @@ def _existing_leading_columns(table: Table) -> set[tuple[str, ...]]:
         Each usable leading column combination, as a tuple of column names.
     """
     prefixes: set[tuple[str, ...]] = set()
-    column_lists = [tuple(column.name for column in index.columns) for index in table.indexes]
+    # A *partial* index covers nothing here. Postgres will only use one for a
+    # query it can prove is implied by the index predicate, and none of the
+    # reads this function exists to serve carry that predicate: an RLS policy
+    # filters on `user_id` alone, and a cascading delete from `users` names no
+    # state at all. Counting one as coverage would silently skip the real
+    # index.
+    #
+    # This changes exactly one table's outcome today, `trades.sync_runs`,
+    # whose `uq_sync_runs_active_user` is the first partial index to lead
+    # with `user_id` on a table that has no `UNIQUE (user_id, natural_key)`
+    # behind it. `accounting.goal_automations` also carries partial indexes
+    # led by `user_id` and was checked first: its full unique constraint on
+    # `(user_id, natural_key)` covers the prefix legitimately, so it was
+    # never relying on the partial ones and nothing about it moves.
+    column_lists = [
+        tuple(column.name for column in index.columns)
+        for index in table.indexes
+        if index.dialect_options["postgresql"].get("where") is None
+    ]
     # Only constraints Postgres actually backs with an index count. A
     # ForeignKeyConstraint emphatically does not — treating one as coverage
     # is precisely the mistake that leaves foreign keys unindexed.

@@ -19,9 +19,9 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from typing import get_args
+from typing import Any, Literal, get_args
 
-from sqlalchemy import CheckConstraint, ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -203,3 +203,102 @@ class DashboardSettings(Base, Timestamped):
     w8ben_treaty_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
     marginal_ordinary_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
     qualified_ltcg_rate_pct: Mapped[Decimal | None] = mapped_column(RATE, default=None)
+
+
+SyncRunState = Literal["queued", "running", "succeeded", "failed"]
+"""Where one sync run has got to.
+
+Four values and only two of them terminal. `queued` is the row a `POST`
+creates before handing the work to the background runner; `running` is the
+runner having picked it up; `succeeded` and `failed` are the end.
+
+**`failed` does not mean the IBKR pull failed.** A sync commits per
+successful step and rolls back per failed one, deliberately, so a pull that
+partly worked is a *completed* run whose `steps` records what did not — the
+same partial-success contract the synchronous endpoint had. `failed` is
+reserved for the runner itself not finishing: an unexpected exception, or a
+container restart that left the row behind (see
+`api.sync_runs.fail_interrupted_runs`).
+"""
+
+ACTIVE_SYNC_RUN_STATES: tuple[SyncRunState, ...] = ("queued", "running")
+"""The states that count as "this user already has a sync in flight".
+
+Named here rather than spelled out at each use because the partial unique
+index below, the runner's own transitions and the startup sweep all have to
+agree on the same set, and a fourth spelling of it is how they would stop
+agreeing.
+"""
+
+
+class SyncRun(Base, Timestamped):
+    """One run of a broker sync, as a row rather than as a request that has not returned yet.
+
+    `POST /api/v1/trades/sync` used to do the whole IBKR pull inside the
+    request and answer 200 when it finished, reporting progress into
+    `app.state.sync_progress` — an in-process dict. That was two problems in
+    one (known gap 2). A client could not poll, cancel or resume; and the
+    progress channel was already wrong with more than one uvicorn worker,
+    since the poll could land on a worker that had never run the sync and
+    would report nothing while the sync ran fine in another. Storing the run
+    fixes the second as a side effect of fixing the first: any worker can
+    read a row.
+
+    The progress columns and the result columns are on the same row on
+    purpose. A run is one resource with one lifecycle, and `GET` on it
+    answers "where has it got to" and "what did it do" together, so a client
+    polling to completion already holds the result and needs no second
+    request for it.
+
+    **`uq_sync_runs_active_user` is the concurrency control**, replacing a
+    per-process `dict[uuid.UUID, threading.Lock]` that had exactly the same
+    defect as the progress dict it sat beside. A partial unique index over
+    `user_id` where the state is still active means "one sync in flight per
+    user" is a fact about the database rather than about one Python process,
+    so a second `POST` is refused by Postgres however many workers or
+    containers there are. It only ever conflicts within one `user_id`, so it
+    is not a cross-tenant coupling.
+    """
+
+    __tablename__ = "sync_runs"
+    __table_args__ = (
+        CheckConstraint(check_in_sql("state", get_args(SyncRunState)), name="state"),
+        Index(
+            "uq_sync_runs_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text(f"state IN ({', '.join(repr(state) for state in ACTIVE_SYNC_RUN_STATES)})"),
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=UUID7_DEFAULT)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    state: Mapped[str] = mapped_column(default="queued")
+    step: Mapped[str] = mapped_column(default="Queued")
+    """A short human-readable description of what the run is doing, straight from `on_progress`."""
+    percent: Mapped[float] = mapped_column(default=0.0)
+    error: Mapped[str | None] = mapped_column(default=None)
+    """Why the *runner* failed, never why a step did — a step's own error lives in `steps`."""
+    started_at: Mapped[datetime | None] = mapped_column(default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    synced_at: Mapped[str | None] = mapped_column(default=None)
+    """The broker's last-synced timestamp, already rendered in the user's display zone.
+
+    A string rather than a `datetime` because that is what it was when the
+    synchronous endpoint returned it and what the client renders: an ISO
+    string carrying a real UTC offset, resolved through
+    `dependencies._last_synced_iso`. Storing a naive UTC datetime here and
+    re-resolving the zone on read would move a display concern into the
+    table for no gain.
+    """
+    new_event_count: Mapped[int] = mapped_column(default=0)
+    total_event_count: Mapped[int] = mapped_column(default=0)
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    """Each independent leg's `label`/`ok`/`error`, as `api_models.SyncStep` serialises it.
+
+    `JSONB` rather than a child table: this is an opaque record of what one
+    run reported, never queried across runs and never joined to. A row per
+    step would be a table nothing selects from by anything but its parent.
+    """

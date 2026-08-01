@@ -48,9 +48,21 @@ config = context.config
 config.set_main_option("sqlalchemy.url", DatabaseSettings().database_url.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
+#
+# `disable_existing_loggers=False` is not the default and is not cosmetic.
+# `fileConfig` otherwise sets `disabled = True` on every logger that already
+# exists and is not named in `alembic.ini` — which, whenever migrations run
+# **in-process**, means every application logger imported before this line
+# goes silent for the rest of that process. Production never notices
+# (`deploy/Dockerfile` runs `alembic upgrade head` as its own process before
+# uvicorn starts), but the test suite runs migrations in-process for every
+# scratch database, so any suite ordered after one of those was asserting on
+# logs that could no longer be emitted — silently, since a disabled logger
+# raises nothing. Found by exactly that: a fail-closed test in
+# `tests/trades/api/test_auth.py` passed alone and saw zero records in a full
+# run.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
