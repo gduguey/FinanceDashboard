@@ -28,14 +28,16 @@ enforced by the database rather than by application `WHERE` clauses.
 | Schema | Tables | What lives there |
 |---|---|---|
 | `public` | 5 | Identity (`users`, `external_identities`, `user_secrets`), the currency dimension, and Alembic's own `alembic_version` |
-| `accounting` | 26 | The cash ledger, its taxonomy, its interpretation overlays, planning, the institution dimension |
+| `accounting` | 28 | The cash ledger, its taxonomy, its interpretation overlays, the resolved projection, planning, the institution dimension |
 | `trades` | 5 | Broker connections, the brokerage event ledger, dashboard settings, the security dimension |
 
-**35 application tables** (36 counting `alembic_version`). Postgres 16, both
+**37 application tables** (38 counting `alembic_version`). Postgres 16, both
 locally and in `deploy/docker-compose.yml`.
 
-Schema history is **one baseline revision**,
-`src/migration/versions/000000000001_baseline_schema.py` (`down_revision = None`).
+Schema history is the baseline plus one revision:
+`src/migration/versions/000000000001_baseline_schema.py` (`down_revision = None`)
+and `000000000002_resolved_posting_projection.py`, which adds §3.10's two
+tables and their triggers.
 The previous 28-revision chain — which contained a drop-and-recreate of both
 schemas partway through and hand-copied RLS into six separate revisions — was
 collapsed, not carried forward. The project is pre-launch with no data to
@@ -104,7 +106,7 @@ Conventions used throughout, so they are not repeated per table:
   `ENABLE` + `FORCE ROW LEVEL SECURITY` and one policy named `user_isolation`
   with both `USING` and `WITH CHECK`.
 - **`created_at` / `updated_at`** — `timestamptz NOT NULL DEFAULT now()` on all
-  35 tables; `updated_at` additionally carries the mapper's `onupdate=now()`.
+  37 tables; `updated_at` additionally carries the mapper's `onupdate=now()`.
 - **`natural_key`** — `varchar NOT NULL`, with
   `UNIQUE (user_id, natural_key)`. The domain's addressing mechanism.
 - **Index naming** — `ix_<table>_<cols>`; every non-unique index listed below is
@@ -127,7 +129,7 @@ Column lists below omit `created_at`/`updated_at`.
 
 - RLS: forced, policy compares `id` (not `user_id`) — the one special case in
   `db.tenant._USERS_TABLE`.
-- Referenced by all 31 tenant tables.
+- Referenced by all 33 tenant tables.
 - No indexes beyond the primary key.
 
 #### `public.external_identities` — provider account → internal user.
@@ -702,6 +704,44 @@ wanted behaviour, not a conflict.
 PK `(user_id, provider)`. `period_start timestamp NOT NULL`,
 `used_count integer NOT NULL`, `is_limited boolean NOT NULL`,
 `last_error varchar NULL`. No other indexes.
+
+### 3.10 The resolved projection
+
+Two tables that hold no facts of their own. Everything in them is derived
+from §3.5 and §3.6 by `accounting.ledger.resolution`, and stored so SQL can
+filter, sort and count the values a user actually sees — see §4.9, which is
+where the immutable-posting rule this exists alongside is set out.
+
+#### `accounting.resolved_postings` — one posting as the overlay pipeline resolves it.
+
+PK `(user_id, posting_id)`, where `posting_id` is the natural key string
+rather than a foreign key into `postings`: a split leg's id
+(`f"{posting_id}:split:{n}"`) belongs to no `postings` row. Columns are
+deliberately `api.api_models.PostingRow`'s own, plus
+`is_real_income_expense`, `is_excluded_from_rule`, and `transaction_row_id`
+— the real `transactions.id`, carried because a recompute has to be able to
+delete the rows of a transaction that no longer exists.
+
+`currency` foreign-keys `public.currencies` like the other nine currency
+columns. Nothing else here is a foreign key; the values are natural keys,
+not references.
+
+Indexes: `(user_id, posted_at, transaction_id)` for the page order,
+`(user_id, transaction_row_id)` for a recompute, `(user_id, category_id)` and
+`(user_id, account_id)` for the filters.
+
+#### `accounting.resolved_postings_dirty` — one transaction whose projection rows are out of date.
+
+PK `(user_id, transaction_id)`. `transaction_id` is a `transactions.id` and
+deliberately **not** a foreign key: the row has to survive the deletion of
+the transaction it names, because "this transaction is gone" is exactly a
+change the projection has to be told about.
+
+Filled by 68 statement-level triggers — four per resolution input table,
+because Postgres refuses a transition table on a multi-event trigger —
+generated from `accounting.precedence.OVERLAY_SOURCES` by
+`accounting.db.projection`. Drained by `repositories.projection.drain` at
+the top of every read that trusts the projection.
 
 ---
 
