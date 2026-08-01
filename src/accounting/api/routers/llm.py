@@ -12,10 +12,10 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import (
     BulkSuggestResult,
     CategorySuggestionResult,
+    FilteredBulkRequest,
     LlmProviderUsage,
     LlmSettings,
     LLMSettingsUpdate,
-    PatternSuggestBulkRequest,
     VerifyResult,
 )
 from accounting.ledger.patterns import match_patterns_bulk, matching_pattern
@@ -38,6 +38,7 @@ from accounting.repositories.interpretation import (
     load_overrides_for_postings,
     save_overrides_for_postings,
 )
+from accounting.repositories.projection import drain, matching_posting_ids
 from accounting.taxonomy import seeded_categories
 from accounting.utils.io_utils import collect_if_lazy
 from db.current_user import get_current_user_id
@@ -394,7 +395,7 @@ def post_pattern_suggest_category(
 
 @router.post("/postings/pattern-suggest-category/bulk")
 def post_pattern_suggest_category_bulk(
-    payload: PatternSuggestBulkRequest,
+    payload: FilteredBulkRequest,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> BulkSuggestResult:
@@ -414,27 +415,36 @@ def post_pattern_suggest_category_bulk(
     `post_pattern_suggest_category`'s `lock_category_id` gives, using each
     posting's own current category as its lock.
 
+    The set comes from the caller's current filter rather than from a list
+    of ids, and is resolved in the same transaction as the write — see
+    `api_models.FilteredBulkRequest` for why that replaced "always exactly
+    the caller's current filtered view", which was only ever true while the
+    client held the whole ledger.
+
     Parameters
     ----------
     payload
-        The postings to suggest categories for.
+        The filter naming the postings to suggest categories for.
 
     Returns
     -------
     BulkSuggestResult
-        How many postings got a staged suggestion.
+        How many postings the filter matched, and how many got a staged
+        suggestion.
     """
     allow_background_runtime(session, user_id)
+    drain(session, user_id)
+    posting_ids = matching_posting_ids(session, user_id, payload.filters)
     postings = resolved_postings(session, user_id)
-    targets = postings.filter(pl.col("posting_id").is_in(payload.posting_ids))
+    targets = postings.filter(pl.col("posting_id").is_in(posting_ids))
     if targets.is_empty():
-        return BulkSuggestResult(applied=0)
+        return BulkSuggestResult(matched=len(posting_ids), applied=0)
 
     matches = collect_if_lazy(
         match_patterns_bulk(load_category_patterns(session, user_id), targets.select("posting_id", "description"))
     )
     if matches.is_empty():
-        return BulkSuggestResult(applied=0)
+        return BulkSuggestResult(matched=len(posting_ids), applied=0)
 
     target_rows = {row["posting_id"]: row for row in targets.to_dicts()}
     matched_posting_ids = matches["posting_id"].to_list()
@@ -455,4 +465,4 @@ def post_pattern_suggest_category_bulk(
         overrides[match["posting_id"]] = staged
         applied += 1
     save_overrides_for_postings(matched_posting_ids, overrides, session, user_id)
-    return BulkSuggestResult(applied=applied)
+    return BulkSuggestResult(matched=len(posting_ids), applied=applied)
