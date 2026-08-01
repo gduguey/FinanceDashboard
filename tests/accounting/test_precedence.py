@@ -1,6 +1,6 @@
 """Overlay precedence is declared data, not the line order of the resolution pipeline.
 
-`accounting.precedence` is the declaration; `accounting.api.dependencies`
+`accounting.precedence` is the declaration; `accounting.ledger.resolution`
 walks it; each overlay table's `stage` column CHECK restates the subset of
 it that table may hold. These tests are what keeps those three from
 drifting apart — a stage nobody applies, an applier for a stage nobody
@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 import accounting.db  # noqa: F401 — registers every accounting table on the shared metadata
-from accounting.api.dependencies import _overlay_appliers
+from accounting.ledger.resolution import overlay_context
 from accounting.precedence import OVERLAY_PRECEDENCE, OverlayStage
 from db.base import Base
 
@@ -63,8 +63,7 @@ def test_the_precedence_tuple_is_the_vocabulary_itself() -> None:
 
 def test_every_declared_stage_has_an_applier(db_session, test_user_id) -> None:
     """A stage with no applier is an overlay that silently never runs."""
-    appliers = _overlay_appliers(db_session, test_user_id, rules=[], accounts={}, overrides={})
-    assert set(appliers) == set(OVERLAY_PRECEDENCE)
+    assert set(overlay_context(db_session, test_user_id, rules=[]).appliers) == set(OVERLAY_PRECEDENCE)
 
 
 def test_every_stage_carrying_table_pins_itself_to_a_declared_stage() -> None:
@@ -90,7 +89,7 @@ def test_category_resolution_is_not_an_overlay_and_declares_no_stage() -> None:
 
     Resolving a posting's imported category through the taxonomy's own
     retirements runs before the first stage (see
-    `api.dependencies._resolved_postings`), and deliberately
+    `ledger.resolution.apply_overlays`), and deliberately
     carries no `stage` column: giving it one would declare a precedence
     relative to the overlays that it does not have, since every overlay's
     own `category_id` is a foreign key into the same table.

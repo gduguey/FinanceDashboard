@@ -152,20 +152,31 @@ src/accounting/
   repositories/         one module per aggregate root, each owning its own tables' reads
                          and writes: accounts, taxonomy, planning, interpretation,
                          ledger.py (the posting-frame statement, its page window,
-                         and the projection into LEDGER_FRAME_SCHEMA)
+                         and the projection into LEDGER_FRAME_SCHEMA),
+                         projection.py (the resolved-posting cache: the drain that
+                         keeps it equal to the pipeline, and the filtered/sorted/
+                         counted queries the transactions screen is served from)
   db/                   SQLAlchemy models/queries for the `accounting` Postgres schema —
                          core.py (accounts/categories/tags/postings/transactions),
                          budgets.py, goals.py, automation.py (categorization_rules —
                          one description matcher, typed transfer/categorize effect),
                          corrections.py (manual overrides, splits, merges, and
                          suggestions — pending + dismissed in one table), simulator.py,
-                         llm.py (per-provider usage tracking)
+                         llm.py (per-provider usage tracking),
+                         projection.py (resolved_postings + its staleness queue, and
+                         the triggers that fill it — generated from precedence.py's
+                         declaration of what each stage reads, never a hand-kept list)
 
-  precedence.py         the order the interpretation overlays are applied in, declared
-                         as data — each overlay table stores its own stage, the resolver
-                         walks the declaration instead of a hard-coded call sequence
+  precedence.py         the order the interpretation overlays are applied in, and the
+                         tables each one reads, both declared as data — each overlay
+                         table stores its own stage, the resolver walks the declaration
+                         instead of a hard-coded call sequence, and the projection's
+                         staleness triggers are generated from the same declaration
 
   ledger/               pure domain logic, no I/O
+    resolution.py         the overlay pipeline itself: the raw read, the taxonomy
+                           lookup, and every stage in declared precedence order —
+                           the single implementation of what a posting resolves to
     replay.py             postings -> account balances as of any date
     categorization.py     rule matching + vault/internal-transfer detection;
                            repoints placeholder counterparties, sets categories

@@ -5,7 +5,7 @@ Every table in the interpretation aggregate (see
 posting ledger, and the layers are not commutative: an override has to see
 the account a rule resolved, a merge has to see the rows a split produced.
 Until this module existed, that ordering lived nowhere but the top-to-bottom
-line order of `api.dependencies._resolved_postings_and_store` — reading it
+line order of the resolution pipeline itself — reading it
 meant reading a function body, changing it meant editing a hard-coded
 sequence, and nothing stopped a row from being written by a stage that had
 already run.
@@ -79,6 +79,24 @@ propose and never reaches the resolved ledger at all, and a pending one
 reaches it only by being folded into its posting's `ManualOverride` — at the
 `override` stage that `posting_overrides` already declares. Giving it a
 stage would be declaring a precedence it does not have.
+
+## The second declaration: what each stage reads
+
+`OVERLAY_SOURCES` names the tables behind every stage, and
+`NON_STAGE_SOURCES` the tables behind the two steps above that are not
+stages. Together they are `RESOLUTION_INPUT_TABLES`: every table a resolved
+posting depends on.
+
+That exists for the resolved projection (`repositories.projection`), which
+caches this pipeline's output and has to be recomputed whenever any input
+changes. Deriving the trigger set from the same module that declares the
+overlays is the point — the alternative is a hand-maintained list of write
+sites, which is the shape this repo has been bitten by three times (RLS
+policies, wipe-table sets, invalidation keys). `accounting.db.projection`
+installs one staleness trigger per named table; a stage that gains an input
+without naming it here is caught by
+`tests/accounting/test_resolution_sources.py`, which runs a real resolution
+and compares what it touched against what is declared.
 """
 
 from __future__ import annotations
@@ -102,3 +120,88 @@ OVERLAY_PRECEDENCE: tuple[OverlayStage, ...] = get_args(OverlayStage)
 written in, so this is the declaration itself rather than a second,
 hand-maintained copy of it that could drift.
 """
+
+OVERLAY_SOURCES: dict[OverlayStage, frozenset[str]] = {
+    "counterparty": frozenset({"categorization_rules", "categorization_rule_exclusions", "accounts"}),
+    "split": frozenset({"posting_splits", "posting_split_legs", "categories"}),
+    "override": frozenset({
+        "posting_overrides",
+        "posting_override_tags",
+        "suggestions",
+        "accounts",
+        "categories",
+        "tags",
+        "postings",
+    }),
+    "merge": frozenset({"posting_merges", "posting_merge_duplicates", "transactions"}),
+    "link": frozenset({"transfer_links", "transfer_linked_transactions", "transactions", "categorization_rules"}),
+}
+"""Which `accounting` tables each stage reads, declared beside the order the stages run in.
+
+The second thing precedence has to say. Declaring the *order* made adding a
+stage a vocabulary entry rather than a line in a function body; declaring
+each stage's *inputs* is what makes the resolved projection
+(`repositories.projection`) recomputable without a hand-maintained list of
+write sites to hook. `accounting.db.projection` turns this into one
+staleness trigger per table, so a stage that gains an input gains its
+trigger, and one that gains an input **without declaring it here** fails
+`tests/accounting/test_resolution_sources.py`, which compares this
+declaration against the tables a real resolution actually touches.
+
+A stage lists every table it reads, including the ones it reads only to
+translate a stored `id` into the natural key the frame is keyed by. That is
+not over-declaring: `ledger.frame.LEDGER_FRAME_SCHEMA` holds natural keys,
+so a natural key that changed would change a resolved value exactly as a
+category or an amount would.
+"""
+
+NON_STAGE_SOURCES: dict[str, frozenset[str]] = {
+    "raw ledger": frozenset({
+        "postings",
+        "transactions",
+        "accounts",
+        "categories",
+        "budgets",
+        "posting_tags",
+        "tags",
+    }),
+    "taxonomy redirects": frozenset({"categories"}),
+}
+"""The two inputs that run outside the stage walk, and the tables each reads.
+
+Both are described in this module's docstring: `importers.ingest.load_ledger`
+is the ledger itself rather than a layer over it, and
+`ledger.categorization.apply_category_redirects` is a dimension lookup rather
+than an overlay. Neither is a stage, and neither may be given one — but both
+can change a resolved value, so both belong in `RESOLUTION_INPUT_TABLES`.
+"""
+
+RESOLUTION_INPUT_TABLES: frozenset[str] = frozenset().union(*OVERLAY_SOURCES.values(), *NON_STAGE_SOURCES.values())
+"""Every `accounting` table a resolved posting depends on — the union of the two declarations above.
+
+The set `accounting.db.projection` installs staleness triggers over, and the
+set `tests/accounting/test_resolution_sources.py` asserts a real resolution
+reads no table outside of (bar `RESOLUTION_READ_EXEMPT`).
+"""
+
+RESOLUTION_READ_EXEMPT: dict[str, str] = {
+    "budgets": (
+        "Read by `repositories.ledger.ledger_statement`, which outer-joins it to turn "
+        "`postings.budget_id` into the frame's `budget_id` natural key — but no write to this "
+        "table can change that value. The natural key is immutable (`db.base.upsert_and_prune` "
+        "conflicts on it rather than updating it), and the foreign key from `postings` is "
+        "`NO ACTION`, so a budget cannot be deleted while a posting names it. Nothing in the "
+        "live app writes a non-null `postings.budget_id` at all — see `accounting.db.core.Posting`."
+    ),
+}
+"""Tables resolution reads that deliberately carry no staleness trigger, each with the reason.
+
+Modelled on `db.tenant.RLS_EXEMPT`, and for the same reason: the honest way
+to record a hole is one entry naming it and arguing for it, not an absence
+from a list nobody can audit. An entry here is a claim that *no write to
+this table can change a resolved value* — not that changes are rare, and not
+that the cost is inconvenient.
+"""
+
+RESOLUTION_TRIGGERED_TABLES: frozenset[str] = RESOLUTION_INPUT_TABLES - RESOLUTION_READ_EXEMPT.keys()
+"""The tables that actually get a staleness trigger — every input bar the exempt ones."""

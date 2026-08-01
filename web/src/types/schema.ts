@@ -1634,48 +1634,88 @@ export interface paths {
     }
     /**
      * Get Postings
-     * @description Return one page of postings, resolved against the current rules and manual overrides.
+     * @description Return one filtered, sorted page of postings, resolved against the current rules and manual overrides.
      *
-     *     Each row also carries `pending_source` (`"ai"`, `"pattern"`, or
-     *     `None`) and `pending_selected` — an automated categorizer's
-     *     not-yet-confirmed suggestion, and whether it's currently checked for
-     *     the next "validate selection" action (see `ledger.pending`) —
+     *     Served from `accounting.resolved_postings`, the stored output of the same
+     *     overlay pipeline an unpaged read would run — see
+     *     `accounting.db.projection` for what keeps the two equal, and
+     *     `repositories.projection.drain`, which this calls first so a read can
+     *     never serve a row a write has invalidated. Every filter below reads a
+     *     *resolved* value, which is why they could not be evaluated in SQL before
+     *     that table existed: the category a redirect or an override rewrote, the
+     *     account a rule repointed, the description a merge rewrote, the amount a
+     *     split changed.
+     *
+     *     Each row carries `pending_source` (`"ai"`, `"pattern"`, or `None`) and
+     *     `pending_selected` — an automated categorizer's not-yet-confirmed
+     *     suggestion, and whether it's currently checked for the next "validate
+     *     selection" action (see `ledger.pending`) —
      *     `resolved_by_transfer_rule_id`, naming which `TransferRule` (if any)
      *     resolved this posting's transaction, purely for display (see
-     *     `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) —
-     *     and `manual_transfer_override_posting_id`, the same thing for a manual
-     *     "flag as transfer" (`ManualOverride.account_id`) instead of a rule. A
-     *     manual override always wins if both somehow apply to the same
-     *     transaction (it's applied after rules — see
-     *     `api.dependencies._resolved_postings`), so
+     *     `ledger.categorization.resolved_transfer_rule_ids_by_transaction`) — and
+     *     `manual_transfer_override_posting_id`, the same thing for a manual "flag
+     *     as transfer" (`ManualOverride.account_id`) instead of a rule. A manual
+     *     override always wins if both somehow apply to the same transaction (it's
+     *     applied after rules — see `ledger.resolution.apply_overlays`), so
      *     `resolved_by_transfer_rule_id` is suppressed whenever
-     *     `manual_transfer_override_posting_id` is set for that transaction —
-     *     see `PostingRow`'s own docstring.
+     *     `manual_transfer_override_posting_id` is set for that transaction — see
+     *     `PostingRow`'s own docstring.
      *
-     *     `limit` counts **transactions**, not postings, and the page carries
-     *     every leg of every transaction it covers — so `len(items)` is normally
-     *     larger than `limit`, and larger still where a transaction has been
-     *     split. `repositories.ledger.visible_transaction_page` explains why the
-     *     page cannot be cut at a posting instead.
+     *     `limit` counts **transactions**, not postings, and the page carries every
+     *     leg of every transaction it covers — so `len(items)` is normally larger
+     *     than `limit`, and larger still where a transaction has been split.
+     *     `repositories.projection.filtered_page` explains why the page cannot be
+     *     cut at a matching row instead, and how a transaction with several
+     *     matching rows takes its place in the order.
      *
      *     A `limit` above `PAGE_LIMIT_MAX` is clamped rather than rejected; see
      *     that constant for why.
      *
      *     Parameters
      *     ----------
-     *     limit
-     *         How many transactions to return, newest first. Clamped to
-     *         `PAGE_LIMIT_MAX`.
-     *     offset
-     *         How many transactions to skip.
+     *     query
+     *         The filter bar, the sort and the page window — see `PostingQuery`,
+     *         which explains why all three arrive as one model rather than as a
+     *         filter beside four loose parameters.
      *
      *     Returns
      *     -------
      *     PostingPage
-     *         The page's postings, plus the total transaction count a client needs
-     *         in order to ask for the next page.
+     *         The page's postings, the total transaction count a client needs in
+     *         order to ask for the next page, and the two other counts the screen
+     *         shows (see `PostingPageCounts`).
      */
     get: operations['get_postings_api_v1_accounting_postings_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/postings/months': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Posting Months
+     * @description Every `YYYY-MM` this user has a posting in, newest first — the month picker's options.
+     *
+     *     Bounded by construction: one row per month a user has ever transacted in,
+     *     which is tens of entries for a decade of history. It was previously a
+     *     `Set` built over every posting on the client (`web/src/lib/months.ts`),
+     *     which is only cheap while something else is already holding the whole
+     *     ledger in memory — and nothing is, now.
+     *
+     *     Returns
+     *     -------
+     *     list[str]
+     */
+    get: operations['get_posting_months_api_v1_accounting_postings_months_get']
     put?: never
     post?: never
     delete?: never
@@ -5926,6 +5966,34 @@ export interface components {
       offset: number
     }
     /**
+     * LinkedLeg
+     * @description The other side of a confirmed transfer, as its badge and detail popup need it.
+     *
+     *     Deliberately not a whole `PostingRow`: the partner is not on the page and
+     *     is not rendered as a row, so returning one would invite a client to treat
+     *     it as if it were.
+     */
+    LinkedLeg: {
+      /** Transaction Id */
+      transaction_id: string
+      /** Account Id */
+      account_id: string
+      /** Description */
+      description: string
+      /**
+       * Posted At
+       * Format: date-time
+       */
+      posted_at: string
+      /** Amount */
+      amount: number
+      /**
+       * Currency
+       * @enum {string}
+       */
+      currency: 'USD' | 'EUR'
+    }
+    /**
      * LlmProviderUsage
      * @description One LLM provider's self-tracked call count this period, and whether it's currently rate-limited.
      */
@@ -6429,15 +6497,19 @@ export interface components {
     }
     /**
      * PostingPage
-     * @description One page of resolved postings, cut by transaction.
+     * @description One page of resolved postings, cut by transaction, ordered by whatever the client asked to sort on.
      *
-     *     `items` holds every leg of every transaction on the page, ordered by
-     *     `posted_at` descending then posting id — the same order the window is cut
-     *     in, so concatenating consecutive pages yields one correctly sorted list
-     *     rather than ascending runs in descending order. A split transaction
+     *     `items` holds every leg of every transaction on the page — including the
+     *     placeholder legs the table itself never renders, because the transfer
+     *     badge and "mark as transfer" both read them. A split transaction
      *     contributes more rows than legs it was imported with. See
-     *     `repositories.ledger.visible_transaction_page` for why the cut is by
-     *     transaction rather than by posting.
+     *     `repositories.projection.filtered_page` for why the cut is by transaction
+     *     rather than by matching row, and how a transaction with several matching
+     *     rows takes its place in the order.
+     *
+     *     `total` counts transactions, as `window_unit` says. `counts` carries the
+     *     two other numbers the screen shows, which are genuinely different
+     *     numbers — see `PostingPageCounts`.
      */
     PostingPage: {
       /** Items */
@@ -6453,6 +6525,30 @@ export interface components {
       limit: number
       /** Offset */
       offset: number
+      counts: components['schemas']['PostingPageCounts']
+    }
+    /**
+     * PostingPageCounts
+     * @description The two counts the transactions screen shows, which are two different numbers.
+     *
+     *     `total` on the page envelope counts `window_unit`s — transactions, since
+     *     that is what a page is cut by. The figure beside the table counts
+     *     *rows*, because that is what the table lists: a split transaction
+     *     contributes one transaction and several rows.
+     *
+     *     The screen used to derive the row count client-side and label it
+     *     "transactions", which was wrong in exactly the case a split makes the two
+     *     differ. Both are returned rather than one being silently redefined — the
+     *     same choice `http_api.pagination.Page.window_unit` exists to make
+     *     explicit.
+     */
+    PostingPageCounts: {
+      /** Matched Transactions */
+      matched_transactions: number
+      /** Matched Postings */
+      matched_postings: number
+      /** Needs Categorizing */
+      needs_categorizing: number
     }
     /**
      * PostingRow
@@ -6473,7 +6569,7 @@ export interface components {
      *     `ManualOverride.account_id`, the same way `resolved_by_transfer_rule_id`
      *     is set on both legs of a rule-repointed one — and since a manual
      *     override is applied *after* rules in the resolution pipeline (see
-     *     `api.dependencies._resolved_postings_and_store`) and so always wins if
+     *     `ledger.resolution.apply_overlays`) and so always wins if
      *     both somehow apply to the same transaction, `get_postings` never sets
      *     `resolved_by_transfer_rule_id` on a transaction that also has one of
      *     these, so the two are mutually exclusive here — never "via rule" when
@@ -6535,6 +6631,17 @@ export interface components {
       linked_transaction_id?: string | null
       /** Transfer Link Source */
       transfer_link_source?: ('manual' | 'rule') | null
+      /**
+       * Is Real Income Expense
+       * @default false
+       */
+      is_real_income_expense: boolean
+      /**
+       * Is Excluded From Rule
+       * @default false
+       */
+      is_excluded_from_rule: boolean
+      linked_leg?: components['schemas']['LinkedLeg'] | null
     }
     /**
      * PostingSplit
@@ -9072,7 +9179,41 @@ export interface operations {
   get_postings_api_v1_accounting_postings_get: {
     parameters: {
       query?: {
-        /** @description How many transactions to return, newest first. */
+        /** @description Case-insensitive substring of the resolved description. */
+        search?: string
+        /** @description One account's natural key. */
+        account?: string | null
+        account_exclude?: boolean
+        /** @description Category natural keys; `__uncategorized__` matches rows with none. */
+        categories?: string[]
+        categories_exclude?: boolean
+        /** @description Subcategory natural keys; `__no_subcategory__` matches rows with none. */
+        subcategories?: string[]
+        subcategories_exclude?: boolean
+        /** @description Tag natural keys; a row matches if it carries any. */
+        tags?: string[]
+        tags_exclude?: boolean
+        /** @description A single `YYYY-MM`. */
+        month?: string | null
+        /** @description First day to include, inclusive. */
+        start?: string | null
+        /** @description Last day to include, inclusive. */
+        end?: string | null
+        /** @description `ai`, `pattern`, or `__confirmed__` for a row carrying no unvalidated suggestion. */
+        pending?: string[]
+        pending_exclude?: boolean
+        transfer_flags?: ('rule' | 'excluded' | 'manual' | 'none')[]
+        transfer_flags_exclude?: boolean
+        /** @description Restrict to real income or real expense legs, by sign. */
+        income_expense?: ('income' | 'expense') | null
+        categorized?: ('categorized' | 'uncategorized') | null
+        /** @description The 'Needs categorizing' tab: a real income/expense leg that is uncategorized, still carries an unvalidated suggestion, or sits under a parent category whose subcategory has not been picked. */
+        needs_categorizing?: boolean
+        /** @description Which resolved column to order by. */
+        sort?: 'posted_at' | 'account_id' | 'description' | 'amount' | 'category_id' | 'subcategory_id' | 'tag_ids'
+        /** @description Order high-to-low. Nulls sort last either way. */
+        descending?: boolean
+        /** @description How many transactions to return. Clamped to PAGE_LIMIT_MAX. */
         limit?: number
         /** @description How many transactions to skip. */
         offset?: number
@@ -9099,6 +9240,26 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_posting_months_api_v1_accounting_postings_months_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': string[]
         }
       }
     }

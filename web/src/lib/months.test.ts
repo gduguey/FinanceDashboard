@@ -13,6 +13,8 @@ function makePosting(postedAt: string): Posting {
     description: '',
     pending_selected: true,
     is_linked_transfer: false,
+    is_real_income_expense: false,
+    is_excluded_from_rule: false,
   }
 }
 

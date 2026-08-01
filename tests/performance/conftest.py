@@ -251,8 +251,32 @@ def _seed_tenant(connection: Connection, tenant: uuid.UUID, *, transactions: int
     )
 
 
-_ANALYZED_TABLES = ("postings", "transactions")
-"""The two relations every threshold in this module depends on the planner having statistics for."""
+_ANALYZED_TABLES = ("postings", "transactions", "resolved_postings")
+"""The three relations every threshold in this module depends on the planner having statistics for."""
+
+
+def _fill_the_projection(app_runtime_engine: Engine, tenants: dict[str, uuid.UUID]) -> None:
+    """Build each tenant's resolved projection before the gate measures a read of it.
+
+    The bulk seed fires the staleness triggers, so every seeded transaction
+    lands in the dirty queue and the *first* request would otherwise pay for
+    a whole rebuild. That is a real cost and it has its own case
+    (`test_a_cold_projection_is_rebuilt_in_proportion_to_the_ledger`), but it
+    is not what the paged-read thresholds are about — a gate that measured it
+    inside every other case would be timing a cache fill and calling it a
+    page.
+
+    Run through `repositories.projection.rebuild` rather than by issuing a
+    request, so the fill is not itself one of the measurements, and as
+    `app_runtime` so the rows are written under the policy that will read
+    them back.
+    """
+    from accounting.repositories.projection import rebuild  # noqa: PLC0415 — keeps this module importable without `api`
+
+    for tenant in tenants.values():
+        with Session(bind=app_runtime_engine) as session:
+            set_rls_user(session, tenant)
+            rebuild(session, tenant)
 
 
 def _analyze_as_owner(perf_database: URL) -> None:
@@ -339,8 +363,12 @@ def tenants(app_runtime_engine: Engine, perf_database: URL) -> dict[str, uuid.UU
     # query or an unplanned one. That is what produced C6's "cliff between
     # limit=300 and limit=400": not a page size, but whichever side of that
     # race the runner happened to land on (B5).
+    tenants = {"big": big, "small": small}
+    # Before `ANALYZE`, so the projection's own statistics are built from the
+    # rows the gate will actually read rather than from an empty table.
+    _fill_the_projection(app_runtime_engine, tenants)
     _analyze_as_owner(perf_database)
-    return {"big": big, "small": small}
+    return tenants
 
 
 @pytest.fixture

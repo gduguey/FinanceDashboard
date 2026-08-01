@@ -631,10 +631,12 @@ def test_a_ledger_event_cannot_name_a_currency_that_is_not_in_the_reference_list
 def test_every_currency_column_in_both_schemas_references_the_reference_list() -> None:
     """Coverage, not behaviour: the duplication is only actually gone if no column kept its own copy.
 
-    Derived from the metadata rather than listed here, so a tenth
+    Derived from the metadata rather than listed here, so an eleventh
     `currency` column added later is checked by this test on the day it
     appears — the failure mode the copied `CHECK`s had (a new table simply
-    not getting one) cannot recur silently.
+    not getting one) cannot recur silently. It has already done that job
+    once: `accounting.resolved_postings` is the tenth, and shipped without
+    the foreign key until this assertion refused it.
     """
     currency_columns = [
         (table, column)
@@ -642,7 +644,7 @@ def test_every_currency_column_in_both_schemas_references_the_reference_list() -
         for column in table.columns
         if column.name in {"currency", "target_currency"}
     ]
-    assert len(currency_columns) == 9, f"expected nine currency columns, found {len(currency_columns)}"
+    assert len(currency_columns) == 10, f"expected ten currency columns, found {len(currency_columns)}"
     for table, column in currency_columns:
         targets = {key.target_fullname for key in column.foreign_keys}
         assert targets == {CURRENCY_CODE_COLUMN}, (

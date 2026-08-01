@@ -87,7 +87,20 @@ def upgrade() -> None:
     for statement in ZERO_SUM_STATEMENTS:
         op.execute(statement)
     grant_app_runtime(op, schemas=("public", *_SCHEMAS))
+    # Restricted to the tables *this* revision created, read back off the
+    # connection rather than taken from a list. `tenant_tables` walks live ORM
+    # metadata, which is the whole point of it — the policy set is derived from
+    # the models instead of transcribed. But metadata describes the schema as
+    # it is *today*, not as this revision left it, so the first later revision
+    # to add a tenant table (`000000000002`) made this loop try to protect a
+    # table the baseline does not create, and every fresh database failed to
+    # migrate. Reflection is what makes "derived from the models" and "this
+    # revision only" both true.
+    inspector = sa.inspect(op.get_bind())
+    created = {(schema, table) for schema in ("public", *_SCHEMAS) for table in inspector.get_table_names(schema)}
     for tenant in tenant_tables(Base.metadata):
+        if (tenant.schema or "public", tenant.table) not in created:
+            continue
         for statement in enable_rls_statements(tenant):
             op.execute(statement)
 
@@ -1350,7 +1363,16 @@ def _create_tables() -> None:
 
 def downgrade() -> None:
     """Drop every policy, table, the uuid7 function, and every schema, and revoke the app_runtime role."""
+    # Restricted to the tables that are actually there, for the mirror of the
+    # reason `upgrade` reflects: `tenant_tables` walks live ORM metadata, which
+    # by now names tables later revisions created and this downgrade has
+    # already dropped. `IF EXISTS` covers a missing *policy*, not a missing
+    # relation — `DROP POLICY IF EXISTS ... ON <gone>` still errors.
+    inspector = sa.inspect(op.get_bind())
+    present = {(schema, table) for schema in ("public", *_SCHEMAS) for table in inspector.get_table_names(schema)}
     for tenant in tenant_tables(Base.metadata):
+        if (tenant.schema or "public", tenant.table) not in present:
+            continue
         op.execute(f'DROP POLICY IF EXISTS {POLICY_NAME} ON "{tenant.schema}"."{tenant.table}"')
     _drop_tables()
     # After the tables: while any column still defaults to `uuid7()`, Postgres

@@ -25,12 +25,7 @@ from accounting.api.api_models import (
     WithdrawalAutomationCreate,
     WithdrawalAutomationResult,
 )
-from accounting.api.dependencies import (
-    _currencies_in_use,
-    _display_currency,
-    _rates_by_date,
-    _resolved_postings,
-)
+from accounting.api.dependencies import _currencies_in_use, _display_currency, _rates_by_date
 from accounting.api.entities import Goal, GoalAutomation, GoalContribution
 from accounting.api.locations import CREATED_WITH_LOCATION, created_or_replaced, location_of
 from accounting.dashboard.goals import all_goal_balances, contributions_to_frame, unallocated_balance
@@ -39,6 +34,7 @@ from accounting.ledger.goal_automations import (
     run_recurring_additions,
     run_withdrawal_automation,
 )
+from accounting.ledger.resolution import resolved_postings
 from accounting.models import CurrencyCode, GoalAutomationDirection
 from accounting.models import Goal as DomainGoal
 from accounting.models import GoalAutomation as DomainGoalAutomation
@@ -156,7 +152,7 @@ def _unallocated_basis(
     """
     currencies = _currencies_in_use(session, user_id)
     return _UnallocatedBasis(
-        postings=_resolved_postings(session, user_id),
+        postings=resolved_postings(session, user_id),
         accounts=seeded_accounts(session, user_id),
         opening_balances=load_opening_balances(session, user_id),
         currencies=currencies,

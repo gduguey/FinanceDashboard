@@ -68,6 +68,33 @@ and, for the page sizes C6 used to fail on, 79 ms at 400, 136 ms at 1,000
 and 667 ms at `PAGE_LIMIT_MAX`. One run is a datapoint, not a distribution —
 C8 is the item that collects enough of them to tighten the bounds below.
 
+What C1 changed, measured locally
+---------------------------------
+`GET /postings` is served from `accounting.resolved_postings` now rather
+than by running the overlay pipeline per request, and it got *faster* while
+gaining filters: 53 ms at 2k and 77 ms at 10k, against 86 and 91 ms for the
+unfiltered page immediately before. A filtered, sorted page — a substring
+search and a resolved predicate, ordered on a column that is not the page's
+key — is 55 and 84 ms, i.e. within noise of the unfiltered one, because the
+filter is an indexed read over stored values rather than anything the
+request has to compute. The largest page the contract allows fell from
+537 ms to 354 ms.
+
+The two new shapes have no pre-C1 counterpart:
+
+| measurement | 2k tenant | 10k tenant | ratio |
+|-------------|-----------|------------|-------|
+| filtered + sorted page, 200 | 55 ms | 84 ms | 1.5x |
+| `GET /postings/months` | — | 26 ms | — |
+| cold rebuild, then a page | 517 ms | 2,029 ms | 3.9x |
+| one override, then a page | 94 ms | 91 ms | 1.0x |
+
+The last two are the drain-on-read design stated as numbers. A wide write
+concentrates a whole recompute onto the next read and it stays sub-linear; a
+narrow one is flat in ledger size, which is the property the whole
+per-transaction invalidation exists for. All local, all pending CI figures
+for the same reason every other bound here is loose — see C8.
+
 What this gate does not catch, stated plainly
 ---------------------------------------------
 A constant-factor slowdown of roughly 2x or less, and — for now — a page
@@ -121,6 +148,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.perf
 
 _POSTINGS = "/api/v1/accounting/postings"
+_MONTHS = "/api/v1/accounting/postings/months"
 _EXPORT = "/api/v1/accounting/ledger/export"
 _CATEGORY_TOTALS = "/api/v1/accounting/income-statement/category-totals"
 
@@ -225,6 +253,72 @@ Measured locally over the 10k ledger, with statistics present: **86 ms at
 400, 132 ms at 1,000 and 427 ms at 5,000**; on CI, 79/136/667 ms. Four seconds is roughly 9x the
 largest of those, the same headroom `MAX_POSTINGS_PAGE_SECONDS` carries, and
 well under the 15 s bound whose breach is the actual regression.
+"""
+
+MAX_FILTERED_PAGE_SECONDS = 3.0
+"""Wall-clock ceiling for one filtered, sorted page over a 10k-transaction ledger.
+
+The read C1 exists to make possible, and the one whose *shape* is easiest to
+lose: the filter runs over `accounting.resolved_postings`, and a predicate
+that stopped being expressible there — a join back to the raw ledger, a
+per-row lookup — would turn a page into a scan of history again.
+
+Measured locally over the 10k ledger, with statistics present: a filtered
+page is 4 ms of SQL at 20k projection rows and 23 ms at 100k, on top of the
+same fixed request cost the unfiltered page pays. The ceiling is left equal
+to `MAX_POSTINGS_PAGE_SECONDS` rather than set tighter, for the reason that
+constant gives: a wall clock on a two-core shared runner is the coarse
+backstop, and the scaling assertion beside it is the instrument.
+"""
+
+MAX_MONTHS_SECONDS = 2.0
+"""Wall-clock ceiling for the month picker's whole option list (C2).
+
+One row per month the user has ever transacted in — tens of entries for a
+decade — but computed by grouping every resolved posting, so it is linear in
+the ledger and worth a bound. Measured at 8 ms over 20k projection rows and
+34 ms over 100k.
+"""
+
+MAX_COLD_REBUILD_SECONDS = 30.0
+"""Wall-clock ceiling for the first read after the whole projection is invalidated.
+
+The cost the drain-on-read design concentrates rather than removes: a wide
+change — a transfer rule, an account, a category — enqueues every
+transaction, and the next read pays for a full recompute before it answers.
+
+This gate measures **517 ms for the 2k tenant and 2,029 ms for the 10k
+tenant**, request included. Those are the numbers to compare a future run
+against; the module docstring's table carries them too.
+
+A separate standalone script measured the recompute *alone*, with no request
+around it and a different seed — 0.77 s over 10k transactions and 3.8 s over
+50k, of which the `COPY` of two projection rows per transaction was 193 ms
+and 1,306 ms. It is quoted here only because it is where the extrapolation to
+about 13 s on the 170k-transaction audit database comes from, and it is
+deliberately not the figure this bound is set against.
+
+Thirty seconds is deliberately loose. What this is defending is that a
+rebuild stays *linear*: the failure that would matter is a recompute that
+re-reads a whole-collection overlay per batch, or per transaction, which at
+10k would not finish inside this bound at all. The scaling assertion beside
+it is what says so precisely.
+"""
+
+MAX_REBUILD_SCALING_FACTOR = 12.0
+"""How much slower the big tenant's rebuild may be than the small tenant's, for 5x the ledger.
+
+A rebuild is linear work by construction — every transaction is resolved
+once — so 5.0 is what healthy looks like and this is a little over twice it,
+the same headroom `MAX_INCOME_STATEMENT_SCALING_FACTOR` carries for the same
+reason. Quadratic would be 25.
+
+The regression it exists for is concrete: `ledger.resolution.overlay_context`
+reads the rules, accounts, splits, merges and links once per *drain*, and
+`repositories.projection` walks its batches inside that. Moving either read
+inside the batch loop — or worse, inside the per-transaction path — would
+put the whole-collection cost on every batch and show up here long before it
+showed up as a timeout.
 """
 
 MAX_EXPORT_PAGE_SECONDS = 2.0
@@ -452,4 +546,140 @@ def test_the_income_statement_stays_within_its_wall_clock_budget(request_as: Cal
     assert elapsed < MAX_CATEGORY_TOTALS_SECONDS, (
         f"a whole-history income statement took {elapsed:.2f} s over a "
         f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_CATEGORY_TOTALS_SECONDS} s"
+    )
+
+
+_FILTERED = {
+    "search": "TESCO",
+    "categorized": "uncategorized",
+    "sort": "amount",
+    "descending": True,
+    "limit": _PAGE_SIZE,
+}
+"""One filtered, sorted page as the transactions screen asks for it.
+
+A substring search and a resolved-value predicate together, sorted on a
+column that is not the page's own key — so the measurement covers the
+filter, the aggregate the sort is built from, and the two counts beside it,
+rather than the cheapest path through them.
+"""
+
+
+def test_a_filtered_page_scales_with_the_page_not_the_ledger(request_as: Callable[[str], TestClient]) -> None:
+    """Filtering server-side must stay a page read, not become a scan of history wearing a `LIMIT`."""
+    small = _median_seconds(request_as("small"), _POSTINGS, **_FILTERED)
+    big = _median_seconds(request_as("big"), _POSTINGS, **_FILTERED)
+
+    factor = big / small
+    assert factor < MAX_SCALING_FACTOR, (
+        f"a filtered page cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Quadratic would be {VOLUME_RATIO**2:.0f}x. "
+        f"Something in the filter now reads the whole ledger per page."
+    )
+
+
+def test_a_filtered_page_stays_within_its_wall_clock_budget(request_as: Callable[[str], TestClient]) -> None:
+    """The coarse backstop for the read C1 exists to make possible."""
+    elapsed = _median_seconds(request_as("big"), _POSTINGS, **_FILTERED)
+
+    assert elapsed < MAX_FILTERED_PAGE_SECONDS, (
+        f"one filtered {_PAGE_SIZE}-transaction page took {elapsed:.2f} s over a "
+        f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_FILTERED_PAGE_SECONDS} s"
+    )
+
+
+def test_the_month_picker_costs_a_group_by_and_not_a_ledger_read(request_as: Callable[[str], TestClient]) -> None:
+    """C2's endpoint. Linear in the ledger by nature, so the bound is a wall clock rather than a ratio."""
+    elapsed = _median_seconds(request_as("big"), _MONTHS)
+
+    assert elapsed < MAX_MONTHS_SECONDS, (
+        f"the month list took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction ledger, "
+        f"budget {MAX_MONTHS_SECONDS} s"
+    )
+
+
+def _invalidate_everything(client: TestClient) -> None:
+    """Make a wide change, so the next read has to rebuild the whole projection.
+
+    A transfer rule is the honest way to do it: its `description_contains`
+    can match anything, so `accounting.db.projection` enqueues every one of
+    the user's transactions — the widest blast radius any single write has,
+    and the case the rebuild bound exists for.
+    """
+    response = client.post(
+        "/api/v1/accounting/transfer-rules",
+        params={},
+        json={"description_contains": "PERF", "counterparty_account_id": None},
+    )
+    assert response.status_code in {200, 201}, response.text
+
+
+def test_a_cold_projection_is_rebuilt_in_proportion_to_the_ledger(request_as: Callable[[str], TestClient]) -> None:
+    """The cost drain-on-read concentrates: a wide write, then the next page pays for the whole recompute.
+
+    Two assertions, and the ratio is the real one. A rebuild resolves every
+    transaction exactly once, so it is linear by construction; what would
+    break that is a whole-collection overlay read moving inside the batch
+    loop, which turns one read into one per batch. That is invisible at a
+    single volume and unmistakable across two.
+    """
+
+    def _rebuild_seconds(size: str) -> float:
+        client = request_as(size)
+        _invalidate_everything(client)
+        started = time.perf_counter()
+        assert client.get(_POSTINGS, params={"limit": _PAGE_SIZE}).status_code == 200
+        elapsed = time.perf_counter() - started
+        print(f"  cold rebuild + page ({size}) -> {elapsed * 1000:.0f} ms")  # noqa: T201
+        return elapsed
+
+    small = _rebuild_seconds("small")
+    big = _rebuild_seconds("big")
+
+    assert big < MAX_COLD_REBUILD_SECONDS, (
+        f"rebuilding a {BIG_TENANT_TRANSACTIONS}-transaction projection took {big:.2f} s, "
+        f"budget {MAX_COLD_REBUILD_SECONDS} s"
+    )
+    factor = big / small
+    assert factor < MAX_REBUILD_SCALING_FACTOR, (
+        f"a rebuild cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Linear is {VOLUME_RATIO:.0f}x and expected here; "
+        f"quadratic would be {VOLUME_RATIO**2:.0f}x. Something is re-read per batch instead of per drain."
+    )
+
+
+def test_a_narrow_write_costs_a_recompute_of_what_it_touched(request_as: Callable[[str], TestClient]) -> None:
+    """The common case, and the one the whole design is for: one override, then a page.
+
+    Must be flat in ledger size — the drain recomputes the transactions the
+    triggers named and nothing else. A regression to "any write invalidates
+    everything" would show here as the big tenant's figure tracking its
+    ledger rather than its edit.
+    """
+
+    def _edit_then_page(size: str) -> float:
+        client = request_as(size)
+        posting = client.get(_POSTINGS, params={"limit": 1}).json()["items"][0]
+        # An empty tag set, not a category: it is a real override that writes
+        # `posting_overrides` and fires its trigger, and unlike a category it
+        # needs no reference row the bulk seed does not create.
+        assert (
+            client.put(
+                f"/api/v1/accounting/postings/{posting['posting_id']}/override", json={"tag_ids": []}
+            ).status_code
+            == 200
+        )
+        started = time.perf_counter()
+        assert client.get(_POSTINGS, params={"limit": _PAGE_SIZE}).status_code == 200
+        elapsed = time.perf_counter() - started
+        print(f"  narrow drain + page ({size}) -> {elapsed * 1000:.0f} ms")  # noqa: T201
+        return elapsed
+
+    small = _edit_then_page("small")
+    big = _edit_then_page("big")
+
+    factor = big / small
+    assert factor < MAX_SCALING_FACTOR, (
+        f"the page after a single override cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). A narrow write should not invalidate the ledger."
     )
