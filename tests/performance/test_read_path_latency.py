@@ -137,8 +137,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from accounting.api.api_models import NO_SUBCATEGORY, UNCATEGORIZED
 from http_api.pagination import PAGE_LIMIT_MAX
-from tests.performance.conftest import BIG_TENANT_TRANSACTIONS, SMALL_TENANT_TRANSACTIONS
+from tests.performance.conftest import (
+    BIG_TENANT_TRANSACTIONS,
+    SMALL_TENANT_TRANSACTIONS,
+    REAL_ACCOUNT_KEY,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -157,6 +162,9 @@ _LEDGER_WINDOW = {"start": "2019-01-01", "end": "2030-01-01"}
 
 _PAGE_SIZE = 200
 """The default page the Transactions screen asks for (`http_api.pagination.PAGE_LIMIT_DEFAULT`)."""
+
+_DRILLDOWN_PAGE_SIZE = 50
+"""The page the insights drilldown asks for — a panel inside a chart card, not a screen."""
 
 _ABOVE_THE_CLIFF_PAGE_SIZES = (400, 1_000, PAGE_LIMIT_MAX)
 """Page sizes `GET /postings` used to 500 on, and the cap it advertises.
@@ -269,6 +277,21 @@ same fixed request cost the unfiltered page pays. The ceiling is left equal
 to `MAX_POSTINGS_PAGE_SECONDS` rather than set tighter, for the reason that
 constant gives: a wall clock on a two-core shared runner is the coarse
 backstop, and the scaling assertion beside it is the instrument.
+"""
+
+MAX_DRILLDOWN_PAGE_SECONDS = 3.0
+"""Wall-clock ceiling for one page of the insights drilldown over a 10k-transaction ledger.
+
+Its own case rather than a variation on `MAX_FILTERED_PAGE_SECONDS`, because
+the predicate is a different shape: two array-valued filters, each carrying
+a sentinel that means "is null", against a date window. C6 was a plan flip
+caused by exactly that — an array parameter's effect on a cost estimate,
+which is invisible until an array is what you pass.
+
+Measured locally with statistics present: **37 ms at 2k and 58 ms at 10k**,
+a 1.6x ratio — in line with the 1.5x the filtered page scales at, so the
+arrays cost nothing structural. Same runner reasoning as
+`MAX_FILTERED_PAGE_SECONDS` for why the ceiling is not set nearer to it.
 """
 
 MAX_MONTHS_SECONDS = 2.0
@@ -391,7 +414,7 @@ runs to re-derive it from a distribution rather than one sample.
 """
 
 
-def _median_seconds(client: TestClient, path: str, **params: int | str) -> float:
+def _median_seconds(client: TestClient, path: str, **params: int | str | list[str]) -> float:
     """Time one request repeatedly and return the median, discarding a warm-up.
 
     Parameters
@@ -401,7 +424,10 @@ def _median_seconds(client: TestClient, path: str, **params: int | str) -> float
     path
         Endpoint to call.
     **params
-        Query parameters.
+        Query parameters. A list value is sent as its key repeated, which
+        is the only encoding `PostingFilters`' multi-selects read as a list
+        — see `web/src/lib/accountingApi.ts`' `queryString` for the same
+        hazard on the client's side.
 
     Returns
     -------
@@ -649,6 +675,70 @@ def test_a_filtered_page_stays_within_its_wall_clock_budget(request_as: Callable
     assert elapsed < MAX_FILTERED_PAGE_SECONDS, (
         f"one filtered {_PAGE_SIZE}-transaction page took {elapsed:.2f} s over a "
         f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_FILTERED_PAGE_SECONDS} s"
+    )
+
+
+_DRILLDOWN = {
+    "start": "2020-01-01",
+    "end": "2030-01-01",
+    "account": REAL_ACCOUNT_KEY,
+    "categories": [UNCATEGORIZED],
+    "subcategories": [NO_SUBCATEGORY],
+    "income_expense": "expense",
+    "limit": _DRILLDOWN_PAGE_SIZE,
+}
+"""One page of the insights drilldown, as `CategoryDrilldownPie` asks for it.
+
+Both array filters carry their "is null" sentinel, which is what this seed's
+postings are — it stores no category, so a slice naming a real category id
+would measure an empty result set and assert nothing. The array *shape* is
+what the measurement is for (see `MAX_DRILLDOWN_PAGE_SECONDS`), and it is
+identical either way.
+"""
+
+
+def test_the_drilldown_page_matches_the_rows_it_claims_to_measure(
+    request_as: Callable[[str], TestClient],
+) -> None:
+    """A filter that matched nothing would time an empty page and pass for ever.
+
+    The failure mode this guards is the one an array parameter produces on
+    its own: a list encoded as one comma-joined value is a filter that
+    matches nothing and answers `200`, so the gate beside it would measure
+    the cheapest possible query and call it the drilldown.
+    """
+    page = request_as("big").get(_POSTINGS, params=_DRILLDOWN).json()
+
+    assert page["total"] == BIG_TENANT_TRANSACTIONS
+    assert page["counts"]["matched_postings"] == BIG_TENANT_TRANSACTIONS, "one matching leg per transaction"
+    # The window is a transaction and every leg of it comes back, placeholders
+    # included (see `repositories.projection.page_rows`) — so the page carries
+    # twice the transactions it names, and the panel narrows it itself.
+    assert len(page["items"]) == 2 * _DRILLDOWN_PAGE_SIZE
+    matched = [item for item in page["items"] if item["account_id"] == REAL_ACCOUNT_KEY]
+    assert len(matched) == _DRILLDOWN_PAGE_SIZE
+
+
+def test_the_drilldown_page_scales_with_the_page_not_the_ledger(request_as: Callable[[str], TestClient]) -> None:
+    """The insights drilldown must be a page read too, arrays and sentinels included."""
+    small = _median_seconds(request_as("small"), _POSTINGS, **_DRILLDOWN)
+    big = _median_seconds(request_as("big"), _POSTINGS, **_DRILLDOWN)
+
+    factor = big / small
+    assert factor < MAX_SCALING_FACTOR, (
+        f"a drilldown page cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Quadratic would be {VOLUME_RATIO**2:.0f}x. "
+        f"An array-valued filter now reads the whole ledger per page."
+    )
+
+
+def test_the_drilldown_page_stays_within_its_wall_clock_budget(request_as: Callable[[str], TestClient]) -> None:
+    """The coarse backstop for the read the insights drilldown moved onto."""
+    elapsed = _median_seconds(request_as("big"), _POSTINGS, **_DRILLDOWN)
+
+    assert elapsed < MAX_DRILLDOWN_PAGE_SECONDS, (
+        f"one drilldown {_DRILLDOWN_PAGE_SIZE}-transaction page took {elapsed:.2f} s over a "
+        f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_DRILLDOWN_PAGE_SECONDS} s"
     )
 
 

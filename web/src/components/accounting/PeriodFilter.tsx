@@ -3,9 +3,9 @@ import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { usePostingMonths } from '@/hooks/useAccountingData'
 import type { PeriodGranularity, usePeriodFilter } from '@/hooks/usePeriodFilter'
-import { availableMonths } from '@/lib/months'
-import type { Account, Posting, Tag } from '@/types/accounting'
+import type { Account, Tag } from '@/types/accounting'
 
 const GRANULARITY_ITEMS = { month: 'Month', range: 'Date range', year: 'Year' }
 
@@ -13,18 +13,19 @@ export function PeriodFilterBar({
   filter,
   accounts,
   tags,
-  postings,
 }: {
   filter: ReturnType<typeof usePeriodFilter>
   accounts: Record<string, Account>
   tags: Record<string, Tag>
-  postings: Posting[]
 }) {
   const accountOptions = Object.values(accounts)
     .filter((account) => !['income_source', 'expense_payee'].includes(account.kind))
     .sort((a, b) => a.name.localeCompare(b.name))
   const tagOptions = Object.values(tags).sort((a, b) => a.name.localeCompare(b.name))
-  const months = availableMonths(postings)
+  // One `GROUP BY` on the server rather than a `Set` over a resident ledger.
+  // Read here rather than passed in: the month picker belongs to this bar, and
+  // the query is shared with every other caller of the same hook.
+  const { data: months } = usePostingMonths()
 
   const accountItems = {
     __all__: 'All accounts',
@@ -49,7 +50,7 @@ export function PeriodFilterBar({
       </Select>
 
       {filter.granularity === 'month' && (
-        <MonthSelect value={filter.month} onChange={filter.setMonth} months={months} />
+        <MonthSelect value={filter.month} onChange={filter.setMonth} months={months ?? []} />
       )}
       {filter.granularity === 'year' && (
         <Input

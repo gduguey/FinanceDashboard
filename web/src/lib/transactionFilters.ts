@@ -208,6 +208,41 @@ export function activeFilterCount(filters: PersistedFilters): number {
  * @param onlyUncategorized - Whether the "Needs categorizing" tab is the open one.
  * @returns The filter as the server reads it.
  */
+/**
+ * The filter that restricts nothing — every predicate at its "no restriction" value.
+ *
+ * `PostingFilters` makes each multi-select's `_exclude` flag and the search
+ * term required, so a caller naming two or three predicates still has to say
+ * what the other eighteen mean. Spreading this says it once. The insights
+ * drilldown is the second caller of `GET /postings` and the reason it exists:
+ * it names a window, an account, a tag and a category, and nothing else.
+ *
+ * @returns A fully-populated filter matching every posting.
+ */
+export function noPostingFilters(): Required<PostingFilters> {
+  return {
+    search: '',
+    account: null,
+    account_exclude: false,
+    categories: [],
+    categories_exclude: false,
+    subcategories: [],
+    subcategories_exclude: false,
+    tags: [],
+    tags_exclude: false,
+    month: null,
+    start: null,
+    end: null,
+    pending: [],
+    pending_exclude: false,
+    transfer_flags: [],
+    transfer_flags_exclude: false,
+    income_expense: null,
+    categorized: null,
+    needs_categorizing: false,
+  }
+}
+
 export function toPostingFilters(
   filters: FilterState,
   { onlyUncategorized }: { onlyUncategorized: boolean },

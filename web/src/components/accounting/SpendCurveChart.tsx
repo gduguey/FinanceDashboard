@@ -1,26 +1,26 @@
 import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { MonthSelect } from '@/components/accounting/MonthSelect'
 import { ChartCard } from '@/components/shared/ChartCard'
-import { useSpendCurve } from '@/hooks/useAccountingData'
+import { usePostingMonths, useSpendCurve } from '@/hooks/useAccountingData'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { formatCurrency } from '@/lib/format'
-import { availableMonths } from '@/lib/months'
-import type { CurrencyCode, Posting } from '@/types/accounting'
+import type { CurrencyCode } from '@/types/accounting'
 
 // Local calendar, not UTC `toISOString()` — a user near a month boundary in a
 // negative-UTC timezone should default to their own current month.
 const _now = new Date()
 const CURRENT_MONTH = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}`
 
-export function SpendCurveChart({ displayCurrency, postings }: { displayCurrency: CurrencyCode; postings: Posting[] }) {
+export function SpendCurveChart({ displayCurrency }: { displayCurrency: CurrencyCode }) {
   const [month, setMonth] = usePersistedState('accounting.spend-curve-month', CURRENT_MONTH)
   const { data, isLoading } = useSpendCurve(`${month}-01`, 3, displayCurrency)
+  const { data: months } = usePostingMonths()
 
   return (
     <ChartCard
       title="Monthly spend, day by day"
       description="Cumulative spend this month vs. the average of the previous 3 months"
-      action={<MonthSelect value={month} onChange={setMonth} months={availableMonths(postings)} className="w-40" />}
+      action={<MonthSelect value={month} onChange={setMonth} months={months ?? []} className="w-40" />}
       isLoading={isLoading}
       isEmpty={!data?.length}
     >

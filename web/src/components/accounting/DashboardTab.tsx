@@ -6,7 +6,8 @@ import { NoAccountsYetBanner } from '@/components/shared/NoAccountsYetBanner'
 import { useCategoryTotals } from '@/hooks/useAccountingData'
 import { usePeriodFilter } from '@/hooks/usePeriodFilter'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
-import type { Account, CurrencyCode, Goal, GoalContribution, Posting, Tag } from '@/types/accounting'
+import { noPostingFilters } from '@/lib/transactionFilters'
+import type { Account, CurrencyCode, Goal, GoalContribution, PostingFilters, Tag } from '@/types/accounting'
 
 // Charts are the heaviest code the app ships. `lazyChart` keeps them off this
 // page's critical path and streams them in behind a skeleton.
@@ -25,14 +26,12 @@ const SpendCurveChart = lazyChart(() =>
 )
 
 export function DashboardTab({
-  postings,
   accounts,
   tags,
   goals,
   goalContributions,
   displayCurrency,
 }: {
-  postings: Posting[]
   accounts: Record<string, Account>
   tags: Record<string, Tag>
   goals: Record<string, Goal>
@@ -68,33 +67,35 @@ export function DashboardTab({
       .filter((flow) => flow.value > 0)
   }, [goalContributions, goals, filter.period])
 
-  const scopedPostings = useMemo(
-    () =>
-      postings.filter((posting) => {
-        const day = posting.posted_at.slice(0, 10)
-        if (day < filter.period.start || day > filter.period.end) return false
-        if (filter.accountId && posting.account_id !== filter.accountId) return false
-        if (filter.tagId && !posting.tag_ids?.includes(filter.tagId)) return false
-        return true
-      }),
-    [postings, filter.period, filter.accountId, filter.tagId],
+  // The period bar's three controls in the wire's own vocabulary, so the
+  // drilldown asks the server for its rows with the same window the ring was
+  // aggregated over. This used to be a `.filter()` pass over every posting the
+  // page held resident, which is what it held them for.
+  const drilldownScope: Required<PostingFilters> = useMemo(
+    () => ({
+      ...noPostingFilters(),
+      start: filter.period.start,
+      end: filter.period.end,
+      account: filter.accountId ?? null,
+      tags: filter.tagId ? [filter.tagId] : [],
+    }),
+    [filter.period, filter.accountId, filter.tagId],
   )
 
   return (
     <div className="space-y-6">
       {!hasAnyRealAccount(Object.values(accounts)) && <NoAccountsYetBanner />}
-      <PeriodFilterBar filter={filter} accounts={accounts} tags={tags} postings={postings} />
+      <PeriodFilterBar filter={filter} accounts={accounts} tags={tags} />
       <CategoryDrilldownPie
         categoryTotals={categoryTotals ?? []}
-        postings={scopedPostings}
-        allPostings={postings}
+        scope={drilldownScope}
         accounts={accounts}
         isLoading={isLoading}
         displayCurrency={displayCurrency}
       />
       <div className="grid gap-6 lg:grid-cols-2">
         <IncomeExpenseChart displayCurrency={displayCurrency} />
-        <SpendCurveChart displayCurrency={displayCurrency} postings={postings} />
+        <SpendCurveChart displayCurrency={displayCurrency} />
       </div>
       <CashflowSankeyChart
         categoryTotals={categoryTotals ?? []}

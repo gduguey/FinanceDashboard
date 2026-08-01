@@ -68,7 +68,7 @@ assertions divide the work.
 """
 
 _INSTITUTION = "perf-harness-bank"
-_REAL_ACCOUNT_KEY = "acct:perf:checking"
+REAL_ACCOUNT_KEY = "acct:perf:checking"
 _EUR_ACCOUNT_KEY = "acct:perf:eur"
 
 _RATE_HISTORY_START = date(2019, 1, 1)
@@ -205,7 +205,7 @@ def _seed_tenant(connection: Connection, tenant: uuid.UUID, *, transactions: int
         """),
         {
             "tenant": tenant,
-            "real_key": _REAL_ACCOUNT_KEY,
+            "real_key": REAL_ACCOUNT_KEY,
             # Empty, and there on purpose: a second currency in use is what
             # puts every income-statement read through the per-date rate
             # join rather than the single-currency shortcut around it.
@@ -247,7 +247,7 @@ def _seed_tenant(connection: Connection, tenant: uuid.UUID, *, transactions: int
               ON placeholder.user_id = t.user_id AND placeholder.natural_key = :placeholder_key
             WHERE t.user_id = :tenant
         """),
-        {"tenant": tenant, "real_key": _REAL_ACCOUNT_KEY, "placeholder_key": UNCATEGORIZED_EXPENSE_ACCOUNT_ID},
+        {"tenant": tenant, "real_key": REAL_ACCOUNT_KEY, "placeholder_key": UNCATEGORIZED_EXPENSE_ACCOUNT_ID},
     )
 
 
