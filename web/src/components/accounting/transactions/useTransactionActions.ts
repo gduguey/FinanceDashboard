@@ -12,11 +12,12 @@ import {
   useSetPostingOverride,
   useValidatePending,
 } from '@/hooks/useAccountingData'
+import { accountingApi } from '@/lib/accountingApi'
 import { safeDirectRepointOptions } from '@/lib/counterpartyAccounts'
 import { anyLlmProviderAvailable } from '@/lib/llm'
 import { PLACEHOLDER_ACCOUNT_IDS } from '@/lib/transactionFilters'
 import { addedExcludedTransactionIds, ruleUpdateFromRule } from '@/lib/transferRules'
-import type { Account, ManualOverride, Posting, TransferRule } from '@/types/accounting'
+import type { Account, ManualOverride, Posting, PostingFilters, TransferRule } from '@/types/accounting'
 
 /**
  * Every write the transactions table can make, plus the transient state each one needs.
@@ -26,8 +27,16 @@ import type { Account, ManualOverride, Posting, TransferRule } from '@/types/acc
  * and the table-wide "picking a transfer partner" mode, none of which is about
  * how a row looks.
  *
- * @param postings - Every resolved posting, unfiltered — the placeholder-leg
- *   lookup a "mark as transfer" needs is built from all of them.
+ * The three bulk actions take a `PostingFilters` rather than a list of ids.
+ * The table holds one page, so it cannot enumerate the set it is showing —
+ * and rebuilding one by walking the collection would mean the client deciding
+ * what the filter selects, a second implementation of the thirteen predicates
+ * the server already evaluates. Two of the three resolve the set entirely
+ * server-side; the AI loop asks for the ids because it makes one request per
+ * posting on purpose.
+ *
+ * @param postings - This page's postings, every leg included. Placeholder legs
+ *   ride along on the page and are what a "mark as transfer" actually targets.
  * @param accounts - The store's accounts, for the direct-repoint fallback list.
  * @param rules - The store's transfer rules, for the "exclude this one" action.
  * @returns The handlers the rows and toolbar call, and the state they read.
@@ -72,6 +81,9 @@ export function useTransactionActions(postings: Posting[], accounts: Record<stri
     }
     return lookup
   }, [postings])
+  // The page's rows by id, for the AI loop: it holds a list of ids the server
+  // resolved and needs each row's own current category as that call's lock.
+  const postingById = useMemo(() => new Map(postings.map((posting) => [posting.posting_id, posting])), [postings])
   const runAiSuggest = useCallback(
     async (posting: Posting) => {
       const postingId = posting.posting_id
@@ -94,25 +106,44 @@ export function useTransactionActions(postings: Posting[], accounts: Record<stri
   )
 
   // Only ever run one at a time — the LLM call has real latency, and this
-  // avoids hammering the provider with the whole filtered view at once.
-  async function runBulkAiSuggest(targets: Posting[]) {
+  // avoids hammering the provider with the whole filtered set at once. The
+  // ids are fetched rather than read off the page, because the set this walks
+  // is the filter's and not the page's; `POST /postings/matching-ids` exists
+  // for exactly this one caller.
+  async function runBulkAiSuggest(filters: PostingFilters) {
     setBulkSuggesting(true)
-    setBulkProgress({ done: 0, total: targets.length })
-    for (const [index, posting] of targets.entries()) {
-      await runAiSuggest(posting)
-      setBulkProgress({ done: index + 1, total: targets.length })
+    setBulkProgress({ done: 0, total: 0 })
+    try {
+      const postingIds = await accountingApi.matchingPostingIds(filters)
+      const targets = postingIds
+        .map((postingId) => postingById.get(postingId))
+        .filter((posting): posting is Posting => posting !== undefined)
+      // Only rows on this page carry the category a suggestion is locked
+      // against, so ids the page does not hold are skipped rather than sent
+      // with a guessed lock. Paging on picks them up.
+      setBulkProgress({ done: 0, total: targets.length })
+      for (const [index, posting] of targets.entries()) {
+        await runAiSuggest(posting)
+        setBulkProgress({ done: index + 1, total: targets.length })
+      }
+    } catch (error) {
+      console.error('Bulk AI suggestion failed', error)
+    } finally {
+      setBulkSuggesting(false)
+      setBulkProgress(null)
     }
-    setBulkSuggesting(false)
-    setBulkProgress(null)
   }
 
-  // The backend matches every target posting in a single vectorized pass
-  // (see `ledger.patterns.match_patterns_bulk`) — one request regardless
-  // of how many postings are targeted, instead of one request per posting.
-  async function runBulkPatternSuggest(targets: Posting[]) {
+  // The backend matches every posting the filter resolves to in a single
+  // vectorized pass (see `ledger.patterns.match_patterns_bulk`) — one request
+  // regardless of how many, instead of one per posting.
+  async function runBulkPatternSuggest(
+    filters: PostingFilters,
+    onDone?: (result: { matched: number; applied: number }) => void,
+  ) {
     setBulkPatternSuggesting(true)
     try {
-      await patternSuggestBulk.mutateAsync(targets.map((posting) => posting.posting_id))
+      onDone?.(await patternSuggestBulk.mutateAsync(filters))
     } catch (error) {
       // Already surfaced via the global mutation-error toast (see App.tsx) —
       // logged here too so a failure is distinguishable from "nothing needed
@@ -120,6 +151,20 @@ export function useTransactionActions(postings: Posting[], accounts: Record<stri
       console.error('Bulk pattern suggestion failed', error)
     } finally {
       setBulkPatternSuggesting(false)
+    }
+  }
+
+  // Reports `matched` back to the caller rather than letting it assume the
+  // action covered what the page had rendered. It does not: the server
+  // resolves the filter, which spans every page.
+  async function validateFiltered(
+    filters: PostingFilters,
+    onDone?: (result: { matched: number; accepted: number; reverted: number }) => void,
+  ) {
+    try {
+      onDone?.(await validatePending.mutateAsync(filters))
+    } catch (error) {
+      console.error('Validating pending suggestions failed', error)
     }
   }
 
@@ -236,7 +281,7 @@ export function useTransactionActions(postings: Posting[], accounts: Record<stri
     runAiSuggest,
     runBulkAiSuggest,
     runBulkPatternSuggest,
-    validatePendingIds: (postingIds: string[]) => validatePending.mutate(postingIds),
+    validateFiltered,
     handleOverride,
     handleMarkAsTransfer,
     handleUndoManualOverride,

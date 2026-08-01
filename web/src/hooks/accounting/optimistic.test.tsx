@@ -7,7 +7,7 @@ import { keys } from '@/hooks/accounting/keys'
 import { useSetPostingOverride } from '@/hooks/accounting/postings'
 import { useSetBudget } from '@/hooks/accounting/taxonomy'
 import { emptyStore } from '@/test/fixtures'
-import type { AccountingStore, Budget, GoalAutomation, Posting } from '@/types/accounting'
+import type { AccountingStore, Budget, GoalAutomation, Posting, PostingPage } from '@/types/accounting'
 
 function posting(id: string, fields: Partial<Posting> = {}): Posting {
   return {
@@ -25,6 +25,23 @@ function posting(id: string, fields: Partial<Posting> = {}): Posting {
     pending_selected: true,
     ...fields,
   } as Posting
+}
+
+function page(items: Posting[]): PostingPage {
+  return {
+    items,
+    window_unit: 'transaction',
+    total: items.length,
+    limit: 200,
+    offset: 0,
+    counts: {
+      matched_transactions: items.length,
+      matched_postings: items.length,
+      needs_categorizing: 0,
+      pending: 0,
+      pending_selected: 0,
+    },
+  } as PostingPage
 }
 
 function budget(id: string, fields: Partial<Budget>): Budget {
@@ -61,12 +78,20 @@ describe('optimistic paints', () => {
   }
 
   describe('useSetPostingOverride', () => {
+    // Two cached pages of the same collection, which is the shape the cutover
+    // produced: the table holds one page and the cache holds every page
+    // visited under this filter and sort. `p1` is on both, because a
+    // categorizing click has to paint every copy of the row it changed.
+    const FIRST_PAGE = { sort: 'posted_at', offset: 0 }
+    const SECOND_PAGE = { sort: 'posted_at', offset: 200 }
+
     beforeEach(() => {
-      queryClient.setQueryData(keys.postings, [posting('p1'), posting('p2')])
+      queryClient.setQueryData(keys.postingsPage(FIRST_PAGE), page([posting('p1'), posting('p2')]))
+      queryClient.setQueryData(keys.postingsPage(SECOND_PAGE), page([posting('p1'), posting('p3')]))
     })
 
-    function postings() {
-      return queryClient.getQueryData<Posting[]>(keys.postings) ?? []
+    function postings(window: object = FIRST_PAGE) {
+      return queryClient.getQueryData<PostingPage>(keys.postingsPage(window))?.items ?? []
     }
 
     it('shows the picked category on the row that was clicked', async () => {
@@ -81,6 +106,43 @@ describe('optimistic paints', () => {
 
       expect(postings()[0].category_id).toBe('food')
       expect(postings()[1].category_id).toBeNull()
+    })
+
+    // Painting only the page on screen would leave a page the user pages back
+    // to still showing the old category until something refetched it.
+    it('paints the same row on every cached page it appears on', async () => {
+      const { result } = renderHook(() => useSetPostingOverride(), { wrapper })
+
+      await act(async () => {
+        await result.current.mutateAsync({ postingId: 'p1', override: { category_id: 'food' } })
+      })
+
+      expect(postings(SECOND_PAGE)[0].category_id).toBe('food')
+      expect(postings(SECOND_PAGE)[1].category_id).toBeNull()
+    })
+
+    // The count is a fact about the whole filter that only the server can
+    // compute — guessing it here would be a second copy of
+    // `projection._needs_categorizing`, which is the duplication C1 removed.
+    it('leaves the page counts for the refetch to correct', async () => {
+      queryClient.setQueryData(keys.postingsPage(FIRST_PAGE), {
+        ...page([posting('p1'), posting('p2')]),
+        counts: {
+          matched_transactions: 2,
+          matched_postings: 2,
+          needs_categorizing: 2,
+          pending: 2,
+          pending_selected: 2,
+        },
+      })
+      const { result } = renderHook(() => useSetPostingOverride(), { wrapper })
+
+      await act(async () => {
+        await result.current.mutateAsync({ postingId: 'p1', override: { category_id: 'food' } })
+      })
+
+      const cached = queryClient.getQueryData<PostingPage>(keys.postingsPage(FIRST_PAGE))
+      expect(cached?.counts.needs_categorizing).toBe(2)
     })
 
     it('leaves a field the override did not mention alone', async () => {
@@ -191,18 +253,27 @@ describe('optimistic paints', () => {
     })
   })
 
-  it('puts a posting row back when the request fails', async () => {
+  it('puts every painted posting row back when the request fails', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{"detail":"nope"}', { status: 500 })),
     )
-    queryClient.setQueryData(keys.postings, [posting('p1')])
+    const first = { sort: 'posted_at', offset: 0 }
+    const second = { sort: 'posted_at', offset: 200 }
+    queryClient.setQueryData(keys.postingsPage(first), page([posting('p1')]))
+    queryClient.setQueryData(keys.postingsPage(second), page([posting('p1')]))
     const { result } = renderHook(() => useSetPostingOverride(), { wrapper })
 
     await act(async () => {
       await result.current.mutateAsync({ postingId: 'p1', override: { category_id: 'food' } }).catch(() => {})
     })
 
-    await waitFor(() => expect(queryClient.getQueryData<Posting[]>(keys.postings)?.[0].category_id).toBeNull())
+    // Both pages roll back, not just the one the mutation happened to be
+    // fired from — the snapshot is every page the prefix matched.
+    for (const window of [first, second]) {
+      await waitFor(() =>
+        expect(queryClient.getQueryData<PostingPage>(keys.postingsPage(window))?.items[0].category_id).toBeNull(),
+      )
+    }
   })
 })

@@ -3,7 +3,7 @@ import { TransactionsTab } from '@/components/accounting/TransactionsTab'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ExportButtons } from '@/components/shared/ExportButtons'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
+import { useAccountingStore } from '@/hooks/useAccountingData'
 import { accountingApi } from '@/lib/accountingApi'
 import { downloadCsv, downloadJson, exportStamp } from '@/lib/download'
 
@@ -13,7 +13,6 @@ import { downloadCsv, downloadJson, exportStamp } from '@/lib/download'
 // matching transfers are a rules-authoring task, not a transactions-review one.
 export function TransactionsPage() {
   const { data: store, isLoading } = useAccountingStore()
-  const { data: postings } = usePostings()
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -21,18 +20,19 @@ export function TransactionsPage() {
         title="Transactions"
         actions={
           <>
-            {/* "Postings" is already loaded for the table itself — no
-                extra request needed. "Ledger" is the raw, unresolved
-                history (before rules, overrides, splits, or merges),
-                which the table never fetches on its own, so this one
-                does its own request. Both also live on Settings' own
-                Export tab, for anyone who'd rather find every export in
-                one place. */}
+            {/* Both exports walk their collection page by page, and both do
+                their own request. "Postings" is the resolved ledger — the
+                same rows the table shows, but all of them: an export's
+                caller wants everything by definition, which is exactly why
+                it cannot read the table's one page. "Ledger" is the raw,
+                unresolved history (before rules, overrides, splits, or
+                merges). Both also live on Settings' own Export tab, for
+                anyone who'd rather find every export in one place. */}
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               Postings
               <ExportButtons
-                onJson={() => downloadJson(postings ?? [], `postings-${exportStamp()}.json`)}
-                onCsv={() => downloadCsv(postings ?? [], `postings-${exportStamp()}.csv`)}
+                onJson={async () => downloadJson(await accountingApi.postings(), `postings-${exportStamp()}.json`)}
+                onCsv={async () => downloadCsv(await accountingApi.postings(), `postings-${exportStamp()}.csv`)}
               />
             </div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -57,7 +57,6 @@ export function TransactionsPage() {
           <>
             <LlmUsageBanner />
             <TransactionsTab
-              postings={postings ?? []}
               accounts={store.accounts}
               categories={store.categories}
               tags={store.tags}

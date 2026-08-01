@@ -1,10 +1,6 @@
 import { PLACEHOLDER_ACCOUNT_IDS } from '@/lib/transactionFilters'
-import {
-  realLegByTransactionId as buildRealLegByTransactionId,
-  siblingLegByPostingId as buildSiblingLegByPostingId,
-  type TransferRowInfo,
-} from '@/lib/transferRowInfo'
-import type { Account, Posting, TransferLink } from '@/types/accounting'
+import { siblingLegByPostingId as buildSiblingLegByPostingId, type TransferRowInfo } from '@/lib/transferRowInfo'
+import type { Account, LinkedLeg, Posting, TransferLink } from '@/types/accounting'
 
 // Everything the category-column "Transfer …" badge and its detail popup
 // need — computed once per posting, covering all three mechanisms that put a
@@ -30,18 +26,42 @@ export interface TransferBadgeInfo {
 }
 
 /**
- * The transfer badge for every posting that has one, keyed by posting id.
+ * Turn the server's `linked_leg` into the row shape every transfer summary renders.
+ *
+ * @param leg - The partner's real leg, as `GET /postings` joined it on.
+ * @param accounts - The store's accounts, for the name behind the id.
+ * @returns The same facts, named as the UI names them.
+ */
+function fromLinkedLeg(leg: LinkedLeg, accounts: Record<string, Account>): TransferRowInfo {
+  return {
+    transactionId: leg.transaction_id,
+    accountName: accounts[leg.account_id]?.name ?? leg.account_id,
+    description: leg.description,
+    postedAt: leg.posted_at,
+    amount: leg.amount,
+    currency: leg.currency,
+  }
+}
+
+/**
+ * The transfer badge for every posting on the page that has one, keyed by posting id.
  *
  * Keyed by the real-leg row that is actually rendered; placeholders never are,
  * and are skipped. Direction is one rule across all three mechanisms: "to"
  * when this posting's own amount is negative (money leaving), "from" when
  * positive (money arriving).
  *
- * Built from the full, unscoped posting list rather than the filtered one. A
- * transfer's counterpart is usually on a different account, so an account
- * filter would otherwise leave a genuinely-linked row with no badge.
+ * Takes one page rather than the whole ledger, which is only possible because
+ * the two lookups that used to need every posting no longer do. A confirmed
+ * transfer's partner arrives on the row itself as `linked_leg`, joined
+ * server-side (see `api_models.PostingRow`) — previously it was found by
+ * scanning the resident array for the partner's transaction, so an account
+ * filter that hid the partner left a genuinely-linked row with no badge. The
+ * direct-repoint case reads the row's *sibling* leg, which is on the page by
+ * construction: `GET /postings` cuts its window by transaction and sends every
+ * leg of each.
  *
- * @param postings - Every resolved posting, unfiltered.
+ * @param postings - The page's postings, every leg included.
  * @param accounts - The store's accounts, keyed by id.
  * @param transferLinks - Every confirmed transfer link.
  * @param realIncomeExpensePostingIds - Postings that are real income/expense
@@ -55,7 +75,6 @@ export function transferBadgeByPostingId(
   transferLinks: TransferLink[],
   realIncomeExpensePostingIds: Set<string>,
 ): Map<string, TransferBadgeInfo> {
-  const realLegByTransactionId = buildRealLegByTransactionId(postings, accounts)
   const siblingLegByPostingId = buildSiblingLegByPostingId(postings, accounts)
   const linkByTransactionId = new Map<string, TransferLink>()
   for (const link of transferLinks) {
@@ -75,11 +94,20 @@ export function transferBadgeByPostingId(
   for (const posting of postings) {
     if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
     const direction = posting.amount < 0 ? 'to' : 'from'
-    if (posting.is_linked_transfer && posting.linked_transaction_id) {
+    if (posting.is_linked_transfer && posting.linked_leg) {
       const link = linkByTransactionId.get(posting.transaction_id)
-      const other = realLegByTransactionId.get(posting.linked_transaction_id)
-      const mine = realLegByTransactionId.get(posting.transaction_id)
-      if (!link || !other || !mine) continue
+      if (!link) continue
+      const other = fromLinkedLeg(posting.linked_leg, accounts)
+      // This posting *is* the real leg — placeholders were skipped above — so
+      // there is nothing to look up for our own side.
+      const mine: TransferRowInfo = {
+        transactionId: posting.transaction_id,
+        accountName: accounts[posting.account_id]?.name ?? posting.account_id,
+        description: posting.description,
+        postedAt: posting.posted_at,
+        amount: posting.amount,
+        currency: posting.currency,
+      }
       const [from, to] = posting.amount < 0 ? [mine, other] : [other, mine]
       lookup.set(posting.posting_id, {
         label: `Transfer ${direction} ${other.accountName}`,

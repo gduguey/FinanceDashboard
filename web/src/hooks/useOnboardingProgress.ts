@@ -1,4 +1,4 @@
-import { useAccountingStore, usePostingCount } from '@/hooks/useAccountingData'
+import { useAccountingStore, usePostingSummary } from '@/hooks/useAccountingData'
 import { useIbkrConnectionStatus } from '@/hooks/usePortfolioData'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 
@@ -15,11 +15,11 @@ import { hasAnyRealAccount } from '@/lib/postingClassification'
 // minute — to answer one boolean.
 export function useOnboardingProgress() {
   const { data: store } = useAccountingStore()
-  const { data: postingCount } = usePostingCount()
+  const { data: summary } = usePostingSummary()
   const ibkr = useIbkrConnectionStatus()
 
   const hasAccount = hasAnyRealAccount(Object.values(store?.accounts ?? {}))
-  const hasData = (postingCount ?? 0) > 0
+  const hasData = (summary?.total ?? 0) > 0
   const ibkrConnected = ibkr.state === 'connected'
 
   return { hasAccount, hasData, ibkrConnected, isComplete: hasAccount && hasData }

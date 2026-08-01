@@ -280,6 +280,34 @@ the ledger and worth a bound. Measured at 8 ms over 20k projection rows and
 34 ms over 100k.
 """
 
+MAX_BULK_ACTION_SECONDS = 6.0
+"""Wall-clock ceiling for one filter-shaped bulk action over a 10k-transaction ledger.
+
+The three actions the transactions screen fires — `POST /postings/matching-ids`,
+`POST /postings/validate-pending`, `POST /postings/pattern-suggest-category/bulk`
+— all resolve their target set from the filter server-side, which is what
+lets the screen hold a page (C1). None of them is scoped to a page, and none
+of them should be: a bulk action covers what the filter matches. So they are
+allowed to be linear in the matched set, which is why this is a wall clock
+rather than a scaling ratio.
+
+What it defends is that they stay *queries* over
+`accounting.resolved_postings`. The bulk pattern suggester in particular used
+to call `ledger.resolution.resolved_postings` and replay the entire ledger in
+Python to obtain four columns the projection already stores — a cost the
+cutover would have made trivial to trigger, since the same button now covers
+every page rather than the rows one screen had rendered.
+
+Measured locally over the 10k ledger with an empty filter, i.e. the widest
+set any of them can resolve: **34 ms** for `matching-ids`, **319 ms** for
+`validate-pending` (which loads an override row per matched id, and is the
+only one of the three that is not simply a projection query), and **78 ms**
+for the pattern suggester. Against 2k: 23 ms, 91 ms and 28 ms. Six seconds
+is roughly 19x the largest, the same order of headroom the other wall clocks
+carry and for the same reason — a two-core shared runner with no I/O
+isolation.
+"""
+
 MAX_COLD_REBUILD_SECONDS = 30.0
 """Wall-clock ceiling for the first read after the whole projection is invalidated.
 
@@ -395,6 +423,42 @@ def _median_seconds(client: TestClient, path: str, **params: int | str) -> float
     # threshold needs the number CI actually saw. The perf job runs `-s`.
     print(f"  {path} {params} -> {median * 1000:.0f} ms median of {_REPEATS}")  # noqa: T201
     return median
+
+
+def _median_post_seconds(client: TestClient, path: str, body: dict[str, object]) -> float:
+    """Time one `POST` repeatedly and return the median, discarding a warm-up.
+
+    Only used for the three filter-shaped bulk actions. Each is a write in
+    principle, and each is a no-op over this seed — it stages no override and
+    stores no category pattern — so repeating one measures the read half,
+    which is the half that scales with the ledger and the half a regression
+    would show up in.
+
+    Returns
+    -------
+    float
+        Median elapsed seconds.
+    """
+    for _ in range(_WARMUP):
+        assert client.post(path, json=body).status_code == 200
+
+    samples = []
+    for _ in range(_REPEATS):
+        started = time.perf_counter()
+        response = client.post(path, json=body)
+        samples.append(time.perf_counter() - started)
+        assert response.status_code == 200, response.text
+    median = statistics.median(samples)
+    print(f"  POST {path} {body} -> {median * 1000:.0f} ms median of {_REPEATS}")  # noqa: T201
+    return median
+
+
+_BULK_ACTIONS = (
+    "/api/v1/accounting/postings/matching-ids",
+    "/api/v1/accounting/postings/validate-pending",
+    "/api/v1/accounting/postings/pattern-suggest-category/bulk",
+)
+"""Every endpoint that resolves its own target set from `PostingFilters`."""
 
 
 def test_the_seed_is_the_shape_the_gate_assumes(request_as: Callable[[str], TestClient]) -> None:
@@ -595,6 +659,44 @@ def test_the_month_picker_costs_a_group_by_and_not_a_ledger_read(request_as: Cal
     assert elapsed < MAX_MONTHS_SECONDS, (
         f"the month list took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction ledger, "
         f"budget {MAX_MONTHS_SECONDS} s"
+    )
+
+
+@pytest.mark.parametrize("path", _BULK_ACTIONS)
+def test_a_bulk_action_stays_within_its_wall_clock_budget(path: str, request_as: Callable[[str], TestClient]) -> None:
+    """Over the widest set any of them can resolve — an empty filter, i.e. the whole ledger."""
+    elapsed = _median_post_seconds(request_as("big"), path, {})
+
+    assert elapsed < MAX_BULK_ACTION_SECONDS, (
+        f"{path} took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction ledger, "
+        f"budget {MAX_BULK_ACTION_SECONDS} s"
+    )
+
+
+@pytest.mark.parametrize("path", _BULK_ACTIONS)
+def test_a_bulk_action_stays_linear_in_the_set_it_resolves(path: str, request_as: Callable[[str], TestClient]) -> None:
+    """The instrument beside that wall clock, and the one that would catch a resolve creeping back in.
+
+    An unfiltered bulk action matches every row, so linear — 5.0 for 5x the
+    ledger — is what healthy looks like, exactly as it is for the income
+    statement, and this borrows that constant rather than inventing a second
+    one with the same justification.
+
+    The regression it exists for is concrete and was real until this PR:
+    `post_pattern_suggest_category_bulk` called
+    `ledger.resolution.resolved_postings`, which replays the whole ledger
+    through every overlay stage in Python. That is super-linear in the ledger
+    the way `holdings.lots_table` is (C4b), so it separates from a query over
+    the projection here long before it does on a wall clock.
+    """
+    small = _median_post_seconds(request_as("small"), path, {})
+    big = _median_post_seconds(request_as("big"), path, {})
+
+    factor = big / small
+    assert factor < MAX_INCOME_STATEMENT_SCALING_FACTOR, (
+        f"{path} cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Linear would be {VOLUME_RATIO:.0f}x and "
+        f"quadratic {VOLUME_RATIO**2:.0f}x. Something in the action now resolves the ledger rather than querying it."
     )
 
 

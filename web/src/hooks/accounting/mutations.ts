@@ -95,6 +95,60 @@ export function useOptimisticMutation<TCache, TData, TVariables = void>({
 }
 
 /**
+ * A write that paints every cached query under one prefix before the server confirms it.
+ *
+ * `useOptimisticMutation`'s counterpart for data that is no longer one cached
+ * value. The transactions table holds a page, and the cache holds as many
+ * pages as have been visited under this filter and sort — so the row a
+ * categorizing click just changed may be cached several times over, and
+ * painting only the key currently on screen would leave the others to
+ * contradict it the moment the user pages back.
+ *
+ * The snapshot is every `[key, data]` pair the prefix matched at the moment
+ * the mutation fired, and `onError` restores each of them. That is the same
+ * wholesale rollback `useOptimisticMutation` performs, for the same reason:
+ * it only runs when the request failed, and the `onSuccess` invalidation
+ * refetches the truth immediately afterwards either way.
+ *
+ * Like its sibling, deliberately not offered for a create.
+ *
+ * @param prefix - The key prefix to paint. Must match only queries of one shape.
+ * @param mutationFn - The request.
+ * @param changes - What the write moved. See `AccountingFamily`.
+ * @param edit - One cached value as it should look the instant the user acts.
+ * @returns A React Query mutation.
+ */
+export function useOptimisticPagesMutation<TCache, TData, TVariables = void>({
+  prefix,
+  mutationFn,
+  changes,
+  edit,
+}: {
+  prefix: readonly unknown[]
+  mutationFn: (variables: TVariables) => Promise<TData>
+  changes: readonly AccountingFamily[]
+  edit: (cached: TCache, variables: TVariables) => TCache
+}) {
+  const queryClient = useQueryClient()
+  const invalidate = useInvalidateAccounting()
+  return useMutation({
+    mutationFn,
+    onMutate: async (variables: TVariables) => {
+      await queryClient.cancelQueries({ queryKey: prefix })
+      const previous = queryClient.getQueriesData<TCache>({ queryKey: prefix })
+      queryClient.setQueriesData<TCache>({ queryKey: prefix }, (current) =>
+        current === undefined ? current : edit(current, variables),
+      )
+      return { previous }
+    },
+    onError: (_error, _variables, context) => {
+      for (const [queryKey, data] of context?.previous ?? []) queryClient.setQueryData(queryKey, data)
+    },
+    onSuccess: () => invalidate(...changes),
+  })
+}
+
+/**
  * A write that paints the cached store before the server confirms it.
  *
  * `useOptimisticMutation` fixed to the store's own key and shape — the common

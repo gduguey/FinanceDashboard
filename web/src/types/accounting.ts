@@ -5,7 +5,7 @@
 // JSON shape anymore: a backend field rename shows up here automatically
 // next time `schema.ts` is regenerated, and CI's `openapi-types` workflow
 // fails the build if it isn't.
-import type { components } from './schema'
+import type { components, operations } from './schema'
 
 export type Account = components['schemas']['Account']
 export type AccountKind = Account['kind']
@@ -65,6 +65,28 @@ export type Posting = components['schemas']['PostingRow']
 // *transactions*, while `items` holds every leg of every transaction on the
 // page — see the backend's `api_models.PostingPage`.
 export type PostingPage = components['schemas']['PostingPage']
+
+// The filter bar as the server evaluates it. The same model is the query
+// string of `GET /postings` and the body of both bulk actions, which is what
+// guarantees a bulk action acts on the set the table is showing.
+export type PostingFilters = components['schemas']['PostingFilters']
+
+// Which resolved column the table is ordered by — one per sortable heading.
+// Reached through the operation rather than through `components`, because
+// `PostingQuery` is a query-parameter model: FastAPI expands it into loose
+// parameters and never emits a schema for the model itself.
+export type PostingSortField = NonNullable<
+  NonNullable<operations['get_postings_api_v1_accounting_postings_get']['parameters']['query']>['sort']
+>
+
+// Everything the page reports about the whole filter, none of which is the
+// page's own size: see `api_models.PostingPageCounts`.
+export type PostingPageCounts = components['schemas']['PostingPageCounts']
+
+// The partner transaction's real leg, joined onto a confirmed transfer's row
+// at read time. The one thing the transfer badge needs that is on neither the
+// row nor a sibling.
+export type LinkedLeg = components['schemas']['LinkedLeg']
 
 // One page of `GET /ledger/export`. Unlike `PostingPage`, `total` and
 // `limit` count postings — the raw export applies no overlay.

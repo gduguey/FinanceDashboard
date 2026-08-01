@@ -771,7 +771,7 @@ class PostingQuery(PostingFilters):
 
 
 class PostingPageCounts(BaseModel):
-    """The two counts the transactions screen shows, which are two different numbers.
+    """Every count the transactions screen shows about the whole filter, none of which is the page's size.
 
     `total` on the page envelope counts `window_unit`s — transactions, since
     that is what a page is cut by. The figure beside the table counts
@@ -783,6 +783,11 @@ class PostingPageCounts(BaseModel):
     differ. Both are returned rather than one being silently redefined — the
     same choice `http_api.pagination.Page.window_unit` exists to make
     explicit.
+
+    Every field here describes the filter, never the page. That is the whole
+    reason they are on the wire: a button whose label counts what happens to
+    be rendered, while the action behind it resolves the filter server-side,
+    reports a number that is not the number of rows it affects.
     """
 
     matched_transactions: int
@@ -795,6 +800,21 @@ class PostingPageCounts(BaseModel):
     The "Needs categorizing" tab's badge, and the size of the set the bulk
     categorizers would act on. Deliberately computed with that one predicate
     lifted, so the badge reads the same whichever tab is open."""
+    pending: int
+    """How many matched rows carry an unvalidated AI or pattern suggestion.
+
+    What "Validate selection" resolves — `POST /postings/validate-pending`
+    takes the filter, so this is the size of the set that button acts on. It
+    used to be counted off the rendered rows, which was the same number only
+    while the client held every row the filter matched."""
+    pending_selected: int
+    """How many of `pending` are currently checked, and so will be accepted rather than reverted.
+
+    `pending_selected` is a stored field of the override, not client state,
+    so this is a fact about the filter and not about what a page happens to
+    have painted. The two together are the "(checked/pending)" on the
+    button; the checkbox in the table header toggles one page's worth of
+    them and says so."""
 
 
 class PostingRow(Posting):
@@ -1015,27 +1035,43 @@ class CategorySuggestionResult(BaseModel):
     applied: bool
 
 
-class PatternSuggestBulkRequest(BaseModel):
-    """Which postings to run category-pattern matching over, in one call."""
+class FilteredBulkRequest(BaseModel):
+    """The set a bulk action applies to, named by the filter that produced it rather than by a list of ids.
 
-    posting_ids: list[str]
+    Both bulk actions used to take `posting_ids` — "always exactly the
+    caller's current filtered view", which was true only while the client
+    held the whole ledger and could enumerate that view. It cannot now, and
+    the honest fix is not to make it page through the collection to rebuild
+    a list: it is to send the filter and let the server resolve the set
+    **inside the same transaction as the write**, so nothing can shift
+    underneath the operation between the two.
+
+    The filter is exactly `GET /postings`' own, so the set a bulk action
+    touches is by construction the set the screen is showing. A sort and a
+    page window are deliberately absent: a bulk action is not scoped to a
+    page (see `matched` on each result, which is what the button reports).
+    """
+
+    filters: PostingFilters = Field(default_factory=PostingFilters)
 
 
 class BulkSuggestResult(BaseModel):
     """Response body for `POST /postings/pattern-suggest-category/bulk`."""
 
+    matched: int
+    """How many rows the filter resolved to — what the action was applied over."""
     applied: int
-
-
-class ValidatePendingRequest(BaseModel):
-    """Which postings' pending suggestions to resolve — always exactly the caller's current filtered view."""
-
-    posting_ids: list[str]
+    """How many of them actually got a staged suggestion."""
 
 
 class ValidatePendingResult(BaseModel):
     """Response body for `POST /postings/validate-pending`."""
 
+    matched: int
+    """How many rows the filter resolved to — what the action was applied over.
+
+    Returned so the UI reports what happened rather than assuming it acted
+    on what it last rendered, which is no longer the same set."""
     accepted: int
     reverted: int
 

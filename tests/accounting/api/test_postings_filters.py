@@ -281,6 +281,29 @@ def test_the_needs_categorizing_count_ignores_its_own_filter(seeded_ledger, clie
     assert everything == on_the_tab > 0
 
 
+def test_the_pending_counts_size_the_validate_button(seeded_ledger, client) -> None:
+    """What "Validate selection" acts on, which is the filter's set and not the rendered page's."""
+    counts = _page(client, limit=500)["counts"]
+    assert counts["pending"] == 1
+    assert counts["pending_selected"] == 1, "a staged suggestion is checked until someone unchecks it"
+
+
+def test_unchecking_a_suggestion_moves_only_the_selected_count(seeded_ledger, client) -> None:
+    """The two are separate numbers: one is how many will be resolved, the other which way."""
+    pharmacy = _posting_on(client, seeded_ledger["checking"]["account_id"], "PHARMACY")
+    response = client.put(f"{ACCOUNTING}/postings/{pharmacy['posting_id']}/override", json={"pending_selected": False})
+    assert response.status_code == 200, response.text
+
+    counts = _page(client, limit=500)["counts"]
+    assert counts["pending"] == 1
+    assert counts["pending_selected"] == 0
+
+
+def test_the_pending_counts_narrow_with_the_filter(seeded_ledger, client) -> None:
+    """A filter matching no suggestion reports none, so the button disappears rather than lying."""
+    assert _page(client, search="CORNER", limit=500)["counts"]["pending"] == 0
+
+
 def test_the_counts_describe_the_filter_rather_than_the_page(seeded_ledger, client) -> None:
     """A one-transaction window must not make the collection look one transaction long."""
     whole = _page(client, limit=500)["counts"]
@@ -322,3 +345,35 @@ def test_a_linked_row_carries_its_partners_leg(seeded_ledger, client) -> None:
 def test_an_unlinked_row_carries_no_partner(seeded_ledger, client) -> None:
     page = _page(client, limit=500)
     assert all(row["linked_leg"] is None for row in page["items"] if not row["is_linked_transfer"])
+
+
+def test_a_bulk_action_resolves_its_own_set_from_the_filter(seeded_ledger, client) -> None:
+    """The set a bulk action touches is the set the screen shows, resolved server-side rather than sent as ids."""
+    response = client.post(f"{ACCOUNTING}/postings/validate-pending", json={"filters": {"search": "PHARMACY"}})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"matched": 1, "accepted": 1, "reverted": 0}
+    assert _page(client, pending=["ai"], limit=500)["counts"]["matched_postings"] == 0
+
+
+def test_a_bulk_action_over_an_empty_filter_covers_the_whole_ledger(seeded_ledger, client) -> None:
+    """No filter means no restriction, exactly as it does on the page — not "nothing selected"."""
+    whole = _page(client, limit=500)["counts"]["matched_postings"]
+    response = client.post(f"{ACCOUNTING}/postings/matching-ids", json={})
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == whole
+
+
+def test_matching_ids_returns_the_matched_rows_and_no_placeholder(seeded_ledger, client) -> None:
+    """What the deliberately client-side AI loop walks: the rows the filter matched, never a placeholder leg.
+
+    A strict subset of the page's rows, not all of them — the page also
+    carries the *unmatched* legs of every transaction it covers, which is
+    what the transfer badge needs and what a bulk categorizer must not touch.
+    """
+    ids = client.post(f"{ACCOUNTING}/postings/matching-ids", json={"filters": {"needs_categorizing": True}}).json()
+    page = _page(client, needs_categorizing=True, limit=500)
+
+    assert len(ids) == page["counts"]["matched_postings"]
+    assert set(ids) < {row["posting_id"] for row in _rendered(page)}
+    placeholders = {row["posting_id"] for row in page["items"] if row["account_id"] in PLACEHOLDERS}
+    assert not set(ids) & placeholders
