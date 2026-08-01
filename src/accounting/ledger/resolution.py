@@ -26,7 +26,7 @@ Three entry points, narrowing:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -37,8 +37,10 @@ from accounting.ledger.categorization import (
     apply_posting_merges,
     apply_posting_splits,
     apply_rules,
+    resolved_transfer_rule_ids_by_transaction,
 )
 from accounting.ledger.transfers import apply_transfer_links
+from accounting.models import VIRTUAL_ACCOUNT_KINDS
 from accounting.precedence import OVERLAY_PRECEDENCE
 from accounting.repositories.interpretation import (
     load_overrides,
@@ -329,6 +331,89 @@ def resolve_postings(
         accounts=context.accounts,
         total=total,
     )
+
+
+def resolved_display_rows(resolution: ResolvedPostings) -> list[dict[str, Any]]:
+    """Render a resolution as the rows the transactions screen shows — every resolved and display-only field.
+
+    The one place these seven derived fields are computed. Four of them
+    (`pending_source`, `pending_selected`, `resolved_by_transfer_rule_id`,
+    `manual_transfer_override_posting_id`) were built inline in
+    `api.routers.postings.get_postings`; the projection stores exactly this
+    shape, so leaving them there would have been a second implementation of
+    the row the projection is supposed to *be*. The other three
+    (`is_real_income_expense` and `is_excluded_from_rule`)
+    are new here, and are what the transactions screen needs to filter
+    server-side.
+
+    `is_real_income_expense` mirrors
+    `dashboard.income_statement.real_income_expense_legs` — this posting is
+    not on a virtual placeholder account, its transaction has at least one
+    leg that is, and the transaction is not a confirmed transfer link. It is
+    computed here rather than shared with that function because that one
+    returns a filtered, currency-converted frame for aggregation, while this
+    needs a per-row flag on an unfiltered one; the *rule* is stated once in
+    that function's docstring and mirrored here deliberately and visibly,
+    with `tests/accounting/test_projection_equivalence.py` holding the two
+    together.
+
+    `resolved_by_transfer_rule_id` is suppressed wherever
+    `manual_transfer_override_posting_id` is set, because a manual override
+    is applied after rules and always wins — see `PostingRow`'s docstring.
+
+    Parameters
+    ----------
+    resolution
+        A resolution, whose `raw`, `rules`, `accounts` and `overrides` are
+        all read here rather than re-fetched.
+
+    Returns
+    -------
+    list[dict]
+        One dict per resolved posting, keyed by `api.api_models.PostingRow`'s
+        own field names, newest first. The projection's `transaction_row_id`
+        is not here: it is a storage key rather than a resolved value, and
+        `repositories.projection` reads it from the batch it is recomputing.
+    """
+    rows = resolution.resolved.sort("posted_at", "posting_id", descending=[True, False]).to_dicts()
+    overrides = resolution.overrides
+    resolved_by_rule = resolved_transfer_rule_ids_by_transaction(resolution.raw, resolution.rules, resolution.accounts)
+
+    posting_id_to_transaction_id = {row["posting_id"]: row["transaction_id"] for row in rows}
+    manual_override_posting_by_transaction: dict[str, str] = {}
+    for posting_id, posting_override in overrides.items():
+        if posting_override.account_id is None:
+            continue
+        transaction_id = posting_id_to_transaction_id.get(posting_id)
+        if transaction_id is not None:
+            manual_override_posting_by_transaction[transaction_id] = posting_id
+
+    virtual_account_ids = {
+        account_id for account_id, account in resolution.accounts.items() if account.kind in VIRTUAL_ACCOUNT_KINDS
+    }
+    transactions_with_a_virtual_leg = {
+        row["transaction_id"] for row in rows if row["account_id"] in virtual_account_ids
+    }
+    excluded_transaction_ids = {
+        transaction_id for rule in resolution.rules for transaction_id in rule.excluded_transaction_ids
+    }
+    for row in rows:
+        transaction_id = row["transaction_id"]
+        override = overrides.get(row["posting_id"])
+        row["pending_source"] = override.pending_source if override is not None else None
+        row["pending_selected"] = override.pending_selected if override is not None else True
+        manual_override_posting_id = manual_override_posting_by_transaction.get(transaction_id)
+        row["manual_transfer_override_posting_id"] = manual_override_posting_id
+        row["resolved_by_transfer_rule_id"] = (
+            None if manual_override_posting_id is not None else resolved_by_rule.get(transaction_id)
+        )
+        row["is_real_income_expense"] = (
+            row["account_id"] not in virtual_account_ids
+            and transaction_id in transactions_with_a_virtual_leg
+            and not row["is_linked_transfer"]
+        )
+        row["is_excluded_from_rule"] = transaction_id in excluded_transaction_ids
+    return rows
 
 
 def resolved_postings(
