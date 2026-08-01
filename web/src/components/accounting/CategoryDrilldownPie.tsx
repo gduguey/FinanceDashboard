@@ -142,6 +142,24 @@ const INNER_START = 40
 const OUTER_END = 150
 
 /**
+ * Whether a slice is the "no category at all" one, which is not a category.
+ *
+ * The two placeholder ids are what `GET /income-statement/category-totals`
+ * files an uncategorized row under; the wire's filter spells the same thing
+ * with `UNCATEGORIZED`. Both readers below need the distinction, so it is
+ * named once rather than repeated as a two-line `||`.
+ *
+ * @param selection - The subcategory slice the user clicked.
+ * @returns Whether the rows behind it carry no category.
+ */
+function isUncategorizedSlice(selection: SelectedSubcategory): boolean {
+  return (
+    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID ||
+    selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
+  )
+}
+
+/**
  * The clicked slice's own postings, as `GET /postings` selects them.
  *
  * Every predicate the browser used to evaluate over a resident ledger has a
@@ -155,9 +173,7 @@ const OUTER_END = 150
  * @returns The filter for this drilldown, with no sort or page window.
  */
 function drilldownFilters(selection: SelectedSubcategory, scope: Required<PostingFilters>): Required<PostingFilters> {
-  const isUncategorized =
-    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID ||
-    selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
+  const isUncategorized = isUncategorizedSlice(selection)
   return {
     ...scope,
     income_expense: selection.classification,
@@ -180,22 +196,22 @@ function drilldownFilters(selection: SelectedSubcategory, scope: Required<Postin
  * the clicked subcategory and another somewhere else, and listing the second
  * under this heading would be a wrong row, not merely an extra one.
  *
- * That is three comparisons over one page, not a filter pass over a ledger —
- * the thing the endpoint cannot express is *which legs*, because its window is
- * a transaction. Sign and reality are not re-tested here: `income_expense`
- * already asserted both server-side, so a leg that reached this page and
- * carries the selected category is one the filter selected.
+ * A few comparisons over one page, not a filter pass over a ledger — the thing
+ * the endpoint cannot express is *which legs*, because its window is a
+ * transaction. The sign is re-tested rather than taken from the query: the
+ * server applied `income_expense` to whichever leg *matched*, and a sibling
+ * riding along on the page was never subject to it.
  *
  * @param items - One page of rows as the server returned them.
  * @param selection - The subcategory slice the user clicked.
  * @returns The rows this table lists.
  */
 function matchedLegs(items: Posting[], selection: SelectedSubcategory): Posting[] {
-  const isUncategorized =
-    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID ||
-    selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
+  const isUncategorized = isUncategorizedSlice(selection)
   return items.filter((posting) => {
     if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) return false
+    if (!posting.is_real_income_expense) return false
+    if (selection.classification === 'income' ? posting.amount < 0 : posting.amount >= 0) return false
     if (isUncategorized) return posting.category_id == null
     return posting.category_id === selection.categoryId && posting.subcategory_id === (selection.subcategoryId ?? null)
   })

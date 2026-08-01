@@ -189,6 +189,10 @@ describe('the insights drilldown', () => {
             subcategory_id: 'expense:food:dining',
           }),
           posting({ posting_id: 'p1:counterparty', description: 'Supermarket', account_id: 'uncategorized:expense' }),
+          // Same category and subcategory, wrong side. `income_expense` was
+          // applied to whichever leg matched, so a sibling riding along on the
+          // page was never subject to it.
+          posting({ posting_id: 'p1:refund', description: 'Refunded at the till', amount: 12 }),
         ],
         1,
       ),
@@ -198,6 +202,7 @@ describe('the insights drilldown', () => {
 
     expect(await screen.findByText('Supermarket')).toBeInTheDocument()
     expect(screen.queryByText('Wine with the shop')).not.toBeInTheDocument()
+    expect(screen.queryByText('Refunded at the till')).not.toBeInTheDocument()
     expect(screen.queryByText('uncategorized:expense')).not.toBeInTheDocument()
   })
 
