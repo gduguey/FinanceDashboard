@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from accounting.api.api_models import NO_SUBCATEGORY
 from http_api.pagination import PAGE_LIMIT_MAX
 from tests.accounting.conftest import ACCOUNTING, _posting_on
 
@@ -273,6 +274,52 @@ def test_the_two_counts_differ_where_a_split_makes_them_differ(seeded_ledger, cl
     assert page["counts"]["matched_transactions"] == 1
     assert page["counts"]["matched_postings"] == 2
     assert page["total"] == page["counts"]["matched_transactions"]
+
+
+def test_the_insights_drilldown_selects_one_slice_and_counts_only_its_rows(seeded_ledger, client) -> None:
+    """The filter combination `CategoryDrilldownPie` sends, against a real ledger.
+
+    Its own case because it is the second screen to drive `GET /postings` and
+    it composes four predicates none of the cases above put together: a window,
+    a category, a subcategory sentinel and `income_expense`. The seeded salary
+    is split into two categories, which is what makes the assertion worth
+    making — `matched_postings` must be the one leg the slice is about, not the
+    transaction's row count.
+    """
+    page = _page(
+        client,
+        start="2026-03-01",
+        end="2026-03-31",
+        categories=["income:salary"],
+        subcategories=[NO_SUBCATEGORY],
+        income_expense="income",
+        limit=500,
+    )
+
+    assert page["counts"]["matched_postings"] == 1
+    assert page["total"] == 1
+
+
+def test_the_drilldown_page_still_carries_the_sibling_leg_the_panel_drops(seeded_ledger, client) -> None:
+    """Why `CategoryDrilldownPie.matchedLegs` exists, asserted on the wire.
+
+    The window is a transaction, so selecting one split leg returns the other
+    one and the placeholder counterparty too. Listing either under the clicked
+    subcategory's heading is a wrong row, not merely an extra one — and no
+    parameter on this endpoint can express "only the matching legs", because
+    its page is not cut by leg.
+    """
+    page = _page(
+        client,
+        categories=["income:salary"],
+        subcategories=[NO_SUBCATEGORY],
+        income_expense="income",
+        limit=500,
+    )
+    categories = {row["category_id"] for row in _rendered(page)}
+
+    assert "income:reimbursement" in categories, "the sibling leg rides along on the page"
+    assert page["counts"]["matched_postings"] == 1, "and is not counted"
 
 
 def test_the_needs_categorizing_count_ignores_its_own_filter(seeded_ledger, client) -> None:
