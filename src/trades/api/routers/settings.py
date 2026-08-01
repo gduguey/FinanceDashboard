@@ -63,10 +63,14 @@ def get_target_allocation(
 
 @router.patch("/settings/target-allocation")
 def patch_target_allocation(
-    # `Rate`, not `float`: `model_copy(update=...)` below skips validation, so a
-    # `float` here would leave the frozen `DashboardSettings` holding a double in
-    # a field that promises `Decimal`. `Rate` pins its own OpenAPI type to
-    # `number`, so the wire contract is unchanged.
+    # `Rate`, not `float`, and the reason moved with the merge. It used to be
+    # that `model_copy(update=...)` skipped validation, so a `float` would have
+    # left the frozen `DashboardSettings` holding a double; there is no
+    # `model_copy` here any more. What matters now is that the value goes
+    # straight into a `jsonb` column through `db.base.RateMap`, which serialises
+    # each rate to its exact decimal string — a `float` would arrive already
+    # rounded to the nearest double and be stored exactly that way. `Rate` pins
+    # its own OpenAPI type to `number`, so the wire contract is unchanged.
     patch: Annotated[dict[str, Rate | None], Body(media_type="application/merge-patch+json")],
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],

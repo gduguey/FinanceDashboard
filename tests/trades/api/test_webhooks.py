@@ -218,9 +218,19 @@ class TestClerkWebhook:
         )
         client.post("/api/webhooks/clerk", content=created_body, headers=created_headers)
         linked_id = lookup_user_id(db_session, "clerk", "user_soft_deleted")
+        assert linked_id is not None, "provisioning did not run, so the rest of this test would pass vacuously"
 
         deleted_headers, deleted_body = _signed_headers_and_body(_user_deleted_payload("user_soft_deleted"))
         client.post("/api/webhooks/clerk", content=deleted_body, headers=deleted_headers)
+
+        # `expire_all` is what makes the assertion able to fail. `lookup_user_id`
+        # goes through `session.get`, which serves a primary key it already
+        # holds straight from the identity map — and the lookup above put this
+        # exact row there. The delete webhook commits on a *different* session,
+        # so nothing invalidates that copy: without this, the assertion would
+        # read the cached object and pass whether or not the handler deleted
+        # the row, which is the one thing it exists to catch.
+        db_session.expire_all()
 
         assert lookup_user_id(db_session, "clerk", "user_soft_deleted") == linked_id, (
             "the identity link was removed by the soft delete, so the next request would silently re-provision"

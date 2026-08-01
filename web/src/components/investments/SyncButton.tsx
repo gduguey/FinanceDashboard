@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { isSyncFinished, useActiveSyncRun, useStartSync, useSyncRun } from '@/hooks/usePortfolioData'
 import { formatRelativeTime } from '@/lib/format'
-import type { SyncStep } from '@/types/portfolio'
+import type { SyncRun, SyncStep } from '@/types/portfolio'
 
 // Each leg of a sync (portfolio pull, prices, benchmark, CPI, HYSA rates)
 // now succeeds or fails independently on the backend — one bad IBKR token
@@ -31,6 +31,17 @@ function StepResult({ step }: { step: SyncStep }) {
   )
 }
 
+// Two different failures, told apart because they mean different things to
+// the person reading them. The run itself failed — the runner did not finish,
+// or a restart interrupted it — and its own message says why; or the poll
+// failed, and we simply cannot see the run any more, which says nothing about
+// whether it is still going. A failed *broker leg* is neither: that comes back
+// as a completed run and is reported per step instead.
+function describeFailure(run: { data?: SyncRun; isError: boolean }): string | null {
+  if (run.data?.state === 'failed') return run.data.error ?? 'Sync failed'
+  return run.isError ? 'Lost track of this sync' : null
+}
+
 // A first sync can take a while — most of it spent waiting on IBKR to
 // generate the statement — so a bare spinner reads as "is this frozen?"
 // Polling the step/percent the backend reports turns that dead time into
@@ -55,13 +66,15 @@ export function SyncButton({ lastSyncedAt }: { lastSyncedAt: string | null }) {
     if (runId === null && active.data) setRunId(active.data.id)
   }, [runId, active.data])
 
-  const running = runId !== null && !isSyncFinished(run.data)
+  // `run.isError` is part of the condition, not decoration. Without it a
+  // poll that keeps failing — the run row gone, or the network down — leaves
+  // `run.data` undefined for ever, so `running` never clears, the button
+  // stays disabled with a spinning icon, and the only way back is a page
+  // reload. Losing sight of a run has to end the pending state, not freeze it.
+  const running = runId !== null && !isSyncFinished(run.data) && !run.isError
   const pending = start.isPending || running
   const percent = Math.round(run.data?.percent ?? 0)
-  // A run that failed *as a run* — the runner did not finish, or a restart
-  // interrupted it. A failed broker leg is not this: that comes back as a
-  // completed run and is reported per step below.
-  const runError = run.data?.state === 'failed' ? (run.data.error ?? 'Sync failed') : null
+  const runError = describeFailure(run)
 
   return (
     <div className="flex flex-col items-end gap-1">

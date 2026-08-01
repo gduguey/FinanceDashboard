@@ -241,7 +241,9 @@ def post_sync_run(
     Raises
     ------
     HTTPException
-        409 if this user already has a sync in flight.
+        409 if this user already has a sync in flight, or 503 if the run
+        could not be handed to the runner — in which case the run it just
+        created is closed rather than left claiming the user's one slot.
     """
     try:
         run = sync_runs.start_run(session, user_id)
@@ -252,7 +254,21 @@ def post_sync_run(
             headers={"Location": str(request.url_for("get_sync_run", run_id=str(error.run_id)))},
         ) from error
 
-    sync_runs.runner.submit(lambda: _execute_run(_config(), user_id, run.id))
+    try:
+        sync_runs.runner.submit(lambda: _execute_run(_config(), user_id, run.id))
+    except Exception as error:
+        # `start_run` has already committed a `queued` row, and
+        # `uq_sync_runs_active_user` counts that as a sync in flight. Letting
+        # this escape would leave the row behind and block every future sync
+        # for this user until the next restart's sweep — a permanent
+        # consequence from a transient cause, and the likeliest cause is
+        # exactly transient: `submit` raises once `runner.shutdown()` has run,
+        # which is a window a graceful shutdown really passes through while
+        # the server is still accepting requests.
+        logger.exception("Could not hand sync run %s to the runner for user %s", run.id, user_id)
+        sync_runs.fail_run(user_id, run.id, "Could not start the sync. Try again.")
+        raise HTTPException(status_code=503, detail="Could not start a sync right now. Try again.") from error
+
     location_of(request, response, "get_sync_run", run_id=str(run.id))
     return _resource(run)
 

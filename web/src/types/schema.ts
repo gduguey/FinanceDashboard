@@ -4085,7 +4085,9 @@ export interface paths {
      *     Raises
      *     ------
      *     HTTPException
-     *         409 if this user already has a sync in flight.
+     *         409 if this user already has a sync in flight, or 503 if the run
+     *         could not be handed to the runner — in which case the run it just
+     *         created is closed rather than left claiming the user's one slot.
      */
     post: operations['post_sync_run_api_v1_trades_sync_runs_post']
     delete?: never

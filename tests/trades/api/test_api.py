@@ -669,7 +669,12 @@ def test_listing_runs_returns_them_newest_first_on_the_shared_envelope(client, c
 
     assert body["window_unit"] == "run"
     assert body["total"] == 3
-    assert [item["id"] for item in body["items"]] == list(reversed(ids))
+    # Descending id, not reversed insertion order. `recent_runs` sorts on the
+    # primary key because it is a UUIDv7 and therefore time-ordered — but only
+    # across milliseconds. Three rows minted inside one tick differ in their
+    # random tail, so asserting insertion order would flake on a fast machine
+    # while claiming to test the sort.
+    assert [item["id"] for item in body["items"]] == sorted(ids, reverse=True)
 
 
 def test_listing_runs_pages(client, captured_jobs, db_session) -> None:
@@ -684,3 +689,36 @@ def test_listing_runs_pages(client, captured_jobs, db_session) -> None:
     assert body["total"] == 3
     assert body["limit"] == 2
     assert body["offset"] == 1
+
+
+def test_a_runner_that_will_not_take_the_job_closes_the_run_it_just_created(client, monkeypatch) -> None:
+    """`start_run` commits before `submit`, so a failed handoff must not strand a `queued` row.
+
+    `uq_sync_runs_active_user` counts `queued` as a sync in flight, so a
+    stranded row blocks every future sync for that user until a restart
+    sweeps it — a permanent consequence from a transient cause, and the
+    likeliest cause is transient: `submit` raises once the pool is shut
+    down, which a graceful shutdown really passes through while the server
+    still accepts requests.
+
+    Asserted as "the handler closes the run", not "the next POST succeeds":
+    `fail_run` opens its own committed session, which cannot see a row this
+    suite created inside the `db_session` fixture's rolled-back
+    transaction. That the close genuinely frees the slot is
+    `test_sync_runs.py`'s, against sessions that really commit.
+    """
+    closed: list[tuple[uuid.UUID, str]] = []
+
+    def refuse(_job) -> None:
+        message = "the sync runner is not started"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(trades_api.sync_runs.runner, "submit", refuse)
+    monkeypatch.setattr(
+        trades_api.sync_runs, "fail_run", lambda _user_id, run_id, error: closed.append((run_id, error))
+    )
+
+    response = client.post("/api/v1/trades/sync-runs")
+
+    assert response.status_code == 503
+    assert len(closed) == 1, "the queued row was left claiming the user's one sync slot"
