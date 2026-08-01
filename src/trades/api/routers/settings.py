@@ -81,26 +81,27 @@ def patch_target_allocation(
     longer has to resend every other one and risk clobbering an edit made
     elsewhere in between.
 
-    Merges into the existing settings for a second, unrelated reason — a
-    settings row is one record, so writing this field naively from a fresh
-    `DashboardSettings()` would silently wipe out the HYSA/benchmark
-    settings saved separately.
+    The merge happens **in the database**, in one statement, rather than by
+    reading the map here and writing it back. That is not an optimisation:
+    read-modify-write in this handler meant two patches of different symbols
+    did not compose — the later commit dropped the earlier one, which is the
+    one thing merge-patch is defined not to do (A4b). See
+    `dashboard.merge_target_allocation` for the statement and for why this
+    row still has no version column.
+
+    It also cannot disturb the rest of the record. The old path rewrote all
+    twelve columns of a one-row-per-user settings table via `save_settings`,
+    so a concurrent HYSA or timezone save was collateral; the statement now
+    touches one `jsonb` column.
 
     Returns
     -------
     dict[str, Rate]
-        The whole resulting allocation, not just the patched entries.
+        The whole resulting allocation, not just the patched entries — read
+        back from the row that was written, so it reflects any concurrent
+        patch that composed with this one.
     """
-    settings = dashboard.load_settings(session, user_id)
-    allocation = dict(settings.target_allocation_pct)
-    for symbol, target in patch.items():
-        if target is None:
-            allocation.pop(symbol, None)
-        else:
-            allocation[symbol] = target
-    updated = settings.model_copy(update={"target_allocation_pct": allocation})
-    dashboard.save_settings(updated, session, user_id)
-    return updated.target_allocation_pct
+    return dashboard.merge_target_allocation(session, user_id, patch)
 
 
 @router.get("/settings/hysa")

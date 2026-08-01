@@ -26,8 +26,8 @@ THREAD_TIMEOUT_SECONDS = 30.0
 """How long to wait for the losing thread to finish once the winner has committed."""
 
 
-def wait_until_a_backend_blocks_on_a_lock(engine: Engine) -> None:
-    """Block until some backend in this database is waiting on a lock, or fail the test.
+def wait_until_a_backend_blocks_on_a_lock(engine: Engine, *, count: int = 1) -> None:
+    """Block until `count` backends in this database are waiting on a lock, or fail the test.
 
     The synchronisation point of a forced race. The losing session runs in
     its own thread and, on hitting the winner's uncommitted row, stops
@@ -45,9 +45,14 @@ def wait_until_a_backend_blocks_on_a_lock(engine: Engine) -> None:
     Parameters
     ----------
     engine
-        An engine on the database the race is running in. A third connection
-        is opened on it to watch, so it must not be the winner's or the
-        loser's.
+        An engine on the database the race is running in. A further
+        connection is opened on it to watch, so it must not be one of the
+        racing sessions'.
+    count
+        How many backends must be blocked at once. More than one when
+        several contenders have to be queued behind the same row before the
+        holder releases it, so that they genuinely contend rather than
+        running one after another.
     """
     deadline = time.monotonic() + LOCK_WAIT_TIMEOUT_SECONDS
     with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as watcher:
@@ -58,7 +63,7 @@ def wait_until_a_backend_blocks_on_a_lock(engine: Engine) -> None:
                     "WHERE datname = current_database() AND wait_event_type = 'Lock'"
                 )
             ).scalar_one()
-            if waiting:
+            if waiting >= count:
                 return
             time.sleep(0.02)
-    pytest.fail("the losing session never blocked on the winner's uncommitted row")
+    pytest.fail(f"fewer than {count} session(s) ever blocked on the held row")

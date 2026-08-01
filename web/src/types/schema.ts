@@ -3643,15 +3643,25 @@ export interface paths {
      *     longer has to resend every other one and risk clobbering an edit made
      *     elsewhere in between.
      *
-     *     Merges into the existing settings for a second, unrelated reason — a
-     *     settings row is one record, so writing this field naively from a fresh
-     *     `DashboardSettings()` would silently wipe out the HYSA/benchmark
-     *     settings saved separately.
+     *     The merge happens **in the database**, in one statement, rather than by
+     *     reading the map here and writing it back. That is not an optimisation:
+     *     read-modify-write in this handler meant two patches of different symbols
+     *     did not compose — the later commit dropped the earlier one, which is the
+     *     one thing merge-patch is defined not to do (A4b). See
+     *     `dashboard.merge_target_allocation` for the statement and for why this
+     *     row still has no version column.
+     *
+     *     It also cannot disturb the rest of the record. The old path rewrote all
+     *     twelve columns of a one-row-per-user settings table via `save_settings`,
+     *     so a concurrent HYSA or timezone save was collateral; the statement now
+     *     touches one `jsonb` column.
      *
      *     Returns
      *     -------
      *     dict[str, Rate]
-     *         The whole resulting allocation, not just the patched entries.
+     *         The whole resulting allocation, not just the patched entries — read
+     *         back from the row that was written, so it reflects any concurrent
+     *         patch that composed with this one.
      */
     patch: operations['patch_target_allocation_api_v1_trades_settings_target_allocation_patch']
     trace?: never
