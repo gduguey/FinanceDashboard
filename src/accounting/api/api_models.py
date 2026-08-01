@@ -1015,43 +1015,27 @@ class CategorySuggestionResult(BaseModel):
     applied: bool
 
 
-class FilteredBulkRequest(BaseModel):
-    """The set a bulk action applies to, named by the filter that produced it rather than by a list of ids.
+class PatternSuggestBulkRequest(BaseModel):
+    """Which postings to run category-pattern matching over, in one call."""
 
-    Both bulk actions used to take `posting_ids` — "always exactly the
-    caller's current filtered view", which was true only while the client
-    held the whole ledger and could enumerate that view. It cannot now, and
-    the honest fix is not to make it page through the collection to rebuild
-    a list: it is to send the filter and let the server resolve the set
-    **inside the same transaction as the write**, so nothing can shift
-    underneath the operation between the two.
-
-    The filter is exactly `GET /postings`' own, so the set a bulk action
-    touches is by construction the set the screen is showing. A sort and a
-    page window are deliberately absent: a bulk action is not scoped to a
-    page (see `matched` on each result, which is what the button reports).
-    """
-
-    filters: PostingFilters = Field(default_factory=PostingFilters)
+    posting_ids: list[str]
 
 
 class BulkSuggestResult(BaseModel):
     """Response body for `POST /postings/pattern-suggest-category/bulk`."""
 
-    matched: int
-    """How many rows the filter resolved to — what the action was applied over."""
     applied: int
-    """How many of them actually got a staged suggestion."""
+
+
+class ValidatePendingRequest(BaseModel):
+    """Which postings' pending suggestions to resolve — always exactly the caller's current filtered view."""
+
+    posting_ids: list[str]
 
 
 class ValidatePendingResult(BaseModel):
     """Response body for `POST /postings/validate-pending`."""
 
-    matched: int
-    """How many rows the filter resolved to — what the action was applied over.
-
-    Returned so the UI reports what happened rather than assuming it acted
-    on what it last rendered, which is no longer the same set."""
     accepted: int
     reverted: int
 

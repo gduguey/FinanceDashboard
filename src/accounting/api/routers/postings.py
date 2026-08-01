@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import (
     DismissSuggestionRequest,
     DuplicateGroup,
-    FilteredBulkRequest,
     LedgerExportPage,
     PostingMergeUpsert,
     PostingPage,
@@ -25,6 +24,7 @@ from accounting.api.api_models import (
     PostingRow,
     TransferLinkCreate,
     TransferSuggestion,
+    ValidatePendingRequest,
     ValidatePendingResult,
 )
 from accounting.api.dependencies import state
@@ -72,7 +72,6 @@ from accounting.repositories.projection import (
     drain,
     filtered_page,
     linked_legs,
-    matching_posting_ids,
     page_rows,
 )
 from accounting.utils.statement_archive import StatementArchive
@@ -586,34 +585,25 @@ def delete_transfer_link(
 
 @router.post("/postings/validate-pending")
 def post_validate_pending(
-    payload: FilteredBulkRequest,
+    payload: ValidatePendingRequest,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ValidatePendingResult:
-    """Resolve every pending suggestion the caller's current filter matches, per its own `pending_selected` flag.
+    """Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
 
-    The set comes from the filter rather than from a list of ids, and is
-    resolved **in the same transaction as the write** — so it cannot shift
-    between the two, which a client-supplied list gathered over several
-    requests could. It is the same `PostingFilters` `GET /postings` takes,
-    so what this touches is by construction what the screen is showing.
-
-    A posting with no override, or one whose override isn't pending, is
-    silently skipped — it matched the filter, it simply had nothing to
-    resolve.
+    Only ever touches postings named in `payload.posting_ids` — the
+    caller's current filtered view — so a pending suggestion sitting
+    outside that view is never affected by this call, per the "validate
+    selection" button's contract. A posting with no override, or one
+    whose override isn't pending, is silently skipped.
 
     Returns
     -------
     ValidatePendingResult
-        `matched` is the size of the set the filter resolved to; `accepted`
-        and `reverted` how many of them had a suggestion, and which way it
-        went.
     """
-    drain(session, user_id)
-    posting_ids = matching_posting_ids(session, user_id, payload.filters)
-    overrides = load_overrides_for_postings(session, user_id, posting_ids)
+    overrides = load_overrides_for_postings(session, user_id, payload.posting_ids)
     accepted = reverted = 0
-    for posting_id in posting_ids:
+    for posting_id in payload.posting_ids:
         existing = overrides.get(posting_id)
         if existing is None or existing.pending_source is None:
             continue
@@ -626,38 +616,8 @@ def post_validate_pending(
             del overrides[posting_id]
         else:
             overrides[posting_id] = resolved
-    save_overrides_for_postings(posting_ids, overrides, session, user_id)
-    return ValidatePendingResult(matched=len(posting_ids), accepted=accepted, reverted=reverted)
-
-
-@router.post("/postings/matching-ids")
-def post_matching_posting_ids(
-    payload: FilteredBulkRequest,
-    session: Annotated[Session, Depends(get_db)],
-    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
-) -> list[str]:
-    """Every posting id the caller's current filter matches, for the one bulk action that cannot be server-side.
-
-    The AI categorizer runs one request per posting on purpose — the loop is
-    a deliberate rate limit, not an oversight (see known gap 5) — so it needs
-    the identity of the set it is about to walk. Everything else that acts on
-    a filter does so server-side and never sees an id.
-
-    Deliberately unpaged, and that is not a hole in the bounded-reads rule:
-    the response is strictly smaller than the work it precedes, since the
-    caller is about to make one LLM call per entry. Paging it would add
-    round trips to a list the client must hold in full anyway to loop over
-    it, and the alternative — truncating to a page — is exactly the silent
-    truncation the whole screen was rebuilt to remove.
-
-    Returns
-    -------
-    list[str]
-        Matching posting ids, newest first, in the same order the table
-        shows them under its default sort.
-    """
-    drain(session, user_id)
-    return matching_posting_ids(session, user_id, payload.filters)
+    save_overrides_for_postings(payload.posting_ids, overrides, session, user_id)
+    return ValidatePendingResult(accepted=accepted, reverted=reverted)
 
 
 def _transfer_suggestion_id(row: dict[str, Any]) -> str:
