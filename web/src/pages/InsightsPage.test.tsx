@@ -13,7 +13,7 @@ import { emptyStore } from '@/test/fixtures'
 vi.mock('@/lib/accountingApi', () => ({
   accountingApi: {
     store: vi.fn(),
-    postings: vi.fn(),
+    postingsExport: vi.fn(),
     postingsPage: vi.fn(),
     postingMonths: vi.fn(),
     categoryTotals: vi.fn(),
@@ -44,7 +44,7 @@ describe('InsightsPage', () => {
     vi.mocked(accountingApi.categoryTotals).mockResolvedValue([])
     vi.mocked(accountingApi.monthlyIncomeExpense).mockResolvedValue([])
     vi.mocked(accountingApi.spendCurve).mockResolvedValue([])
-    vi.mocked(accountingApi.postings).mockResolvedValue([])
+    vi.mocked(accountingApi.postingsExport).mockResolvedValue([])
     vi.mocked(accountingApi.currencies).mockResolvedValue([])
   })
 
@@ -63,6 +63,6 @@ describe('InsightsPage', () => {
     await waitFor(() => expect(accountingApi.postingMonths).toHaveBeenCalled())
     await waitFor(() => expect(accountingApi.categoryTotals).toHaveBeenCalled())
 
-    expect(accountingApi.postings).not.toHaveBeenCalled()
+    expect(accountingApi.postingsExport).not.toHaveBeenCalled()
   })
 })

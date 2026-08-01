@@ -437,13 +437,13 @@ function ExportTab() {
               {
                 label: 'JSON',
                 onExport: withErrorHandling('postings', async () => {
-                  downloadJson(await accountingApi.postings(), `accounting-postings-${exportStamp()}.json`)
+                  downloadJson(await accountingApi.postingsExport(), `accounting-postings-${exportStamp()}.json`)
                 }),
               },
               {
                 label: 'CSV',
                 onExport: withErrorHandling('postings', async () => {
-                  downloadCsv(await accountingApi.postings(), `accounting-postings-${exportStamp()}.csv`)
+                  downloadCsv(await accountingApi.postingsExport(), `accounting-postings-${exportStamp()}.csv`)
                 }),
               },
             ]}

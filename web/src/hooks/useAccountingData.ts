@@ -75,7 +75,6 @@ export {
   usePatternSuggestCategoryBulk,
   usePostingMonths,
   usePostingSummary,
-  usePostings,
   usePostingsPage,
   useRemovePostingMerge,
   useRemoveTransferLink,

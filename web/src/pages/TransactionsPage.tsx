@@ -31,8 +31,10 @@ export function TransactionsPage() {
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               Postings
               <ExportButtons
-                onJson={async () => downloadJson(await accountingApi.postings(), `postings-${exportStamp()}.json`)}
-                onCsv={async () => downloadCsv(await accountingApi.postings(), `postings-${exportStamp()}.csv`)}
+                onJson={async () =>
+                  downloadJson(await accountingApi.postingsExport(), `postings-${exportStamp()}.json`)
+                }
+                onCsv={async () => downloadCsv(await accountingApi.postingsExport(), `postings-${exportStamp()}.csv`)}
               />
             </div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

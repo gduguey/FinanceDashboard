@@ -326,25 +326,25 @@ export const accountingApi = {
     const page = await request<PostingPage>(`/postings${queryString({ limit: 1, offset: 0 })}`)
     return { total: page.total, counts: page.counts }
   },
-  // Pages through the collection until it is exhausted, rather than asking
-  // for one page. The server caps any single page (`PAGE_LIMIT_MAX`), so a
-  // single request cannot return a large user's whole ledger — and returning
-  // a silently truncated ledger is not an option for a money app. C1
-  // replaces this loop with real pagination in the Transactions table; until
-  // then every consumer still receives the complete list it expects.
-  //
-  // `total`, `limit` and `offset` are all in the page's own `window_unit`
-  // (`"transaction"` here, `"posting"` for the export below, `"event"` for
-  // the trades ledger), so `fetchAllPages` is correct for all three without
-  // knowing which unit it is in — `page.items.length` is what differs, and
-  // it is never the stride.
   // One page of the filtered, sorted collection — what the Transactions table
   // renders. The filter, the sort and the counts beside the table are all the
   // server's answer now; nothing here re-derives any of them (C1). `limit`
   // counts transactions and `items` carries every leg of each, so
   // `items.length` is normally larger.
   postingsPage: (query: PostingPageQuery) => request<PostingPage>(`/postings${queryString({ ...query })}`),
-  postings: () =>
+  // Pages through the collection until it is exhausted. Named for what is
+  // left of its purpose: the four "download my transactions" buttons, which
+  // want everything by definition and are the only callers now that no screen
+  // holds the ledger (C1, C2, C7). A silently truncated file is not an option
+  // for a money app, and the server caps any single page (`PAGE_LIMIT_MAX`),
+  // so the loop is the only way to honour that.
+  //
+  // `total`, `limit` and `offset` are all in the page's own `window_unit`
+  // (`"transaction"` here, `"posting"` for the export below, `"event"` for
+  // the trades ledger), so `fetchAllPages` is correct for all three without
+  // knowing which unit it is in — `page.items.length` is what differs, and
+  // it is never the stride.
+  postingsExport: () =>
     fetchAllPages<Posting>(({ limit, offset }) => request<PostingPage>(`/postings${queryString({ limit, offset })}`)),
   // Every `YYYY-MM` the user has a posting in, newest first. Bounded by
   // construction — one row per month ever transacted in — so unlike the

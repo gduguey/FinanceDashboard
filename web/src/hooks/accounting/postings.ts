@@ -17,8 +17,6 @@ import type {
   TransferLinkCreate,
 } from '@/types/accounting'
 
-export const usePostings = () => useQuery({ queryKey: keys.postings, queryFn: accountingApi.postings })
-
 /**
  * One page of the filtered, sorted transactions collection.
  *
@@ -40,7 +38,8 @@ export const usePostingsPage = (query: PostingPageQuery) =>
  * What the whole, unfiltered ledger amounts to, without fetching any of it.
  *
  * `total` is how many transactions exist — all the sidebar's onboarding check
- * ever needed, and reading it off `usePostings` cost the whole history.
+ * ever needed, and reading it off the whole-ledger fetch this replaced cost
+ * the entire history to learn one number.
  * `counts` comes free with it, and carries the "Needs categorizing" badge:
  * that number describes the ledger rather than either tab's filter, so it
  * cannot be read off a page the filter bar has narrowed.

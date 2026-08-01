@@ -14,7 +14,7 @@ import { emptyStore } from '@/test/fixtures'
 vi.mock('@/lib/accountingApi', () => ({
   accountingApi: {
     store: vi.fn(),
-    postings: vi.fn(),
+    postingsExport: vi.fn(),
     postingMonths: vi.fn(),
     categoryTotals: vi.fn(),
     suggestedBudgetAmount: vi.fn(),
@@ -42,7 +42,7 @@ describe('BudgetPage’s month picker (C7)', () => {
     vi.mocked(accountingApi.store).mockResolvedValue(emptyStore())
     vi.mocked(accountingApi.postingMonths).mockResolvedValue(MONTHS)
     vi.mocked(accountingApi.categoryTotals).mockResolvedValue([])
-    vi.mocked(accountingApi.postings).mockResolvedValue([])
+    vi.mocked(accountingApi.postingsExport).mockResolvedValue([])
     vi.mocked(accountingApi.currencies).mockResolvedValue([])
   })
 
@@ -59,6 +59,6 @@ describe('BudgetPage’s month picker (C7)', () => {
   it('never fetches the ledger to learn them', async () => {
     renderBudgetPage()
     await waitFor(() => expect(accountingApi.postingMonths).toHaveBeenCalled())
-    expect(accountingApi.postings).not.toHaveBeenCalled()
+    expect(accountingApi.postingsExport).not.toHaveBeenCalled()
   })
 })

@@ -10,7 +10,7 @@ import type { Account, CategoryTotalRow, Posting, PostingPage } from '@/types/ac
 
 vi.mock('@/lib/accountingApi', () => ({
   accountingApi: {
-    postings: vi.fn(),
+    postingsExport: vi.fn(),
     postingsPage: vi.fn(),
   },
 }))
@@ -144,7 +144,7 @@ describe('the insights drilldown', () => {
     await drillIntoGroceries()
     await screen.findByText(/Supermarket/)
 
-    expect(accountingApi.postings).not.toHaveBeenCalled()
+    expect(accountingApi.postingsExport).not.toHaveBeenCalled()
   })
 
   // The regression this block exists for. `total` was `sum(|amount|)` over the

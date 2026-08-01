@@ -14,7 +14,7 @@ import type { Account } from '@/types/accounting'
 vi.mock('@/lib/accountingApi', () => ({
   accountingApi: {
     store: vi.fn(),
-    postings: vi.fn(),
+    postingsExport: vi.fn(),
     netWorth: vi.fn(),
     currencies: vi.fn(),
   },
@@ -57,7 +57,7 @@ describe('AccountsPage’s kind/currency lock', () => {
         account_ids_with_postings: [USED.account_id],
       }),
     )
-    vi.mocked(accountingApi.postings).mockResolvedValue([])
+    vi.mocked(accountingApi.postingsExport).mockResolvedValue([])
     vi.mocked(accountingApi.netWorth).mockResolvedValue({
       as_of: '2026-01-01',
       display_currency: 'USD',
@@ -83,6 +83,6 @@ describe('AccountsPage’s kind/currency lock', () => {
     await waitFor(() => expect(accountingApi.store).toHaveBeenCalled())
     await screen.findByRole('button', { name: 'Delete Rainy day' })
 
-    expect(accountingApi.postings).not.toHaveBeenCalled()
+    expect(accountingApi.postingsExport).not.toHaveBeenCalled()
   })
 })

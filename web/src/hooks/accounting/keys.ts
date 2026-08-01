@@ -75,7 +75,6 @@ export const keys = {
   syncStatus: prefixes.syncStatus,
   currentExchangeRate: (currency: string) => [...prefixes.currentExchangeRate, currency],
   exchangeRateHistory: (currency: string) => [...prefixes.exchangeRateHistory, currency],
-  postings: prefixes.postings,
   postingCount: [...prefixes.postings, 'count'],
   postingMonths: [...prefixes.postings, 'months'],
   postingsPage: (query: object) => [...POSTINGS_PAGE_PREFIX, query],

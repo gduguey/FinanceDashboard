@@ -11,7 +11,7 @@ import type { Account, LinkedLeg, TransferLink, TransferRule } from '@/types/acc
 vi.mock('@/lib/accountingApi', () => ({
   accountingApi: {
     store: vi.fn(),
-    postings: vi.fn(),
+    postingsExport: vi.fn(),
     transactionLegs: vi.fn(),
     transferSuggestions: vi.fn(),
     currencies: vi.fn(),
@@ -92,7 +92,7 @@ describe('RulesPage', () => {
     renderRulesPage()
 
     await waitFor(() => expect(accountingApi.transactionLegs).toHaveBeenCalled())
-    expect(accountingApi.postings).not.toHaveBeenCalled()
+    expect(accountingApi.postingsExport).not.toHaveBeenCalled()
   })
 
   // A fresh install has no links and no exclusions, so there is nothing to
