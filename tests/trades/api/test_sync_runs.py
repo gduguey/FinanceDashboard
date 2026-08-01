@@ -129,6 +129,11 @@ def test_a_completed_run_records_its_result_on_the_row(
     assert run.new_event_count == 7
     assert run.total_event_count == 12
     assert run.steps == [{"label": "IBKR data", "ok": True, "error": None}]
+    # Stamped when the runner picked the run up, not when the row was created:
+    # the gap between the two is how long it waited for a free pool slot,
+    # which is the only thing distinguishing a slow sync from a queued one.
+    assert run.started_at is not None
+    assert run.finished_at >= run.started_at
 
 
 def _fake_result(on_progress: Any, *, ok: bool = True) -> Any:

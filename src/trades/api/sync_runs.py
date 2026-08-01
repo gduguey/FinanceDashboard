@@ -185,9 +185,21 @@ def _apply(user_id: uuid.UUID, run_id: uuid.UUID, **values: object) -> None:
         session.commit()
 
 
+def begin_run(user_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    """Mark a run as picked up by the runner, and stamp when.
+
+    Separate from the first `report_progress` so `started_at` is written
+    exactly once, by the transition that owns it, rather than conditionally
+    on every progress tick. The gap between `created_at` and this is how
+    long the run waited for a free pool slot, which is the only thing that
+    distinguishes a slow sync from a queued one.
+    """
+    _apply(user_id, run_id, state="running", started_at=datetime.now(tz=UTC).replace(tzinfo=None))
+
+
 def report_progress(user_id: uuid.UUID, run_id: uuid.UUID, step: str, percent: float) -> None:
     """Record where a run has got to, readable by any worker and any request."""
-    _apply(user_id, run_id, state="running", step=step, percent=percent)
+    _apply(user_id, run_id, step=step, percent=percent)
 
 
 def finish_run(

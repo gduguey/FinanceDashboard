@@ -170,6 +170,7 @@ def _execute_run(config: AppConfig, user_id: uuid.UUID, run_id: uuid.UUID) -> No
         sync_runs.report_progress(user_id, run_id, step, percent)
 
     try:
+        sync_runs.begin_run(user_id, run_id)
         with session_scope(user_id) as session:
             result = _run_sync(config, session, user_id, on_progress)
         sync_runs.finish_run(
