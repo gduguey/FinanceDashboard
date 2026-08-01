@@ -79,3 +79,38 @@ def test_reassigning_an_external_id_to_a_different_user_is_a_one_row_update(db_s
 
     assert lookup_user_id(db_session, "clerk", "user_original_signup") is None
     assert lookup_user_id(db_session, "clerk", "user_after_delete_and_reinvite") == original_user_id
+
+
+def test_link_returns_the_id_it_linked(db_session: Session) -> None:
+    """The ordinary case, and the value `db.provisioning` compares against to detect that it lost."""
+    user_id = uuid.uuid4()
+    db_session.add(User(id=user_id, email=f"{user_id}@example.com"))
+    db_session.commit()
+
+    assert link_identity(db_session, user_id, "clerk", "user_fresh_link") == user_id
+
+
+def test_link_returns_the_existing_id_rather_than_the_one_offered(db_session: Session) -> None:
+    """The silent case this return value exists for.
+
+    A second caller offering a *different* user id for an already-linked
+    external account does not conflict on anything it can see: `users.email`
+    carries no unique constraint (see `db.models.User`), so its own `users`
+    row inserts happily, and `ON CONFLICT DO NOTHING` then declines to
+    repoint the link without saying so. Returning the offered id here is
+    what stranded a user; returning the linked one is what
+    `db.provisioning` needs to roll its orphan back.
+    """
+    first_user_id = uuid.uuid4()
+    second_user_id = uuid.uuid4()
+    db_session.add_all([
+        User(id=first_user_id, email="shared@example.com"),
+        User(id=second_user_id, email="shared@example.com"),
+    ])
+    db_session.commit()
+
+    link_identity(db_session, first_user_id, "clerk", "user_contested")
+    db_session.commit()
+
+    assert link_identity(db_session, second_user_id, "clerk", "user_contested") == first_user_id
+    assert lookup_user_id(db_session, "clerk", "user_contested") == first_user_id

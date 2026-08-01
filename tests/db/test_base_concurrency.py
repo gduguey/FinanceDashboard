@@ -20,17 +20,17 @@ actually sees the winner's row, or that the retry lands as an `UPDATE` on it.
 from __future__ import annotations
 
 import threading
-import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 import accounting.db as adb
 import db.models
 from db.base import NATURAL_KEY_MERGE_ATTEMPTS, ConcurrentNaturalKeyInsertError, merge_by_natural_key
+from tests.support.concurrency import THREAD_TIMEOUT_SECONDS, wait_until_a_backend_blocks_on_a_lock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,12 +39,6 @@ if TYPE_CHECKING:
 
 _RACED_KEY = "tag:raced"
 """The one natural key both sessions try to create."""
-
-_LOCK_WAIT_TIMEOUT_SECONDS = 15.0
-"""How long to wait for the losing backend to actually block on the winner's uncommitted row."""
-
-_THREAD_TIMEOUT_SECONDS = 30.0
-"""How long to wait for the losing thread to finish once the winner has committed."""
 
 
 def _tag_row(user_id: uuid.UUID, natural_key: str, name: str) -> adb.Tag:
@@ -80,37 +74,6 @@ def committed_user_id(_db_engine: Engine) -> Iterator[uuid.UUID]:
         teardown.query(adb.Tag).filter_by(user_id=user_id).delete()
         teardown.query(db.models.User).filter_by(id=user_id).delete()
         teardown.commit()
-
-
-def _wait_until_a_backend_blocks_on_a_lock(engine: Engine) -> None:
-    """Block until some backend in this database is waiting on a lock, or fail the test.
-
-    The synchronisation point of the race below. The losing session runs in
-    its own thread and, on hitting the winner's uncommitted duplicate key,
-    stops *inside Postgres* — no Python-visible event fires — so the only
-    honest way to know it has got there is to ask Postgres. `pg_stat_activity`
-    reports live backend state rather than an MVCC snapshot, so a third
-    connection polling it sees the wait as soon as it starts.
-
-    Deliberately not a `sleep`: a fixed sleep either flakes on a slow machine
-    or makes every run pay for the slowest one, and worse, a sleep that is too
-    short would let the winner commit *before* the loser's insert is even
-    sent, which is a different (and much easier) interleaving than the one
-    this file exists to test.
-    """
-    deadline = time.monotonic() + _LOCK_WAIT_TIMEOUT_SECONDS
-    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as watcher:
-        while time.monotonic() < deadline:
-            waiting = watcher.execute(
-                text(
-                    "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
-                )
-            ).scalar_one()
-            if waiting:
-                return
-            time.sleep(0.02)
-    pytest.fail("the losing session never blocked on the winner's uncommitted row")
 
 
 def test_a_lost_insert_race_retries_into_an_update_of_the_winners_row(
@@ -155,12 +118,12 @@ def test_a_lost_insert_race_retries_into_an_update_of_the_winners_row(
         )
         thread.start()
         try:
-            _wait_until_a_backend_blocks_on_a_lock(_db_engine)
+            wait_until_a_backend_blocks_on_a_lock(_db_engine)
         finally:
             # Always commit, even if the wait timed out: the losing thread is
             # parked on this transaction and would otherwise hang the suite.
             winner.commit()
-    thread.join(timeout=_THREAD_TIMEOUT_SECONDS)
+    thread.join(timeout=THREAD_TIMEOUT_SECONDS)
 
     assert not thread.is_alive()
     assert "error" not in outcome, outcome.get("error")

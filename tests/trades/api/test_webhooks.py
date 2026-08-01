@@ -162,6 +162,35 @@ class TestClerkWebhook:
         assert row is not None
         assert row.is_active is False
 
+    def test_user_deleted_leaves_the_identity_link_in_place(self, client: TestClient, db_session) -> None:
+        """The soft delete must stay soft, and this is what makes it so now that provisioning is just-in-time.
+
+        `resolve_current_user_id` provisions whenever the
+        `external_identities` lookup misses (D1). So if this handler removed
+        the link along with the activation flag, the deactivated user's very
+        next request would miss, provision a brand-new `users` row and sign
+        them straight back in under it — an undelete nobody asked for, and
+        one that would look like a working app rather than like a bug.
+
+        Because the link survives, the lookup still hits and provisioning
+        never runs for a deactivated account at all. Re-inviting that person
+        in Clerk mints a *new* Clerk id, which misses and provisions a second
+        unrelated user — which is exactly what `db.models.User` documents
+        should happen, and is not a resurrection of the first.
+        """
+        created_headers, created_body = _signed_headers_and_body(
+            _user_created_payload("user_soft_deleted", "soft-deleted@example.com")
+        )
+        client.post("/api/webhooks/clerk", content=created_body, headers=created_headers)
+        linked_id = lookup_user_id(db_session, "clerk", "user_soft_deleted")
+
+        deleted_headers, deleted_body = _signed_headers_and_body(_user_deleted_payload("user_soft_deleted"))
+        client.post("/api/webhooks/clerk", content=deleted_body, headers=deleted_headers)
+
+        assert lookup_user_id(db_session, "clerk", "user_soft_deleted") == linked_id, (
+            "the identity link was removed by the soft delete, so the next request would silently re-provision"
+        )
+
     def test_user_deleted_for_an_unknown_clerk_id_is_a_noop(self, client: TestClient) -> None:
         headers, body = _signed_headers_and_body(_user_deleted_payload("user_never_provisioned"))
         response = client.post("/api/webhooks/clerk", content=body, headers=headers)
