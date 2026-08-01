@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
     "polars>=1.9",
-    "pydantic>=2.7",
+    "pydantic>=2.12",
     "pydantic-settings>=2.2",
     "requests>=2.31",
     "numpy>=1.26",
