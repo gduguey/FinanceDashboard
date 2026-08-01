@@ -170,7 +170,39 @@ eleven components that await a mutation and found every remaining case to be a
 genuine data dependency (create-then-set-opening-balance) or a deliberate
 rate limit (the LLM categorization loop), not a workaround for that rule.
 
-## 6. The transactions table filters, sorts and counts in the browser, over the whole ledger
+## 6. The transactions table filters, sorts and counts in the browser, over the whole ledger — HALF FIXED
+
+**The blocker named below is gone** (PR E). The recorded fix direction was
+taken exactly as written: `accounting.resolved_postings` materialises the
+resolved rows, maintained by triggers generated from
+`accounting.precedence`'s own declaration of what each overlay stage reads,
+drained at the top of every read. `GET /postings` now evaluates all thirteen
+predicates, the sort and three counts in SQL — and got faster doing it, 53 ms
+at 2k and 77 ms at 10k against 86 and 91 ms before. A filtered, sorted page
+is 55 and 84 ms. Distinct months is `GET /postings/months`, 26 ms.
+
+Two things the entry below got right and one it got wrong. Right: mirroring
+the pipeline in SQL would have been a second implementation, and it is not
+what was built — the projection stores the resolver's output and an
+equivalence test asserts the two are equal, field for field, after each of
+23 mutations driven through the real routes. Also right: the needs-
+categorizing count is a resolved predicate, and it is now one of the three
+the page returns.
+
+Wrong, or at least incomplete: "send the filter, the sort and the page to
+the server" is only half the work. The other half is the screen, and it is
+larger than this entry implies — five pages share `usePostings()`, the
+optimistic override paint assumes a flat cached array, and the transfer
+badge, the pick hints and both exports all read the resident one. **The SPA
+still fetches the whole ledger and filters in the browser**, so the server
+half has no consumer yet. That is PR G, and the filter-shaped bulk actions
+this entry defers are held back with it: they were built and reverted,
+because a bulk action can only send the filter once the list it acts on is
+driven by one, and landing it alone would have put two implementations of
+the same predicates in front of one screen.
+
+The original entry follows.
+
 
 **Where:** `web/src/lib/accountingApi.ts`'s `postings()`, which pages
 `GET /postings` until the collection is exhausted, and
