@@ -386,6 +386,14 @@ def _multi_select(
 ) -> ColumnElement[bool] | None:
     """Apply one multi-select's own semantics: empty means no restriction, `exclude` inverts.
 
+    An exclusion is `IS NOT TRUE`, never `NOT (...)`, and that is not
+    stylistic. SQL's three-valued logic makes `NOT (category_id IN ('x'))`
+    evaluate to `NULL` — not `TRUE` — for a row whose category is null, so a
+    plain negation silently drops every uncategorized row from "exclude this
+    category". The client-side pass this replaces returns `!includes(...)`,
+    which keeps them. `IS NOT TRUE` is the operator that means what the
+    checkbox means.
+
     Returns
     -------
     sqlalchemy.ColumnElement[bool] or None
@@ -393,7 +401,7 @@ def _multi_select(
     """
     if not selected:
         return None
-    return ~matches if exclude else matches
+    return matches.is_not(True) if exclude else matches
 
 
 def _transfer_flag_predicate(flags: Sequence[str]) -> ColumnElement[bool]:
@@ -498,7 +506,10 @@ def filter_predicates(user_id: uuid.UUID, filters: PostingFilters) -> list[Colum
         predicates.append(row.description.ilike(f"%{_escape_like(filters.search)}%", escape="\\"))
     if filters.account is not None:
         matches = row.account_id == filters.account
-        predicates.append(~matches if filters.account_exclude else matches)
+        # `IS NOT TRUE` here too, for uniformity rather than necessity —
+        # `account_id` is `NOT NULL`, but an exclusion that reads differently
+        # from the four beside it is an invitation to change the wrong one.
+        predicates.append(matches.is_not(True) if filters.account_exclude else matches)
 
     optional = [
         _nullable_multi_select(
@@ -654,12 +665,18 @@ def filtered_page(
 
 
 def page_rows(session: Session, user_id: uuid.UUID, transaction_ids: Sequence[str]) -> list[dict[str, Any]]:
-    """Every stored row of the named transactions, newest first.
+    """Every stored row of the named transactions, in the order the page put them.
 
     Every leg, not only the ones the filter matched: see `filtered_page` on
     why a transaction's legs travel together. Placeholder legs included, for
     the same reason — the transfer badge and "mark as transfer" both read
     them, and the client drops them from the table itself.
+
+    Ordered by `transaction_ids`' own order, which is the sort the client
+    asked for, and by posting id within a transaction. Re-sorting by
+    `posted_at` here instead — which this did until the sort tests caught it
+    — silently ignored every sort but the default: the *window* honoured the
+    requested order while the rows inside it came back by date regardless.
 
     Returns
     -------
@@ -669,11 +686,15 @@ def page_rows(session: Session, user_id: uuid.UUID, transaction_ids: Sequence[st
     if not transaction_ids:
         return []
     rows = session.execute(
-        select(adb.ResolvedPosting)
-        .where(adb.ResolvedPosting.user_id == user_id, any_text(adb.ResolvedPosting.transaction_id, transaction_ids))
-        .order_by(adb.ResolvedPosting.posted_at.desc(), adb.ResolvedPosting.posting_id.asc())
+        select(adb.ResolvedPosting).where(
+            adb.ResolvedPosting.user_id == user_id, any_text(adb.ResolvedPosting.transaction_id, transaction_ids)
+        )
     ).scalars()
-    return [_row_dict(row) for row in rows]
+    position = {transaction_id: index for index, transaction_id in enumerate(transaction_ids)}
+    return sorted(
+        (_row_dict(row) for row in rows),
+        key=lambda row: (position[row["transaction_id"]], row["posting_id"]),
+    )
 
 
 def _row_dict(row: adb.ResolvedPosting) -> dict[str, Any]:
