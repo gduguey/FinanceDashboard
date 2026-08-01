@@ -1,5 +1,5 @@
 import { ApiError, parseBody, RowVersionConflictError } from '@/lib/api'
-import { fetchAllPages } from '@/lib/paging'
+import { fetchAllPages, PAGE_LIMIT_MAX } from '@/lib/paging'
 import type {
   Account,
   AccountCreate,
@@ -355,10 +355,27 @@ export const accountingApi = {
   // The real leg of each named transaction, for the three Rules tabs that
   // render "one transaction as a small card" and know nothing but the id. A
   // POST for a read because the caller names an arbitrary set it already
-  // holds, which does not survive a query string; bounded server-side at
-  // `PAGE_LIMIT_MAX` ids, so the answer is never larger than one page.
-  transactionLegs: (transactionIds: string[]) =>
-    request<Record<string, LinkedLeg>>('/postings/legs', jsonInit('POST', { transaction_ids: transactionIds })),
+  // holds, which does not survive a query string.
+  //
+  // Chunked at the cap the server enforces. `TransactionLegsRequest` declares
+  // `max_length=PAGE_LIMIT_MAX`, so a longer list is a 422 — and the caller's
+  // list is every transfer link plus every rule exclusion the user has, which
+  // is unbounded by anything. The failure was silent in the worst way: the
+  // request rejects, the hook holds no data, and the tabs render fallback
+  // values rather than an error. Sequential rather than parallel, because
+  // this is a background lookup for a list view and not worth N concurrent
+  // connections.
+  transactionLegs: async (transactionIds: string[]) => {
+    const legs: Record<string, LinkedLeg> = {}
+    for (let start = 0; start < transactionIds.length; start += PAGE_LIMIT_MAX) {
+      const chunk = transactionIds.slice(start, start + PAGE_LIMIT_MAX)
+      Object.assign(
+        legs,
+        await request<Record<string, LinkedLeg>>('/postings/legs', jsonInit('POST', { transaction_ids: chunk })),
+      )
+    }
+    return legs
+  },
   // Same paging loop as `postings` above, and for the same reason — an
   // export that silently stopped at the cap would write a partial backup to
   // a file the user believes is complete. Its `window_unit` is `"posting"`

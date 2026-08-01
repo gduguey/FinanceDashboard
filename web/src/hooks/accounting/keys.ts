@@ -43,8 +43,9 @@ const prefixes = {
  * Its own level under `postings` rather than the bare prefix, and that is
  * load-bearing: `useSetPostingOverride` paints *every* cached page at once,
  * so it needs a prefix that matches pages and only pages. Matching
- * `prefixes.postings` would hand a page-shaped updater to the count query,
- * whose cached value is a number.
+ * `prefixes.postings` would hand a page-shaped updater to the summary and
+ * month queries too, neither of which is page-shaped — the summary caches
+ * `{ total, counts }` and the month list caches an array of strings.
  */
 export const POSTINGS_PAGE_PREFIX = [...prefixes.postings, 'page'] as const
 
@@ -59,7 +60,7 @@ export const POSTINGS_PAGE_PREFIX = [...prefixes.postings, 'page'] as const
  *
  * A key built from arguments always extends its own entry in `prefixes`, so
  * invalidating that prefix sweeps every argument variant. Four of them nest:
- * `postingCount`, `postingMonths` and `postingsPage` sit under `postings`,
+ * `postingSummary`, `postingMonths` and `postingsPage` sit under `postings`,
  * and `llmVerify` under `llmSettings`. All are deliberate — the count, the
  * month list and every cached page are derived from the same rows, and a
  * verify result is only meaningful for the key currently stored — so a prefix
@@ -75,7 +76,7 @@ export const keys = {
   syncStatus: prefixes.syncStatus,
   currentExchangeRate: (currency: string) => [...prefixes.currentExchangeRate, currency],
   exchangeRateHistory: (currency: string) => [...prefixes.exchangeRateHistory, currency],
-  postingCount: [...prefixes.postings, 'count'],
+  postingSummary: [...prefixes.postings, 'summary'],
   postingMonths: [...prefixes.postings, 'months'],
   postingsPage: (query: object) => [...POSTINGS_PAGE_PREFIX, query],
   transactionLegs: (transactionIds: readonly string[]) => [...prefixes.postings, 'legs', transactionIds],

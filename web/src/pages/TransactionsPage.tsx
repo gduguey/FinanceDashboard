@@ -1,3 +1,4 @@
+import { toast } from 'sonner'
 import { LlmUsageBanner } from '@/components/accounting/LlmUsageBanner'
 import { TransactionsTab } from '@/components/accounting/TransactionsTab'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -6,6 +7,29 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useAccountingStore } from '@/hooks/useAccountingData'
 import { accountingApi } from '@/lib/accountingApi'
 import { downloadCsv, downloadJson, exportStamp } from '@/lib/download'
+
+/**
+ * Run an export and say so if it fails.
+ *
+ * Both exports walk the server page by page now, so either can fail on the
+ * network — and `ExportButtons` is deliberately dumb about pending and error
+ * state, which used to be harmless when the handler serialized an array that
+ * was already resident. An unhandled rejection there is the worst possible
+ * answer: no file, no message, no sign the click did anything.
+ *
+ * @param what - What the user asked for, named in the failure message.
+ * @param run - The export itself.
+ * @returns A handler for `ExportButtons`.
+ */
+function exporting(what: string, run: () => Promise<void>): () => Promise<void> {
+  return async () => {
+    try {
+      await run()
+    } catch (error) {
+      toast.error(`Could not export ${what}: ${error instanceof Error ? error.message : 'the request failed'}`)
+    }
+  }
+}
 
 // Was the "Transactions" tab inside the old combined Accounting page,
 // promoted to its own top-level page. The transfer-suggestions panel that
@@ -31,21 +55,23 @@ export function TransactionsPage() {
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               Postings
               <ExportButtons
-                onJson={async () =>
-                  downloadJson(await accountingApi.postingsExport(), `postings-${exportStamp()}.json`)
-                }
-                onCsv={async () => downloadCsv(await accountingApi.postingsExport(), `postings-${exportStamp()}.csv`)}
+                onJson={exporting('postings', async () =>
+                  downloadJson(await accountingApi.postingsExport(), `postings-${exportStamp()}.json`),
+                )}
+                onCsv={exporting('postings', async () =>
+                  downloadCsv(await accountingApi.postingsExport(), `postings-${exportStamp()}.csv`),
+                )}
               />
             </div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
               Ledger
               <ExportButtons
-                onJson={async () =>
-                  downloadJson(await accountingApi.ledgerExport(), `accounting-ledger-${exportStamp()}.json`)
-                }
-                onCsv={async () =>
-                  downloadCsv(await accountingApi.ledgerExport(), `accounting-ledger-${exportStamp()}.csv`)
-                }
+                onJson={exporting('the ledger', async () =>
+                  downloadJson(await accountingApi.ledgerExport(), `accounting-ledger-${exportStamp()}.json`),
+                )}
+                onCsv={exporting('the ledger', async () =>
+                  downloadCsv(await accountingApi.ledgerExport(), `accounting-ledger-${exportStamp()}.csv`),
+                )}
               />
             </div>
           </>

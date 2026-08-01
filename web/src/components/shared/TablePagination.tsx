@@ -13,6 +13,13 @@ import { Button } from '@/components/ui/button'
  * `total` and `offset` count whatever the page's own `window_unit` counts —
  * transactions for `GET /postings`, not rows — so the caller names the unit
  * rather than this component assuming one.
+ *
+ * Both arrows stay mounted and unfocusable-but-present at a boundary:
+ * `aria-disabled` rather than `disabled`, because a `disabled` button leaves
+ * the tab order, so the last activation of Next drops a keyboard user's focus
+ * to `<body>` and makes them tab from the top of the document to carry on.
+ * The click guard is on the handler, so the visual and the behaviour cannot
+ * disagree.
  */
 export function TablePagination({
   offset,
@@ -46,8 +53,9 @@ export function TablePagination({
           <Button
             variant="outline"
             size="sm"
-            disabled={!hasPrevious || busy}
-            onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+            aria-disabled={!hasPrevious || busy}
+            className={!hasPrevious || busy ? 'pointer-events-none opacity-50' : undefined}
+            onClick={() => hasPrevious && !busy && onOffsetChange(Math.max(0, offset - limit))}
           >
             <ChevronLeft className="size-3.5" />
             Previous
@@ -55,8 +63,9 @@ export function TablePagination({
           <Button
             variant="outline"
             size="sm"
-            disabled={!hasNext || busy}
-            onClick={() => onOffsetChange(offset + limit)}
+            aria-disabled={!hasNext || busy}
+            className={!hasNext || busy ? 'pointer-events-none opacity-50' : undefined}
+            onClick={() => hasNext && !busy && onOffsetChange(offset + limit)}
           >
             Next
             <ChevronRight className="size-3.5" />

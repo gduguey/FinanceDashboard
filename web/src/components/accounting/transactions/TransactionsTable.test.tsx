@@ -32,6 +32,7 @@ vi.mock('@/lib/accountingApi', async (importOriginal) => ({
     validatePending: vi.fn(),
     patternSuggestCategoryBulk: vi.fn(),
     matchingPostingIds: vi.fn(),
+    aiSuggestCategory: vi.fn(),
   },
 }))
 
@@ -377,7 +378,7 @@ describe('TransactionsTable', () => {
       ...expense('b', 'Rent'),
     ]
 
-    it('validates by filter and reports what the server actually touched', async () => {
+    it('validates by filter and separates the set it ran over from what it changed', async () => {
       const user = userEvent.setup()
       vi.mocked(accountingApi.validatePending).mockResolvedValue({ matched: 57, accepted: 40, reverted: 17 })
       renderTable(postings, { page: pageOf(postings, { pending: 57, pending_selected: 40 }) })
@@ -392,9 +393,12 @@ describe('TransactionsTable', () => {
       expect(sent).not.toHaveProperty('limit')
       expect(sent).not.toHaveProperty('offset')
       // Reports the server's own `matched`, not the page's row count — the
-      // whole reason that field is on the response.
+      // whole reason that field is on the response. And says "checked", not
+      // "resolved": `matched` is the set the action ran over, and a matching
+      // row carrying no pending suggestion is skipped, so 57 is not 57
+      // suggestions — 40 and 17 are what moved.
       await waitFor(() =>
-        expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('Resolved 57 matching suggestions')),
+        expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('Checked 57 matching rows')),
       )
     })
 
@@ -413,6 +417,31 @@ describe('TransactionsTable', () => {
       expect(vi.mocked(accountingApi.patternSuggestCategoryBulk).mock.calls[0][0]).toMatchObject({
         needs_categorizing: true,
       })
+    })
+
+    // The one bulk action that is genuinely page-bounded, and the reason its
+    // button says so. It is a loop of one request per posting, each carrying
+    // the category the suggestion is locked against — which only a loaded row
+    // knows — so an id the filter matched on another page is skipped. The
+    // button used to be labelled with the filter-wide count and promise a
+    // number it could not reach.
+    it('runs the AI suggester over the page’s matching rows and says so on the button', async () => {
+      const user = userEvent.setup()
+      vi.mocked(accountingApi.matchingPostingIds).mockResolvedValue(['a', 'somewhere-on-another-page'])
+      vi.mocked(accountingApi.aiSuggestCategory).mockResolvedValue({} as never)
+      vi.mocked(accountingApi.llmUsage).mockResolvedValue({ gemini: { configured: true, is_limited: false } } as never)
+      renderTable(postings, { page: pageOf(postings, { needs_categorizing: 900 }) })
+      await rendered(['Corner Store', 'Rent'])
+
+      const button = await screen.findByRole('button', { name: /AI suggest/ })
+      expect(button).toHaveTextContent('AI suggest on this page')
+      expect(button).not.toHaveTextContent('900')
+
+      await user.click(button)
+
+      await waitFor(() => expect(accountingApi.aiSuggestCategory).toHaveBeenCalled())
+      const suggested = vi.mocked(accountingApi.aiSuggestCategory).mock.calls.map(([postingId]) => postingId)
+      expect(suggested).toEqual(['a'])
     })
   })
 

@@ -228,7 +228,10 @@ export function TransactionsTable({
   function handleValidatePending() {
     validateFiltered(query, (result) =>
       toast.success(
-        `Resolved ${result.matched.toLocaleString()} matching suggestion${result.matched === 1 ? '' : 's'} — ` +
+        // `matched` is the set the action ran over, not what it changed — a
+        // matching row with no pending suggestion is skipped. Naming it
+        // "resolved" read as though every one of them had been.
+        `Checked ${result.matched.toLocaleString()} matching row${result.matched === 1 ? '' : 's'} — ` +
           `${result.accepted.toLocaleString()} accepted, ${result.reverted.toLocaleString()} reverted.`,
       ),
     )
@@ -242,7 +245,7 @@ export function TransactionsTable({
   function handleRunBulkPatternSuggest() {
     runBulkPatternSuggest(bulkTargetFilter, (result) =>
       toast.success(
-        `Matched ${result.matched.toLocaleString()} transaction${result.matched === 1 ? '' : 's'} — ` +
+        `Matched ${result.matched.toLocaleString()} row${result.matched === 1 ? '' : 's'} — ` +
           `${result.applied.toLocaleString()} got a suggestion.`,
       ),
     )

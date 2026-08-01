@@ -44,7 +44,8 @@ export const usePostingsPage = (query: PostingPageQuery) =>
  * that number describes the ledger rather than either tab's filter, so it
  * cannot be read off a page the filter bar has narrowed.
  */
-export const usePostingSummary = () => useQuery({ queryKey: keys.postingCount, queryFn: accountingApi.postingSummary })
+export const usePostingSummary = () =>
+  useQuery({ queryKey: keys.postingSummary, queryFn: accountingApi.postingSummary })
 
 /**
  * Every month the user has a posting in, newest first — the month picker's options.

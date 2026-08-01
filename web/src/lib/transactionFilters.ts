@@ -188,27 +188,6 @@ export function activeFilterCount(filters: PersistedFilters): number {
 }
 
 /**
- * Translate the filter bar into the query `GET /postings` and both bulk actions take.
- *
- * The one place the screen's vocabulary and the wire's meet. The bar carries
- * sentinels for "no restriction" (`FILTER_ALL`, `ALL_MONTHS`, an empty
- * multi-select) and a `dateMode` toggle picking which of two date controls is
- * live; the wire says the same things by omission. Everything else is a
- * rename.
- *
- * The predicates themselves are no longer here at all. Thirteen of them used
- * to run in the browser over a resident ledger, and the server now evaluates
- * the identical set over `accounting.resolved_postings` — see
- * `accounting.repositories.projection.filter_predicates`, which is written in
- * this function's own order so the two can be read side by side. Two
- * implementations of one filter in front of one screen is exactly what C1
- * existed to remove, so this returns the query and nothing evaluates it here.
- *
- * @param filters - The bar's current state, already normalized.
- * @param onlyUncategorized - Whether the "Needs categorizing" tab is the open one.
- * @returns The filter as the server reads it.
- */
-/**
  * The filter that restricts nothing — every predicate at its "no restriction" value.
  *
  * `PostingFilters` makes each multi-select's `_exclude` flag and the search
@@ -243,6 +222,27 @@ export function noPostingFilters(): Required<PostingFilters> {
   }
 }
 
+/**
+ * Translate the filter bar into the query `GET /postings` and both bulk actions take.
+ *
+ * The one place the screen's vocabulary and the wire's meet. The bar carries
+ * sentinels for "no restriction" (`FILTER_ALL`, `ALL_MONTHS`, an empty
+ * multi-select) and a `dateMode` toggle picking which of two date controls is
+ * live; the wire says the same things by omission. Everything else is a
+ * rename.
+ *
+ * The predicates themselves are no longer here at all. Thirteen of them used
+ * to run in the browser over a resident ledger, and the server now evaluates
+ * the identical set over `accounting.resolved_postings` — see
+ * `accounting.repositories.projection.filter_predicates`, which is written in
+ * this function's own order so the two can be read side by side. Two
+ * implementations of one filter in front of one screen is exactly what C1
+ * existed to remove, so this returns the query and nothing evaluates it here.
+ *
+ * @param filters - The bar's current state, already normalized.
+ * @param onlyUncategorized - Whether the "Needs categorizing" tab is the open one.
+ * @returns The filter as the server reads it.
+ */
 export function toPostingFilters(
   filters: FilterState,
   { onlyUncategorized }: { onlyUncategorized: boolean },

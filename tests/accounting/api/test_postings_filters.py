@@ -286,18 +286,24 @@ def test_the_insights_drilldown_selects_one_slice_and_counts_only_its_rows(seede
     making — `matched_postings` must be the one leg the slice is about, not the
     transaction's row count.
     """
-    page = _page(
-        client,
-        start="2026-03-01",
-        end="2026-03-31",
-        categories=["income:salary"],
-        subcategories=[NO_SUBCATEGORY],
-        income_expense="income",
-        limit=500,
-    )
+    drilldown = {
+        "start": "2026-03-01",
+        "end": "2026-03-31",
+        "categories": ["income:salary"],
+        "subcategories": [NO_SUBCATEGORY],
+        "income_expense": "income",
+    }
+    assert _matched(client, **drilldown) == 1
 
-    assert page["counts"]["matched_postings"] == 1
-    assert page["total"] == 1
+    # Each predicate is then moved on its own, because the seed happens to
+    # satisfy all four at once — so a regression dropping any one of them
+    # would leave the assertion above passing. Every line here is a different
+    # answer, which is what makes the first one mean something.
+    assert _matched(client, **{**drilldown, "start": "2026-04-01", "end": "2026-04-30"}) == 0, "the window"
+    assert _matched(client, **{**drilldown, "categories": ["income:reimbursement"]}) == 1, "the category selects"
+    assert _matched(client, **{**drilldown, "income_expense": "expense"}) == 0, "the side"
+    assert _matched(client, **{**drilldown, "subcategories": ["income:salary:bonus"]}) == 0, "the subcategory"
+    assert _matched(client, **{**drilldown, "categories": ["expense:food-drink"]}) == 0, "the category excludes"
 
 
 def test_the_drilldown_page_still_carries_the_sibling_leg_the_panel_drops(seeded_ledger, client) -> None:
@@ -318,8 +324,11 @@ def test_the_drilldown_page_still_carries_the_sibling_leg_the_panel_drops(seeded
     )
     categories = {row["category_id"] for row in _rendered(page)}
 
-    assert "income:reimbursement" in categories, "the sibling leg rides along on the page"
-    assert page["counts"]["matched_postings"] == 1, "and is not counted"
+    assert categories == {"income:salary", "income:reimbursement"}, (
+        "the selected leg and its sibling both arrive; asserting only the sibling would pass "
+        "if the endpoint dropped the very row the drilldown is about"
+    )
+    assert page["counts"]["matched_postings"] == 1, "and only one of them is counted"
 
 
 def test_the_needs_categorizing_count_ignores_its_own_filter(seeded_ledger, client) -> None:

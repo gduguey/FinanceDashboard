@@ -21,7 +21,7 @@ const PROBES: Record<string, readonly unknown[]> = {
   syncStatus: keys.syncStatus,
   currentExchangeRate: keys.currentExchangeRate('EUR'),
   exchangeRateHistory: keys.exchangeRateHistory('EUR'),
-  postingCount: keys.postingCount,
+  postingSummary: keys.postingSummary,
   postingMonths: keys.postingMonths,
   transferSuggestions: [...keys.transferSuggestions, 3],
   duplicateSuggestions: [...keys.duplicateSuggestions, 3],
