@@ -282,16 +282,22 @@ categorizing count is a resolved predicate, and it is now one of the three
 the page returns.
 
 Wrong, or at least incomplete: "send the filter, the sort and the page to
-the server" is only half the work. The other half is the screen, and it is
-larger than this entry implies — five pages share `usePostings()`, the
-optimistic override paint assumes a flat cached array, and the transfer
-badge, the pick hints and both exports all read the resident one. **The SPA
-still fetches the whole ledger and filters in the browser**, so the server
-half has no consumer yet. That is PR G, and the filter-shaped bulk actions
-this entry defers are held back with it: they were built and reverted,
-because a bulk action can only send the filter once the list it acts on is
-driven by one, and landing it alone would have put two implementations of
-the same predicates in front of one screen.
+the server" is only half the work. The other half is the screen, and it was
+larger than this entry implies — five pages shared `usePostings()`, the
+optimistic override paint assumed a flat cached array, and the transfer
+badge, the pick hints and both exports all read the resident one.
+
+**PR G closed that half.** No screen holds the ledger: the transactions
+table pages the server, the rules page reads its legs from
+`POST /postings/legs`, four month pickers read `GET /postings/months`, the
+insights drilldown pages `GET /postings`, and the accounts page reads
+`account_ids_with_postings` off the store. `usePostings()` is deleted and
+the page-until-exhausted loop survives as `postingsExport`, which is what
+the four download buttons need and nothing else calls. The filter-shaped
+bulk actions landed with it, which is why they were held: a bulk action can
+only send the filter once the list it acts on is driven by one, and landing
+it alone would have put two implementations of the same predicates in front
+of one screen.
 
 The original entry follows.
 

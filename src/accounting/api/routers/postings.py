@@ -17,14 +17,16 @@ from sqlalchemy.orm import Session
 from accounting.api.api_models import (
     DismissSuggestionRequest,
     DuplicateGroup,
+    FilteredBulkRequest,
     LedgerExportPage,
+    LinkedLeg,
     PostingMergeUpsert,
     PostingPage,
     PostingQuery,
     PostingRow,
+    TransactionLegsRequest,
     TransferLinkCreate,
     TransferSuggestion,
-    ValidatePendingRequest,
     ValidatePendingResult,
 )
 from accounting.api.dependencies import state
@@ -71,6 +73,7 @@ from accounting.repositories.projection import (
     drain,
     filtered_page,
     linked_legs,
+    matching_posting_ids,
     page_rows,
 )
 from accounting.utils.statement_archive import StatementArchive
@@ -181,6 +184,54 @@ def get_posting_months(
     """
     drain(session, user_id)
     return distinct_months(session, user_id)
+
+
+@router.post("/postings/legs")
+def post_transaction_legs(
+    payload: TransactionLegsRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> dict[str, LinkedLeg]:
+    """Look up the real (non-placeholder) leg of each named transaction, keyed by transaction.
+
+    The Rules page renders "one transaction as a small card" in three of its
+    four tabs — the transactions a rule links, the manually-linked pairs, and
+    the ones excluded from a rule. Each names transactions and nothing else,
+    so each needs the row a person would recognise: the date, the account,
+    the description and the amount. It used to get them by holding the whole
+    resolved ledger and indexing it, which is the fetch C1 removed from every
+    other screen.
+
+    **A `POST` for a read, deliberately.** The caller names an arbitrary set
+    of ids it already holds — a few hundred UUIDs for a well-used rule — and
+    that does not survive a query string: `http-api-contract.md`'s own
+    bounded-reads rule assumes a window, and there is no window here to page.
+    Bounded instead by `TransactionLegsRequest`'s `max_length`, which is
+    `PAGE_LIMIT_MAX`, so the response can never be larger than one page of
+    `GET /postings`. The same exception `POST /postings/matching-ids` makes,
+    for the same reason, and both say so rather than leaving it to look like
+    a lapse.
+
+    A transaction with no real leg — merged away, or its statement
+    re-imported — is simply absent from the result rather than being an
+    error: the caller is rendering a list and a vanished row is a row it
+    should not draw.
+
+    Parameters
+    ----------
+    payload
+        The transactions to look up. At most `PAGE_LIMIT_MAX`; a longer list
+        is a 422 rather than a truncation.
+
+    Returns
+    -------
+    dict[str, LinkedLeg]
+        One entry per transaction that has a real leg, keyed by its natural
+        key. The same shape and the same query `GET /postings` uses for
+        `PostingRow.linked_leg`.
+    """
+    drain(session, user_id)
+    return linked_legs(session, user_id, payload.transaction_ids)
 
 
 @router.get("/ledger/export")
@@ -585,25 +636,34 @@ def delete_transfer_link(
 
 @router.post("/postings/validate-pending")
 def post_validate_pending(
-    payload: ValidatePendingRequest,
+    payload: FilteredBulkRequest,
     session: Annotated[Session, Depends(get_db)],
     user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
 ) -> ValidatePendingResult:
-    """Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
+    """Resolve every pending suggestion the caller's current filter matches, per its own `pending_selected` flag.
 
-    Only ever touches postings named in `payload.posting_ids` — the
-    caller's current filtered view — so a pending suggestion sitting
-    outside that view is never affected by this call, per the "validate
-    selection" button's contract. A posting with no override, or one
-    whose override isn't pending, is silently skipped.
+    The set comes from the filter rather than from a list of ids, and is
+    resolved **in the same transaction as the write** — so it cannot shift
+    between the two, which a client-supplied list gathered over several
+    requests could. It is the same `PostingFilters` `GET /postings` takes,
+    so what this touches is by construction what the screen is showing.
+
+    A posting with no override, or one whose override isn't pending, is
+    silently skipped — it matched the filter, it simply had nothing to
+    resolve.
 
     Returns
     -------
     ValidatePendingResult
+        `matched` is the size of the set the filter resolved to; `accepted`
+        and `reverted` how many of them had a suggestion, and which way it
+        went.
     """
-    overrides = load_overrides_for_postings(session, user_id, payload.posting_ids)
+    drain(session, user_id)
+    posting_ids = matching_posting_ids(session, user_id, payload.filters)
+    overrides = load_overrides_for_postings(session, user_id, posting_ids)
     accepted = reverted = 0
-    for posting_id in payload.posting_ids:
+    for posting_id in posting_ids:
         existing = overrides.get(posting_id)
         if existing is None or existing.pending_source is None:
             continue
@@ -616,8 +676,38 @@ def post_validate_pending(
             del overrides[posting_id]
         else:
             overrides[posting_id] = resolved
-    save_overrides_for_postings(payload.posting_ids, overrides, session, user_id)
-    return ValidatePendingResult(accepted=accepted, reverted=reverted)
+    save_overrides_for_postings(posting_ids, overrides, session, user_id)
+    return ValidatePendingResult(matched=len(posting_ids), accepted=accepted, reverted=reverted)
+
+
+@router.post("/postings/matching-ids")
+def post_matching_posting_ids(
+    payload: FilteredBulkRequest,
+    session: Annotated[Session, Depends(get_db)],
+    user_id: Annotated[uuid.UUID, Depends(get_current_user_id)],
+) -> list[str]:
+    """Every posting id the caller's current filter matches, for the one bulk action that cannot be server-side.
+
+    The AI categorizer runs one request per posting on purpose — the loop is
+    a deliberate rate limit, not an oversight (see known gap 5) — so it needs
+    the identity of the set it is about to walk. Everything else that acts on
+    a filter does so server-side and never sees an id.
+
+    Deliberately unpaged, and that is not a hole in the bounded-reads rule:
+    the response is strictly smaller than the work it precedes, since the
+    caller is about to make one LLM call per entry. Paging it would add
+    round trips to a list the client must hold in full anyway to loop over
+    it, and the alternative — truncating to a page — is exactly the silent
+    truncation the whole screen was rebuilt to remove.
+
+    Returns
+    -------
+    list[str]
+        Matching posting ids, newest first, in the same order the table
+        shows them under its default sort.
+    """
+    drain(session, user_id)
+    return matching_posting_ids(session, user_id, payload.filters)
 
 
 def _transfer_suggestion_id(row: dict[str, Any]) -> str:

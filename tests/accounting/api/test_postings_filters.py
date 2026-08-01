@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from accounting.api.api_models import NO_SUBCATEGORY
+from http_api.pagination import PAGE_LIMIT_MAX
 from tests.accounting.conftest import ACCOUNTING, _posting_on
 
 if TYPE_CHECKING:
@@ -274,11 +276,89 @@ def test_the_two_counts_differ_where_a_split_makes_them_differ(seeded_ledger, cl
     assert page["total"] == page["counts"]["matched_transactions"]
 
 
+def test_the_insights_drilldown_selects_one_slice_and_counts_only_its_rows(seeded_ledger, client) -> None:
+    """The filter combination `CategoryDrilldownPie` sends, against a real ledger.
+
+    Its own case because it is the second screen to drive `GET /postings` and
+    it composes four predicates none of the cases above put together: a window,
+    a category, a subcategory sentinel and `income_expense`. The seeded salary
+    is split into two categories, which is what makes the assertion worth
+    making — `matched_postings` must be the one leg the slice is about, not the
+    transaction's row count.
+    """
+    drilldown = {
+        "start": "2026-03-01",
+        "end": "2026-03-31",
+        "categories": ["income:salary"],
+        "subcategories": [NO_SUBCATEGORY],
+        "income_expense": "income",
+    }
+    assert _matched(client, **drilldown) == 1
+
+    # Each predicate is then moved on its own, because the seed happens to
+    # satisfy all four at once — so a regression dropping any one of them
+    # would leave the assertion above passing. Every line here is a different
+    # answer, which is what makes the first one mean something.
+    assert _matched(client, **{**drilldown, "start": "2026-04-01", "end": "2026-04-30"}) == 0, "the window"
+    assert _matched(client, **{**drilldown, "categories": ["income:reimbursement"]}) == 1, "the category selects"
+    assert _matched(client, **{**drilldown, "income_expense": "expense"}) == 0, "the side"
+    assert _matched(client, **{**drilldown, "subcategories": ["income:salary:bonus"]}) == 0, "the subcategory"
+    assert _matched(client, **{**drilldown, "categories": ["expense:food-drink"]}) == 0, "the category excludes"
+
+
+def test_the_drilldown_page_still_carries_the_sibling_leg_the_panel_drops(seeded_ledger, client) -> None:
+    """Why `CategoryDrilldownPie.matchedLegs` exists, asserted on the wire.
+
+    The window is a transaction, so selecting one split leg returns the other
+    one and the placeholder counterparty too. Listing either under the clicked
+    subcategory's heading is a wrong row, not merely an extra one — and no
+    parameter on this endpoint can express "only the matching legs", because
+    its page is not cut by leg.
+    """
+    page = _page(
+        client,
+        categories=["income:salary"],
+        subcategories=[NO_SUBCATEGORY],
+        income_expense="income",
+        limit=500,
+    )
+    categories = {row["category_id"] for row in _rendered(page)}
+
+    assert categories == {"income:salary", "income:reimbursement"}, (
+        "the selected leg and its sibling both arrive; asserting only the sibling would pass "
+        "if the endpoint dropped the very row the drilldown is about"
+    )
+    assert page["counts"]["matched_postings"] == 1, "and only one of them is counted"
+
+
 def test_the_needs_categorizing_count_ignores_its_own_filter(seeded_ledger, client) -> None:
     """So the tab's badge reads the same number whichever tab is currently open."""
     everything = _page(client, limit=500)["counts"]["needs_categorizing"]
     on_the_tab = _page(client, needs_categorizing=True, limit=500)["counts"]["needs_categorizing"]
     assert everything == on_the_tab > 0
+
+
+def test_the_pending_counts_size_the_validate_button(seeded_ledger, client) -> None:
+    """What "Validate selection" acts on, which is the filter's set and not the rendered page's."""
+    counts = _page(client, limit=500)["counts"]
+    assert counts["pending"] == 1
+    assert counts["pending_selected"] == 1, "a staged suggestion is checked until someone unchecks it"
+
+
+def test_unchecking_a_suggestion_moves_only_the_selected_count(seeded_ledger, client) -> None:
+    """The two are separate numbers: one is how many will be resolved, the other which way."""
+    pharmacy = _posting_on(client, seeded_ledger["checking"]["account_id"], "PHARMACY")
+    response = client.put(f"{ACCOUNTING}/postings/{pharmacy['posting_id']}/override", json={"pending_selected": False})
+    assert response.status_code == 200, response.text
+
+    counts = _page(client, limit=500)["counts"]
+    assert counts["pending"] == 1
+    assert counts["pending_selected"] == 0
+
+
+def test_the_pending_counts_narrow_with_the_filter(seeded_ledger, client) -> None:
+    """A filter matching no suggestion reports none, so the button disappears rather than lying."""
+    assert _page(client, search="CORNER", limit=500)["counts"]["pending"] == 0
 
 
 def test_the_counts_describe_the_filter_rather_than_the_page(seeded_ledger, client) -> None:
@@ -322,3 +402,73 @@ def test_a_linked_row_carries_its_partners_leg(seeded_ledger, client) -> None:
 def test_an_unlinked_row_carries_no_partner(seeded_ledger, client) -> None:
     page = _page(client, limit=500)
     assert all(row["linked_leg"] is None for row in page["items"] if not row["is_linked_transfer"])
+
+
+def _legs(client: TestClient, transaction_ids: list[str]) -> dict:
+    response = client.post(f"{ACCOUNTING}/postings/legs", json={"transaction_ids": transaction_ids})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_legs_lookup_answers_the_row_a_person_would_recognise(seeded_ledger, client) -> None:
+    """What the Rules page draws for a transaction it only knows the id of."""
+    groceries = _posting_on(client, seeded_ledger["groceries"]["account_id"], "CORNER SHOP")
+    leg = _legs(client, [groceries["transaction_id"]])[groceries["transaction_id"]]
+
+    assert leg["transaction_id"] == groceries["transaction_id"]
+    assert leg["description"] == "CORNER SHOP GROCERIES"
+    assert leg["account_id"] not in PLACEHOLDERS
+
+
+def test_the_legs_lookup_never_answers_with_a_placeholder(seeded_ledger, client) -> None:
+    """A placeholder leg is never rendered as a row, so it is never the leg to show for a transaction."""
+    transaction_ids = [row["transaction_id"] for row in _rendered(_page(client, limit=500))]
+    legs = _legs(client, transaction_ids)
+
+    assert legs
+    assert all(leg["account_id"] not in PLACEHOLDERS for leg in legs.values())
+
+
+def test_the_legs_lookup_omits_a_transaction_it_cannot_find(seeded_ledger, client) -> None:
+    """The caller is drawing a list; a vanished row is one it should not draw, not an error."""
+    assert _legs(client, ["txn:does-not-exist"]) == {}
+
+
+def test_the_legs_lookup_refuses_a_list_longer_than_a_page(seeded_ledger, client) -> None:
+    """Bounded rather than truncated — a silently shortened answer is what the bound exists to avoid."""
+    response = client.post(
+        f"{ACCOUNTING}/postings/legs", json={"transaction_ids": [f"txn:{n}" for n in range(PAGE_LIMIT_MAX + 1)]}
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_a_bulk_action_resolves_its_own_set_from_the_filter(seeded_ledger, client) -> None:
+    """The set a bulk action touches is the set the screen shows, resolved server-side rather than sent as ids."""
+    response = client.post(f"{ACCOUNTING}/postings/validate-pending", json={"filters": {"search": "PHARMACY"}})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"matched": 1, "accepted": 1, "reverted": 0}
+    assert _page(client, pending=["ai"], limit=500)["counts"]["matched_postings"] == 0
+
+
+def test_a_bulk_action_over_an_empty_filter_covers_the_whole_ledger(seeded_ledger, client) -> None:
+    """No filter means no restriction, exactly as it does on the page — not "nothing selected"."""
+    whole = _page(client, limit=500)["counts"]["matched_postings"]
+    response = client.post(f"{ACCOUNTING}/postings/matching-ids", json={})
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == whole
+
+
+def test_matching_ids_returns_the_matched_rows_and_no_placeholder(seeded_ledger, client) -> None:
+    """What the deliberately client-side AI loop walks: the rows the filter matched, never a placeholder leg.
+
+    A strict subset of the page's rows, not all of them — the page also
+    carries the *unmatched* legs of every transaction it covers, which is
+    what the transfer badge needs and what a bulk categorizer must not touch.
+    """
+    ids = client.post(f"{ACCOUNTING}/postings/matching-ids", json={"filters": {"needs_categorizing": True}}).json()
+    page = _page(client, needs_categorizing=True, limit=500)
+
+    assert len(ids) == page["counts"]["matched_postings"]
+    assert set(ids) < {row["posting_id"] for row in _rendered(page)}
+    placeholders = {row["posting_id"] for row in page["items"] if row["account_id"] in PLACEHOLDERS}
+    assert not set(ids) & placeholders

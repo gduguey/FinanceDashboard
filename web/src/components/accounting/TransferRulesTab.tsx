@@ -23,9 +23,9 @@ import {
 } from '@/hooks/useAccountingData'
 import { useSortableRows } from '@/hooks/useSortableRows'
 import { counterpartyOptions, needsLinkingAccount } from '@/lib/counterpartyAccounts'
-import { type LinkedPairRow, linkedPairRowFromLink, realLegByTransactionId } from '@/lib/transferRowInfo'
+import { type LinkedPairRow, linkedPairRowFromLink, type TransferRowInfo } from '@/lib/transferRowInfo'
 import { addedExcludedTransactionIds, ruleUpdateFromRule } from '@/lib/transferRules'
-import type { Account, Posting, TransferLink, TransferRule } from '@/types/accounting'
+import type { Account, TransferLink, TransferRule } from '@/types/accounting'
 
 // Shown under the counterparty picker whenever the chosen account is one a
 // rule can't safely repoint straight onto (see
@@ -126,12 +126,12 @@ function TransferRuleEditDialog({
 export function TransferRulesTab({
   rules,
   accounts,
-  postings,
+  legByTransactionId,
   transferLinks,
 }: {
   rules: TransferRule[]
   accounts: Record<string, Account>
-  postings: Posting[]
+  legByTransactionId: Map<string, TransferRowInfo>
   transferLinks: TransferLink[]
 }) {
   const patchRule = usePatchTransferRule()
@@ -154,7 +154,6 @@ export function TransferRulesTab({
   const options = counterpartyOptions(accounts)
   const counterpartyName = (rule: TransferRule) =>
     (rule.counterparty_account_id && accounts[rule.counterparty_account_id]?.name) || '—'
-  const legByTransactionId = useMemo(() => realLegByTransactionId(postings, accounts), [postings, accounts])
   // Every confirmed transfer link, grouped by the rule that created it —
   // links a user made manually (`rule_id === null`) never show up here.
   const linkedPairsByRuleId = useMemo(() => {

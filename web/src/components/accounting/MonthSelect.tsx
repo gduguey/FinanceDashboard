@@ -20,7 +20,10 @@ export function MonthSelect({
 
   return (
     <Select value={value} onValueChange={(next) => next && onChange(next)}>
-      <SelectTrigger size="sm" className={className ?? 'min-w-40'}>
+      {/* The trigger's own text is the selected month, which names the value
+          but not the control — so a screen reader (and a test) reaching for
+          "the month picker" has nothing to match on. */}
+      <SelectTrigger size="sm" aria-label="Month" className={className ?? 'min-w-40'}>
         <SelectValue items={items} />
       </SelectTrigger>
       <SelectContent>

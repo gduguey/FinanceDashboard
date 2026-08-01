@@ -1,6 +1,4 @@
-import type { Account, Posting, TransferLink } from '@/types/accounting'
-
-const PLACEHOLDER_ACCOUNT_IDS = new Set(['uncategorized:expense', 'uncategorized:income'])
+import type { Account, LinkedLeg, Posting, TransferLink } from '@/types/accounting'
 
 // A cent of float/rounding slack, never a real discrepancy — an actually
 // mismatched-fee pair should never silently count as a match.
@@ -124,20 +122,35 @@ function toRowInfo(posting: Posting, accounts: Record<string, Account>): Transfe
   }
 }
 
-// Each transaction's own real (non-placeholder) leg — the row actually
-// shown for it everywhere in the UI, since a placeholder never renders as
-// its own row. Built from an unscoped posting list so a filter elsewhere
-// can't hide the leg a transfer's counterpart needs to look up.
+/**
+ * Each transaction's own real (non-placeholder) leg, as the server answered it.
+ *
+ * The row actually shown for a transaction everywhere in the UI, since a
+ * placeholder never renders as one. Built from `POST /postings/legs`, which
+ * names the transactions it wants — this used to be a scan of every posting
+ * the client held, which meant holding every posting.
+ *
+ * @param legs - The server's answer, keyed by transaction id.
+ * @param accounts - The store's accounts, for the name behind each id.
+ * @returns One entry per transaction the server found a real leg for.
+ */
 export function realLegByTransactionId(
-  postings: Posting[],
+  legs: Record<string, LinkedLeg>,
   accounts: Record<string, Account>,
 ): Map<string, TransferRowInfo> {
-  const lookup = new Map<string, TransferRowInfo>()
-  for (const posting of postings) {
-    if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) continue
-    lookup.set(posting.transaction_id, toRowInfo(posting, accounts))
-  }
-  return lookup
+  return new Map(
+    Object.entries(legs).map(([transactionId, leg]) => [
+      transactionId,
+      {
+        transactionId,
+        accountName: accounts[leg.account_id]?.name ?? leg.account_id,
+        description: leg.description,
+        postedAt: leg.posted_at,
+        amount: leg.amount,
+        currency: leg.currency,
+      },
+    ]),
+  )
 }
 
 // The OTHER posting in the same 2-leg transaction, keyed by each side's own

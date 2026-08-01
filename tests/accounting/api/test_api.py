@@ -830,11 +830,11 @@ def test_validate_pending_accepts_a_selected_suggestion(client, monkeypatch) -> 
     )
     client.post(f"/api/v1/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
-    response = client.post(
-        "/api/v1/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]}
-    )
+    # Named by the filter that selects it, not by its id — see
+    # `api_models.FilteredBulkRequest`.
+    response = client.post("/api/v1/accounting/postings/validate-pending", json={"filters": {"search": "PAYROLL"}})
     assert response.status_code == 200
-    assert response.json() == {"accepted": 1, "reverted": 0}
+    assert response.json() == {"matched": 1, "accepted": 1, "reverted": 0}
 
     updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
@@ -855,11 +855,9 @@ def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) 
     client.post(f"/api/v1/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
     client.put(f"/api/v1/accounting/postings/{payroll['posting_id']}/override", json={"pending_selected": False})
 
-    response = client.post(
-        "/api/v1/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]}
-    )
+    response = client.post("/api/v1/accounting/postings/validate-pending", json={"filters": {"search": "PAYROLL"}})
     assert response.status_code == 200
-    assert response.json() == {"accepted": 0, "reverted": 1}
+    assert response.json() == {"matched": 1, "accepted": 0, "reverted": 1}
 
     updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
@@ -867,7 +865,7 @@ def test_validate_pending_reverts_an_unselected_suggestion(client, monkeypatch) 
     assert updated_payroll["pending_source"] is None
 
 
-def test_validate_pending_ignores_postings_outside_the_given_list(client, monkeypatch) -> None:
+def test_validate_pending_ignores_postings_the_filter_does_not_match(client, monkeypatch) -> None:
     account_id = _import_chase_checking(client)
     postings = _postings(client)
     payroll = next(p for p in postings if p["account_id"] == account_id and p["amount"] > 0)
@@ -878,8 +876,10 @@ def test_validate_pending_ignores_postings_outside_the_given_list(client, monkey
     )
     client.post(f"/api/v1/accounting/postings/{payroll['posting_id']}/ai-suggest-category")
 
-    response = client.post("/api/v1/accounting/postings/validate-pending", json={"posting_ids": ["some-other-posting"]})
-    assert response.json() == {"accepted": 0, "reverted": 0}
+    response = client.post(
+        "/api/v1/accounting/postings/validate-pending", json={"filters": {"search": "nothing matches this"}}
+    )
+    assert response.json() == {"matched": 0, "accepted": 0, "reverted": 0}
 
     updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
@@ -929,10 +929,10 @@ def test_pattern_suggest_category_bulk_stages_suggestions_for_many_postings_in_o
 
     response = client.post(
         "/api/v1/accounting/postings/pattern-suggest-category/bulk",
-        json={"posting_ids": [payroll["posting_id"], card_payment["posting_id"]]},
+        json={"filters": {"account": account_id}},
     )
     assert response.status_code == 200
-    assert response.json() == {"applied": 2}
+    assert response.json() == {"matched": 2, "applied": 2}
 
     updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
@@ -958,9 +958,9 @@ def test_pattern_suggest_category_bulk_skips_postings_whose_existing_category_di
     )
 
     response = client.post(
-        "/api/v1/accounting/postings/pattern-suggest-category/bulk", json={"posting_ids": [payroll["posting_id"]]}
+        "/api/v1/accounting/postings/pattern-suggest-category/bulk", json={"filters": {"search": "PAYROLL"}}
     )
-    assert response.json() == {"applied": 0}
+    assert response.json() == {"matched": 1, "applied": 0}
 
     updated = _postings(client)
     updated_payroll = next(p for p in updated if p["posting_id"] == payroll["posting_id"])
@@ -1327,6 +1327,37 @@ def test_transfer_suggestions_finds_the_chase_card_payoff(client) -> None:
     }
     assert suggestions[0]["description"]
     assert suggestions[0]["other_description"]
+
+
+def test_a_transfer_suggestion_names_both_transactions_it_pairs(client) -> None:
+    """A suggestion matches postings; the link it becomes joins transactions, so it has to carry both.
+
+    Without these the only consumer had to fetch the whole resolved ledger to
+    build a two-entry `posting_id -> transaction_id` lookup.
+    """
+    _import_chase_checking(client)
+    credit_card_csv = (
+        "Transaction Date,Post Date,Description,Category,Type,Amount,Memo\n"
+        "06/29/2026,06/29/2026,Something else entirely,Other,Sale,70.00,\n"
+    )
+    _import_chase_credit_card(client, credit_card_csv)
+    suggestion = client.get("/api/v1/accounting/transfer-suggestions").json()[0]
+
+    by_posting = {row["posting_id"]: row["transaction_id"] for row in _postings(client)}
+    assert suggestion["transaction_id"] == by_posting[suggestion["posting_id"]]
+    assert suggestion["other_transaction_id"] == by_posting[suggestion["other_posting_id"]]
+    assert suggestion["transaction_id"] != suggestion["other_transaction_id"]
+
+    # And they are exactly what `POST /transfer-links` takes, which is the
+    # whole reason they are on the wire.
+    linked = client.post(
+        "/api/v1/accounting/transfer-links",
+        json={
+            "transaction_id_a": suggestion["transaction_id"],
+            "transaction_id_b": suggestion["other_transaction_id"],
+        },
+    )
+    assert linked.status_code == 201, linked.text
 
 
 def test_transfer_suggestions_respects_a_wider_window_days(client) -> None:
@@ -3293,6 +3324,49 @@ def test_put_account_blocks_locked_field_changes_once_it_has_postings(client) ->
     assert renamed.json()["name"] == "Renamed"
 
 
+def test_store_reports_which_accounts_have_postings_and_the_lock_agrees(client) -> None:
+    """The accounts page's lock and `PUT /accounts` must answer from one predicate.
+
+    Asserted together on purpose: the field exists so the table can grey a
+    row out, and a table greying out the wrong row is a UI that contradicts
+    the 400 the user gets if they try anyway.
+    """
+    imported_id = _import_chase_checking(client)
+    untouched_id = _create_account(client, name="Rainy Day", kind="savings", institution="Ally")["account_id"]
+
+    with_postings = client.get("/api/v1/accounting/store").json()["account_ids_with_postings"]
+    assert imported_id in with_postings
+    assert untouched_id not in with_postings
+
+    locked = client.put(
+        f"/api/v1/accounting/accounts/{imported_id}",
+        json={"name": "Chase Checking", "institution": "Chase", "kind": "savings", "currency": "USD"},
+    )
+    unlocked = client.put(
+        f"/api/v1/accounting/accounts/{untouched_id}",
+        json={"name": "Rainy Day", "institution": "Ally", "kind": "checking", "currency": "USD"},
+    )
+    assert locked.status_code == 400
+    assert unlocked.status_code == 200
+
+
+def test_store_names_the_counterparty_side_of_an_import_as_having_postings(client) -> None:
+    """A placeholder counterparty carries the balancing leg, so it is locked too.
+
+    The old client-side derivation mapped every posting's `account_id`,
+    placeholder legs included, and the raw ledger has them; asserting it
+    keeps the field honest about what "has a posting" means rather than
+    quietly filtering to the accounts the table happens to show.
+    """
+    _import_chase_checking(client)
+    with_postings = client.get("/api/v1/accounting/store").json()["account_ids_with_postings"]
+    assert "uncategorized:income" in with_postings
+
+
+def test_store_reports_no_accounts_with_postings_on_a_fresh_install(client) -> None:
+    assert client.get("/api/v1/accounting/store").json()["account_ids_with_postings"] == []
+
+
 def test_post_account_accepts_an_external_investment_pulling_from_trades(client, broker_connection_id) -> None:
     response = client.post(
         "/api/v1/accounting/accounts",
@@ -3629,7 +3703,7 @@ def test_category_totals_excludes_unconfirmed_pending_suggestions(client, monkey
     assert income_row["category_name"] == "Uncategorized"
     assert income_row["amount"] == pytest.approx(1500.0)
 
-    client.post("/api/v1/accounting/postings/validate-pending", json={"posting_ids": [payroll["posting_id"]]})
+    client.post("/api/v1/accounting/postings/validate-pending", json={"filters": {"search": "PAYROLL"}})
     response = client.get(
         "/api/v1/accounting/income-statement/category-totals", params={"start": "2026-06-01", "end": "2026-06-30"}
     )

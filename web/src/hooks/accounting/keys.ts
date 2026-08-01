@@ -38,6 +38,18 @@ const prefixes = {
 } as const
 
 /**
+ * The head every cached page of `GET /postings` hangs off.
+ *
+ * Its own level under `postings` rather than the bare prefix, and that is
+ * load-bearing: `useSetPostingOverride` paints *every* cached page at once,
+ * so it needs a prefix that matches pages and only pages. Matching
+ * `prefixes.postings` would hand a page-shaped updater to the summary and
+ * month queries too, neither of which is page-shaped — the summary caches
+ * `{ total, counts }` and the month list caches an array of strings.
+ */
+export const POSTINGS_PAGE_PREFIX = [...prefixes.postings, 'page'] as const
+
+/**
  * The cache key for every accounting query, in one place.
  *
  * Exported rather than module-private, which is what it used to be. A hook
@@ -47,11 +59,12 @@ const prefixes = {
  * incidental detail.
  *
  * A key built from arguments always extends its own entry in `prefixes`, so
- * invalidating that prefix sweeps every argument variant. Two of them nest:
- * `postingCount` sits under `postings`, and `llmVerify` under `llmSettings`.
- * Both are deliberate — the count is derived from the same rows as the list,
- * and a verify result is only meaningful for the key currently stored — so a
- * prefix invalidation of the parent is supposed to take the child with it.
+ * invalidating that prefix sweeps every argument variant. Four of them nest:
+ * `postingSummary`, `postingMonths` and `postingsPage` sit under `postings`,
+ * and `llmVerify` under `llmSettings`. All are deliberate — the count, the
+ * month list and every cached page are derived from the same rows, and a
+ * verify result is only meaningful for the key currently stored — so a prefix
+ * invalidation of the parent is supposed to take the children with it.
  */
 export const keys = {
   store: prefixes.store,
@@ -63,8 +76,10 @@ export const keys = {
   syncStatus: prefixes.syncStatus,
   currentExchangeRate: (currency: string) => [...prefixes.currentExchangeRate, currency],
   exchangeRateHistory: (currency: string) => [...prefixes.exchangeRateHistory, currency],
-  postings: prefixes.postings,
-  postingCount: [...prefixes.postings, 'count'],
+  postingSummary: [...prefixes.postings, 'summary'],
+  postingMonths: [...prefixes.postings, 'months'],
+  postingsPage: (query: object) => [...POSTINGS_PAGE_PREFIX, query],
+  transactionLegs: (transactionIds: readonly string[]) => [...prefixes.postings, 'legs', transactionIds],
   transferSuggestions: prefixes.transferSuggestions,
   duplicateSuggestions: prefixes.duplicateSuggestions,
   dismissedSuggestions: prefixes.dismissedSuggestions,

@@ -61,6 +61,7 @@ from accounting.api.entities import (
     TransferRule,
 )
 from accounting.models import SUPPORTED_CURRENCIES
+from accounting.repositories.accounts import account_ids_with_postings
 from accounting.repositories.interpretation import (
     load_category_patterns,
     load_transfer_links,
@@ -96,15 +97,20 @@ def get_store(
         (each a list). No store-wide version: optimistic concurrency is
         per-row (`goals`, `transfer_rules`, `category_patterns` each
         carry their own `version`), so there is nothing store-wide to
-        echo back. Opening balances, manual transfers, posting splits
-        and posting merges are deliberately absent — see
-        `AccountingStoreResponse` for why.
+        echo back. Plus `account_ids_with_postings`, the one derived
+        fact here rather than an entity: which accounts have their kind
+        and currency locked, as
+        `repositories.accounts.account_ids_with_postings` answers it and
+        `PUT /accounts/{account_id}` enforces it. Opening balances,
+        manual transfers, posting splits and posting merges are
+        deliberately absent — see `AccountingStoreResponse` for why.
     """
     return AccountingStoreResponse(
         accounts={
             account_id: Account.from_domain(account)
             for account_id, account in seeded_accounts(session, user_id).items()
         },
+        account_ids_with_postings=account_ids_with_postings(session, user_id),
         categories={
             category_id: Category.from_domain(category)
             for category_id, category in seeded_categories(session, user_id).items()

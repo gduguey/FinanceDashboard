@@ -25,9 +25,13 @@ export interface paths {
      *         (each a list). No store-wide version: optimistic concurrency is
      *         per-row (`goals`, `transfer_rules`, `category_patterns` each
      *         carry their own `version`), so there is nothing store-wide to
-     *         echo back. Opening balances, manual transfers, posting splits
-     *         and posting merges are deliberately absent — see
-     *         `AccountingStoreResponse` for why.
+     *         echo back. Plus `account_ids_with_postings`, the one derived
+     *         fact here rather than an entity: which accounts have their kind
+     *         and currency locked, as
+     *         `repositories.accounts.account_ids_with_postings` answers it and
+     *         `PUT /accounts/{account_id}` enforces it. Opening balances,
+     *         manual transfers, posting splits and posting merges are
+     *         deliberately absent — see `AccountingStoreResponse` for why.
      */
     get: operations['get_store_api_v1_accounting_store_get']
     put?: never
@@ -1724,6 +1728,62 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/v1/accounting/postings/legs': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Transaction Legs
+     * @description Look up the real (non-placeholder) leg of each named transaction, keyed by transaction.
+     *
+     *     The Rules page renders "one transaction as a small card" in three of its
+     *     four tabs — the transactions a rule links, the manually-linked pairs, and
+     *     the ones excluded from a rule. Each names transactions and nothing else,
+     *     so each needs the row a person would recognise: the date, the account,
+     *     the description and the amount. It used to get them by holding the whole
+     *     resolved ledger and indexing it, which is the fetch C1 removed from every
+     *     other screen.
+     *
+     *     **A `POST` for a read, deliberately.** The caller names an arbitrary set
+     *     of ids it already holds — a few hundred UUIDs for a well-used rule — and
+     *     that does not survive a query string: `http-api-contract.md`'s own
+     *     bounded-reads rule assumes a window, and there is no window here to page.
+     *     Bounded instead by `TransactionLegsRequest`'s `max_length`, which is
+     *     `PAGE_LIMIT_MAX`, so the response can never be larger than one page of
+     *     `GET /postings`. The same exception `POST /postings/matching-ids` makes,
+     *     for the same reason, and both say so rather than leaving it to look like
+     *     a lapse.
+     *
+     *     A transaction with no real leg — merged away, or its statement
+     *     re-imported — is simply absent from the result rather than being an
+     *     error: the caller is rendering a list and a vanished row is a row it
+     *     should not draw.
+     *
+     *     Parameters
+     *     ----------
+     *     payload
+     *         The transactions to look up. At most `PAGE_LIMIT_MAX`; a longer list
+     *         is a 422 rather than a truncation.
+     *
+     *     Returns
+     *     -------
+     *     dict[str, LinkedLeg]
+     *         One entry per transaction that has a real leg, keyed by its natural
+     *         key. The same shape and the same query `GET /postings` uses for
+     *         `PostingRow.linked_leg`.
+     */
+    post: operations['post_transaction_legs_api_v1_accounting_postings_legs_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/v1/accounting/ledger/export': {
     parameters: {
       query?: never
@@ -2043,19 +2103,64 @@ export interface paths {
     put?: never
     /**
      * Post Validate Pending
-     * @description Resolve every listed posting's pending suggestion per its own `pending_selected` flag.
+     * @description Resolve every pending suggestion the caller's current filter matches, per its own `pending_selected` flag.
      *
-     *     Only ever touches postings named in `payload.posting_ids` — the
-     *     caller's current filtered view — so a pending suggestion sitting
-     *     outside that view is never affected by this call, per the "validate
-     *     selection" button's contract. A posting with no override, or one
-     *     whose override isn't pending, is silently skipped.
+     *     The set comes from the filter rather than from a list of ids, and is
+     *     resolved **in the same transaction as the write** — so it cannot shift
+     *     between the two, which a client-supplied list gathered over several
+     *     requests could. It is the same `PostingFilters` `GET /postings` takes,
+     *     so what this touches is by construction what the screen is showing.
+     *
+     *     A posting with no override, or one whose override isn't pending, is
+     *     silently skipped — it matched the filter, it simply had nothing to
+     *     resolve.
      *
      *     Returns
      *     -------
      *     ValidatePendingResult
+     *         `matched` is the size of the set the filter resolved to; `accepted`
+     *         and `reverted` how many of them had a suggestion, and which way it
+     *         went.
      */
     post: operations['post_validate_pending_api_v1_accounting_postings_validate_pending_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/accounting/postings/matching-ids': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Post Matching Posting Ids
+     * @description Every posting id the caller's current filter matches, for the one bulk action that cannot be server-side.
+     *
+     *     The AI categorizer runs one request per posting on purpose — the loop is
+     *     a deliberate rate limit, not an oversight (see known gap 5) — so it needs
+     *     the identity of the set it is about to walk. Everything else that acts on
+     *     a filter does so server-side and never sees an id.
+     *
+     *     Deliberately unpaged, and that is not a hole in the bounded-reads rule:
+     *     the response is strictly smaller than the work it precedes, since the
+     *     caller is about to make one LLM call per entry. Paging it would add
+     *     round trips to a list the client must hold in full anyway to loop over
+     *     it, and the alternative — truncating to a page — is exactly the silent
+     *     truncation the whole screen was rebuilt to remove.
+     *
+     *     Returns
+     *     -------
+     *     list[str]
+     *         Matching posting ids, newest first, in the same order the table
+     *         shows them under its default sort.
+     */
+    post: operations['post_matching_posting_ids_api_v1_accounting_postings_matching_ids_post']
     delete?: never
     options?: never
     head?: never
@@ -2434,16 +2539,28 @@ export interface paths {
     put?: never
     /**
      * Post Pattern Suggest Category Bulk
-     * @description Suggest categories for many postings at once from category-pattern matches, in one ledger load.
+     * @description Suggest categories for every posting the caller's current filter matches, in one pass.
      *
      *     The bulk counterpart to `post_pattern_suggest_category` — that
      *     endpoint reloads and re-resolves the entire ledger on every single
      *     call, which is fine for one posting but made the "run pattern
      *     suggestions" bulk action take minutes over a few hundred rows (each
-     *     one its own full reload). This loads everything exactly once and
-     *     matches every posting in a single vectorized pass (see
-     *     `ledger.patterns.match_patterns_bulk`) instead of looping over
-     *     postings to match them one at a time.
+     *     one its own full reload). This matches every posting in a single
+     *     vectorized pass (see `ledger.patterns.match_patterns_bulk`) instead of
+     *     looping over postings to match them one at a time.
+     *
+     *     The set comes from the caller's current filter rather than from a list
+     *     of ids, and is resolved in the same transaction as the write — see
+     *     `api_models.FilteredBulkRequest` for why that replaced "always exactly
+     *     the caller's current filtered view", which was only ever true while the
+     *     client held the whole ledger.
+     *
+     *     Its four inputs are read out of `accounting.resolved_postings` rather
+     *     than by replaying the ledger through `ledger.resolution`: `description`,
+     *     `category_id` and `subcategory_id` are stored columns, so a resolve here
+     *     would be a full-history read behind a button the caller can now fire
+     *     over an unfiltered view in one click. See
+     *     `repositories.projection.matching_rows_for_patterns`.
      *
      *     A posting that already has a category only gets a pattern match if
      *     the pattern's own category agrees with it — the same guarantee
@@ -2453,12 +2570,13 @@ export interface paths {
      *     Parameters
      *     ----------
      *     payload
-     *         The postings to suggest categories for.
+     *         The filter naming the postings to suggest categories for.
      *
      *     Returns
      *     -------
      *     BulkSuggestResult
-     *         How many postings got a staged suggestion.
+     *         How many postings the filter matched, and how many got a staged
+     *         suggestion.
      */
     post: operations['post_pattern_suggest_category_bulk_api_v1_accounting_postings_pattern_suggest_category_bulk_post']
     delete?: never
@@ -4350,12 +4468,24 @@ export interface components {
      *     thing from a `ManualTransfer`, which is not a table at all any more
      *     but a projection over `origin='manual'` transactions and their two
      *     balancing postings (see `repositories.accounts.load_manual_transfers`).
+     *
+     *     `account_ids_with_postings` is the one field here that is not an
+     *     entity. It is a server-derived fact — which accounts have had real
+     *     money land on them, and therefore have their kind and currency locked
+     *     — and it is deliberately *not* a field on `entities.Account`: that
+     *     type is a wire mirror clients also send back, and a fact only the
+     *     server can know has no business on a shape a client authors. It rides
+     *     here because the page that needs it already makes this read, so it
+     *     costs no round trip; the alternative was the accounts page fetching
+     *     every posting to derive it in the browser, which is what it did.
      */
     AccountingStoreResponse: {
       /** Accounts */
       accounts: {
         [key: string]: components['schemas']['Account']
       }
+      /** Account Ids With Postings */
+      account_ids_with_postings: string[]
       /** Categories */
       categories: {
         [key: string]: components['schemas']['Category']
@@ -4695,6 +4825,8 @@ export interface components {
      * @description Response body for `POST /postings/pattern-suggest-category/bulk`.
      */
     BulkSuggestResult: {
+      /** Matched */
+      matched: number
       /** Applied */
       applied: number
     }
@@ -5348,6 +5480,26 @@ export interface components {
       rate: number
       /** Smoothed Rate */
       smoothed_rate: number
+    }
+    /**
+     * FilteredBulkRequest
+     * @description The set a bulk action applies to, named by the filter that produced it rather than by a list of ids.
+     *
+     *     Both bulk actions used to take `posting_ids` — "always exactly the
+     *     caller's current filtered view", which was true only while the client
+     *     held the whole ledger and could enumerate that view. It cannot now, and
+     *     the honest fix is not to make it page through the collection to rebuild
+     *     a list: it is to send the filter and let the server resolve the set
+     *     **inside the same transaction as the write**, so nothing can shift
+     *     underneath the operation between the two.
+     *
+     *     The filter is exactly `GET /postings`' own, so the set a bulk action
+     *     touches is by construction the set the screen is showing. A sort and a
+     *     page window are deliberately absent: a bulk action is not scoped to a
+     *     page (see `matched` on each result, which is what the button reports).
+     */
+    FilteredBulkRequest: {
+      filters?: components['schemas']['PostingFilters']
     }
     /**
      * Goal
@@ -6431,14 +6583,6 @@ export interface components {
       last_synced_at: string | null
     }
     /**
-     * PatternSuggestBulkRequest
-     * @description Which postings to run category-pattern matching over, in one call.
-     */
-    PatternSuggestBulkRequest: {
-      /** Posting Ids */
-      posting_ids: string[]
-    }
-    /**
      * PaystubReconciliationResult
      * @description Response body for `POST /import/paystub`.
      */
@@ -6494,6 +6638,120 @@ export interface components {
       meta?: {
         [key: string]: string
       }
+    }
+    /**
+     * PostingFilters
+     * @description The transactions screen's filter bar, as the server evaluates it.
+     *
+     *     Every predicate here reads a *resolved* value, which is why this could
+     *     not exist before the projection did: the category a redirect or an
+     *     override rewrote, the account a rule repointed, the description a merge
+     *     rewrote, the amount a split changed. See
+     *     `accounting.db.projection.ResolvedPosting`.
+     *
+     *     Used in two places, and deliberately the same model in both: as query
+     *     parameters on `GET /postings`, and in the body of the filter-shaped bulk
+     *     actions (`POST /postings/validate-pending`,
+     *     `POST /pattern-suggest-category/bulk`). A bulk action that took its own
+     *     filter shape could disagree with the list the user is looking at, which
+     *     is the whole failure this endpoint exists to prevent.
+     *
+     *     Each multi-select carries its own `_exclude` flag rather than a signed
+     *     value list, matching the filter bar's own controls: an empty list means
+     *     "no restriction", and `_exclude` inverts whatever the list selects.
+     */
+    PostingFilters: {
+      /**
+       * Search
+       * @description Case-insensitive substring of the resolved description.
+       * @default
+       */
+      search: string
+      /**
+       * Account
+       * @description One account's natural key.
+       */
+      account?: string | null
+      /**
+       * Account Exclude
+       * @default false
+       */
+      account_exclude: boolean
+      /**
+       * Categories
+       * @description Category natural keys; `__uncategorized__` matches rows with none.
+       */
+      categories?: string[]
+      /**
+       * Categories Exclude
+       * @default false
+       */
+      categories_exclude: boolean
+      /**
+       * Subcategories
+       * @description Subcategory natural keys; `__no_subcategory__` matches rows with none.
+       */
+      subcategories?: string[]
+      /**
+       * Subcategories Exclude
+       * @default false
+       */
+      subcategories_exclude: boolean
+      /**
+       * Tags
+       * @description Tag natural keys; a row matches if it carries any.
+       */
+      tags?: string[]
+      /**
+       * Tags Exclude
+       * @default false
+       */
+      tags_exclude: boolean
+      /**
+       * Month
+       * @description A single `YYYY-MM`.
+       */
+      month?: string | null
+      /**
+       * Start
+       * @description First day to include, inclusive.
+       */
+      start?: string | null
+      /**
+       * End
+       * @description Last day to include, inclusive.
+       */
+      end?: string | null
+      /**
+       * Pending
+       * @description `ai`, `pattern`, or `__confirmed__` for a row carrying no unvalidated suggestion.
+       */
+      pending?: string[]
+      /**
+       * Pending Exclude
+       * @default false
+       */
+      pending_exclude: boolean
+      /** Transfer Flags */
+      transfer_flags?: ('rule' | 'excluded' | 'manual' | 'none')[]
+      /**
+       * Transfer Flags Exclude
+       * @default false
+       */
+      transfer_flags_exclude: boolean
+      /**
+       * Income Expense
+       * @description Restrict to real income or real expense legs, by sign.
+       */
+      income_expense?: ('income' | 'expense') | null
+      /** Categorized */
+      categorized?: ('categorized' | 'uncategorized') | null
+      /**
+       * Needs Categorizing
+       * @description The 'Needs categorizing' tab: a real income/expense leg that is uncategorized, still carries an unvalidated suggestion, or sits under a parent category whose subcategory has not been picked.
+       * @default false
+       */
+      needs_categorizing: boolean
     }
     /**
      * PostingMerge
@@ -6560,7 +6818,7 @@ export interface components {
     }
     /**
      * PostingPageCounts
-     * @description The two counts the transactions screen shows, which are two different numbers.
+     * @description Every count the transactions screen shows about the whole filter, none of which is the page's size.
      *
      *     `total` on the page envelope counts `window_unit`s — transactions, since
      *     that is what a page is cut by. The figure beside the table counts
@@ -6572,6 +6830,11 @@ export interface components {
      *     differ. Both are returned rather than one being silently redefined — the
      *     same choice `http_api.pagination.Page.window_unit` exists to make
      *     explicit.
+     *
+     *     Every field here describes the filter, never the page. That is the whole
+     *     reason they are on the wire: a button whose label counts what happens to
+     *     be rendered, while the action behind it resolves the filter server-side,
+     *     reports a number that is not the number of rows it affects.
      */
     PostingPageCounts: {
       /** Matched Transactions */
@@ -6580,6 +6843,10 @@ export interface components {
       matched_postings: number
       /** Needs Categorizing */
       needs_categorizing: number
+      /** Pending */
+      pending: number
+      /** Pending Selected */
+      pending_selected: number
     }
     /**
      * PostingRow
@@ -7254,6 +7521,14 @@ export interface components {
       local_zone?: string | null
     }
     /**
+     * TransactionLegsRequest
+     * @description Which transactions to look the real leg up for — `POST /postings/legs`' body.
+     */
+    TransactionLegsRequest: {
+      /** Transaction Ids */
+      transaction_ids?: string[]
+    }
+    /**
      * TransferLink
      * @description A confirmed pairing of two transactions as the two sides of one real-world transfer.
      */
@@ -7400,12 +7675,20 @@ export interface components {
      * @description One likely internal transfer no rule has resolved yet.
      *
      *     See `ledger.transfers.find_unmatched_transfer_candidates`.
+     *
+     *     Carries both the postings it matched and the transactions they belong
+     *     to. The match is between postings, but the action a user takes on it —
+     *     `POST /transfer-links` — names transactions, so a client without the two
+     *     `transaction_id`s has to find them itself. The one that had to used to
+     *     hold the entire resolved ledger to build a two-entry lookup.
      */
     TransferSuggestion: {
       /** Account Id */
       account_id: string
       /** Posting Id */
       posting_id: string
+      /** Transaction Id */
+      transaction_id: string
       /**
        * Posted At
        * Format: date-time
@@ -7422,6 +7705,8 @@ export interface components {
       other_posted_at: string
       /** Other Posting Id */
       other_posting_id: string
+      /** Other Transaction Id */
+      other_transaction_id: string
       /** Other Description */
       other_description: string
       /** Amount */
@@ -7430,18 +7715,12 @@ export interface components {
       suggestion_id: string
     }
     /**
-     * ValidatePendingRequest
-     * @description Which postings' pending suggestions to resolve — always exactly the caller's current filtered view.
-     */
-    ValidatePendingRequest: {
-      /** Posting Ids */
-      posting_ids: string[]
-    }
-    /**
      * ValidatePendingResult
      * @description Response body for `POST /postings/validate-pending`.
      */
     ValidatePendingResult: {
+      /** Matched */
+      matched: number
       /** Accepted */
       accepted: number
       /** Reverted */
@@ -9338,6 +9617,41 @@ export interface operations {
       }
     }
   }
+  post_transaction_legs_api_v1_accounting_postings_legs_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['TransactionLegsRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            [key: string]: components['schemas']['LinkedLeg']
+          }
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_ledger_export_api_v1_accounting_ledger_export_get: {
     parameters: {
       query?: {
@@ -9708,7 +10022,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['ValidatePendingRequest']
+        'application/json': components['schemas']['FilteredBulkRequest']
       }
     }
     responses: {
@@ -9719,6 +10033,39 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['ValidatePendingResult']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  post_matching_posting_ids_api_v1_accounting_postings_matching_ids_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['FilteredBulkRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': string[]
         }
       }
       /** @description Validation Error */
@@ -10121,7 +10468,7 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['PatternSuggestBulkRequest']
+        'application/json': components['schemas']['FilteredBulkRequest']
       }
     }
     responses: {

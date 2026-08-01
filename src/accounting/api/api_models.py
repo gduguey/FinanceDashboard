@@ -50,7 +50,7 @@ from accounting.models import (
     TransferLinkSource,
 )
 from db.money import ZERO, Money, Rate
-from http_api.pagination import PAGE_LIMIT_DEFAULT, Page
+from http_api.pagination import PAGE_LIMIT_DEFAULT, PAGE_LIMIT_MAX, Page
 
 
 class AccountingStoreResponse(BaseModel):
@@ -81,9 +81,20 @@ class AccountingStoreResponse(BaseModel):
     thing from a `ManualTransfer`, which is not a table at all any more
     but a projection over `origin='manual'` transactions and their two
     balancing postings (see `repositories.accounts.load_manual_transfers`).
+
+    `account_ids_with_postings` is the one field here that is not an
+    entity. It is a server-derived fact — which accounts have had real
+    money land on them, and therefore have their kind and currency locked
+    — and it is deliberately *not* a field on `entities.Account`: that
+    type is a wire mirror clients also send back, and a fact only the
+    server can know has no business on a shape a client authors. It rides
+    here because the page that needs it already makes this read, so it
+    costs no round trip; the alternative was the accounts page fetching
+    every posting to derive it in the browser, which is what it did.
     """
 
     accounts: dict[str, Account]
+    account_ids_with_postings: list[str]
     categories: dict[str, Category]
     tags: dict[str, Tag]
     transfer_rules: list[TransferRule]
@@ -771,7 +782,7 @@ class PostingQuery(PostingFilters):
 
 
 class PostingPageCounts(BaseModel):
-    """The two counts the transactions screen shows, which are two different numbers.
+    """Every count the transactions screen shows about the whole filter, none of which is the page's size.
 
     `total` on the page envelope counts `window_unit`s — transactions, since
     that is what a page is cut by. The figure beside the table counts
@@ -783,6 +794,11 @@ class PostingPageCounts(BaseModel):
     differ. Both are returned rather than one being silently redefined — the
     same choice `http_api.pagination.Page.window_unit` exists to make
     explicit.
+
+    Every field here describes the filter, never the page. That is the whole
+    reason they are on the wire: a button whose label counts what happens to
+    be rendered, while the action behind it resolves the filter server-side,
+    reports a number that is not the number of rows it affects.
     """
 
     matched_transactions: int
@@ -795,6 +811,21 @@ class PostingPageCounts(BaseModel):
     The "Needs categorizing" tab's badge, and the size of the set the bulk
     categorizers would act on. Deliberately computed with that one predicate
     lifted, so the badge reads the same whichever tab is open."""
+    pending: int
+    """How many matched rows carry an unvalidated AI or pattern suggestion.
+
+    What "Validate selection" resolves — `POST /postings/validate-pending`
+    takes the filter, so this is the size of the set that button acts on. It
+    used to be counted off the rendered rows, which was the same number only
+    while the client held every row the filter matched."""
+    pending_selected: int
+    """How many of `pending` are currently checked, and so will be accepted rather than reverted.
+
+    `pending_selected` is a stored field of the override, not client state,
+    so this is a fact about the filter and not about what a page happens to
+    have painted. The two together are the "(checked/pending)" on the
+    button; the checkbox in the table header toggles one page's worth of
+    them and says so."""
 
 
 class PostingRow(Posting):
@@ -853,6 +884,12 @@ class PostingRow(Posting):
     denormalising the partner onto this row would mean every change to the
     partner had to find and rewrite it, which is a second staleness axis on
     top of the one the projection already has."""
+
+
+class TransactionLegsRequest(BaseModel):
+    """Which transactions to look the real leg up for — `POST /postings/legs`' body."""
+
+    transaction_ids: list[str] = Field(default_factory=list, max_length=PAGE_LIMIT_MAX)
 
 
 class LinkedLeg(BaseModel):
@@ -1015,27 +1052,43 @@ class CategorySuggestionResult(BaseModel):
     applied: bool
 
 
-class PatternSuggestBulkRequest(BaseModel):
-    """Which postings to run category-pattern matching over, in one call."""
+class FilteredBulkRequest(BaseModel):
+    """The set a bulk action applies to, named by the filter that produced it rather than by a list of ids.
 
-    posting_ids: list[str]
+    Both bulk actions used to take `posting_ids` — "always exactly the
+    caller's current filtered view", which was true only while the client
+    held the whole ledger and could enumerate that view. It cannot now, and
+    the honest fix is not to make it page through the collection to rebuild
+    a list: it is to send the filter and let the server resolve the set
+    **inside the same transaction as the write**, so nothing can shift
+    underneath the operation between the two.
+
+    The filter is exactly `GET /postings`' own, so the set a bulk action
+    touches is by construction the set the screen is showing. A sort and a
+    page window are deliberately absent: a bulk action is not scoped to a
+    page (see `matched` on each result, which is what the button reports).
+    """
+
+    filters: PostingFilters = Field(default_factory=PostingFilters)
 
 
 class BulkSuggestResult(BaseModel):
     """Response body for `POST /postings/pattern-suggest-category/bulk`."""
 
+    matched: int
+    """How many rows the filter resolved to — what the action was applied over."""
     applied: int
-
-
-class ValidatePendingRequest(BaseModel):
-    """Which postings' pending suggestions to resolve — always exactly the caller's current filtered view."""
-
-    posting_ids: list[str]
+    """How many of them actually got a staged suggestion."""
 
 
 class ValidatePendingResult(BaseModel):
     """Response body for `POST /postings/validate-pending`."""
 
+    matched: int
+    """How many rows the filter resolved to — what the action was applied over.
+
+    Returned so the UI reports what happened rather than assuming it acted
+    on what it last rendered, which is no longer the same set."""
     accepted: int
     reverted: int
 
@@ -1044,15 +1097,23 @@ class TransferSuggestion(BaseModel):
     """One likely internal transfer no rule has resolved yet.
 
     See `ledger.transfers.find_unmatched_transfer_candidates`.
+
+    Carries both the postings it matched and the transactions they belong
+    to. The match is between postings, but the action a user takes on it —
+    `POST /transfer-links` — names transactions, so a client without the two
+    `transaction_id`s has to find them itself. The one that had to used to
+    hold the entire resolved ledger to build a two-entry lookup.
     """
 
     account_id: str
     posting_id: str
+    transaction_id: str
     posted_at: datetime
     description: str
     other_account_id: str
     other_posted_at: datetime
     other_posting_id: str
+    other_transaction_id: str
     other_description: str
     amount: float
     suggestion_id: str

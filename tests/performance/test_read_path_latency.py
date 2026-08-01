@@ -137,8 +137,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from accounting.api.api_models import NO_SUBCATEGORY, UNCATEGORIZED
 from http_api.pagination import PAGE_LIMIT_MAX
-from tests.performance.conftest import BIG_TENANT_TRANSACTIONS, SMALL_TENANT_TRANSACTIONS
+from tests.performance.conftest import (
+    BIG_TENANT_TRANSACTIONS,
+    SMALL_TENANT_TRANSACTIONS,
+    REAL_ACCOUNT_KEY,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -157,6 +162,9 @@ _LEDGER_WINDOW = {"start": "2019-01-01", "end": "2030-01-01"}
 
 _PAGE_SIZE = 200
 """The default page the Transactions screen asks for (`http_api.pagination.PAGE_LIMIT_DEFAULT`)."""
+
+_DRILLDOWN_PAGE_SIZE = 50
+"""The page the insights drilldown asks for — a panel inside a chart card, not a screen."""
 
 _ABOVE_THE_CLIFF_PAGE_SIZES = (400, 1_000, PAGE_LIMIT_MAX)
 """Page sizes `GET /postings` used to 500 on, and the cap it advertises.
@@ -271,6 +279,21 @@ constant gives: a wall clock on a two-core shared runner is the coarse
 backstop, and the scaling assertion beside it is the instrument.
 """
 
+MAX_DRILLDOWN_PAGE_SECONDS = 3.0
+"""Wall-clock ceiling for one page of the insights drilldown over a 10k-transaction ledger.
+
+Its own case rather than a variation on `MAX_FILTERED_PAGE_SECONDS`, because
+the predicate is a different shape: two array-valued filters, each carrying
+a sentinel that means "is null", against a date window. C6 was a plan flip
+caused by exactly that — an array parameter's effect on a cost estimate,
+which is invisible until an array is what you pass.
+
+Measured locally with statistics present: **37 ms at 2k and 58 ms at 10k**,
+a 1.6x ratio — in line with the 1.5x the filtered page scales at, so the
+arrays cost nothing structural. Same runner reasoning as
+`MAX_FILTERED_PAGE_SECONDS` for why the ceiling is not set nearer to it.
+"""
+
 MAX_MONTHS_SECONDS = 2.0
 """Wall-clock ceiling for the month picker's whole option list (C2).
 
@@ -278,6 +301,34 @@ One row per month the user has ever transacted in — tens of entries for a
 decade — but computed by grouping every resolved posting, so it is linear in
 the ledger and worth a bound. Measured at 8 ms over 20k projection rows and
 34 ms over 100k.
+"""
+
+MAX_BULK_ACTION_SECONDS = 6.0
+"""Wall-clock ceiling for one filter-shaped bulk action over a 10k-transaction ledger.
+
+The three actions the transactions screen fires — `POST /postings/matching-ids`,
+`POST /postings/validate-pending`, `POST /postings/pattern-suggest-category/bulk`
+— all resolve their target set from the filter server-side, which is what
+lets the screen hold a page (C1). None of them is scoped to a page, and none
+of them should be: a bulk action covers what the filter matches. So they are
+allowed to be linear in the matched set, which is why this is a wall clock
+rather than a scaling ratio.
+
+What it defends is that they stay *queries* over
+`accounting.resolved_postings`. The bulk pattern suggester in particular used
+to call `ledger.resolution.resolved_postings` and replay the entire ledger in
+Python to obtain four columns the projection already stores — a cost the
+cutover would have made trivial to trigger, since the same button now covers
+every page rather than the rows one screen had rendered.
+
+Measured locally over the 10k ledger with an empty filter, i.e. the widest
+set any of them can resolve: **34 ms** for `matching-ids`, **319 ms** for
+`validate-pending` (which loads an override row per matched id, and is the
+only one of the three that is not simply a projection query), and **78 ms**
+for the pattern suggester. Against 2k: 23 ms, 91 ms and 28 ms. Six seconds
+is roughly 19x the largest, the same order of headroom the other wall clocks
+carry and for the same reason — a two-core shared runner with no I/O
+isolation.
 """
 
 MAX_COLD_REBUILD_SECONDS = 30.0
@@ -363,7 +414,7 @@ runs to re-derive it from a distribution rather than one sample.
 """
 
 
-def _median_seconds(client: TestClient, path: str, **params: int | str) -> float:
+def _median_seconds(client: TestClient, path: str, **params: int | str | list[str]) -> float:
     """Time one request repeatedly and return the median, discarding a warm-up.
 
     Parameters
@@ -373,7 +424,10 @@ def _median_seconds(client: TestClient, path: str, **params: int | str) -> float
     path
         Endpoint to call.
     **params
-        Query parameters.
+        Query parameters. A list value is sent as its key repeated, which
+        is the only encoding `PostingFilters`' multi-selects read as a list
+        — see `web/src/lib/accountingApi.ts`' `queryString` for the same
+        hazard on the client's side.
 
     Returns
     -------
@@ -395,6 +449,42 @@ def _median_seconds(client: TestClient, path: str, **params: int | str) -> float
     # threshold needs the number CI actually saw. The perf job runs `-s`.
     print(f"  {path} {params} -> {median * 1000:.0f} ms median of {_REPEATS}")  # noqa: T201
     return median
+
+
+def _median_post_seconds(client: TestClient, path: str, body: dict[str, object]) -> float:
+    """Time one `POST` repeatedly and return the median, discarding a warm-up.
+
+    Only used for the three filter-shaped bulk actions. Each is a write in
+    principle, and each is a no-op over this seed — it stages no override and
+    stores no category pattern — so repeating one measures the read half,
+    which is the half that scales with the ledger and the half a regression
+    would show up in.
+
+    Returns
+    -------
+    float
+        Median elapsed seconds.
+    """
+    for _ in range(_WARMUP):
+        assert client.post(path, json=body).status_code == 200
+
+    samples = []
+    for _ in range(_REPEATS):
+        started = time.perf_counter()
+        response = client.post(path, json=body)
+        samples.append(time.perf_counter() - started)
+        assert response.status_code == 200, response.text
+    median = statistics.median(samples)
+    print(f"  POST {path} {body} -> {median * 1000:.0f} ms median of {_REPEATS}")  # noqa: T201
+    return median
+
+
+_BULK_ACTIONS = (
+    "/api/v1/accounting/postings/matching-ids",
+    "/api/v1/accounting/postings/validate-pending",
+    "/api/v1/accounting/postings/pattern-suggest-category/bulk",
+)
+"""Every endpoint that resolves its own target set from `PostingFilters`."""
 
 
 def test_the_seed_is_the_shape_the_gate_assumes(request_as: Callable[[str], TestClient]) -> None:
@@ -588,6 +678,70 @@ def test_a_filtered_page_stays_within_its_wall_clock_budget(request_as: Callable
     )
 
 
+_DRILLDOWN = {
+    "start": "2020-01-01",
+    "end": "2030-01-01",
+    "account": REAL_ACCOUNT_KEY,
+    "categories": [UNCATEGORIZED],
+    "subcategories": [NO_SUBCATEGORY],
+    "income_expense": "expense",
+    "limit": _DRILLDOWN_PAGE_SIZE,
+}
+"""One page of the insights drilldown, as `CategoryDrilldownPie` asks for it.
+
+Both array filters carry their "is null" sentinel, which is what this seed's
+postings are — it stores no category, so a slice naming a real category id
+would measure an empty result set and assert nothing. The array *shape* is
+what the measurement is for (see `MAX_DRILLDOWN_PAGE_SECONDS`), and it is
+identical either way.
+"""
+
+
+def test_the_drilldown_page_matches_the_rows_it_claims_to_measure(
+    request_as: Callable[[str], TestClient],
+) -> None:
+    """A filter that matched nothing would time an empty page and pass for ever.
+
+    The failure mode this guards is the one an array parameter produces on
+    its own: a list encoded as one comma-joined value is a filter that
+    matches nothing and answers `200`, so the gate beside it would measure
+    the cheapest possible query and call it the drilldown.
+    """
+    page = request_as("big").get(_POSTINGS, params=_DRILLDOWN).json()
+
+    assert page["total"] == BIG_TENANT_TRANSACTIONS
+    assert page["counts"]["matched_postings"] == BIG_TENANT_TRANSACTIONS, "one matching leg per transaction"
+    # The window is a transaction and every leg of it comes back, placeholders
+    # included (see `repositories.projection.page_rows`) — so the page carries
+    # twice the transactions it names, and the panel narrows it itself.
+    assert len(page["items"]) == 2 * _DRILLDOWN_PAGE_SIZE
+    matched = [item for item in page["items"] if item["account_id"] == REAL_ACCOUNT_KEY]
+    assert len(matched) == _DRILLDOWN_PAGE_SIZE
+
+
+def test_the_drilldown_page_scales_with_the_page_not_the_ledger(request_as: Callable[[str], TestClient]) -> None:
+    """The insights drilldown must be a page read too, arrays and sentinels included."""
+    small = _median_seconds(request_as("small"), _POSTINGS, **_DRILLDOWN)
+    big = _median_seconds(request_as("big"), _POSTINGS, **_DRILLDOWN)
+
+    factor = big / small
+    assert factor < MAX_SCALING_FACTOR, (
+        f"a drilldown page cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Quadratic would be {VOLUME_RATIO**2:.0f}x. "
+        f"An array-valued filter now reads the whole ledger per page."
+    )
+
+
+def test_the_drilldown_page_stays_within_its_wall_clock_budget(request_as: Callable[[str], TestClient]) -> None:
+    """The coarse backstop for the read the insights drilldown moved onto."""
+    elapsed = _median_seconds(request_as("big"), _POSTINGS, **_DRILLDOWN)
+
+    assert elapsed < MAX_DRILLDOWN_PAGE_SECONDS, (
+        f"one drilldown {_DRILLDOWN_PAGE_SIZE}-transaction page took {elapsed:.2f} s over a "
+        f"{BIG_TENANT_TRANSACTIONS}-transaction ledger, budget {MAX_DRILLDOWN_PAGE_SECONDS} s"
+    )
+
+
 def test_the_month_picker_costs_a_group_by_and_not_a_ledger_read(request_as: Callable[[str], TestClient]) -> None:
     """C2's endpoint. Linear in the ledger by nature, so the bound is a wall clock rather than a ratio."""
     elapsed = _median_seconds(request_as("big"), _MONTHS)
@@ -595,6 +749,44 @@ def test_the_month_picker_costs_a_group_by_and_not_a_ledger_read(request_as: Cal
     assert elapsed < MAX_MONTHS_SECONDS, (
         f"the month list took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction ledger, "
         f"budget {MAX_MONTHS_SECONDS} s"
+    )
+
+
+@pytest.mark.parametrize("path", _BULK_ACTIONS)
+def test_a_bulk_action_stays_within_its_wall_clock_budget(path: str, request_as: Callable[[str], TestClient]) -> None:
+    """Over the widest set any of them can resolve — an empty filter, i.e. the whole ledger."""
+    elapsed = _median_post_seconds(request_as("big"), path, {})
+
+    assert elapsed < MAX_BULK_ACTION_SECONDS, (
+        f"{path} took {elapsed:.2f} s over a {BIG_TENANT_TRANSACTIONS}-transaction ledger, "
+        f"budget {MAX_BULK_ACTION_SECONDS} s"
+    )
+
+
+@pytest.mark.parametrize("path", _BULK_ACTIONS)
+def test_a_bulk_action_stays_linear_in_the_set_it_resolves(path: str, request_as: Callable[[str], TestClient]) -> None:
+    """The instrument beside that wall clock, and the one that would catch a resolve creeping back in.
+
+    An unfiltered bulk action matches every row, so linear — 5.0 for 5x the
+    ledger — is what healthy looks like, exactly as it is for the income
+    statement, and this borrows that constant rather than inventing a second
+    one with the same justification.
+
+    The regression it exists for is concrete and was real until this PR:
+    `post_pattern_suggest_category_bulk` called
+    `ledger.resolution.resolved_postings`, which replays the whole ledger
+    through every overlay stage in Python. That is super-linear in the ledger
+    the way `holdings.lots_table` is (C4b), so it separates from a query over
+    the projection here long before it does on a wall clock.
+    """
+    small = _median_post_seconds(request_as("small"), path, {})
+    big = _median_post_seconds(request_as("big"), path, {})
+
+    factor = big / small
+    assert factor < MAX_INCOME_STATEMENT_SCALING_FACTOR, (
+        f"{path} cost {factor:.1f}x more for {VOLUME_RATIO:.0f}x the ledger "
+        f"({small * 1000:.0f} ms, then {big * 1000:.0f} ms). Linear would be {VOLUME_RATIO:.0f}x and "
+        f"quadratic {VOLUME_RATIO**2:.0f}x. Something in the action now resolves the ledger rather than querying it."
     )
 
 

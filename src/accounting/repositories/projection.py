@@ -670,10 +670,15 @@ def filtered_page(
         .limit(limit)
         .offset(offset)
     )
+    # One pass over the matched rows for all four figures. The two pending
+    # counts ride along in the aggregate that was already running rather than
+    # becoming queries of their own — see `PostingPageCounts`.
+    pending = adb.ResolvedPosting.pending_source.is_not(None)
     matched = select(
         func.count(func.distinct(adb.ResolvedPosting.transaction_id)),
         func.count(),
-        func.count().filter(_needs_categorizing(user_id)),
+        func.count().filter(pending),
+        func.count().filter(pending & adb.ResolvedPosting.pending_selected),
     ).where(*predicates)
     # `needs_categorizing` is counted with its own filter lifted, so the tab's
     # badge reads the same number whichever tab is currently open.
@@ -682,13 +687,15 @@ def filtered_page(
         *filter_predicates(user_id, without_the_tab)
     )
 
-    transactions, postings, _ = session.execute(matched).one()
+    transactions, postings, pending_rows, selected_rows = session.execute(matched).one()
     return FilteredPage(
         transaction_ids=list(session.execute(page).scalars()),
         counts=PostingPageCounts(
             matched_transactions=transactions,
             matched_postings=postings,
             needs_categorizing=session.execute(badge).scalar_one(),
+            pending=pending_rows,
+            pending_selected=selected_rows,
         ),
     )
 
@@ -797,6 +804,64 @@ def linked_legs(session: Session, user_id: uuid.UUID, transaction_ids: Sequence[
             ),
         )
     return legs
+
+
+def matching_posting_ids(session: Session, user_id: uuid.UUID, filters: PostingFilters) -> list[str]:
+    """Every posting id the filter matches, across every page.
+
+    What a filter-shaped bulk action resolves its target set from, inside the
+    same transaction as the write it then performs — so the set cannot shift
+    underneath the operation the way a client-supplied list of ids gathered
+    over several requests could.
+
+    Returns the matching *rows*, not every leg of their transactions:
+    a bulk categorizer acts on the rows a user can see, and a placeholder leg
+    is not one of them.
+
+    Returns
+    -------
+    list[str]
+    """
+    return list(
+        session.execute(
+            select(adb.ResolvedPosting.posting_id)
+            .where(*filter_predicates(user_id, filters))
+            .order_by(adb.ResolvedPosting.posted_at.desc(), adb.ResolvedPosting.posting_id.asc())
+        ).scalars()
+    )
+
+
+def matching_rows_for_patterns(session: Session, user_id: uuid.UUID, filters: PostingFilters) -> list[dict[str, Any]]:
+    """Select the four resolved columns the bulk pattern matcher needs, for every row the filter matches.
+
+    `description` is what a pattern matches on; `category_id` and
+    `subcategory_id` are what the match is locked against, so a row that
+    already carries a category only takes a suggestion agreeing with it.
+    All four are projection columns, which is why this is a query rather
+    than a resolve: the handler used to call `ledger.resolution.resolved_postings`
+    and replay the entire ledger in Python to obtain them, which is the cost
+    the projection exists to remove and which the cutover makes trivially
+    easy to trigger over an unfiltered view.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One dict per matching row, ordered as `matching_posting_ids` orders them.
+    """
+    row = adb.ResolvedPosting
+    return [
+        {
+            "posting_id": posting_id,
+            "description": description,
+            "category_id": category_id,
+            "subcategory_id": subcategory_id,
+        }
+        for posting_id, description, category_id, subcategory_id in session.execute(
+            select(row.posting_id, row.description, row.category_id, row.subcategory_id)
+            .where(*filter_predicates(user_id, filters))
+            .order_by(row.posted_at.desc(), row.posting_id.asc())
+        ).all()
+    ]
 
 
 def distinct_months(session: Session, user_id: uuid.UUID) -> list[str]:

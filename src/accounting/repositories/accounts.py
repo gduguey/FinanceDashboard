@@ -30,7 +30,7 @@ import json
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from sqlalchemy import text
+from sqlalchemy import exists, select, text
 
 import accounting.db as adb
 from accounting.models import Account, ManualTransfer, OpeningBalance
@@ -186,6 +186,60 @@ def load_accounts(session: Session, user_id: uuid.UUID) -> dict[str, Account]:
     rows = list(session.query(adb.Account).filter_by(user_id=user_id))
     account_natural_key_by_id = {row.id: row.natural_key for row in rows}
     return {row.natural_key: _account_from_row(row, account_natural_key_by_id) for row in rows}
+
+
+def account_has_postings(session: Session, user_id: uuid.UUID, account_id: str) -> bool:
+    """Check whether any raw posting references this account, by natural key.
+
+    The accounts-CRUD lock: institution, kind and currency (and the
+    account row itself) may only change before real money has landed on
+    it. An `EXISTS` over the join, not a load of the whole ledger — the
+    question is one bit and the answer stops at the first row.
+
+    Returns
+    -------
+    bool
+    """
+    return bool(
+        session.scalar(
+            select(
+                exists().where(
+                    adb.Account.user_id == user_id,
+                    adb.Account.natural_key == account_id,
+                    adb.Posting.user_id == user_id,
+                    adb.Posting.account_id == adb.Account.id,
+                )
+            )
+        )
+    )
+
+
+def account_ids_with_postings(session: Session, user_id: uuid.UUID) -> list[str]:
+    """Every account natural key at least one raw posting references, sorted.
+
+    The set form of `account_has_postings`, for the client that has to lock
+    the same fields on every row of its accounts table at once. One
+    `SELECT DISTINCT` rather than a `load_ledger` per account, and the same
+    predicate as the enforcing check, so what the table greys out and what
+    `PUT /accounts/{account_id}` rejects cannot disagree.
+
+    Deliberately over `postings` rather than `resolved_postings`. The
+    resolved account of a leg can be repointed by a manual override, but
+    the lock exists because a *statement* landed on the account, which is
+    the raw fact — and it is the raw fact the router enforces.
+
+    Returns
+    -------
+    list[str]
+    """
+    return sorted(
+        session.execute(
+            select(adb.Account.natural_key)
+            .join(adb.Posting, adb.Posting.account_id == adb.Account.id)
+            .where(adb.Account.user_id == user_id, adb.Posting.user_id == user_id)
+            .distinct()
+        ).scalars()
+    )
 
 
 def replace_accounts(session: Session, user_id: uuid.UUID, accounts: Iterable[Account], *, prune: bool = True) -> None:

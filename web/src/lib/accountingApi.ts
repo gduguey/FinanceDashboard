@@ -1,5 +1,5 @@
 import { ApiError, parseBody, RowVersionConflictError } from '@/lib/api'
-import { fetchAllPages } from '@/lib/paging'
+import { fetchAllPages, PAGE_LIMIT_MAX } from '@/lib/paging'
 import type {
   Account,
   AccountCreate,
@@ -42,6 +42,7 @@ import type {
   ImportResult,
   InterestAccountRow,
   LedgerExportPage,
+  LinkedLeg,
   LlmSettings,
   LlmSettingsUpdate,
   LlmUsage,
@@ -56,9 +57,11 @@ import type {
   OtherAssetCreate,
   PaystubReconciliationResult,
   Posting,
+  PostingFilters,
   PostingMerge,
   PostingMergeUpsert,
   PostingPage,
+  PostingSortField,
   PostingSplitLeg,
   ProjectionPoint,
   RawPosting,
@@ -111,13 +114,53 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 })
 
-function queryString(params: Record<string, string | number | undefined>): string {
+/** One query parameter's value, before encoding. A list becomes repeated keys; `undefined` is omitted. */
+export type QueryValue = string | number | boolean | readonly string[] | undefined | null
+
+/**
+ * Encode a query string the way FastAPI reads one back.
+ *
+ * A list is emitted as **repeated keys** (`?tags=a&tags=b`), which is what a
+ * `list[str]` query parameter is parsed from. It is the one case worth
+ * stating, because the obvious implementation is wrong in a way nothing
+ * catches: `URLSearchParams.set(key, String(['a','b']))` writes `tags=a,b`,
+ * the server parses that as the single tag `"a,b"`, matches nothing, and
+ * answers `200` with an empty page. No type is violated and no error is
+ * raised — the filter just silently selects the wrong set. See
+ * `accounting.api.api_models.PostingFilters`.
+ *
+ * `null` is omitted alongside `undefined`: every nullable filter on that
+ * model defaults to "no restriction" when absent, and there is no parameter
+ * for which sending an empty string would mean the same thing.
+ *
+ * @param params - Parameter names to values.
+ * @returns The query string including its leading `?`, or `''` when nothing survives.
+ */
+export function queryString(params: Record<string, QueryValue>): string {
   const search = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) search.set(key, String(value))
+    if (value === undefined || value === null) continue
+    if (Array.isArray(value)) for (const entry of value) search.append(key, entry)
+    else search.set(key, String(value))
   }
   const string = search.toString()
   return string ? `?${string}` : ''
+}
+
+/**
+ * One request for one page of the transactions table: the filter, the sort and the window.
+ *
+ * Flat rather than `{ filters, sort, … }` because `GET /postings` expands
+ * `PostingQuery` — filters and all — into loose query parameters. Mirrors
+ * `api_models.PostingQuery`, which inherits `PostingFilters` for the same
+ * reason: the bulk actions take the filter alone and so cannot be handed a
+ * sort or a window.
+ */
+export interface PostingPageQuery extends PostingFilters {
+  sort: PostingSortField
+  descending: boolean
+  limit: number
+  offset: number
 }
 
 export const accountingApi = {
@@ -268,30 +311,71 @@ export const accountingApi = {
     })
   },
   rebuild: () => request<{ total_posting_count: number }>('/rebuild', { method: 'POST' }),
-  // Answers "does this user have any transaction at all", which is all the
-  // sidebar's onboarding check ever needed. It used to read that off the
-  // fully-paged `postings()` below — on every route, because the sidebar is on
-  // every route — so a 170k-transaction ledger downloaded its entire history
-  // to compute a boolean. Asking for a single transaction returns the same
-  // `total` in 67 ms rather than 34 sequential pages.
-  postingCount: async () => {
+  // Everything the app needs to know about the *unfiltered* ledger without
+  // reading any of it: how many transactions there are, and how many rows
+  // still want a category. The first answers the sidebar's onboarding check,
+  // which used to read it off the fully-paged `postings()` below — on every
+  // route, because the sidebar is on every route — so a 170k-transaction
+  // ledger downloaded its entire history to compute a boolean. The second is
+  // the "Needs categorizing" tab's badge, which is a fact about the whole
+  // ledger rather than about either tab's filter.
+  //
+  // One transaction is requested rather than none: `limit` has a floor of 1,
+  // and the counts describe the filter regardless of the window.
+  postingSummary: async () => {
     const page = await request<PostingPage>(`/postings${queryString({ limit: 1, offset: 0 })}`)
-    return page.total
+    return { total: page.total, counts: page.counts }
   },
-  // Pages through the collection until it is exhausted, rather than asking
-  // for one page. The server caps any single page (`PAGE_LIMIT_MAX`), so a
-  // single request cannot return a large user's whole ledger — and returning
-  // a silently truncated ledger is not an option for a money app. C1
-  // replaces this loop with real pagination in the Transactions table; until
-  // then every consumer still receives the complete list it expects.
+  // One page of the filtered, sorted collection — what the Transactions table
+  // renders. The filter, the sort and the counts beside the table are all the
+  // server's answer now; nothing here re-derives any of them (C1). `limit`
+  // counts transactions and `items` carries every leg of each, so
+  // `items.length` is normally larger.
+  postingsPage: (query: PostingPageQuery) => request<PostingPage>(`/postings${queryString({ ...query })}`),
+  // Pages through the collection until it is exhausted. Named for what is
+  // left of its purpose: the four "download my transactions" buttons, which
+  // want everything by definition and are the only callers now that no screen
+  // holds the ledger (C1, C2, C7). A silently truncated file is not an option
+  // for a money app, and the server caps any single page (`PAGE_LIMIT_MAX`),
+  // so the loop is the only way to honour that.
   //
   // `total`, `limit` and `offset` are all in the page's own `window_unit`
   // (`"transaction"` here, `"posting"` for the export below, `"event"` for
   // the trades ledger), so `fetchAllPages` is correct for all three without
   // knowing which unit it is in — `page.items.length` is what differs, and
   // it is never the stride.
-  postings: () =>
+  postingsExport: () =>
     fetchAllPages<Posting>(({ limit, offset }) => request<PostingPage>(`/postings${queryString({ limit, offset })}`)),
+  // Every `YYYY-MM` the user has a posting in, newest first. Bounded by
+  // construction — one row per month ever transacted in — so unlike the
+  // collection above it needs no paging loop. Replaces a `Set` built over
+  // the whole resident ledger, which was only ever cheap while something
+  // else was already holding it.
+  postingMonths: () => request<string[]>('/postings/months'),
+  // The real leg of each named transaction, for the three Rules tabs that
+  // render "one transaction as a small card" and know nothing but the id. A
+  // POST for a read because the caller names an arbitrary set it already
+  // holds, which does not survive a query string.
+  //
+  // Chunked at the cap the server enforces. `TransactionLegsRequest` declares
+  // `max_length=PAGE_LIMIT_MAX`, so a longer list is a 422 — and the caller's
+  // list is every transfer link plus every rule exclusion the user has, which
+  // is unbounded by anything. The failure was silent in the worst way: the
+  // request rejects, the hook holds no data, and the tabs render fallback
+  // values rather than an error. Sequential rather than parallel, because
+  // this is a background lookup for a list view and not worth N concurrent
+  // connections.
+  transactionLegs: async (transactionIds: string[]) => {
+    const legs: Record<string, LinkedLeg> = {}
+    for (let start = 0; start < transactionIds.length; start += PAGE_LIMIT_MAX) {
+      const chunk = transactionIds.slice(start, start + PAGE_LIMIT_MAX)
+      Object.assign(
+        legs,
+        await request<Record<string, LinkedLeg>>('/postings/legs', jsonInit('POST', { transaction_ids: chunk })),
+      )
+    }
+    return legs
+  },
   // Same paging loop as `postings` above, and for the same reason — an
   // export that silently stopped at the cap would write a partial backup to
   // a file the user believes is complete. Its `window_unit` is `"posting"`
@@ -325,16 +409,29 @@ export const accountingApi = {
       `/postings/${encodeURIComponent(postingId)}/pattern-suggest-category${queryString({ lock_category_id: lockCategoryId ?? undefined })}`,
       { method: 'POST' },
     ),
-  patternSuggestCategoryBulk: (postingIds: string[]) =>
-    request<{ applied: number }>(
+  // The three actions below all name their target set by the filter that
+  // produced it rather than by a list of ids, and the server resolves it
+  // inside the same transaction as the write. A list of ids stopped being
+  // expressible the moment the table held a page instead of the ledger — and
+  // rebuilding one by walking the collection would have put two
+  // implementations of the same thirteen predicates in front of one screen.
+  patternSuggestCategoryBulk: (filters: PostingFilters) =>
+    request<{ matched: number; applied: number }>(
       '/postings/pattern-suggest-category/bulk',
-      jsonInit('POST', { posting_ids: postingIds }),
+      jsonInit('POST', { filters }),
     ),
-  validatePending: (postingIds: string[]) =>
-    request<{ accepted: number; reverted: number }>(
+  validatePending: (filters: PostingFilters) =>
+    request<{ matched: number; accepted: number; reverted: number }>(
       '/postings/validate-pending',
-      jsonInit('POST', { posting_ids: postingIds }),
+      jsonInit('POST', { filters }),
     ),
+  // The exception, and deliberately so: the AI categorizer makes one request
+  // per posting on purpose (the loop is a rate limit), so it needs the
+  // identity of the set it is about to walk. Unpaged, because the response is
+  // strictly smaller than the work it precedes and truncating it to a page
+  // would be the silent truncation this whole screen was rebuilt to remove.
+  matchingPostingIds: (filters: PostingFilters) =>
+    request<string[]>('/postings/matching-ids', jsonInit('POST', { filters })),
   createCategoryPattern: (pattern: CategoryPatternCreate) =>
     request<CategoryPattern>('/category-patterns', jsonInit('POST', pattern)),
   patchCategoryPattern: (patternId: string, update: CategoryPatternUpdate) =>

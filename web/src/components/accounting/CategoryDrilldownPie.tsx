@@ -1,25 +1,32 @@
 import { ChevronRight } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { PieChartLegend } from '@/components/shared/PieChartLegend'
 import { SortableTableHead } from '@/components/shared/SortableTableHead'
+import { TablePagination } from '@/components/shared/TablePagination'
 import { Truncate } from '@/components/shared/Truncate'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHeader, TableRow } from '@/components/ui/table'
-import { useSortableRows } from '@/hooks/useSortableRows'
+import { usePostingsPage } from '@/hooks/useAccountingData'
 import { formatCurrency, formatDate } from '@/lib/format'
-import { realIncomeExpensePostingIds } from '@/lib/postingClassification'
+import { NO_SUBCATEGORY, PLACEHOLDER_ACCOUNT_IDS, UNCATEGORIZED } from '@/lib/transactionFilters'
 import {
   type Account,
   type CategoryClassification,
   type CategoryTotalRow,
   type CurrencyCode,
   type Posting,
+  type PostingFilters,
+  type PostingSortField,
   UNCATEGORIZED_EXPENSE_CATEGORY_ID,
   UNCATEGORIZED_INCOME_CATEGORY_ID,
 } from '@/types/accounting'
+
+// Drilldown rows per page. Smaller than the transactions table's 200: this is
+// a panel inside a chart card with its own scroll box, not a screen.
+const PAGE_SIZE = 50
 
 interface Scope {
   classification?: CategoryClassification
@@ -32,6 +39,8 @@ interface SelectedSubcategory {
   categoryName: string
   subcategoryId: string | null
   subcategoryName: string
+  /** The clicked ring slice's own value, already converted into the display currency. */
+  total: number
 }
 
 interface RingSlice {
@@ -132,37 +141,127 @@ function buildRings(rows: CategoryTotalRow[], scope: Scope): { level: string; sl
 const INNER_START = 40
 const OUTER_END = 150
 
+/**
+ * Whether a slice is the "no category at all" one, which is not a category.
+ *
+ * The two placeholder ids are what `GET /income-statement/category-totals`
+ * files an uncategorized row under; the wire's filter spells the same thing
+ * with `UNCATEGORIZED`. Both readers below need the distinction, so it is
+ * named once rather than repeated as a two-line `||`.
+ *
+ * @param selection - The subcategory slice the user clicked.
+ * @returns Whether the rows behind it carry no category.
+ */
+function isUncategorizedSlice(selection: SelectedSubcategory): boolean {
+  return (
+    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID ||
+    selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
+  )
+}
+
+/**
+ * The clicked slice's own postings, as `GET /postings` selects them.
+ *
+ * Every predicate the browser used to evaluate over a resident ledger has a
+ * parameter here. `income_expense` is the one worth naming: it asserts
+ * `is_real_income_expense` *and* the sign, which is exactly what the client
+ * was computing with `realIncomeExpensePostingIds` plus an `amount >= 0`
+ * test, so the two-pass version is not translated, it is deleted.
+ *
+ * @param selection - The subcategory slice the user clicked.
+ * @param scope - The period bar's window, account and tag, as the wire names them.
+ * @returns The filter for this drilldown, with no sort or page window.
+ */
+function drilldownFilters(selection: SelectedSubcategory, scope: Required<PostingFilters>): Required<PostingFilters> {
+  const isUncategorized = isUncategorizedSlice(selection)
+  return {
+    ...scope,
+    income_expense: selection.classification,
+    // "Uncategorized" is a ring slice, not a category: the rows behind it
+    // carry no category at all, which the wire spells with its own sentinel
+    // and which no subcategory predicate then narrows.
+    categories: [isUncategorized ? UNCATEGORIZED : selection.categoryId],
+    subcategories: isUncategorized ? [] : [selection.subcategoryId ?? NO_SUBCATEGORY],
+  }
+}
+
+/**
+ * Keep only the legs the drilldown is about, out of a page cut by transaction.
+ *
+ * `GET /postings` windows by transaction and returns **every** leg of each
+ * one, placeholders included — `repositories.projection.page_rows` says so and
+ * says why (the transfer badge and "undo split" both read a sibling), and the
+ * transactions table drops the placeholders itself for the same reason. This
+ * panel needs one narrowing more: a split transaction can have one leg under
+ * the clicked subcategory and another somewhere else, and listing the second
+ * under this heading would be a wrong row, not merely an extra one.
+ *
+ * A few comparisons over one page, not a filter pass over a ledger — the thing
+ * the endpoint cannot express is *which legs*, because its window is a
+ * transaction. The sign is re-tested rather than taken from the query: the
+ * server applied `income_expense` to whichever leg *matched*, and a sibling
+ * riding along on the page was never subject to it.
+ *
+ * @param items - One page of rows as the server returned them.
+ * @param selection - The subcategory slice the user clicked.
+ * @returns The rows this table lists.
+ */
+function matchedLegs(items: Posting[], selection: SelectedSubcategory): Posting[] {
+  const isUncategorized = isUncategorizedSlice(selection)
+  return items.filter((posting) => {
+    if (PLACEHOLDER_ACCOUNT_IDS.has(posting.account_id)) return false
+    if (!posting.is_real_income_expense) return false
+    if (selection.classification === 'income' ? posting.amount < 0 : posting.amount >= 0) return false
+    if (isUncategorized) return posting.category_id == null
+    return posting.category_id === selection.categoryId && posting.subcategory_id === (selection.subcategoryId ?? null)
+  })
+}
+
 function SubcategoryTable({
   selection,
-  postings,
-  allPostings,
+  scope,
   accounts,
   displayCurrency,
 }: {
   selection: SelectedSubcategory
-  postings: Posting[]
-  allPostings: Posting[]
+  scope: Required<PostingFilters>
   accounts: Record<string, Account>
   displayCurrency: CurrencyCode
 }) {
-  const isUncategorized =
-    selection.categoryId === UNCATEGORIZED_INCOME_CATEGORY_ID ||
-    selection.categoryId === UNCATEGORIZED_EXPENSE_CATEGORY_ID
-  const realIds = realIncomeExpensePostingIds(allPostings, accounts)
-  const rows = postings.filter((posting) => {
-    if (!realIds.has(posting.posting_id)) return false
-    const signMatches = selection.classification === 'income' ? posting.amount >= 0 : posting.amount < 0
-    if (!signMatches) return false
-    if (isUncategorized) return posting.category_id === null
-    return posting.category_id === selection.categoryId && posting.subcategory_id === selection.subcategoryId
+  const [sort, setSort] = useState<{ key: PostingSortField; desc: boolean }>({ key: 'posted_at', desc: true })
+  const [offset, setOffset] = useState(0)
+  const page = usePostingsPage({
+    ...drilldownFilters(selection, scope),
+    sort: sort.key,
+    descending: sort.desc,
+    limit: PAGE_SIZE,
+    offset,
   })
-  const total = rows.reduce((sum, row) => sum + Math.abs(row.amount), 0)
-  const { sorted, sort, toggleSort } = useSortableRows(rows, 'posted_at')
+  const rows = useMemo(() => matchedLegs(page.data?.items ?? [], selection), [page.data, selection])
+  const matchedPostings = page.data?.counts?.matched_postings ?? 0
+
+  function toggleSort(key: PostingSortField) {
+    setSort((previous) => (previous.key === key ? { key, desc: !previous.desc } : { key, desc: true }))
+    setOffset(0)
+  }
+
+  // The already-converted value of the ring slice this table was opened from,
+  // not `sum(|amount|)` over the rows. Those amounts are each in their own
+  // native currency, so adding them up and labelling the result the display
+  // currency produced a number that was only ever right for a single-currency
+  // ledger — and it cannot be computed here at all now that the rows arrive a
+  // page at a time.
+  const total = selection.total
 
   return (
     <div className="space-y-2">
+      {/* "Rows", as the transactions toolbar says it and for the same reason:
+          a split transaction is one transaction and several rows, and this
+          line counts what the table lists. The pager below counts
+          transactions, which is what a page is cut by. */}
       <p className="text-sm text-muted-foreground">
-        {rows.length} transaction{rows.length === 1 ? '' : 's'} — total {formatCurrency(total, displayCurrency)}
+        {matchedPostings.toLocaleString()} row{matchedPostings === 1 ? '' : 's'} — total{' '}
+        {formatCurrency(total, displayCurrency)}
       </p>
       <div className="max-h-96 overflow-y-auto">
         <Table>
@@ -208,7 +307,7 @@ function SubcategoryTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sorted.map((posting) => (
+            {rows.map((posting) => (
               <TableRow key={posting.posting_id}>
                 <TableCell className="whitespace-nowrap text-muted-foreground">
                   {formatDate(posting.posted_at.slice(0, 10))}
@@ -222,29 +321,42 @@ function SubcategoryTable({
                 <TableCell className="text-right tabular-nums">
                   {formatCurrency(posting.amount, posting.currency)}
                 </TableCell>
+                {/* A share of the total is only a number when the two are in
+                    the same currency: the row's amount is native and the total
+                    is converted. It used to be printed regardless, against a
+                    denominator that added the two together. */}
                 <TableCell className="text-right tabular-nums text-muted-foreground">
-                  {total ? `${((Math.abs(posting.amount) / total) * 100).toFixed(1)}%` : '—'}
+                  {total && posting.currency === displayCurrency
+                    ? `${((Math.abs(posting.amount) / total) * 100).toFixed(1)}%`
+                    : '—'}
                 </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
+      <TablePagination
+        offset={offset}
+        limit={PAGE_SIZE}
+        total={page.data?.total ?? 0}
+        unit="transaction"
+        busy={page.isPlaceholderData}
+        onOffsetChange={setOffset}
+      />
     </div>
   )
 }
 
 export function CategoryDrilldownPie({
   categoryTotals,
-  postings,
-  allPostings,
+  scope: periodScope,
   accounts,
   isLoading,
   displayCurrency,
 }: {
   categoryTotals: CategoryTotalRow[]
-  postings: Posting[]
-  allPostings: Posting[]
+  /** The period bar’s window, account and tag, already in the wire’s vocabulary. */
+  scope: Required<PostingFilters>
   accounts: Record<string, Account>
   isLoading: boolean
   displayCurrency: CurrencyCode
@@ -252,6 +364,20 @@ export function CategoryDrilldownPie({
   const [scope, setScope] = useState<Scope>({})
   const [showPercent, setShowPercent] = useState(false)
   const [selected, setSelected] = useState<SelectedSubcategory | null>(null)
+
+  // The period bar sits above this card and stays live while the drilldown is
+  // open, so changing the window, account or tag has to close it. Two reasons,
+  // both of them a wrong number rather than a stale one: `selection.total` was
+  // captured from a ring aggregated over the *old* window and does not
+  // re-derive, and the table's page offset would survive into a collection
+  // that may now be smaller than it — which reads as "nothing matches". The
+  // transactions table resets its offset on the same signal.
+  const scopeFingerprint = JSON.stringify(periodScope)
+  const lastScope = useRef(scopeFingerprint)
+  if (lastScope.current !== scopeFingerprint) {
+    lastScope.current = scopeFingerprint
+    if (selected) setSelected(null)
+  }
 
   const rings = buildRings(categoryTotals, scope)
   const bandWidth = rings.length ? (OUTER_END - INNER_START) / rings.length : 0
@@ -269,6 +395,7 @@ export function CategoryDrilldownPie({
         categoryName: slice.categoryName ?? '',
         subcategoryId: slice.subcategoryId ?? null,
         subcategoryName: slice.subcategoryName ?? slice.name,
+        total: slice.value,
       })
     }
   }
@@ -332,8 +459,7 @@ export function CategoryDrilldownPie({
             </p>
             <SubcategoryTable
               selection={selected}
-              postings={postings}
-              allPostings={allPostings}
+              scope={periodScope}
               accounts={accounts}
               displayCurrency={displayCurrency}
             />

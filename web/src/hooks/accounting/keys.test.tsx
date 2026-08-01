@@ -21,8 +21,8 @@ const PROBES: Record<string, readonly unknown[]> = {
   syncStatus: keys.syncStatus,
   currentExchangeRate: keys.currentExchangeRate('EUR'),
   exchangeRateHistory: keys.exchangeRateHistory('EUR'),
-  postings: keys.postings,
-  postingCount: keys.postingCount,
+  postingSummary: keys.postingSummary,
+  postingMonths: keys.postingMonths,
   transferSuggestions: [...keys.transferSuggestions, 3],
   duplicateSuggestions: [...keys.duplicateSuggestions, 3],
   dismissedSuggestions: keys.dismissedSuggestions,
@@ -190,10 +190,9 @@ describe('what each mutation invalidates', () => {
     // invalidated without being refetched, which is exactly the signal under
     // test and keeps the stubbed `fetch` free for the mutations themselves.
     for (const probe of Object.values(PROBES)) queryClient.setQueryData(probe, {})
-    // Two probes need a real shape rather than a placeholder, because a
-    // mutation paints them optimistically and reads into them to do it.
+    // One probe needs a real shape rather than a placeholder, because a
+    // mutation paints it optimistically and reads into it to do so.
     queryClient.setQueryData(keys.store, emptyStore())
-    queryClient.setQueryData(keys.postings, [])
   })
 
   afterEach(() => {

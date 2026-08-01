@@ -2,7 +2,7 @@ import { DashboardTab } from '@/components/accounting/DashboardTab'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { DisplayCurrencyToggle } from '@/components/shared/DisplayCurrencyToggle'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useAccountingStore, usePostings } from '@/hooks/useAccountingData'
+import { useAccountingStore } from '@/hooks/useAccountingData'
 import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 
 // Spending/income breakdown, filterable by period/account/tag — was the
@@ -11,7 +11,6 @@ import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 export function InsightsPage() {
   const { displayCurrency } = useDisplayCurrency()
   const { data: store, isLoading } = useAccountingStore()
-  const { data: postings } = usePostings()
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -22,7 +21,6 @@ export function InsightsPage() {
           <Skeleton className="h-64 w-full" />
         ) : (
           <DashboardTab
-            postings={postings ?? []}
             accounts={store.accounts}
             tags={store.tags}
             goals={store.goals}

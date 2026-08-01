@@ -64,6 +64,14 @@ describe('transferBadgeByPostingId', () => {
         is_linked_transfer: true,
         linked_transaction_id: 't2',
         transfer_link_source: 'manual',
+        linked_leg: {
+          transaction_id: 't2',
+          account_id: 'savings',
+          description: 'Moved money',
+          posted_at: '2026-01-15T00:00:00',
+          amount: 100,
+          currency: 'USD',
+        },
       }),
       makePosting({
         posting_id: 'in',
@@ -73,6 +81,14 @@ describe('transferBadgeByPostingId', () => {
         is_linked_transfer: true,
         linked_transaction_id: 't1',
         transfer_link_source: 'manual',
+        linked_leg: {
+          transaction_id: 't1',
+          account_id: 'checking',
+          description: 'Moved money',
+          posted_at: '2026-01-15T00:00:00',
+          amount: -100,
+          currency: 'USD',
+        },
       }),
     ]
 
@@ -94,10 +110,22 @@ describe('transferBadgeByPostingId', () => {
       expect(popup.ruleId).toBeNull()
     })
 
-    // The link exists but its partner transaction is not in the list — a page
-    // boundary, or a filter. A half-resolved badge would name the wrong side.
-    it('gives no badge when the other side is absent', () => {
+    // The partner used to have to be in the same array, so a page boundary or
+    // an account filter cost a genuinely-linked row its badge. `linked_leg` is
+    // joined onto the row server-side precisely so it does not.
+    it('badges a row whose partner is not in the list at all', () => {
       const orphan = [postings[0]]
+
+      expect(transferBadgeByPostingId(orphan, ACCOUNTS, [link], new Set()).get('out')?.label).toBe(
+        'Transfer to Rainy Day',
+      )
+    })
+
+    // What "absent" means now: the server found no real leg for the partner —
+    // its statement was re-imported away, or the ledger was rebuilt. A
+    // half-resolved badge would name the wrong side.
+    it('gives no badge when the server sent no partner leg', () => {
+      const orphan = [makePosting({ ...postings[0], linked_leg: null })]
 
       expect(transferBadgeByPostingId(orphan, ACCOUNTS, [link], new Set()).size).toBe(0)
     })
@@ -170,6 +198,14 @@ describe('transferBadgeByPostingId', () => {
         transfer_link_source: 'rule',
         manual_transfer_override_posting_id: 'somewhere',
         resolved_by_transfer_rule_id: 'r1',
+        linked_leg: {
+          transaction_id: 't2',
+          account_id: 'savings',
+          description: 'Moved money',
+          posted_at: '2026-01-15T00:00:00',
+          amount: 100,
+          currency: 'USD',
+        },
       }),
       makePosting({ posting_id: 'in', transaction_id: 't2', account_id: 'savings', amount: 100 }),
     ]
