@@ -292,6 +292,12 @@ export const accountingApi = {
   // it is never the stride.
   postings: () =>
     fetchAllPages<Posting>(({ limit, offset }) => request<PostingPage>(`/postings${queryString({ limit, offset })}`)),
+  // Every `YYYY-MM` the user has a posting in, newest first. Bounded by
+  // construction — one row per month ever transacted in — so unlike the
+  // collection above it needs no paging loop. Replaces a `Set` built over
+  // the whole resident ledger, which was only ever cheap while something
+  // else was already holding it.
+  postingMonths: () => request<string[]>('/postings/months'),
   // Same paging loop as `postings` above, and for the same reason — an
   // export that silently stopped at the cap would write a partial backup to
   // a file the user believes is complete. Its `window_unit` is `"posting"`

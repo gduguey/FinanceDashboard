@@ -74,6 +74,7 @@ export {
   usePatternSuggestCategory,
   usePatternSuggestCategoryBulk,
   usePostingCount,
+  usePostingMonths,
   usePostings,
   useRemovePostingMerge,
   useRemoveTransferLink,

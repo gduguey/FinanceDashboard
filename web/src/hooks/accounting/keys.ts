@@ -47,11 +47,12 @@ const prefixes = {
  * incidental detail.
  *
  * A key built from arguments always extends its own entry in `prefixes`, so
- * invalidating that prefix sweeps every argument variant. Two of them nest:
- * `postingCount` sits under `postings`, and `llmVerify` under `llmSettings`.
- * Both are deliberate — the count is derived from the same rows as the list,
- * and a verify result is only meaningful for the key currently stored — so a
- * prefix invalidation of the parent is supposed to take the child with it.
+ * invalidating that prefix sweeps every argument variant. Three of them nest:
+ * `postingCount` and `postingMonths` sit under `postings`, and `llmVerify`
+ * under `llmSettings`. All are deliberate — the count and the month list are
+ * derived from the same rows as the list itself, and a verify result is only
+ * meaningful for the key currently stored — so a prefix invalidation of the
+ * parent is supposed to take the child with it.
  */
 export const keys = {
   store: prefixes.store,
@@ -65,6 +66,7 @@ export const keys = {
   exchangeRateHistory: (currency: string) => [...prefixes.exchangeRateHistory, currency],
   postings: prefixes.postings,
   postingCount: [...prefixes.postings, 'count'],
+  postingMonths: [...prefixes.postings, 'months'],
   transferSuggestions: prefixes.transferSuggestions,
   duplicateSuggestions: prefixes.duplicateSuggestions,
   dismissedSuggestions: prefixes.dismissedSuggestions,

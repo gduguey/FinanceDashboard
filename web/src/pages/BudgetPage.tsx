@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import {
   useAccountingStore,
   useCategoryTotals,
-  usePostings,
+  usePostingMonths,
   useRemoveBudget,
   useSetBudget,
   useSuggestedBudgetAmount,
@@ -23,7 +23,6 @@ import { useDisplayCurrency } from '@/hooks/useDisplayCurrency'
 import { usePersistedState } from '@/hooks/usePersistedState'
 import { withAlpha } from '@/lib/colors'
 import { formatCurrency } from '@/lib/format'
-import { availableMonths } from '@/lib/months'
 import { hasAnyRealAccount } from '@/lib/postingClassification'
 import type { Category, CategoryTotalRow, CurrencyCode } from '@/types/accounting'
 
@@ -204,7 +203,10 @@ export function BudgetPage() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
 
   const { data: store, isLoading: storeLoading } = useAccountingStore()
-  const { data: postings } = usePostings()
+  // The month picker is the only thing on this page that ever needed the
+  // ledger, and it needed one `GROUP BY` of it. Reading that off the whole
+  // resident posting list was C7; it is now a bounded request of its own.
+  const { data: months } = usePostingMonths()
   const setBudget = useSetBudget()
   const removeBudget = useRemoveBudget()
 
@@ -400,7 +402,7 @@ export function BudgetPage() {
                   ))}
                 </SelectContent>
               </Select>
-              <MonthSelect value={month} onChange={setMonth} months={availableMonths(postings ?? [])} />
+              <MonthSelect value={month} onChange={setMonth} months={months ?? []} />
             </div>
           </CardHeader>
           <CardContent className="space-y-3">

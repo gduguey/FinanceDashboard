@@ -23,6 +23,7 @@ const PROBES: Record<string, readonly unknown[]> = {
   exchangeRateHistory: keys.exchangeRateHistory('EUR'),
   postings: keys.postings,
   postingCount: keys.postingCount,
+  postingMonths: keys.postingMonths,
   transferSuggestions: [...keys.transferSuggestions, 3],
   duplicateSuggestions: [...keys.duplicateSuggestions, 3],
   dismissedSuggestions: keys.dismissedSuggestions,

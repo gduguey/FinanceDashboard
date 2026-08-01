@@ -21,6 +21,16 @@ export const usePostings = () => useQuery({ queryKey: keys.postings, queryFn: ac
  */
 export const usePostingCount = () => useQuery({ queryKey: keys.postingCount, queryFn: accountingApi.postingCount })
 
+/**
+ * Every month the user has a posting in, newest first — the month picker's options.
+ *
+ * One `GROUP BY` on the server (`GET /postings/months`), not a `Set` built
+ * over a resident ledger. The distinction only became affordable once
+ * something other than the whole posting list could answer it, which is why
+ * this endpoint sat unconsumed until now (C2).
+ */
+export const usePostingMonths = () => useQuery({ queryKey: keys.postingMonths, queryFn: accountingApi.postingMonths })
+
 export const useTransferSuggestions = (windowDays?: number) =>
   useQuery({
     queryKey: [...keys.transferSuggestions, windowDays ?? {}],
