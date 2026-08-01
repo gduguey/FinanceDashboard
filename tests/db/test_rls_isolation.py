@@ -33,7 +33,9 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ProgrammingError
 
-from db.session import create_one_shot_engine
+from sqlalchemy.orm import Session
+
+from db.session import create_one_shot_engine, set_rls_user
 from tests.db.conftest import app_runtime_database_url
 
 if TYPE_CHECKING:
@@ -300,3 +302,76 @@ def test_the_restricted_role_is_not_a_superuser_and_cannot_bypass_rls(seeded: En
     assert not role.rolsuper, "app_runtime is a superuser, so RLS does not apply to it"
     assert not role.rolbypassrls, "app_runtime holds BYPASSRLS, so every isolation policy is decorative"
     assert not role.rolcreaterole, "app_runtime can create roles, and so can grant itself a way around RLS"
+
+
+def test_a_read_that_commits_mid_request_stays_scoped_to_its_tenant(seeded: Engine) -> None:
+    """`set_rls_user` is transaction-local, so anything that commits and then reads has to re-arm it.
+
+    Almost every write path commits at the end of the request and reads
+    nothing afterwards, which is why this stayed invisible for so long.
+    `repositories.projection.drain` breaks that pattern deliberately: it is a
+    *read* path that writes, filling the resolved projection before the
+    request queries it, and it commits so the recomputed rows and the claimed
+    staleness markers land together.
+
+    What makes the failure worth its own test is its shape. Postgres resets
+    an undeclared GUC to the empty string rather than to null, and
+    `db.tenant.enable_rls_statements` wraps the setting in `NULLIF(..., '')`
+    so an unset tenant fails *closed* — the right choice, and the reason this
+    does not raise. Every query after the commit simply matches nothing, and
+    the endpoint answers 200 with an empty page.
+
+    Uses `db.session.set_rls_user` rather than this module's own `_become`,
+    and that distinction is the whole point: `_become` sets the GUC at
+    *session* scope (`is_local=false`) so it survives a commit, while
+    production sets it at *transaction* scope so a pooled connection cannot
+    leak one request's tenant into the next. Only the production spelling can
+    exhibit this.
+
+    Asserted here rather than in the accounting suite because only this
+    module runs under a real policy: `tests/conftest.py` builds its schema
+    with `Base.metadata.create_all`, which creates none, so a missing re-arm
+    is undetectable there by construction.
+    """
+    with Session(bind=seeded) as session:
+        set_rls_user(session, TENANT_A)
+        before = session.execute(text("SELECT count(*) FROM accounting.accounts")).scalar_one()
+        assert before == 1, "the seed should give tenant A exactly one account to see"
+
+        session.commit()
+        after_commit = session.execute(text("SELECT count(*) FROM accounting.accounts")).scalar_one()
+
+        set_rls_user(session, TENANT_A)
+        after_rearming = session.execute(text("SELECT count(*) FROM accounting.accounts")).scalar_one()
+
+    assert after_commit == 0, (
+        "a committed transaction is expected to drop `app.current_user_id` — if this ever stops being true, "
+        "the re-arm at the end of `repositories.projection.drain` is dead code and should go with this test"
+    )
+    assert after_rearming == 1, "re-arming after the commit did not restore the tenant's own rows"
+
+
+def test_the_projection_drain_re_arms_the_session_it_committed(seeded: Engine) -> None:
+    """The fix for the case above, asserted on the function that needs it rather than on the mechanism.
+
+    `drain` over a tenant with nothing dirty does no work and must not
+    disturb the session; over a tenant with something dirty it commits, and
+    the caller has to be able to keep reading afterwards. Both are the same
+    assertion from the request's point of view: after `drain`, this session
+    can still see its own rows.
+    """
+    from accounting.repositories.projection import drain  # noqa: PLC0415 — keeps this module importable without `api`
+
+    with Session(bind=seeded) as session:
+        set_rls_user(session, TENANT_A)
+        session.execute(
+            text("INSERT INTO accounting.resolved_postings_dirty (user_id, transaction_id) VALUES (:t, :t)"),
+            {"t": TENANT_A},
+        )
+        session.commit()
+        set_rls_user(session, TENANT_A)
+
+        assert drain(session, TENANT_A) == 1, "the marker should have been claimed"
+        assert session.execute(text("SELECT count(*) FROM accounting.accounts")).scalar_one() == 1, (
+            "the session could not see its own rows after `drain` committed"
+        )

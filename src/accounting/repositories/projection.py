@@ -23,6 +23,19 @@ extrapolated to the 170k-transaction audit database. A transfer-rule save
 already reconciles links over the whole ledger, so it was never a cheap
 write; this roughly doubles it rather than introducing a new class of cost.
 
+## A read that commits
+
+`drain` is a write on the read path, which is unusual enough to state: it
+commits, and then the request goes on to query. That matters because
+`db.session.set_rls_user` is transaction-local by design, and Postgres
+resets an undeclared GUC to the *empty string* rather than to null — so
+every subsequent RLS policy on the same session would compare
+`user_id = NULL` and match nothing. Not an error: a silently empty page.
+`drain` therefore re-arms the session itself, the same thing
+`ledger.transfers.reconcile_and_persist_rule_links` does after its own
+mid-request commit, and `tests/db/test_rls_isolation.py` holds it under a
+real policy.
+
 ## Claiming, and two readers at once
 
 The queue is claimed with `DELETE ... RETURNING` inside the caller's
@@ -74,6 +87,7 @@ from accounting.repositories.interpretation import load_overrides_for_postings
 from accounting.taxonomy import UNCATEGORIZED_EXPENSE_ACCOUNT_ID, UNCATEGORIZED_INCOME_ACCOUNT_ID
 from db.base import any_text, any_uuid
 from db.money import quantize_money
+from db.session import set_rls_user
 
 if TYPE_CHECKING:
     import uuid
@@ -256,6 +270,13 @@ def drain(session: Session, user_id: uuid.UUID) -> int:
     for start in range(0, len(claimed), RECOMPUTE_BATCH_TRANSACTIONS):
         _recompute_batch(session, user_id, claimed[start : start + RECOMPUTE_BATCH_TRANSACTIONS], context)
     session.commit()
+    # The commit above ends the transaction `app.current_user_id` was set
+    # local to, and Postgres resets an undeclared GUC to the empty string
+    # rather than to null — so every RLS policy on this session would go on
+    # matching `user_id = NULL` and silently return nothing. This is a *read*
+    # that commits, which is unusual, and the failure it would cause is an
+    # empty page rather than an error. See `db.session.set_rls_user`.
+    set_rls_user(session, user_id)
     return len(claimed)
 
 
@@ -286,6 +307,7 @@ def rebuild(session: Session, user_id: uuid.UUID) -> int:
     for start in range(0, len(every), RECOMPUTE_BATCH_TRANSACTIONS):
         _recompute_batch(session, user_id, every[start : start + RECOMPUTE_BATCH_TRANSACTIONS], context)
     session.commit()
+    set_rls_user(session, user_id)  # See `drain`.
     return len(every)
 
 
