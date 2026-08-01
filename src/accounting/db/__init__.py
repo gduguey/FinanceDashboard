@@ -32,6 +32,7 @@ from accounting.db.corrections import (
 from accounting.db.goals import Goal, GoalAutomation, GoalContribution
 from accounting.db.institutions import Institution
 from accounting.db.llm import LLMUsage
+from accounting.db.projection import ResolvedPosting, ResolvedPostingDirty
 from accounting.db.simulator import SimulatorScenario
 from accounting.db.transfers import TransferLink, TransferLinkedTransaction
 from accounting.db.triggers import ZERO_SUM_STATEMENTS  # noqa: F401 — importing installs the after_create hook
@@ -59,6 +60,8 @@ __all__ = [
     "PostingSplit",
     "PostingSplitLeg",
     "PostingTag",
+    "ResolvedPosting",
+    "ResolvedPostingDirty",
     "SimulatorScenario",
     "Suggestion",
     "Tag",

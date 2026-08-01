@@ -87,7 +87,20 @@ def upgrade() -> None:
     for statement in ZERO_SUM_STATEMENTS:
         op.execute(statement)
     grant_app_runtime(op, schemas=("public", *_SCHEMAS))
+    # Restricted to the tables *this* revision created, read back off the
+    # connection rather than taken from a list. `tenant_tables` walks live ORM
+    # metadata, which is the whole point of it — the policy set is derived from
+    # the models instead of transcribed. But metadata describes the schema as
+    # it is *today*, not as this revision left it, so the first later revision
+    # to add a tenant table (`000000000002`) made this loop try to protect a
+    # table the baseline does not create, and every fresh database failed to
+    # migrate. Reflection is what makes "derived from the models" and "this
+    # revision only" both true.
+    inspector = sa.inspect(op.get_bind())
+    created = {(schema, table) for schema in ("public", *_SCHEMAS) for table in inspector.get_table_names(schema)}
     for tenant in tenant_tables(Base.metadata):
+        if (tenant.schema or "public", tenant.table) not in created:
+            continue
         for statement in enable_rls_statements(tenant):
             op.execute(statement)
 
